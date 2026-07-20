@@ -186,49 +186,164 @@ async def wallet_summary(uid: str = Depends(get_current_user_id)):
     }
 
 
+# ==================== TRANSFER CONFIG ====================
+DEFAULT_TRANSFER_CONFIG = {
+    "id": "transfer_config",
+    "mobile_money": {
+        "enabled": True,
+        "operators": [
+            # TG
+            {"country": "TG", "code": "flooz", "name": "Flooz", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "TG", "code": "tmoney", "name": "TMoney", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "TG", "code": "wave", "name": "Wave", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
+            # SN
+            {"country": "SN", "code": "wave", "name": "Wave", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
+            {"country": "SN", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "SN", "code": "free", "name": "Free Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # CI
+            {"country": "CI", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "CI", "code": "mtn", "name": "MTN Mobile Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "CI", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "CI", "code": "wave", "name": "Wave", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
+            # ML
+            {"country": "ML", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "ML", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # BF
+            {"country": "BF", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "BF", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # CM
+            {"country": "CM", "code": "mtn", "name": "MTN Mobile Money", "fee_pct": 2.0, "min": 100, "max": 500000, "active": True},
+            {"country": "CM", "code": "orange", "name": "Orange Money", "fee_pct": 2.0, "min": 100, "max": 500000, "active": True},
+            # BJ
+            {"country": "BJ", "code": "mtn", "name": "MTN Mobile Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "BJ", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "BJ", "code": "celtiis", "name": "Celtiis Cash", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+        ],
+    },
+    "bank": {
+        "enabled": False,
+        "banks": [],
+    },
+}
+
+
+async def get_transfer_config() -> dict:
+    doc = await db.settings.find_one({"id": "transfer_config"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(DEFAULT_TRANSFER_CONFIG.copy())
+        doc = await db.settings.find_one({"id": "transfer_config"}, {"_id": 0})
+    return doc
+
+
+@api.get("/transfer/config")
+async def transfer_config(uid: str = Depends(get_current_user_id)):
+    cfg = await get_transfer_config()
+    return cfg
+
+
 # ==================== TRANSFER ====================
 @api.post("/transfers")
 async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)):
     u = await get_user(uid)
-    if u.get("kyc_status") != "verified":
-        # allow demo transfer but flag
-        pass
+    if u.get("is_banned") or u.get("is_blocked"):
+        raise HTTPException(403, "Compte suspendu")
+    if u.get("withdrawals_blocked") and req.transfer_type != "biz_to_biz":
+        raise HTTPException(403, "Retraits bloqués pour votre compte")
 
     field = "balance_xof" if req.currency == "XOF" else "balance_xaf"
     if u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
-    fee = 0.0
-    if req.transfer_type == "biz_to_bank":
-        fee = req.amount * 0.015
-    elif req.transfer_type == "biz_to_mobile":
-        fee = req.amount * 0.01
+    cfg = await get_transfer_config()
 
-    total_debit = req.amount + fee
-    if u.get(field, 0) < total_debit:
-        raise HTTPException(400, "Solde insuffisant (frais inclus)")
-
-    # if biz_to_biz, recipient MUST exist
-    recip = None
+    # -------- BIZ TO BIZ: instant, no fees --------
     if req.transfer_type == "biz_to_biz":
-        recip = await db.users.find_one(
-            {"$or": [{"username": req.recipient.lower()}, {"email": req.recipient.lower()}]}
-        )
+        needle = (req.recipient or "").lower().strip()
+        recip = await db.users.find_one({
+            "$or": [
+                {"username": needle}, {"email": needle},
+                {"phone": {"$regex": req.recipient_phone or needle, "$options": "i"}} if (req.recipient_phone or needle) else {"_none": True},
+            ]
+        })
         if not recip:
-            raise HTTPException(404, "Destinataire introuvable")
+            raise HTTPException(404, "Bénéficiaire Biz-transPay introuvable")
+        if recip["id"] == uid:
+            raise HTTPException(400, "Impossible de vous transférer à vous-même")
 
-    await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
-
-    if recip:
+        await db.users.update_one({"id": uid}, {"$inc": {field: -req.amount}})
         await db.users.update_one({"id": recip["id"]}, {"$inc": {field: req.amount}})
         await record_tx(recip["id"], "transfer", "in", req.amount, req.currency,
                         counterparty=u["username"], description=req.description)
+        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 counterparty=recip["username"], description=req.description,
+                                 metadata={"transfer_type": "biz_to_biz", "fee": 0,
+                                           "recipient_name": recip.get("full_name")})
+        return {"transaction": tx_out.model_dump(), "fee": 0,
+                "recipient": {"username": recip["username"], "full_name": recip.get("full_name")}}
 
-    tx = await record_tx(uid, "transfer", "out", req.amount, req.currency,
-                         counterparty=req.recipient, description=req.description,
-                         metadata={"transfer_type": req.transfer_type, "fee": fee,
-                                   "recipient_name": req.recipient_name})
-    return {"transaction": tx.model_dump(), "fee": fee}
+    # -------- BIZ TO MOBILE --------
+    if req.transfer_type == "biz_to_mobile":
+        mm_cfg = cfg.get("mobile_money", {})
+        if not mm_cfg.get("enabled"):
+            raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
+        if not req.country or not req.operator:
+            raise HTTPException(400, "Pays et opérateur requis")
+        op = next((o for o in mm_cfg.get("operators", [])
+                   if o.get("country") == req.country and o.get("code") == req.operator and o.get("active", True)), None)
+        if not op:
+            raise HTTPException(400, "Opérateur non disponible pour ce pays")
+        if req.amount < op.get("min", 0) or req.amount > op.get("max", 10**12):
+            raise HTTPException(400, f"Montant hors des limites autorisées ({op['min']} - {op['max']} {req.currency})")
+
+        fee_pct = op.get("fee_pct", 0) / 100.0
+        fee = req.amount * fee_pct
+        if req.fee_bearer == "sender":
+            total_debit = req.amount + fee
+            recipient_gets = req.amount
+        else:  # receiver pays
+            total_debit = req.amount
+            recipient_gets = req.amount - fee
+
+        if u.get(field, 0) < total_debit:
+            raise HTTPException(400, "Solde insuffisant (frais inclus)")
+
+        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
+        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 counterparty=req.recipient, description=req.description,
+                                 metadata={"transfer_type": "biz_to_mobile", "operator": op["name"],
+                                           "country": req.country, "fee": fee, "fee_bearer": req.fee_bearer,
+                                           "recipient_gets": recipient_gets, "recipient_name": req.recipient_name,
+                                           "total_debit": total_debit})
+        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
+                "recipient_gets": recipient_gets, "operator": op["name"]}
+
+    # -------- BIZ TO BANK --------
+    if req.transfer_type == "biz_to_bank":
+        bank_cfg = cfg.get("bank", {})
+        if not bank_cfg.get("enabled"):
+            raise HTTPException(403, "Bientôt disponible. Les transferts bancaires seront disponibles prochainement.")
+        if not req.bank:
+            raise HTTPException(400, "Banque requise")
+        bank = next((b for b in bank_cfg.get("banks", [])
+                     if b.get("code") == req.bank and b.get("active", True)), None)
+        if not bank:
+            raise HTTPException(400, "Banque non disponible")
+        fee_pct = bank.get("fee_pct", 0) / 100.0
+        fee = req.amount * fee_pct
+        total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
+        recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
+        if u.get(field, 0) < total_debit:
+            raise HTTPException(400, "Solde insuffisant (frais inclus)")
+        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
+        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 counterparty=req.recipient, description=req.description,
+                                 metadata={"transfer_type": "biz_to_bank", "bank": bank["name"],
+                                           "fee": fee, "fee_bearer": req.fee_bearer,
+                                           "recipient_gets": recipient_gets, "total_debit": total_debit})
+        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
+                "recipient_gets": recipient_gets, "bank": bank["name"]}
+
+    raise HTTPException(400, "Type de transfert inconnu")
 
 
 # ==================== DEPOSIT (Stripe) ====================
@@ -859,6 +974,41 @@ async def admin_list_admins(admin=Depends(get_admin)):
     docs = await db.users.find({"role": {"$in": ["admin", "super_admin"]}},
                                 {"_id": 0, "password_hash": 0}).to_list(200)
     return docs
+
+
+class AdminTransferConfigReq(BaseModel):
+    mobile_money: Optional[dict] = None
+    bank: Optional[dict] = None
+
+
+@api.get("/admin/transfer/config")
+async def admin_get_transfer_config(admin=Depends(get_admin)):
+    return await get_transfer_config()
+
+
+@api.patch("/admin/transfer/config")
+async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depends(get_admin)):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    await db.settings.update_one({"id": "transfer_config"}, {"$set": updates}, upsert=True)
+    await audit(admin["id"], admin["username"], "update_transfer_config", details=updates)
+    return await get_transfer_config()
+
+
+@api.get("/users/lookup")
+async def lookup_user(q: str = Query(...), uid: str = Depends(get_current_user_id)):
+    needle = q.lower().strip()
+    recip = await db.users.find_one({
+        "$or": [
+            {"username": needle},
+            {"email": needle},
+            {"phone": {"$regex": needle, "$options": "i"}},
+        ]
+    }, {"_id": 0, "id": 1, "username": 1, "full_name": 1, "country": 1})
+    if not recip:
+        raise HTTPException(404, "Utilisateur introuvable")
+    return recip
 
 
 # ==================== STATS (public) ====================

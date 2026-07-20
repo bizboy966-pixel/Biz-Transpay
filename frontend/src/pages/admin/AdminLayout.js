@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, Bell, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send } from 'lucide-react';
+import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, Bell, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { Link } from 'react-router-dom';
 
@@ -11,6 +11,7 @@ const NAV = [
   { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts' },
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
   { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC' },
+  { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
   { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
   { to: '/admin/api', i: Code2, l: 'API & Intégrations' },
   { to: '/admin/tickets', i: MessageCircle, l: 'Tickets & Support' },

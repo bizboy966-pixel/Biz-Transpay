@@ -112,6 +112,11 @@ class TransferRequest(BaseModel):
     transfer_type: Literal["biz_to_biz", "biz_to_mobile", "biz_to_bank"]
     recipient: str  # username / phone / iban
     recipient_name: Optional[str] = ""
+    recipient_phone: Optional[str] = ""  # extra id field for biz_to_biz
+    country: Optional[str] = None
+    operator: Optional[str] = None
+    bank: Optional[str] = None
+    fee_bearer: Optional[Literal["sender", "receiver"]] = "sender"
     amount: float
     currency: Literal["XOF", "XAF"]
     description: Optional[str] = ""

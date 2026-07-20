@@ -26,6 +26,7 @@ import AdminKyc from '@/pages/admin/AdminKyc';
 import AdminTransactions from '@/pages/admin/AdminTransactions';
 import AdminLogs from '@/pages/admin/AdminLogs';
 import AdminAdmins from '@/pages/admin/AdminAdmins';
+import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -77,6 +78,7 @@ function App() {
             <Route path="withdrawals" element={<AdminTransactions filterType="withdrawal" />} />
             <Route path="logs" element={<AdminLogs />} />
             <Route path="admins" element={<AdminAdmins />} />
+            <Route path="transfer-config" element={<AdminTransferConfig />} />
           </Route>
         </Routes>
       </BrowserRouter>
