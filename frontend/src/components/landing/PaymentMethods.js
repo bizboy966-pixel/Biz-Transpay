@@ -17,11 +17,11 @@ const METHODS = [
 function LogoChip({ m }) {
   return (
     <div
-      className="mx-3 flex items-center justify-center min-w-[170px] h-[72px] rounded-2xl border border-slate-100 bg-white shadow-[0_4px_20px_rgba(15,23,42,0.05)] hover:shadow-[0_10px_30px_rgba(37,99,235,0.15)] hover:-translate-y-0.5 transition-transform"
+      className="mx-2 flex items-center justify-center min-w-[140px] h-[56px] rounded-xl border border-slate-100 bg-white shadow-[0_2px_12px_rgba(15,23,42,0.04)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.12)] hover:-translate-y-0.5 transition-transform"
       data-testid={`method-${m.name.toLowerCase().replace(/\s+/g,'-')}`}
     >
       <div
-        className="px-5 py-2 rounded-xl font-cabinet font-extrabold text-lg"
+        className="px-3.5 py-1.5 rounded-lg font-cabinet font-extrabold text-sm"
         style={{ background: m.bg, color: m.text }}
       >
         {m.short || m.name}
@@ -33,12 +33,12 @@ function LogoChip({ m }) {
 export default function PaymentMethods() {
   const { t } = useTranslation();
   return (
-    <section className="relative py-20 sm:py-24 bg-gradient-to-b from-white to-slate-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <div className="inline-block text-xs font-bold uppercase tracking-[0.2em] text-[#2563EB] mb-3">Partenaires</div>
-          <h2 className="font-cabinet text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">{t('methods.title')}</h2>
-          <p className="mt-3 text-slate-600">{t('methods.subtitle')}</p>
+    <section className="relative py-14 sm:py-16 bg-gradient-to-b from-white to-slate-50">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center max-w-xl mx-auto mb-8">
+          <div className="inline-block text-[11px] font-bold uppercase tracking-[0.2em] text-[#2563EB] mb-2">Partenaires</div>
+          <h2 className="font-cabinet text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900">{t('methods.title')}</h2>
+          <p className="mt-2 text-sm text-slate-600">{t('methods.subtitle')}</p>
         </div>
 
         <div className="relative">

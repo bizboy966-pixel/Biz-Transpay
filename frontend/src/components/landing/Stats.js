@@ -59,62 +59,62 @@ export default function Stats() {
   ];
 
   return (
-    <section ref={ref} className="relative py-6 sm:py-10">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="relative rounded-[32px] bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1E40AF] overflow-hidden p-10 sm:p-14">
+    <section ref={ref} className="relative py-6 sm:py-8">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="relative rounded-[24px] bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1E40AF] overflow-hidden p-8 sm:p-10">
           {/* Decorative circles */}
-          <div className="absolute -top-24 -right-24 w-96 h-96 rounded-full bg-white/10" />
-          <div className="absolute -bottom-32 -left-16 w-96 h-96 rounded-full bg-white/5" />
+          <div className="absolute -top-16 -right-16 w-72 h-72 rounded-full bg-white/10" />
+          <div className="absolute -bottom-24 -left-12 w-72 h-72 rounded-full bg-white/5" />
           <div className="absolute inset-0 bt-worldmap opacity-20" />
 
-          <div className="relative grid md:grid-cols-[1.2fr_1fr] gap-10 items-center">
+          <div className="relative grid md:grid-cols-[1.2fr_1fr] gap-8 items-center">
             <div>
-              <div className="inline-flex items-center gap-2 bg-white/10 text-white/90 px-4 py-1.5 rounded-full text-xs font-semibold uppercase tracking-wider backdrop-blur">
+              <div className="inline-flex items-center gap-2 bg-white/10 text-white/90 px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider backdrop-blur">
                 <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
                 Trusted worldwide
               </div>
-              <h2 className="mt-4 font-cabinet text-4xl sm:text-5xl font-extrabold text-white tracking-tighter">{t('stats.title')}</h2>
+              <h2 className="mt-3 font-cabinet text-2xl sm:text-3xl font-extrabold text-white tracking-tighter">{t('stats.title')}</h2>
 
-              <div className="mt-10 grid grid-cols-2 sm:grid-cols-4 gap-6">
+              <div className="mt-7 grid grid-cols-2 sm:grid-cols-4 gap-5">
                 {stats.map((s, i) => (
                   <div key={i} data-testid={`stat-${i}`}>
-                    <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-3 backdrop-blur">
-                      <s.i className="w-5 h-5 text-white" strokeWidth={1.75} />
+                    <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center mb-2 backdrop-blur">
+                      <s.i className="w-4 h-4 text-white" strokeWidth={1.75} />
                     </div>
-                    <div className="font-cabinet text-3xl sm:text-4xl font-extrabold text-white">{s.v}</div>
-                    <div className="text-xs text-white/70 mt-1 font-medium">{s.l}</div>
+                    <div className="font-cabinet text-2xl sm:text-3xl font-extrabold text-white">{s.v}</div>
+                    <div className="text-[11px] text-white/70 mt-0.5 font-medium">{s.l}</div>
                   </div>
                 ))}
               </div>
 
-              <div className="mt-8 flex items-center gap-2 text-white/80 text-sm font-semibold">
-                <Clock className="w-4 h-4" /> {t('stats.support')}
+              <div className="mt-6 flex items-center gap-2 text-white/80 text-xs font-semibold">
+                <Clock className="w-3.5 h-3.5" /> {t('stats.support')}
               </div>
             </div>
 
             {/* Right decoration: avatars orbiting brand */}
-            <div className="relative h-64 hidden md:block">
+            <div className="relative h-52 hidden md:block">
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-56 h-56 rounded-full border border-white/20 relative">
-                  <div className="w-40 h-40 rounded-full border border-white/10 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+                <div className="w-44 h-44 rounded-full border border-white/20 relative">
+                  <div className="w-32 h-32 rounded-full border border-white/10 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
                 </div>
               </div>
               <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-24 h-24 rounded-3xl bg-white flex items-center justify-center shadow-2xl">
-                  <span className="font-cabinet font-extrabold text-3xl text-[#2563EB]">B</span>
+                <div className="w-20 h-20 rounded-2xl bg-white flex items-center justify-center shadow-2xl">
+                  <span className="font-cabinet font-extrabold text-2xl text-[#2563EB]">B</span>
                 </div>
               </div>
               {AVATARS.map((a, i) => {
                 const positions = [
-                  'top-4 right-8', 'top-1/2 -right-2 -translate-y-1/2', 'bottom-4 right-16', 'top-6 left-10',
+                  'top-2 right-6', 'top-1/2 -right-1 -translate-y-1/2', 'bottom-2 right-12', 'top-4 left-8',
                 ];
                 return (
                   <div key={i} className={`absolute ${positions[i]}`}>
                     <div className="relative">
-                      <div className={`w-14 h-14 rounded-full bg-gradient-to-br ${a.c} border-4 border-white shadow-xl flex items-center justify-center text-xl`}>
+                      <div className={`w-11 h-11 rounded-full bg-gradient-to-br ${a.c} border-[3px] border-white shadow-xl flex items-center justify-center text-base`}>
                         {a.i}
                       </div>
-                      <CheckCircle2 className="absolute -bottom-1 -right-1 w-5 h-5 text-emerald-400 bg-white rounded-full" strokeWidth={2.5} />
+                      <CheckCircle2 className="absolute -bottom-1 -right-1 w-4 h-4 text-emerald-400 bg-white rounded-full" strokeWidth={2.5} />
                     </div>
                   </div>
                 );

@@ -43,7 +43,7 @@ export default function Navbar() {
         scrolled ? 'bt-glass border-b border-slate-200/60 shadow-[0_2px_20px_rgba(15,23,42,0.04)]' : 'bg-transparent'
       }`}
     >
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
         <Logo />
 
         <nav className="hidden lg:flex items-center gap-1">
@@ -96,9 +96,9 @@ export default function Navbar() {
           <Link
             to="/login"
             data-testid="nav-login-btn"
-            className="hidden sm:inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-semibold px-5 py-2.5 rounded-full shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] hover:-translate-y-0.5 transition-transform"
+            className="hidden sm:inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-sm font-semibold px-4 py-2 rounded-full shadow-[0_4px_12px_0_rgba(37,99,235,0.35)] hover:-translate-y-0.5 transition-transform"
           >
-            <LogIn className="w-4 h-4" />
+            <LogIn className="w-3.5 h-3.5" />
             {t('nav.login')}
           </Link>
 

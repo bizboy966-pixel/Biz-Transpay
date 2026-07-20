@@ -29,38 +29,38 @@ export default function DashboardHome() {
   const needsKyc = user?.kyc_status !== 'verified' && showKycBanner;
 
   return (
-    <div className="space-y-8" data-testid="dashboard-home">
+    <div className="space-y-6" data-testid="dashboard-home">
       {needsKyc && (
-        <div className="relative rounded-[20px] border border-orange-200 bg-gradient-to-r from-orange-50 to-amber-50 p-5 sm:p-6 flex items-start gap-4" data-testid="kyc-banner">
-          <div className="w-12 h-12 rounded-2xl bg-orange-500 text-white flex items-center justify-center shrink-0"><ShieldAlert className="w-6 h-6" /></div>
+        <div className="relative rounded-xl border border-orange-200 bg-gradient-to-r from-orange-50 to-amber-50 p-4 flex items-start gap-3" data-testid="kyc-banner">
+          <div className="w-10 h-10 rounded-xl bg-orange-500 text-white flex items-center justify-center shrink-0"><ShieldAlert className="w-5 h-5" /></div>
           <div className="flex-1">
-            <div className="font-cabinet font-bold text-slate-900 text-lg">{t('dashboard.kyc_banner_title')}</div>
-            <p className="mt-1 text-sm text-slate-700">{t('dashboard.kyc_banner_body')}</p>
-            <Link to="/dashboard/kyc" data-testid="btn-kyc-cta" className="mt-3 inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-600 text-white font-semibold px-5 py-2.5 rounded-full text-sm">
+            <div className="font-cabinet font-bold text-slate-900 text-sm">{t('dashboard.kyc_banner_title')}</div>
+            <p className="mt-0.5 text-xs text-slate-700">{t('dashboard.kyc_banner_body')}</p>
+            <Link to="/dashboard/kyc" data-testid="btn-kyc-cta" className="mt-2 inline-flex items-center gap-1.5 bg-orange-500 hover:bg-orange-600 text-white font-semibold px-4 py-2 rounded-full text-xs">
               {t('dashboard.kyc_banner_cta')}
             </Link>
           </div>
-          <button onClick={() => setShowKycBanner(false)} className="w-8 h-8 rounded-lg hover:bg-white/70 flex items-center justify-center" data-testid="btn-close-kyc-banner"><X className="w-4 h-4" /></button>
+          <button onClick={() => setShowKycBanner(false)} className="w-7 h-7 rounded-lg hover:bg-white/70 flex items-center justify-center" data-testid="btn-close-kyc-banner"><X className="w-3.5 h-3.5" /></button>
         </div>
       )}
 
       {/* Balance cards */}
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid md:grid-cols-2 gap-4">
         {[
           { curr: 'XOF', bal: user?.balance_xof ?? 0 },
           { curr: 'XAF', bal: user?.balance_xaf ?? 0 },
         ].map((b) => (
-          <div key={b.curr} data-testid={`balance-card-${b.curr.toLowerCase()}`} className="relative overflow-hidden rounded-[24px] p-7 text-white bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] shadow-[0_20px_50px_-15px_rgba(37,99,235,0.5)]">
-            <div className="absolute -top-16 -right-16 w-56 h-56 rounded-full bg-white/10" />
-            <div className="absolute -bottom-24 -left-16 w-56 h-56 rounded-full bg-white/5" />
+          <div key={b.curr} data-testid={`balance-card-${b.curr.toLowerCase()}`} className="relative overflow-hidden rounded-2xl p-5 text-white bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]">
+            <div className="absolute -top-12 -right-12 w-40 h-40 rounded-full bg-white/10" />
+            <div className="absolute -bottom-16 -left-10 w-40 h-40 rounded-full bg-white/5" />
             <div className="relative flex items-start justify-between">
               <div>
-                <div className="text-xs uppercase tracking-widest text-white/80 font-semibold">{t('dashboard.available')}</div>
-                <div className="mt-2 font-cabinet font-extrabold text-4xl sm:text-5xl">{b.curr}</div>
-                <div className="mt-3 font-mono text-white/80 text-sm">{b.bal.toLocaleString()} <span className="text-xs">{b.curr}</span></div>
+                <div className="text-[10px] uppercase tracking-widest text-white/80 font-semibold">{t('dashboard.available')}</div>
+                <div className="mt-1.5 font-cabinet font-extrabold text-2xl sm:text-3xl">{b.curr}</div>
+                <div className="mt-2 font-mono text-white/85 text-sm">{b.bal.toLocaleString()} <span className="text-[11px]">{b.curr}</span></div>
               </div>
-              <div className="w-12 h-12 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center">
-                <Wallet className="w-6 h-6 text-white" strokeWidth={1.75} />
+              <div className="w-10 h-10 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center">
+                <Wallet className="w-4 h-4 text-white" strokeWidth={1.75} />
               </div>
             </div>
           </div>
@@ -68,19 +68,19 @@ export default function DashboardHome() {
       </div>
 
       {/* Quick actions */}
-      <div className="bg-white border border-slate-100 rounded-[24px] p-6 sm:p-8 shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {actions.map((a) => (
             <button
               key={a.key}
               onClick={() => nav(a.to)}
               data-testid={`quick-action-${a.key}`}
-              className="group flex flex-col items-center gap-3 py-4 rounded-2xl hover:bg-slate-50 transition-colors active:scale-95"
+              className="group flex flex-col items-center gap-2 py-3 rounded-xl hover:bg-slate-50 transition-colors active:scale-95"
             >
-              <div className={`w-16 h-16 rounded-full ${a.bg} ${a.color} flex items-center justify-center transition-colors ${a.ring} group-hover:text-white`}>
-                <a.I className="w-6 h-6" strokeWidth={1.75} />
+              <div className={`w-12 h-12 rounded-full ${a.bg} ${a.color} flex items-center justify-center transition-colors ${a.ring} group-hover:text-white`}>
+                <a.I className="w-5 h-5" strokeWidth={1.75} />
               </div>
-              <div className="font-cabinet font-bold text-slate-900 text-sm">{a.label}</div>
+              <div className="font-cabinet font-bold text-slate-900 text-xs">{a.label}</div>
             </button>
           ))}
         </div>

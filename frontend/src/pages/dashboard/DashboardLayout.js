@@ -29,34 +29,34 @@ export default function DashboardLayout() {
   return (
     <div className="min-h-screen bg-slate-50" data-testid="dashboard-layout">
       {/* Sidebar */}
-      <aside className={`fixed top-0 left-0 z-40 h-screen bg-white border-r border-slate-200 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-72`} data-testid="sidebar">
-        <div className="h-20 flex items-center gap-3 px-6 border-b border-slate-100">
+      <aside className={`fixed top-0 left-0 z-40 h-screen bg-white border-r border-slate-200 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64`} data-testid="sidebar">
+        <div className="h-16 flex items-center gap-2 px-4 border-b border-slate-100">
           <Logo />
           <button onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="sidebar-close">
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <nav className="p-4 space-y-1">
+        <nav className="p-3 space-y-0.5">
           {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.end} data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
-              className={({ isActive }) => `flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
                 isActive ? 'bg-blue-50 text-[#2563EB]' : 'text-slate-700 hover:bg-slate-50'
               }`}>
-              <n.i className="w-5 h-5" strokeWidth={1.75} />
+              <n.i className="w-4 h-4" strokeWidth={1.75} />
               <div>
                 <div>{n.l}</div>
-                {n.sub && <div className="text-xs text-slate-400 font-normal">{n.sub}</div>}
+                {n.sub && <div className="text-[10px] text-slate-400 font-normal">{n.sub}</div>}
               </div>
             </NavLink>
           ))}
-          <div className="my-4 border-t border-slate-100" />
+          <div className="my-3 border-t border-slate-100" />
           {nav2.map((n) => (
             <NavLink key={n.to} to={n.to} data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
-              className={({ isActive }) => `flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-colors ${
+              className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
                 isActive ? 'bg-blue-50 text-[#2563EB]' : 'text-slate-700 hover:bg-slate-50'
               }`}>
-              <n.i className="w-5 h-5" strokeWidth={1.75} />
+              <n.i className="w-4 h-4" strokeWidth={1.75} />
               {n.l}
             </NavLink>
           ))}
@@ -81,38 +81,38 @@ export default function DashboardLayout() {
       )}
 
       {/* Topbar */}
-      <div className={`transition-[padding] duration-300 ${sidebarOpen ? 'lg:pl-72' : 'lg:pl-0'}`}>
-        <header className="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-slate-200 h-20 flex items-center px-6 gap-4" data-testid="dashboard-topbar">
-          <button onClick={() => setSidebarOpen((v) => !v)} data-testid="btn-toggle-sidebar" className="w-11 h-11 rounded-xl border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
-            <Menu className="w-5 h-5" />
+      <div className={`transition-[padding] duration-300 ${sidebarOpen ? 'lg:pl-64' : 'lg:pl-0'}`}>
+        <header className="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-slate-200 h-16 flex items-center px-5 gap-3" data-testid="dashboard-topbar">
+          <button onClick={() => setSidebarOpen((v) => !v)} data-testid="btn-toggle-sidebar" className="w-10 h-10 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
+            <Menu className="w-4 h-4" />
           </button>
 
           <div className="hidden md:block">
-            <div className="font-cabinet font-extrabold text-slate-900 text-lg">
+            <div className="font-cabinet font-extrabold text-slate-900 text-sm">
               {nav.concat(nav2).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Biz-trans'}
             </div>
-            <div className="text-xs text-slate-500 font-medium">Passerelle de paiement</div>
+            <div className="text-[10px] text-slate-500 font-medium">Passerelle de paiement</div>
           </div>
 
-          <div className="ml-auto flex items-center gap-3">
-            <button data-testid="btn-notifications" className="relative w-11 h-11 rounded-xl hover:bg-slate-100 flex items-center justify-center">
-              <Bell className="w-5 h-5 text-slate-600" strokeWidth={1.75} />
-              <span className="absolute top-2 right-2.5 w-2 h-2 rounded-full bg-[#2563EB]" />
+          <div className="ml-auto flex items-center gap-2">
+            <button data-testid="btn-notifications" className="relative w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center">
+              <Bell className="w-4 h-4 text-slate-600" strokeWidth={1.75} />
+              <span className="absolute top-2 right-2.5 w-1.5 h-1.5 rounded-full bg-[#2563EB]" />
             </button>
             <div className="relative">
-              <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full hover:bg-slate-100 transition-colors">
-                <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-sm">{initials}</div>
-                <ChevronDown className="w-4 h-4 text-slate-500" />
+              <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full hover:bg-slate-100 transition-colors">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
               </button>
               {profileOpen && (
-                <div className="absolute right-0 mt-2 min-w-[220px] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                <div className="absolute right-0 mt-2 min-w-[200px] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
                   <div className="p-3 border-b border-slate-100">
                     <div className="font-semibold text-slate-900 text-sm">{user?.full_name}</div>
                     <div className="text-xs text-slate-500">@{user?.username}</div>
                   </div>
-                  <Link to="/dashboard/settings" className="block px-4 py-2.5 text-sm hover:bg-slate-50" data-testid="menu-settings">{t('dashboard.settings')}</Link>
-                  <button onClick={logout} data-testid="btn-logout" className="w-full text-left px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
-                    <LogOut className="w-4 h-4" /> {t('common.logout')}
+                  <Link to="/dashboard/settings" className="block px-4 py-2 text-sm hover:bg-slate-50" data-testid="menu-settings">{t('dashboard.settings')}</Link>
+                  <button onClick={logout} data-testid="btn-logout" className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
+                    <LogOut className="w-3.5 h-3.5" /> {t('common.logout')}
                   </button>
                 </div>
               )}
@@ -120,7 +120,7 @@ export default function DashboardLayout() {
           </div>
         </header>
 
-        <main className="p-6 sm:p-8 max-w-7xl mx-auto">
+        <main className="p-5 sm:p-6 max-w-6xl mx-auto">
           <Outlet />
         </main>
       </div>
