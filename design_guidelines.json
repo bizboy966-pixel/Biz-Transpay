@@ -1,0 +1,146 @@
+{
+  "theme": "light",
+  "typography": {
+    "headings": {
+      "fontFamily": "Cabinet Grotesk, system-ui, sans-serif",
+      "weights": ["500", "700", "800"],
+      "classes": "font-cabinet tracking-tight text-slate-900"
+    },
+    "body": {
+      "fontFamily": "Plus Jakarta Sans, system-ui, sans-serif",
+      "weights": ["400", "500", "600"],
+      "classes": "font-jakarta text-slate-600"
+    },
+    "hierarchy": {
+      "h1": "text-5xl sm:text-6xl lg:text-7xl font-extrabold leading-[1.1] tracking-tighter text-slate-900",
+      "h2": "text-3xl sm:text-4xl font-bold tracking-tight text-slate-900",
+      "h3": "text-xl sm:text-2xl font-semibold text-slate-800",
+      "body": "text-base sm:text-lg leading-relaxed text-slate-600",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-slate-500"
+    }
+  },
+  "colors": {
+    "primary": {
+      "base": "#2563EB",
+      "light": "#3B82F6",
+      "dark": "#1D4ED8",
+      "surface": "#EFF6FF"
+    },
+    "accent": {
+      "red": "#EF4444",
+      "redSurface": "#FEF2F2",
+      "green": "#10B981"
+    },
+    "neutral": {
+      "white": "#FFFFFF",
+      "background": "#F8FAFC",
+      "card": "#FFFFFF",
+      "border": "#E2E8F0",
+      "textMain": "#0F172A",
+      "textMuted": "#64748B"
+    },
+    "gradients": {
+      "bluePremium": "bg-gradient-to-br from-[#2563EB] via-[#1D4ED8] to-[#1E3A8A]",
+      "softWhite": "bg-gradient-to-b from-white to-slate-50"
+    }
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "card": "shadow-[0_8px_30px_rgb(0,0,0,0.04)]",
+      "hover": "shadow-[0_20px_40px_rgb(0,0,0,0.08)]",
+      "button": "shadow-[0_4px_14px_0_rgba(37,99,235,0.39)]",
+      "floating": "shadow-[0_24px_50px_rgba(0,0,0,0.1)]"
+    },
+    "radii": {
+      "button": "rounded-full",
+      "card": "rounded-[24px]",
+      "input": "rounded-xl",
+      "badge": "rounded-full"
+    },
+    "surfaces": {
+      "glassHeader": "bg-white/80 backdrop-blur-xl border-b border-slate-200/50",
+      "dashboardCard": "bg-white border border-slate-100",
+      "blueOverlay": "bg-blue-600/10"
+    }
+  },
+  "layouts": {
+    "marketing": {
+      "spacing": "py-24 sm:py-32",
+      "container": "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+      "hero": "relative pt-32 pb-20 overflow-hidden flex flex-col lg:flex-row items-center gap-12",
+      "bentoGrid": "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 md:gap-8"
+    },
+    "dashboard": {
+      "sidebar": "w-64 border-r border-slate-200 bg-white h-screen fixed left-0 top-0",
+      "topbar": "h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-40 pl-64 flex items-center justify-between px-8",
+      "main": "ml-64 pt-16 p-8 min-h-screen bg-slate-50",
+      "balanceCards": "grid grid-cols-1 md:grid-cols-2 gap-6 mb-8"
+    }
+  },
+  "motion": {
+    "hover": "transition-all duration-300 ease-out",
+    "buttonTap": "active:scale-95",
+    "floating": "animate-[float_6s_ease-in-out_infinite]",
+    "entrance": "Use framer-motion: initial={{opacity: 0, y: 20}} animate={{opacity: 1, y: 0}}"
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-blue-600 text-white rounded-full px-8 py-3.5 font-semibold shadow-[0_4px_14px_0_rgba(37,99,235,0.39)] hover:bg-blue-700 hover:shadow-[0_6px_20px_rgba(37,99,235,0.23)] hover:-translate-y-0.5 transition-transform transition-shadow duration-300",
+      "secondary": "bg-white text-slate-700 border border-slate-200 rounded-full px-8 py-3.5 font-semibold hover:bg-slate-50 transition-colors duration-300"
+    },
+    "featureCard": "bg-white p-8 rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 hover:shadow-[0_20px_40px_rgb(0,0,0,0.08)] hover:-translate-y-1 transition-all duration-300 flex flex-col gap-4",
+    "alertBox": "bg-red-50 border border-red-200 text-red-700 p-6 rounded-[24px] flex items-start gap-4 shadow-sm",
+    "accountTypeToggle": "flex bg-slate-100 p-1 rounded-xl w-full max-w-md relative",
+    "accountTypeOption": "flex-1 text-center py-3 rounded-lg text-sm font-semibold transition-all data-[state=active]:bg-white data-[state=active]:shadow-sm data-[state=active]:text-blue-600 cursor-pointer z-10",
+    "quickActionButton": "flex flex-col items-center gap-3 group cursor-pointer",
+    "quickActionIcon": "w-16 h-16 rounded-[20px] bg-blue-50 text-blue-600 flex items-center justify-center text-2xl group-hover:bg-blue-600 group-hover:text-white transition-colors duration-300 shadow-sm"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "instruction": "Use lucide-react for all standard icons (outline premium style). For payment methods like Wave, MTN Mobile Money, etc., use clean text badges or custom SVGs if available to simulate logos."
+  },
+  "media": {
+    "images": {
+      "hero_3d_phone": {
+        "url": "https://images.unsplash.com/photo-1664883247910-c83c54ccdd76?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODh8MHwxfHNlYXJjaHw0fHwzZCUyMHNtYXJ0cGhvbmUlMjBtb2NrdXAlMjBjbGVhbiUyMGVtcHR5fGVufDB8fHx8MTc4NDU4MTUwN3ww&ixlib=rb-4.1.0&q=85",
+        "description": "3D White Smartphone for Hero Section mockup"
+      },
+      "world_map_bg": {
+        "url": "https://images.pexels.com/photos/5725589/pexels-photo-5725589.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Minimalist map for hero background (apply opacity 0.03 and mix-blend-multiply to blend cleanly into the background)"
+      }
+    }
+  },
+  "instructions_to_main_agent": [
+    "CRITICAL: The project uses `.js` and `.jsx` extensions. Do NOT create `.tsx` files.",
+    "Install Google Fonts 'Plus Jakarta Sans' and 'Cabinet Grotesk' via Google Fonts / Fontshare links in index.html.",
+    "Install and use `lucide-react` for high-end premium outline icons.",
+    "Install `framer-motion` for fluid animations (e.g., entrance animations, floating bubbles).",
+    "Landing Hero: Implement a split layout. Left side: High-contrast value prop, trust badges. Right side: The 3D phone image floating (`animate-[float_6s_ease-in-out_infinite]`). Around the phone, position Absolute small glowing Glassmorphism chips containing 'XOF' and 'XAF' and security lock icons.",
+    "Hero Background: Place the `world_map_bg` absolute, inset-0, `opacity-5`, behind all content to create depth without distraction.",
+    "Features Section: Use a 3-column Bento Grid structure. Each card must have generous padding (`p-8`), `rounded-[24px]`, and a prominent blue icon.",
+    "Payment Carousel: Implement an infinite auto-scrolling marquee (`react-fast-marquee`) with grayscale logos that colorize on hover.",
+    "Stats Section: Must have a deep blue background (`bg-blue-600`), large typography (`text-5xl`), and small avatar clusters next to the '50K+ users' stat.",
+    "Registration Page: Make the 'Personal/Merchant' account type toggle look like a premium segmented control (using standard div layout and active state classes). Add a 'visual only' Recaptcha styled box.",
+    "Dashboard Navigation: Fixed 64-width sidebar, sticky topbar with glassmorphism `bg-white/80 backdrop-blur-md`.",
+    "Dashboard Balances: Implement two large cards (XOF, XAF). They MUST use the `gradients.bluePremium` gradient and `rounded-[24px]` with crisp white text. Add a faint absolute positioned icon or pattern inside them for depth.",
+    "Dashboard Quick Actions: Create a row of 4 actions (Transfer, Deposit, Link, Exchange). Use pastel blue `bg-blue-50` rounded squares (`rounded-[20px]`) that turn solid blue on hover.",
+    "DO NOT use a fully transparent header. The sticky header over the landing page must use `backdrop-blur-md bg-white/80`.",
+    "DO NOT use `Inter` for headings. Ensure `font-cabinet` is applied to all Headings.",
+    "Add `data-testid` attributes to EVERY interactive element (buttons, links, form inputs, toggles). E.g., `data-testid=\"login-btn\"`."
+  ],
+  "accessibility": {
+    "contrast": "Ensure text inside the blue gradient balance cards is pure white or very light blue to pass APCA contrast checks.",
+    "focus": "All focus states should use `focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 outline-none`."
+  },
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic outputs. Make creative, distinctive frontends that surprise and delight.",
+    "Don't make generic centered layouts. Use optical alignment and asymmetric bento grids where appropriate.",
+    "Create depth through layered design elements (shadows, overlaps, floating bubbles).",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "NEVER use universal transition `transition: all`.",
+    "NEVER use emojis like 🤖🧠💭 for icons. Use lucide-react.",
+    "Use sonner for toast notifications.",
+    "Never use generic placeholder text or empty dummy images. Always use provided assets or build stylized CSS components."
+  ]
+}
