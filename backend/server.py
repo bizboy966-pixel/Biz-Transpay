@@ -3,11 +3,12 @@ import os
 import logging
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Literal
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request
+from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -65,6 +66,10 @@ def user_to_public(u: dict) -> UserPublic:
         two_fa_enabled=u.get("two_fa_enabled", False),
         language=u.get("language", "fr"),
         default_currency=u.get("default_currency", "XOF"),
+        role=u.get("role", "user"),
+        is_blocked=u.get("is_blocked", False),
+        is_banned=u.get("is_banned", False),
+        withdrawals_blocked=u.get("withdrawals_blocked", False),
     )
 
 
@@ -111,6 +116,9 @@ async def register(req: RegisterRequest):
         raise HTTPException(400, "Nom d'utilisateur déjà pris")
 
     uid = new_id()
+    # First user becomes super_admin automatically
+    is_first = (await db.users.count_documents({})) == 0
+    role = "super_admin" if is_first else "user"
     user_doc = {
         "id": uid,
         "full_name": req.full_name,
@@ -120,13 +128,17 @@ async def register(req: RegisterRequest):
         "phone": req.phone,
         "email": req.email.lower(),
         "password_hash": hash_password(req.password),
-        "kyc_status": "not_started",
+        "kyc_status": "verified" if is_first else "not_started",
         "balance_xof": 25000.0,  # welcome bonus for demo
         "balance_xaf": 15000.0,
         "created_at": now_iso(),
         "two_fa_enabled": False,
         "language": "fr",
         "default_currency": "XOF",
+        "role": role,
+        "is_blocked": False,
+        "is_banned": False,
+        "withdrawals_blocked": False,
     }
     await db.users.insert_one(user_doc)
 
@@ -540,6 +552,313 @@ async def create_ticket(req: TicketCreate, uid: str = Depends(get_current_user_i
     )
     await db.tickets.insert_one(t.model_dump())
     return t
+
+
+# ==================== ADMIN ====================
+async def get_admin(uid: str = Depends(get_current_user_id)) -> dict:
+    u = await db.users.find_one({"id": uid}, {"_id": 0})
+    if not u:
+        raise HTTPException(401, "Non autorisé")
+    if u.get("role") not in ("admin", "super_admin"):
+        raise HTTPException(403, "Accès administrateur requis")
+    return u
+
+
+async def audit(admin_id: str, admin_username: str, action: str,
+                target_user_id: Optional[str] = None, target_username: Optional[str] = None,
+                details: Optional[dict] = None):
+    await db.admin_logs.insert_one({
+        "id": new_id(),
+        "admin_id": admin_id,
+        "admin_username": admin_username,
+        "action": action,
+        "target_user_id": target_user_id,
+        "target_username": target_username,
+        "details": details or {},
+        "created_at": now_iso(),
+    })
+
+
+class AdminUserAction(BaseModel):
+    reason: Optional[str] = ""
+
+
+class AdminBalanceAction(BaseModel):
+    currency: Literal["XOF", "XAF"]
+    amount: float
+    reason: Optional[str] = ""
+
+
+class AdminUpdateUser(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    country: Optional[str] = None
+    role: Optional[Literal["user", "admin", "super_admin"]] = None
+
+
+class AdminKycDecision(BaseModel):
+    approve: bool
+    reason: Optional[str] = ""
+
+
+class AdminResetPwd(BaseModel):
+    new_password: str
+
+
+@api.get("/admin/stats")
+async def admin_stats(admin=Depends(get_admin), period: str = "month"):
+    now = datetime.now(timezone.utc)
+    if period == "day":
+        since = now - timedelta(days=1)
+    elif period == "week":
+        since = now - timedelta(days=7)
+    elif period == "year":
+        since = now - timedelta(days=365)
+    else:
+        since = now - timedelta(days=30)
+    since_iso = since.isoformat()
+
+    total_users = await db.users.count_documents({})
+    verified = await db.users.count_documents({"kyc_status": "verified"})
+    not_verified = total_users - verified
+    active_users = await db.transactions.distinct("user_id")
+    suspended = await db.users.count_documents({"$or": [{"is_blocked": True}, {"is_banned": True}]})
+
+    tx_all = db.transactions.find({}, {"_id": 0})
+    total_deposits = 0.0
+    total_withdrawals = 0.0
+    total_tx = 0
+    succeeded = 0
+    pending = 0
+    failed = 0
+    async for tx in tx_all:
+        total_tx += 1
+        if tx.get("status") == "completed":
+            succeeded += 1
+        elif tx.get("status") == "pending":
+            pending += 1
+        elif tx.get("status") in ("failed", "cancelled"):
+            failed += 1
+        if tx.get("type") == "deposit" and tx.get("status") == "completed":
+            total_deposits += tx.get("amount", 0)
+        if tx.get("type") in ("withdrawal", "transfer") and tx.get("direction") == "out" and tx.get("status") == "completed":
+            total_withdrawals += tx.get("amount", 0)
+
+    return {
+        "users": {
+            "total": total_users,
+            "verified": verified,
+            "not_verified": not_verified,
+            "active": len(active_users),
+            "suspended": suspended,
+        },
+        "transactions": {
+            "total_deposits": total_deposits,
+            "total_withdrawals": total_withdrawals,
+            "count": total_tx,
+            "succeeded": succeeded,
+            "pending": pending,
+            "failed": failed,
+        },
+        "period": period,
+    }
+
+
+@api.get("/admin/users")
+async def admin_list_users(admin=Depends(get_admin), q: Optional[str] = None,
+                           kyc: Optional[str] = None, status: Optional[str] = None,
+                           limit: int = Query(200, le=1000)):
+    query: dict = {}
+    if q:
+        query["$or"] = [
+            {"full_name": {"$regex": q, "$options": "i"}},
+            {"email": {"$regex": q, "$options": "i"}},
+            {"username": {"$regex": q, "$options": "i"}},
+            {"phone": {"$regex": q, "$options": "i"}},
+        ]
+    if kyc:
+        query["kyc_status"] = kyc
+    if status == "blocked":
+        query["is_blocked"] = True
+    elif status == "banned":
+        query["is_banned"] = True
+    elif status == "active":
+        query["is_blocked"] = False
+        query["is_banned"] = False
+
+    docs = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(limit)
+    return docs
+
+
+@api.get("/admin/users/{user_id}")
+async def admin_get_user(user_id: str, admin=Depends(get_admin)):
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    if not u:
+        raise HTTPException(404, "Utilisateur introuvable")
+    tx_count = await db.transactions.count_documents({"user_id": user_id})
+    last_txs = await db.transactions.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(20)
+    return {"user": u, "transactions_count": tx_count, "recent_transactions": last_txs}
+
+
+@api.post("/admin/users/{user_id}/action/{action}")
+async def admin_user_action(user_id: str, action: str, req: AdminUserAction,
+                            admin=Depends(get_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+
+    mapping = {
+        "block": {"is_blocked": True},
+        "unblock": {"is_blocked": False},
+        "ban": {"is_banned": True, "is_blocked": True},
+        "unban": {"is_banned": False, "is_blocked": False},
+        "block_withdrawals": {"withdrawals_blocked": True},
+        "unblock_withdrawals": {"withdrawals_blocked": False},
+    }
+    if action not in mapping:
+        raise HTTPException(400, "Action inconnue")
+
+    await db.users.update_one({"id": user_id}, {"$set": mapping[action]})
+    await audit(admin["id"], admin["username"], action,
+                target_user_id=user_id, target_username=target["username"],
+                details={"reason": req.reason})
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return {"ok": True, "user": u}
+
+
+@api.post("/admin/users/{user_id}/credit")
+async def admin_credit(user_id: str, req: AdminBalanceAction, admin=Depends(get_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    field = "balance_xof" if req.currency == "XOF" else "balance_xaf"
+    await db.users.update_one({"id": user_id}, {"$inc": {field: req.amount}})
+    await record_tx(user_id, "deposit", "in", req.amount, req.currency,
+                    description=f"Crédit administrateur ({req.reason or 'manuel'})",
+                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]})
+    await audit(admin["id"], admin["username"], "credit",
+                target_user_id=user_id, target_username=target["username"],
+                details={"amount": req.amount, "currency": req.currency, "reason": req.reason})
+    return {"ok": True}
+
+
+@api.post("/admin/users/{user_id}/debit")
+async def admin_debit(user_id: str, req: AdminBalanceAction, admin=Depends(get_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    field = "balance_xof" if req.currency == "XOF" else "balance_xaf"
+    if target.get(field, 0) < req.amount:
+        raise HTTPException(400, "Solde utilisateur insuffisant")
+    await db.users.update_one({"id": user_id}, {"$inc": {field: -req.amount}})
+    await record_tx(user_id, "withdrawal", "out", req.amount, req.currency,
+                    description=f"Débit administrateur ({req.reason or 'manuel'})",
+                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]})
+    await audit(admin["id"], admin["username"], "debit",
+                target_user_id=user_id, target_username=target["username"],
+                details={"amount": req.amount, "currency": req.currency, "reason": req.reason})
+    return {"ok": True}
+
+
+@api.patch("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(get_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    # only super_admin can change roles
+    if "role" in updates and admin.get("role") != "super_admin":
+        raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
+    if updates:
+        await db.users.update_one({"id": user_id}, {"$set": updates})
+    await audit(admin["id"], admin["username"], "update_user",
+                target_user_id=user_id, target_username=target["username"],
+                details=updates)
+    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    return u
+
+
+@api.post("/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, req: AdminResetPwd, admin=Depends(get_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if len(req.new_password) < 6:
+        raise HTTPException(400, "6 caractères minimum")
+    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": hash_password(req.new_password)}})
+    await audit(admin["id"], admin["username"], "reset_password",
+                target_user_id=user_id, target_username=target["username"])
+    return {"ok": True}
+
+
+@api.get("/admin/kyc")
+async def admin_list_kyc(admin=Depends(get_admin), status: Optional[str] = None):
+    query = {}
+    if status:
+        query["status"] = status
+    docs = await db.kyc.find(query, {"_id": 0}).sort("submitted_at", -1).to_list(500)
+    # enrich with user info
+    for d in docs:
+        u = await db.users.find_one({"id": d["user_id"]}, {"_id": 0, "full_name": 1, "username": 1, "email": 1, "country": 1})
+        d["user"] = u
+    return docs
+
+
+@api.post("/admin/kyc/{user_id}/decision")
+async def admin_kyc_decision(user_id: str, req: AdminKycDecision, admin=Depends(get_admin)):
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if req.approve:
+        await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "verified"}})
+        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "verified", "verified_at": now_iso()}})
+        act = "kyc_approve"
+    else:
+        await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "rejected"}})
+        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "rejected", "reject_reason": req.reason,
+                                                                 "reviewed_at": now_iso()}})
+        act = "kyc_reject"
+    await audit(admin["id"], admin["username"], act,
+                target_user_id=user_id, target_username=target["username"],
+                details={"reason": req.reason})
+    return {"ok": True}
+
+
+@api.get("/admin/transactions")
+async def admin_transactions(admin=Depends(get_admin), q: Optional[str] = None,
+                             type: Optional[str] = None, status: Optional[str] = None,
+                             limit: int = Query(500, le=2000)):
+    query: dict = {}
+    if type:
+        query["type"] = type
+    if status:
+        query["status"] = status
+    if q:
+        query["$or"] = [
+            {"reference": {"$regex": q, "$options": "i"}},
+            {"id": {"$regex": q, "$options": "i"}},
+            {"counterparty": {"$regex": q, "$options": "i"}},
+        ]
+    docs = await db.transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    # attach user info lightly
+    for d in docs:
+        u = await db.users.find_one({"id": d["user_id"]}, {"_id": 0, "username": 1, "full_name": 1, "email": 1})
+        d["user"] = u
+    return docs
+
+
+@api.get("/admin/logs")
+async def admin_logs(admin=Depends(get_admin), limit: int = Query(200, le=1000)):
+    docs = await db.admin_logs.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    return docs
+
+
+@api.get("/admin/admins")
+async def admin_list_admins(admin=Depends(get_admin)):
+    docs = await db.users.find({"role": {"$in": ["admin", "super_admin"]}},
+                                {"_id": 0, "password_hash": 0}).to_list(200)
+    return docs
 
 
 # ==================== STATS (public) ====================

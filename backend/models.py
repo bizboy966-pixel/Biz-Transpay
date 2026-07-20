@@ -44,6 +44,10 @@ class UserPublic(BaseModel):
     two_fa_enabled: bool = False
     language: str = "fr"
     default_currency: str = "XOF"
+    role: str = "user"
+    is_blocked: bool = False
+    is_banned: bool = False
+    withdrawals_blocked: bool = False
 
 
 class AuthResponse(BaseModel):

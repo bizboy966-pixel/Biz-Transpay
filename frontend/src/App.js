@@ -18,12 +18,28 @@ import Support from '@/pages/dashboard/Support';
 import Transfer from '@/pages/dashboard/Transfer';
 import Deposit from '@/pages/dashboard/Deposit';
 import Exchange from '@/pages/dashboard/Exchange';
+import AdminLayout from '@/pages/admin/AdminLayout';
+import AdminHome from '@/pages/admin/AdminHome';
+import AdminUsers from '@/pages/admin/AdminUsers';
+import AdminUserDetail from '@/pages/admin/AdminUserDetail';
+import AdminKyc from '@/pages/admin/AdminKyc';
+import AdminTransactions from '@/pages/admin/AdminTransactions';
+import AdminLogs from '@/pages/admin/AdminLogs';
+import AdminAdmins from '@/pages/admin/AdminAdmins';
 import '@/App.css';
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center">Chargement…</div>;
   if (!user) return <Navigate to="/login" replace />;
+  return children;
+}
+
+function AdminOnly({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="min-h-screen flex items-center justify-center">Chargement…</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== 'admin' && user.role !== 'super_admin') return <Navigate to="/dashboard" replace />;
   return children;
 }
 
@@ -50,6 +66,17 @@ function App() {
             <Route path="transfer" element={<Transfer />} />
             <Route path="deposit" element={<Deposit />} />
             <Route path="exchange" element={<Exchange />} />
+          </Route>
+          <Route path="/admin" element={<AdminOnly><AdminLayout /></AdminOnly>}>
+            <Route index element={<AdminHome />} />
+            <Route path="users" element={<AdminUsers />} />
+            <Route path="users/:id" element={<AdminUserDetail />} />
+            <Route path="kyc" element={<AdminKyc />} />
+            <Route path="transactions" element={<AdminTransactions />} />
+            <Route path="deposits" element={<AdminTransactions filterType="deposit" />} />
+            <Route path="withdrawals" element={<AdminTransactions filterType="withdrawal" />} />
+            <Route path="logs" element={<AdminLogs />} />
+            <Route path="admins" element={<AdminAdmins />} />
           </Route>
         </Routes>
       </BrowserRouter>
