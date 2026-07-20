@@ -106,7 +106,7 @@ export default function DashboardHome() {
       <div className="bg-white border border-slate-100 rounded-[24px] shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
         <div className="p-6 flex items-center justify-between border-b border-slate-100">
           <h3 className="font-cabinet font-bold text-slate-900 text-lg">{t('dashboard.recent_activity')}</h3>
-          <Link to="/dashboard/transactions" className="text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]" data-testid="link-all-tx">Voir tout →</Link>
+          <Link to="/dashboard/transactions" className="text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]" data-testid="link-all-tx">{t('hero.see_all')} →</Link>
         </div>
         <div className="divide-y divide-slate-50">
           {txs.length === 0 && <div className="p-10 text-center text-slate-400 text-sm">{t('dashboard.no_tx')}</div>}

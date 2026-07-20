@@ -12,7 +12,9 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-import stripe
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout, CheckoutSessionRequest, CheckoutSessionResponse,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -32,7 +34,7 @@ mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client[os.environ["DB_NAME"]]
 
 # ---------- Stripe ----------
-stripe.api_key = os.environ.get("STRIPE_API_KEY") or "sk_test_emergent"
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
 
 # ---------- FX ----------
 FX_RATE_XOF_TO_XAF = 1.00  # both peg to EUR ~ 655.957
@@ -194,17 +196,21 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
     if u.get(field, 0) < total_debit:
         raise HTTPException(400, "Solde insuffisant (frais inclus)")
 
-    await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
-
-    # if biz_to_biz and recipient found, credit them
+    # if biz_to_biz, recipient MUST exist
+    recip = None
     if req.transfer_type == "biz_to_biz":
         recip = await db.users.find_one(
             {"$or": [{"username": req.recipient.lower()}, {"email": req.recipient.lower()}]}
         )
-        if recip:
-            await db.users.update_one({"id": recip["id"]}, {"$inc": {field: req.amount}})
-            await record_tx(recip["id"], "transfer", "in", req.amount, req.currency,
-                            counterparty=u["username"], description=req.description)
+        if not recip:
+            raise HTTPException(404, "Destinataire introuvable")
+
+    await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
+
+    if recip:
+        await db.users.update_one({"id": recip["id"]}, {"$inc": {field: req.amount}})
+        await record_tx(recip["id"], "transfer", "in", req.amount, req.currency,
+                        counterparty=u["username"], description=req.description)
 
     tx = await record_tx(uid, "transfer", "out", req.amount, req.currency,
                          counterparty=req.recipient, description=req.description,
@@ -215,34 +221,33 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
 
 # ==================== DEPOSIT (Stripe) ====================
 @api.post("/deposits/checkout")
-async def create_deposit(req: DepositRequest, uid: str = Depends(get_current_user_id)):
-    # Convert XOF/XAF amount to USD-cents approximation for Stripe (1 USD ≈ 600 XOF)
+async def create_deposit(req: DepositRequest, request: Request, uid: str = Depends(get_current_user_id)):
+    # Convert XOF/XAF amount to USD approximation for Stripe (1 USD ≈ 600 XOF)
     usd_amount = round(req.amount / 600.0, 2)
     if usd_amount < 0.5:
         raise HTTPException(400, "Montant minimum de dépôt : 300 XOF/XAF")
 
-    session_id_ref = f"btp_{secrets.token_hex(10)}"
+    host_url = str(request.base_url).rstrip('/')
+    webhook_url = f"{host_url}/api/webhook/stripe"
+    checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+
+    success_url = f"{req.origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{req.origin_url}/payment/cancel"
+
+    session_req = CheckoutSessionRequest(
+        amount=float(usd_amount),
+        currency="usd",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={"user_id": uid, "currency": req.currency, "amount_local": str(req.amount)},
+    )
     try:
-        session = stripe.checkout.Session.create(
-            line_items=[{
-                "price_data": {
-                    "currency": "usd",
-                    "product_data": {"name": f"Dépôt Biz-transPay {req.currency}"},
-                    "unit_amount": int(usd_amount * 100),
-                },
-                "quantity": 1,
-            }],
-            mode="payment",
-            success_url=f"{req.origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{req.origin_url}/payment/cancel",
-            metadata={"user_id": uid, "currency": req.currency, "amount": str(req.amount),
-                      "ref": session_id_ref},
-        )
-    except stripe.error.StripeError as e:
+        session = await checkout.create_checkout_session(session_req)
+    except Exception as e:
         raise HTTPException(500, f"Stripe error: {str(e)}")
 
     await db.payment_transactions.insert_one({
-        "session_id": session.id,
+        "session_id": session.session_id,
         "user_id": uid,
         "amount": req.amount,
         "currency": req.currency,
@@ -252,35 +257,35 @@ async def create_deposit(req: DepositRequest, uid: str = Depends(get_current_use
         "created_at": now_iso(),
         "updated_at": now_iso(),
     })
-    return {"checkout_url": session.url, "session_id": session.id}
+    return {"checkout_url": session.url, "session_id": session.session_id}
 
 
 @api.get("/payments/status/{session_id}")
-async def payment_status(session_id: str):
+async def payment_status(session_id: str, request: Request):
     record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if not record:
         raise HTTPException(404, "Transaction not found")
     if record.get("payment_status") != "paid":
         try:
-            s = stripe.checkout.Session.retrieve(session_id)
+            host_url = str(request.base_url).rstrip('/')
+            webhook_url = f"{host_url}/api/webhook/stripe"
+            checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+            s = await checkout.get_checkout_status(session_id)
             if s.payment_status == "paid" or s.status == "complete":
-                # credit user
                 uid = record["user_id"]
                 field = "balance_xof" if record["currency"] == "XOF" else "balance_xaf"
-                await db.payment_transactions.update_one(
+                r = await db.payment_transactions.update_one(
                     {"session_id": session_id, "payment_status": {"$ne": "paid"}},
                     {"$set": {"status": "completed", "payment_status": "paid",
                               "updated_at": now_iso()}}
                 )
-                # only credit once (guard)
-                already = await db.transactions.find_one({"metadata.stripe_session_id": session_id})
-                if not already:
+                if r.modified_count > 0:
                     await db.users.update_one({"id": uid}, {"$inc": {field: record["amount"]}})
                     await record_tx(uid, "deposit", "in", record["amount"], record["currency"],
                                     description="Dépôt Stripe",
                                     metadata={"stripe_session_id": session_id})
                 record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
-        except stripe.error.StripeError:
+        except Exception:
             pass
     return {
         "session_id": record["session_id"],
@@ -289,6 +294,35 @@ async def payment_status(session_id: str):
         "amount": record["amount"],
         "currency": record["currency"],
     }
+
+
+@api.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    sig = request.headers.get("Stripe-Signature", "")
+    try:
+        host_url = str(request.base_url).rstrip('/')
+        webhook_url = f"{host_url}/api/webhook/stripe"
+        checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
+        event = await checkout.handle_webhook(body, sig)
+    except Exception:
+        raise HTTPException(400, "Invalid webhook")
+
+    if event.payment_status == "paid":
+        record = await db.payment_transactions.find_one({"session_id": event.session_id})
+        if record and record.get("payment_status") != "paid":
+            uid = record["user_id"]
+            field = "balance_xof" if record["currency"] == "XOF" else "balance_xaf"
+            await db.payment_transactions.update_one(
+                {"session_id": event.session_id, "payment_status": {"$ne": "paid"}},
+                {"$set": {"status": "completed", "payment_status": "paid",
+                          "updated_at": now_iso()}}
+            )
+            await db.users.update_one({"id": uid}, {"$inc": {field: record["amount"]}})
+            await record_tx(uid, "deposit", "in", record["amount"], record["currency"],
+                            description="Dépôt Stripe",
+                            metadata={"stripe_session_id": event.session_id})
+    return {"status": "ok"}
 
 
 # ==================== EXCHANGE ====================
