@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Copy, Trash2, Power, Link2, X, Share2 } from 'lucide-react';
+import { Plus, Copy, Trash2, Power, Link2, X, Share2, QrCode, Pencil, Upload, MessageCircle, Send, Mail, ArrowLeft, Info, CheckCircle2 } from 'lucide-react';
+import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -8,24 +9,17 @@ export default function Links() {
   const { t } = useTranslation();
   const [links, setLinks] = useState([]);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ title: '', amount: '', currency: 'XOF', description: '', expires_at: '', single_use: false });
+  const [editing, setEditing] = useState(null);
+  const [showQr, setShowQr] = useState(null);
+  const [showShare, setShowShare] = useState(null);
 
   const load = () => api.get('/links').then(({ data }) => setLinks(data)).catch(() => {});
   useEffect(() => { load(); }, []);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    try {
-      await api.post('/links', { ...form, amount: parseFloat(form.amount), expires_at: form.expires_at || null });
-      toast.success('Lien créé');
-      setShowForm(false); setForm({ title: '', amount: '', currency: 'XOF', description: '', expires_at: '', single_use: false });
-      load();
-    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
-  };
+  const publicUrl = (slug) => `${window.location.origin}/pay/${slug}`;
 
   const copy = (slug) => {
-    const url = `${window.location.origin}/pay/${slug}`;
-    navigator.clipboard.writeText(url);
+    navigator.clipboard.writeText(publicUrl(slug));
     toast.success(t('links.copied'));
   };
 
@@ -34,99 +28,363 @@ export default function Links() {
     load();
   };
   const remove = async (id) => {
-    if (!window.confirm('Supprimer ce lien ?')) return;
+    if (!window.confirm('Supprimer ce lien ? Cette action est irréversible.')) return;
     await api.delete(`/links/${id}`);
+    toast.success('Lien supprimé');
     load();
   };
 
+  const statusOf = (l) => {
+    if (!l.active) return 'disabled';
+    if (l.expires_at && new Date(l.expires_at) < new Date()) return 'expired';
+    return 'active';
+  };
+
   return (
-    <div className="space-y-6" data-testid="page-links">
-      <div className="flex items-center justify-between flex-wrap gap-4">
+    <div className="space-y-5" data-testid="page-links">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="font-cabinet text-3xl font-extrabold tracking-tighter text-slate-900">{t('links.title')}</h1>
-          <p className="text-slate-500 text-sm mt-1">{t('links.subtitle')}</p>
+          <h1 className="font-cabinet text-2xl font-extrabold tracking-tighter text-slate-900">Liens de paiement</h1>
+          <p className="text-slate-500 text-xs mt-1">Créez et gérez vos liens de paiement personnalisés.</p>
         </div>
-        <button onClick={() => setShowForm(true)} data-testid="btn-open-new-link" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-5 py-3 rounded-full shadow-[0_10px_30px_-8px_rgba(37,99,235,0.6)]">
-          <Plus className="w-4 h-4" /> {t('links.create')}
+        <button onClick={() => { setEditing(null); setShowForm(true); }} data-testid="btn-open-new-link" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2.5 rounded-full text-xs shadow-[0_8px_20px_-8px_rgba(37,99,235,0.5)]">
+          <Plus className="w-3.5 h-3.5" /> Créer un lien de paiement
         </button>
       </div>
 
       {links.length === 0 && (
-        <div className="bg-white border border-dashed border-slate-200 rounded-[24px] p-16 text-center">
-          <div className="w-16 h-16 mx-auto rounded-2xl bg-blue-50 flex items-center justify-center"><Link2 className="w-7 h-7 text-[#2563EB]" /></div>
-          <p className="mt-4 text-slate-500">{t('links.no_links')}</p>
+        <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-14 text-center">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-blue-50 flex items-center justify-center"><Link2 className="w-6 h-6 text-[#2563EB]" /></div>
+          <p className="mt-4 text-sm text-slate-500">Aucun lien de paiement pour l'instant.</p>
+          <button onClick={() => setShowForm(true)} className="mt-4 text-xs font-semibold text-[#2563EB]">Créer votre premier lien →</button>
         </div>
       )}
 
       <div className="grid md:grid-cols-2 gap-4">
-        {links.map((l) => (
-          <div key={l.id} data-testid={`link-card-${l.id}`} className="bg-white border border-slate-100 rounded-[20px] p-6 shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="font-cabinet font-bold text-slate-900 text-lg">{l.title}</div>
-                <div className="mt-1 font-cabinet font-extrabold text-2xl text-[#2563EB]">{l.amount.toLocaleString()} <span className="text-sm text-slate-500">{l.currency}</span></div>
+        {links.map((l) => {
+          const st = statusOf(l);
+          return (
+            <div key={l.id} data-testid={`link-card-${l.id}`} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] transition-shadow">
+              <div className="flex items-start gap-3">
+                {l.logo ? (
+                  <img src={l.logo} alt={l.title} className="w-12 h-12 rounded-xl object-cover border border-slate-100" />
+                ) : (
+                  <div className="w-12 h-12 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Link2 className="w-5 h-5" /></div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="font-cabinet font-bold text-sm text-slate-900 truncate">{l.title}</div>
+                  <div className="mt-0.5 font-cabinet font-extrabold text-lg text-[#2563EB]">
+                    {l.amount_type === 'free' ? (
+                      <>{(l.min_amount || 0).toLocaleString()} – {(l.max_amount || 0).toLocaleString()} <span className="text-xs text-slate-500">{l.currency}</span></>
+                    ) : (
+                      <>{l.amount.toLocaleString()} <span className="text-xs text-slate-500">{l.currency}</span></>
+                    )}
+                  </div>
+                </div>
+                <StatusBadge s={st} />
               </div>
-              <span className={`text-[10px] font-bold uppercase tracking-widest px-2.5 py-1 rounded-full ${l.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                {l.active ? t('links.active') : t('links.inactive')}
-              </span>
-            </div>
-            {l.description && <p className="mt-3 text-sm text-slate-500">{l.description}</p>}
-            <div className="mt-4 flex items-center gap-2 p-3 bg-slate-50 rounded-xl">
-              <div className="text-xs text-slate-500 truncate flex-1 font-mono">{window.location.origin}/pay/{l.slug}</div>
-              <button onClick={() => copy(l.slug)} data-testid={`btn-copy-link-${l.id}`} className="w-8 h-8 rounded-lg bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]">
-                <Copy className="w-3.5 h-3.5" />
-              </button>
-              <button data-testid={`btn-share-link-${l.id}`} className="w-8 h-8 rounded-lg bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Share2 className="w-3.5 h-3.5" /></button>
-            </div>
-            <div className="mt-4 flex items-center justify-between">
-              <div className="text-xs text-slate-500">{l.payments_received} {t('links.payments')} · {l.total_received?.toLocaleString() || 0} {l.currency}</div>
-              <div className="flex gap-2">
-                <button onClick={() => toggle(l)} data-testid={`btn-toggle-${l.id}`} className="text-xs font-semibold text-slate-700 hover:text-[#2563EB] inline-flex items-center gap-1"><Power className="w-3.5 h-3.5" /> {l.active ? 'Désactiver' : 'Activer'}</button>
-                <button onClick={() => remove(l.id)} data-testid={`btn-delete-${l.id}`} className="text-xs font-semibold text-red-600 hover:text-red-700 inline-flex items-center gap-1"><Trash2 className="w-3.5 h-3.5" /> Supprimer</button>
+              {l.description && <p className="mt-2 text-xs text-slate-500 line-clamp-2">{l.description}</p>}
+
+              <div className="mt-3 flex items-center gap-2 p-2 bg-slate-50 rounded-lg">
+                <div className="text-[10px] text-slate-500 truncate flex-1 font-mono">{publicUrl(l.slug)}</div>
+                <button onClick={() => copy(l.slug)} data-testid={`btn-copy-link-${l.id}`} title="Copier" className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Copy className="w-3 h-3" /></button>
+                <button onClick={() => setShowShare(l)} data-testid={`btn-share-link-${l.id}`} title="Partager" className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Share2 className="w-3 h-3" /></button>
+                <button onClick={() => setShowQr(l)} data-testid={`btn-qr-link-${l.id}`} title="QR Code" className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><QrCode className="w-3 h-3" /></button>
+              </div>
+
+              <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
+                <span>{l.payments_received} paiements · {(l.total_received || 0).toLocaleString()} {l.currency} reçus</span>
+                <span className="text-slate-400">{new Date(l.created_at).toLocaleDateString()}</span>
+              </div>
+              <div className="mt-3 pt-3 border-t border-slate-50 flex items-center gap-2 text-[11px]">
+                <button onClick={() => { setEditing(l); setShowForm(true); }} data-testid={`btn-edit-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Pencil className="w-3 h-3" /> Modifier</button>
+                <button onClick={() => toggle(l)} data-testid={`btn-toggle-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Power className="w-3 h-3" /> {l.active ? 'Désactiver' : 'Activer'}</button>
+                <button onClick={() => remove(l.id)} data-testid={`btn-delete-${l.id}`} className="ml-auto inline-flex items-center gap-1 font-semibold text-red-600 hover:text-red-700"><Trash2 className="w-3 h-3" /> Supprimer</button>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {showForm && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" data-testid="link-form-modal">
-          <form onSubmit={submit} className="bg-white rounded-[24px] p-8 max-w-md w-full shadow-2xl">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="font-cabinet text-2xl font-extrabold">{t('links.new_title')}</h2>
-              <button type="button" onClick={() => setShowForm(false)} data-testid="btn-close-form" className="w-9 h-9 rounded-lg hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="space-y-4">
-              <Input label={t('links.link_title')} value={form.title} onChange={(v) => setForm({ ...form, title: v })} placeholder={t('links.link_title_ph')} required tid="link-title" />
-              <div className="grid grid-cols-[1fr_auto] gap-3">
-                <Input label={t('links.amount')} type="number" value={form.amount} onChange={(v) => setForm({ ...form, amount: v })} required tid="link-amount" />
-                <div>
-                  <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('links.currency')}</label>
-                  <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-4 py-3.5 border border-slate-200 rounded-xl font-semibold">
-                    <option value="XOF">XOF</option><option value="XAF">XAF</option>
-                  </select>
-                </div>
-              </div>
-              <Input label={t('links.description')} value={form.description} onChange={(v) => setForm({ ...form, description: v })} tid="link-desc" />
-              <Input label={t('links.expires')} type="datetime-local" value={form.expires_at} onChange={(v) => setForm({ ...form, expires_at: v })} tid="link-expires" />
-              <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer">
-                <input type="checkbox" data-testid="link-single-use" checked={form.single_use} onChange={(e) => setForm({ ...form, single_use: e.target.checked })} className="w-4 h-4 accent-[#2563EB]" />
-                <span className="text-sm font-semibold">{t('links.single_use')}</span>
-              </label>
-              <button type="submit" data-testid="btn-generate-link" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3.5 rounded-xl">{t('links.generate')}</button>
-            </div>
-          </form>
-        </div>
-      )}
+      {showForm && <LinkForm initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSaved={() => { setShowForm(false); setEditing(null); load(); }} />}
+      {showQr && <QrModal link={showQr} url={publicUrl(showQr.slug)} onClose={() => setShowQr(null)} />}
+      {showShare && <ShareModal url={publicUrl(showShare.slug)} title={showShare.title} onClose={() => setShowShare(null)} />}
     </div>
   );
 }
 
-function Input({ label, value, onChange, placeholder, type = 'text', required, tid }) {
+function StatusBadge({ s }) {
+  const m = { active: { c: 'bg-emerald-50 text-emerald-700', l: 'Actif' }, disabled: { c: 'bg-slate-100 text-slate-600', l: 'Désactivé' }, expired: { c: 'bg-red-50 text-red-700', l: 'Expiré' } }[s];
+  return <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full ${m.c}`}>{m.l}</span>;
+}
+
+// -------- Form (create + edit) --------
+function LinkForm({ initial, onClose, onSaved }) {
+  const isEdit = !!initial;
+  const [form, setForm] = useState({
+    title: initial?.title || '',
+    description: initial?.description || '',
+    logo: initial?.logo || '',
+    amount_type: initial?.amount_type || 'fixed',
+    amount: initial?.amount || '',
+    min_amount: initial?.min_amount || '',
+    max_amount: initial?.max_amount || '',
+    currency: initial?.currency || 'XOF',
+    fee_bearer: initial?.fee_bearer || 'customer',
+    expires_at: initial?.expires_at?.slice(0, 16) || '',
+    single_use: initial?.single_use || false,
+  });
+  const [pending, setPending] = useState(false);
+  const fileRef = useRef();
+
+  const onLogo = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { toast.error('Format non supporté (JPG, PNG, WebP uniquement)'); return; }
+    if (file.size > 1_500_000) { toast.error('Image trop grande (max 1.5 Mo)'); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => setForm((f) => ({ ...f, logo: ev.target.result }));
+    reader.readAsDataURL(file);
+  };
+
+  const FEE_PCT = 0.015; // 1.5% preview
+  const previewAmount = form.amount_type === 'fixed' ? parseFloat(form.amount) || 0 : parseFloat(form.max_amount) || 0;
+  const previewFee = previewAmount * FEE_PCT;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setPending(true);
+    try {
+      const payload = {
+        title: form.title,
+        currency: form.currency,
+        description: form.description,
+        logo: form.logo || null,
+        amount_type: form.amount_type,
+        amount: form.amount_type === 'fixed' ? parseFloat(form.amount) : 0,
+        min_amount: form.amount_type === 'free' ? parseFloat(form.min_amount) : null,
+        max_amount: form.amount_type === 'free' ? parseFloat(form.max_amount) : null,
+        fee_bearer: form.fee_bearer,
+        expires_at: form.expires_at || null,
+        single_use: form.single_use,
+      };
+      if (isEdit) {
+        await api.patch(`/links/${initial.id}`, payload);
+        toast.success('Lien mis à jour');
+      } else {
+        await api.post('/links', payload);
+        toast.success('Lien créé avec succès');
+      }
+      onSaved();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+    finally { setPending(false); }
+  };
+
   return (
-    <div>
-      <label className="text-sm font-semibold text-slate-700 mb-2 block">{label}</label>
-      <input data-testid={tid} type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} required={required} className="w-full px-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-6 max-w-2xl w-full my-8 shadow-2xl" data-testid="link-form-modal">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center"><ArrowLeft className="w-4 h-4" /></button>
+            <h2 className="font-cabinet text-lg font-extrabold">{isEdit ? 'Modifier le lien' : 'Créer un lien de paiement'}</h2>
+          </div>
+          <button type="button" onClick={onClose} data-testid="btn-close-form" className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+
+        {/* Informations générales */}
+        <Section title="Informations générales">
+          <div className="grid sm:grid-cols-[auto_1fr] gap-4">
+            {/* Logo */}
+            <div>
+              <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Logo / image</label>
+              <div className="relative w-24 h-24 rounded-xl border-2 border-dashed border-slate-200 hover:border-[#2563EB] cursor-pointer overflow-hidden group" onClick={() => fileRef.current?.click()}>
+                {form.logo ? (
+                  <img src={form.logo} alt="logo" className="w-full h-full object-cover" data-testid="logo-preview" />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+                    <Upload className="w-5 h-5" />
+                    <span className="text-[10px] mt-1">Téléverser</span>
+                  </div>
+                )}
+                {form.logo && <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] font-semibold transition-opacity">Modifier</div>}
+              </div>
+              {form.logo && <button type="button" onClick={() => setForm({ ...form, logo: '' })} className="mt-2 text-[10px] text-red-500 font-semibold">Retirer</button>}
+              <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onLogo} className="hidden" data-testid="logo-input" />
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Nom du lien</label>
+                <input data-testid="link-title" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Ex: Facture #001, Formation Web, T-shirt collector…" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Description</label>
+                <textarea data-testid="link-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} placeholder="Décrivez brièvement le produit ou le service…" className="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm resize-none" />
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        {/* Montant */}
+        <Section title="Configuration du montant">
+          <div className="grid grid-cols-2 gap-2 mb-3">
+            {[
+              { v: 'fixed', l: 'Montant fixe', d: 'Le client paie un montant exact' },
+              { v: 'free', l: 'Montant libre', d: 'Le client choisit dans une plage' },
+            ].map((o) => (
+              <button key={o.v} type="button" onClick={() => setForm({ ...form, amount_type: o.v })} data-testid={`amount-type-${o.v}`} className={`p-3 rounded-xl border-2 text-left transition-colors ${form.amount_type === o.v ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 hover:border-slate-300'}`}>
+                <div className="font-cabinet font-bold text-xs text-slate-900">{o.l}</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">{o.d}</div>
+              </button>
+            ))}
+          </div>
+
+          {form.amount_type === 'fixed' ? (
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <div>
+                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant</label>
+                <input data-testid="link-amount" type="number" required min="1" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="5000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Devise</label>
+                <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
+                  <option value="XOF">XOF</option><option value="XAF">XAF</option>
+                </select>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant minimum</label>
+                <input data-testid="link-min" type="number" required min="1" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder="500" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant maximum</label>
+                <input data-testid="link-max" type="number" required min="1" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder="50000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </div>
+              <div className="col-span-2">
+                <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
+                  <option value="XOF">XOF</option><option value="XAF">XAF</option>
+                </select>
+              </div>
+            </div>
+          )}
+        </Section>
+
+        {/* Fees */}
+        <Section title="Gestion des frais">
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { v: 'customer', l: 'Le client paie', d: 'Les frais s\'ajoutent au montant du client' },
+              { v: 'owner', l: 'Vous prenez en charge', d: 'Les frais sont déduits de votre part' },
+            ].map((o) => (
+              <button key={o.v} type="button" onClick={() => setForm({ ...form, fee_bearer: o.v })} data-testid={`fee-bearer-${o.v}`} className={`p-3 rounded-xl border-2 text-left transition-colors ${form.fee_bearer === o.v ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200'}`}>
+                <div className="font-cabinet font-bold text-xs text-slate-900">{o.l}</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">{o.d}</div>
+              </button>
+            ))}
+          </div>
+          {previewAmount > 0 && (
+            <div className="mt-3 p-3 bg-slate-50 rounded-xl text-xs text-slate-600 flex items-center gap-2" data-testid="fee-preview">
+              <Info className="w-3.5 h-3.5 text-[#2563EB]" />
+              Aperçu (1.5% de frais) : <b className="text-slate-900">{previewFee.toLocaleString(undefined, { maximumFractionDigits: 0 })} {form.currency}</b>
+              {form.fee_bearer === 'customer' ? (
+                <span>· Le client paiera <b>{(previewAmount + previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })} {form.currency}</b></span>
+              ) : (
+                <span>· Vous recevrez <b>{(previewAmount - previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })} {form.currency}</b></span>
+              )}
+            </div>
+          )}
+        </Section>
+
+        {/* Options */}
+        <Section title="Options">
+          <div className="grid sm:grid-cols-2 gap-3 items-end">
+            <div>
+              <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Date d'expiration (optionnel)</label>
+              <input data-testid="link-expires" type="datetime-local" value={form.expires_at} onChange={(e) => setForm({ ...form, expires_at: e.target.value })} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+            </div>
+            <label className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl cursor-pointer">
+              <input type="checkbox" data-testid="link-single-use" checked={form.single_use} onChange={(e) => setForm({ ...form, single_use: e.target.checked })} className="w-4 h-4 accent-[#2563EB]" />
+              <span className="text-xs font-semibold">Lien à usage unique</span>
+            </label>
+          </div>
+        </Section>
+
+        <button type="submit" disabled={pending} data-testid="btn-generate-link" className="mt-4 w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 rounded-xl disabled:opacity-60">
+          {pending ? '…' : isEdit ? 'Enregistrer les modifications' : 'Créer le lien de paiement'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div className="mt-4">
+      <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+// -------- QR Modal --------
+function QrModal({ link, url, onClose }) {
+  const canvasRef = useRef();
+  const download = () => {
+    const canvas = canvasRef.current?.querySelector('canvas');
+    if (!canvas) return;
+    const a = document.createElement('a');
+    a.download = `qrcode-${link.slug}.png`;
+    a.href = canvas.toDataURL();
+    a.click();
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-6 max-w-sm w-full" data-testid="qr-modal">
+        <h3 className="font-cabinet font-bold text-base mb-1">{link.title}</h3>
+        <p className="text-xs text-slate-500 mb-4">Scannez ce QR code pour ouvrir le lien.</p>
+        <div ref={canvasRef} className="flex justify-center p-4 bg-white border border-slate-200 rounded-xl">
+          <QRCodeCanvas value={url} size={220} level="H" includeMargin />
+        </div>
+        <div className="mt-3 p-2 bg-slate-50 rounded-lg text-[10px] font-mono text-slate-600 break-all text-center">{url}</div>
+        <button onClick={download} data-testid="btn-download-qr" className="mt-4 w-full bg-[#2563EB] text-white font-bold py-2.5 rounded-full text-xs">Télécharger le QR Code</button>
+      </div>
+    </div>
+  );
+}
+
+// -------- Share Modal --------
+function ShareModal({ url, title, onClose }) {
+  const encoded = encodeURIComponent(url);
+  const text = encodeURIComponent(`${title} — ${url}`);
+  const opts = [
+    { l: 'WhatsApp', h: `https://wa.me/?text=${text}`, c: 'bg-emerald-500', I: MessageCircle },
+    { l: 'Telegram', h: `https://t.me/share/url?url=${encoded}&text=${encodeURIComponent(title)}`, c: 'bg-blue-500', I: Send },
+    { l: 'SMS', h: `sms:?body=${text}`, c: 'bg-violet-500', I: MessageCircle },
+    { l: 'Email', h: `mailto:?subject=${encodeURIComponent(title)}&body=${text}`, c: 'bg-red-500', I: Mail },
+  ];
+  const [copied, setCopied] = useState(false);
+  const doCopy = () => { navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-6 max-w-sm w-full" data-testid="share-modal">
+        <h3 className="font-cabinet font-bold text-base mb-3">Partager le lien</h3>
+        <div className="grid grid-cols-4 gap-3">
+          {opts.map((o) => (
+            <a key={o.l} href={o.h} target="_blank" rel="noreferrer" data-testid={`share-${o.l.toLowerCase()}`} className="flex flex-col items-center gap-1.5">
+              <div className={`w-12 h-12 rounded-full ${o.c} text-white flex items-center justify-center shadow-lg hover:scale-105 transition-transform`}><o.I className="w-5 h-5" /></div>
+              <span className="text-[10px] font-semibold text-slate-700">{o.l}</span>
+            </a>
+          ))}
+        </div>
+        <div className="mt-4 p-2 bg-slate-50 rounded-lg flex items-center gap-2">
+          <div className="flex-1 text-[10px] font-mono text-slate-600 break-all">{url}</div>
+          <button onClick={doCopy} data-testid="share-copy" className={`px-3 py-1.5 rounded-md text-[10px] font-bold ${copied ? 'bg-emerald-500 text-white' : 'bg-[#2563EB] text-white'}`}>
+            {copied ? <><CheckCircle2 className="w-3 h-3 inline" /> Copié</> : 'Copier'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

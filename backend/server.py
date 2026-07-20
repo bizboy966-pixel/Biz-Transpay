@@ -492,18 +492,28 @@ async def list_links(uid: str = Depends(get_current_user_id)):
 
 @api.post("/links", response_model=PaymentLink)
 async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_user_id)):
+    if req.amount_type == "free":
+        if req.min_amount is None or req.max_amount is None:
+            raise HTTPException(400, "Montants minimum et maximum requis pour un montant libre")
+        if req.min_amount <= 0 or req.max_amount <= req.min_amount:
+            raise HTTPException(400, "Montant maximum doit être supérieur au minimum")
     link = PaymentLink(
         id=new_id(),
         user_id=uid,
         slug=secrets.token_urlsafe(8),
         title=req.title,
-        amount=req.amount,
+        amount=req.amount if req.amount_type == "fixed" else 0,
         currency=req.currency,
         description=req.description or "",
         expires_at=req.expires_at,
         single_use=req.single_use,
         active=True,
         created_at=now_iso(),
+        amount_type=req.amount_type,
+        min_amount=req.min_amount,
+        max_amount=req.max_amount,
+        fee_bearer=req.fee_bearer,
+        logo=req.logo,
     )
     await db.payment_links.insert_one(link.model_dump())
     return link

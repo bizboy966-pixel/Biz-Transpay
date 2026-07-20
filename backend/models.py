@@ -58,11 +58,16 @@ class AuthResponse(BaseModel):
 # ---------- Payment link ----------
 class PaymentLinkCreate(BaseModel):
     title: str
-    amount: float
+    amount: float = 0  # kept for backward compat; used when amount_type = fixed
     currency: Literal["XOF", "XAF"]
     description: Optional[str] = ""
     expires_at: Optional[str] = None
     single_use: bool = False
+    amount_type: Literal["fixed", "free"] = "fixed"
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
+    fee_bearer: Literal["customer", "owner"] = "customer"
+    logo: Optional[str] = None  # data URL or hosted URL
 
 
 class PaymentLinkUpdate(BaseModel):
@@ -73,6 +78,11 @@ class PaymentLinkUpdate(BaseModel):
     expires_at: Optional[str] = None
     single_use: Optional[bool] = None
     active: Optional[bool] = None
+    amount_type: Optional[Literal["fixed", "free"]] = None
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
+    fee_bearer: Optional[Literal["customer", "owner"]] = None
+    logo: Optional[str] = None
 
 
 class PaymentLink(BaseModel):
@@ -89,6 +99,11 @@ class PaymentLink(BaseModel):
     payments_received: int = 0
     total_received: float = 0.0
     created_at: str
+    amount_type: str = "fixed"
+    min_amount: Optional[float] = None
+    max_amount: Optional[float] = None
+    fee_bearer: str = "customer"
+    logo: Optional[str] = None
 
 
 # ---------- Transactions ----------
