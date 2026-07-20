@@ -1,0 +1,219 @@
+import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { User, AtSign, Globe, Phone, Mail, Lock, Eye, EyeOff, UserPlus, Building2, Check, CreditCard } from 'lucide-react';
+import { toast } from 'sonner';
+import { Logo } from '@/components/Logo';
+import { useAuth } from '@/context/AuthContext';
+import { COUNTRIES } from '@/constants/countries';
+
+export default function Register() {
+  const { t } = useTranslation();
+  const nav = useNavigate();
+  const { register } = useAuth();
+  const [form, setForm] = useState({
+    full_name: '', username: '', account_type: 'personal', country: 'TG',
+    phone: '', email: '', password: '', confirm: '',
+    robot: false, terms: false,
+  });
+  const [errors, setErrors] = useState({});
+  const [showPwd, setShowPwd] = useState(false);
+  const [showPwd2, setShowPwd2] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const country = COUNTRIES.find((c) => c.code === form.country) || COUNTRIES[0];
+
+  const validate = () => {
+    const e = {};
+    if (!form.full_name) e.full_name = t('register.errors.required');
+    if (!form.username) e.username = t('register.errors.required');
+    if (!form.phone) e.phone = t('register.errors.required');
+    if (!form.email) e.email = t('register.errors.required');
+    if (!form.password || form.password.length < 6) e.password = t('register.errors.short');
+    if (form.password !== form.confirm) e.confirm = t('register.errors.mismatch');
+    if (!form.robot) e.robot = t('register.errors.robot');
+    if (!form.terms) e.terms = t('register.errors.terms');
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  };
+
+  const onSubmit = async (ev) => {
+    ev.preventDefault();
+    if (!validate()) return;
+    setLoading(true);
+    try {
+      await register({
+        full_name: form.full_name, username: form.username,
+        account_type: form.account_type, country: form.country,
+        phone: `${country.dial} ${form.phone}`, email: form.email,
+        password: form.password,
+      });
+      toast.success('Compte créé avec succès !');
+      nav('/dashboard');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Erreur lors de la création du compte');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 flex flex-col" data-testid="register-page">
+      <header className="border-b border-slate-200/70 bg-white/80 backdrop-blur-xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <Logo />
+          <Link to="/login" data-testid="link-to-login" className="text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]">
+            {t('register.have_account')} <span className="underline underline-offset-4">{t('register.login')}</span>
+          </Link>
+        </div>
+      </header>
+
+      <main className="flex-1 relative py-12 overflow-hidden">
+        <div className="absolute top-20 left-10 w-64 h-64 rounded-full bg-blue-100/50 blur-3xl pointer-events-none" />
+        <div className="absolute bottom-10 right-10 w-72 h-72 rounded-full bg-blue-100/40 blur-3xl pointer-events-none" />
+
+        <form onSubmit={onSubmit} className="relative max-w-2xl mx-auto bg-white border border-slate-100 rounded-[28px] shadow-[0_20px_60px_-20px_rgba(15,23,42,0.15)] p-8 sm:p-12" data-testid="register-form">
+          <div className="text-center mb-8">
+            <div className="mx-auto w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center">
+              <UserPlus className="w-7 h-7 text-[#2563EB]" strokeWidth={1.75} />
+            </div>
+            <h1 className="mt-5 font-cabinet text-3xl sm:text-4xl font-extrabold tracking-tighter text-slate-900">{t('register.title')}</h1>
+            <p className="mt-2 text-slate-600">{t('register.subtitle')}</p>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label={t('register.full_name')} icon={User} error={errors.full_name}>
+              <input data-testid="input-full-name" type="text" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none transition-colors" />
+            </Field>
+            <Field label={t('register.username')} icon={AtSign} error={errors.username}>
+              <input data-testid="input-username" type="text" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none transition-colors" />
+            </Field>
+          </div>
+
+          <div className="mt-5">
+            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('register.account_type')}</label>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { v: 'personal', I: User, t: t('register.personal'), d: t('register.personal_d') },
+                { v: 'merchant', I: Building2, t: t('register.merchant'), d: t('register.merchant_d') },
+              ].map((opt) => (
+                <button
+                  key={opt.v}
+                  type="button"
+                  data-testid={`account-type-${opt.v}`}
+                  onClick={() => set('account_type', opt.v)}
+                  className={`relative p-5 rounded-2xl border-2 text-left transition-colors ${
+                    form.account_type === opt.v ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  {form.account_type === opt.v && (
+                    <div className="absolute top-3 right-3 w-6 h-6 rounded-full bg-[#2563EB] text-white flex items-center justify-center">
+                      <Check className="w-3.5 h-3.5" strokeWidth={3} />
+                    </div>
+                  )}
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-3 ${form.account_type === opt.v ? 'bg-[#2563EB] text-white' : 'bg-blue-50 text-[#2563EB]'}`}>
+                    <opt.I className="w-5 h-5" strokeWidth={1.75} />
+                  </div>
+                  <div className="font-cabinet font-bold text-slate-900">{opt.t}</div>
+                  <div className="text-xs text-slate-500 mt-1">{opt.d}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('register.country')}</label>
+            <div className="relative">
+              <Globe className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <select data-testid="select-country" value={form.country} onChange={(e) => set('country', e.target.value)} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none bg-white appearance-none">
+                {COUNTRIES.map((c) => (
+                  <option key={c.code} value={c.code}>{c.flag} {c.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4 mt-5">
+            <div>
+              <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('register.phone')}</label>
+              <div className="relative">
+                <Phone className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <div className="absolute left-11 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pr-2 border-r border-slate-200 h-7">
+                  <span className="text-sm">{country.flag}</span>
+                  <span className="text-sm font-semibold text-slate-700">{country.dial}</span>
+                </div>
+                <input data-testid="input-phone" type="tel" value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder={t('register.phone_ph')} className="w-full pl-[110px] pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+              </div>
+              {errors.phone && <p className="mt-1 text-xs text-red-500">{errors.phone}</p>}
+            </div>
+            <Field label={t('register.email')} icon={Mail} error={errors.email}>
+              <input data-testid="input-email" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={t('register.email_ph')} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+            </Field>
+          </div>
+
+          <Field label={t('register.password')} icon={Lock} error={errors.password} extra="mt-5">
+            <input data-testid="input-password" type={showPwd ? 'text' : 'password'} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="w-full pl-11 pr-11 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+            <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-1">
+              {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </Field>
+
+          <Field label={t('register.confirm')} icon={Lock} error={errors.confirm} extra="mt-5">
+            <input data-testid="input-confirm-password" type={showPwd2 ? 'text' : 'password'} value={form.confirm} onChange={(e) => set('confirm', e.target.value)} placeholder={t('register.confirm_ph')} className="w-full pl-11 pr-11 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+            <button type="button" onClick={() => setShowPwd2((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-2">
+              {showPwd2 ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </Field>
+
+          {/* Robot (visual only) */}
+          <div className="mt-6">
+            <label className="flex items-center gap-3 p-4 border border-slate-200 rounded-xl bg-slate-50 cursor-pointer">
+              <input data-testid="check-robot" type="checkbox" checked={form.robot} onChange={(e) => set('robot', e.target.checked)} className="w-5 h-5 accent-[#2563EB]" />
+              <span className="text-sm font-semibold text-slate-700 flex-1">{t('register.robot')}</span>
+              <div className="text-[10px] text-slate-400 font-mono">reCAPTCHA</div>
+            </label>
+            {errors.robot && <p className="mt-1 text-xs text-red-500">{errors.robot}</p>}
+          </div>
+
+          <div className="mt-4">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input data-testid="check-terms" type="checkbox" checked={form.terms} onChange={(e) => set('terms', e.target.checked)} className="w-4 h-4 mt-0.5 accent-[#2563EB]" />
+              <span className="text-sm text-slate-600 leading-relaxed">
+                {t('register.terms_1')} <a href="#" className="text-[#2563EB] font-semibold">{t('register.terms_link_1')}</a> {t('register.terms_and')} <a href="#" className="text-[#2563EB] font-semibold">{t('register.terms_link_2')}</a> {t('register.terms_end')}
+              </span>
+            </label>
+            {errors.terms && <p className="mt-1 text-xs text-red-500">{errors.terms}</p>}
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            data-testid="btn-submit-register"
+            className="mt-8 w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-4 rounded-xl shadow-[0_10px_30px_-8px_rgba(37,99,235,0.6)] hover:-translate-y-0.5 transition-transform inline-flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
+          >
+            {loading ? 'Création en cours…' : <><UserPlus className="w-5 h-5" /> {t('register.submit')}</>}
+          </button>
+
+          <p className="mt-6 text-center text-sm text-slate-500">
+            {t('register.have_account')} <Link to="/login" className="text-[#2563EB] font-semibold hover:underline" data-testid="link-login">{t('register.login')}</Link>
+          </p>
+        </form>
+      </main>
+    </div>
+  );
+}
+
+function Field({ label, icon: Icon, error, children, extra = '' }) {
+  return (
+    <div className={extra}>
+      <label className="text-sm font-semibold text-slate-700 mb-2 block">{label}</label>
+      <div className="relative">
+        <Icon className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+        {children}
+      </div>
+      {error && <p className="mt-1 text-xs text-red-500">{error}</p>}
+    </div>
+  );
+}
