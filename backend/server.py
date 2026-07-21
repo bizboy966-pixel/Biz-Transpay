@@ -587,14 +587,11 @@ async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
         **req.model_dump(),
         "submitted_at": now_iso(),
         "status": "pending",
+        "reject_reason": None,
     }
     await db.kyc.replace_one({"user_id": uid}, doc, upsert=True)
     await db.users.update_one({"id": uid}, {"$set": {"kyc_status": "pending"}})
-    # auto-approve after submit for demo
-    await db.users.update_one({"id": uid}, {"$set": {"kyc_status": "verified"}})
-    await db.kyc.update_one({"user_id": uid}, {"$set": {"status": "verified",
-                                                         "verified_at": now_iso()}})
-    return {"status": "verified", "message": "Vérification KYC approuvée (démo)"}
+    return {"status": "pending", "message": "Votre demande a été soumise et est en attente de validation."}
 
 
 # ==================== API KEYS ====================
@@ -725,6 +722,7 @@ class AdminUpdateUser(BaseModel):
 class AdminKycDecision(BaseModel):
     approve: bool
     reason: Optional[str] = ""
+    request_resubmit: bool = False
 
 
 class AdminResetPwd(BaseModel):
@@ -937,11 +935,20 @@ async def admin_kyc_decision(user_id: str, req: AdminKycDecision, admin=Depends(
         raise HTTPException(404, "Utilisateur introuvable")
     if req.approve:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "verified"}})
-        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "verified", "verified_at": now_iso()}})
+        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "verified",
+                                                                 "verified_at": now_iso(),
+                                                                 "reject_reason": None}})
         act = "kyc_approve"
+    elif req.request_resubmit:
+        await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "not_started"}})
+        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "resubmit_requested",
+                                                                 "reject_reason": req.reason,
+                                                                 "reviewed_at": now_iso()}})
+        act = "kyc_request_resubmit"
     else:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "rejected"}})
-        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "rejected", "reject_reason": req.reason,
+        await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "rejected",
+                                                                 "reject_reason": req.reason,
                                                                  "reviewed_at": now_iso()}})
         act = "kyc_reject"
     await audit(admin["id"], admin["username"], act,

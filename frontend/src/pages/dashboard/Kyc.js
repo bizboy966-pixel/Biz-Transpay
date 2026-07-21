@@ -1,28 +1,66 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { IdCard, Upload, CheckCircle2, Clock, XCircle } from 'lucide-react';
+import { IdCard, Upload, CheckCircle2, Clock, XCircle, AlertTriangle, ShieldCheck, User, Phone, FileText, Briefcase } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 
+const ACTIVITIES = [
+  'Commerce en ligne',
+  'Boutique physique',
+  'Prestataire de services',
+  'Développeur',
+  'Entreprise',
+  'Utilisation personnelle',
+  'Autre',
+];
+
 export default function Kyc() {
   const { t } = useTranslation();
   const { user, refresh } = useAuth();
+  const [submission, setSubmission] = useState(null);
   const [status, setStatus] = useState('not_started');
-  const [form, setForm] = useState({ document_type: 'id_card', document_number: '', address: '', city: '' });
+  const [form, setForm] = useState({
+    full_name: user?.full_name || '',
+    phone: user?.phone || '',
+    document_type: 'cni',
+    document_number: '',
+    activity_description: 'Commerce en ligne',
+    document_front: '',
+    document_back: '',
+    selfie: '',
+  });
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    api.get('/kyc').then(({ data }) => setStatus(data.status)).catch(() => {});
+    api.get('/kyc').then(({ data }) => {
+      setStatus(data.status);
+      if (data.submission?.user_id) {
+        setSubmission(data.submission);
+        setForm((f) => ({ ...f, ...data.submission, document_front: '', document_back: '', selfie: '' }));
+      }
+    }).catch(() => {});
   }, []);
+
+  const readFile = (file, cb) => {
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/jpg'].includes(file.type)) {
+      toast.error('Format non supporté (JPG, PNG, WebP uniquement)');
+      return;
+    }
+    if (file.size > 3_000_000) { toast.error('Image trop grande (max 3 Mo)'); return; }
+    const r = new FileReader();
+    r.onload = (ev) => cb(ev.target.result);
+    r.readAsDataURL(file);
+  };
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!form.document_front || !form.selfie) { toast.error('Veuillez téléverser au moins le recto du document et le selfie'); return; }
     setLoading(true);
     try {
       await api.post('/kyc/submit', form);
-      toast.success(t('kyc.success'));
-      setStatus('verified');
+      toast.success('Demande soumise. En attente de validation.');
+      setStatus('pending');
       refresh();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erreur');
@@ -30,69 +68,160 @@ export default function Kyc() {
   };
 
   const badges = {
-    not_started: { c: 'bg-slate-100 text-slate-600', I: IdCard, l: t('kyc.not_started') },
-    pending: { c: 'bg-amber-50 text-amber-700', I: Clock, l: t('kyc.pending') },
-    verified: { c: 'bg-emerald-50 text-emerald-700', I: CheckCircle2, l: t('kyc.verified') },
-    rejected: { c: 'bg-red-50 text-red-700', I: XCircle, l: t('kyc.rejected') },
+    not_started: { c: 'bg-slate-100 text-slate-600', I: IdCard, l: 'Non commencé' },
+    pending: { c: 'bg-amber-50 text-amber-700', I: Clock, l: 'En attente de validation' },
+    verified: { c: 'bg-emerald-50 text-emerald-700', I: CheckCircle2, l: 'Vérifiée' },
+    rejected: { c: 'bg-red-50 text-red-700', I: XCircle, l: 'Refusée' },
+    resubmit_requested: { c: 'bg-orange-50 text-orange-700', I: AlertTriangle, l: 'Nouvelle soumission demandée' },
   };
   const badge = badges[status] || badges.not_started;
 
+  const canEdit = status === 'not_started' || status === 'rejected' || status === 'resubmit_requested';
+  const needsBack = form.document_type === 'cni' || form.document_type === 'driver_license';
+
   return (
-    <div className="space-y-6" data-testid="page-kyc">
+    <div className="space-y-5" data-testid="page-kyc">
       <div>
-        <h1 className="font-cabinet text-3xl font-extrabold tracking-tighter text-slate-900">{t('kyc.title')}</h1>
-        <p className="text-slate-500 text-sm mt-1">{t('kyc.subtitle')}</p>
+        <h1 className="font-cabinet text-2xl font-extrabold tracking-tighter text-slate-900">Vérification KYC</h1>
+        <p className="text-slate-500 text-xs mt-1">Complétez votre identité pour débloquer toutes les fonctionnalités (retraits, liens, API avancée).</p>
       </div>
 
-      <div className="bg-white border border-slate-100 rounded-[24px] p-6 flex items-center gap-4">
-        <div className={`w-14 h-14 rounded-2xl ${badge.c} flex items-center justify-center`}>
-          <badge.I className="w-6 h-6" />
+      {/* Status card */}
+      <div className="bg-white border border-slate-100 rounded-2xl p-5 flex items-center gap-4">
+        <div className={`w-12 h-12 rounded-2xl ${badge.c} flex items-center justify-center`}>
+          <badge.I className="w-5 h-5" />
         </div>
-        <div>
-          <div className="text-xs uppercase tracking-widest text-slate-500 font-bold">{t('kyc.status')}</div>
-          <div className="font-cabinet font-extrabold text-2xl text-slate-900" data-testid="kyc-status">{badge.l}</div>
+        <div className="flex-1">
+          <div className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Statut</div>
+          <div className="font-cabinet font-extrabold text-lg text-slate-900" data-testid="kyc-status">{badge.l}</div>
+          {submission?.reject_reason && (status === 'rejected' || status === 'resubmit_requested') && (
+            <div className="mt-1 text-xs text-red-600"><b>Motif :</b> {submission.reject_reason}</div>
+          )}
         </div>
+        {status === 'verified' && <ShieldCheck className="w-8 h-8 text-emerald-500" />}
       </div>
 
-      {status !== 'verified' && (
-        <form onSubmit={submit} className="bg-white border border-slate-100 rounded-[24px] p-6 sm:p-8 space-y-5">
-          <div>
-            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('kyc.doc_type')}</label>
-            <select data-testid="kyc-doc-type" value={form.document_type} onChange={(e) => setForm({ ...form, document_type: e.target.value })} className="w-full px-4 py-3.5 border border-slate-200 rounded-xl">
-              <option value="id_card">{t('kyc.id_card')}</option>
-              <option value="passport">{t('kyc.passport')}</option>
-              <option value="driver_license">{t('kyc.driver')}</option>
-            </select>
+      {status === 'pending' && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+          <Clock className="w-4 h-4 text-amber-600 mt-0.5" />
+          <div className="text-xs text-amber-900">
+            <b>Votre demande est en cours d'examen.</b> Nos équipes vérifient vos documents et vous serez notifié dès qu'une décision sera prise.
           </div>
-          <Input label={t('kyc.doc_number')} value={form.document_number} onChange={(v) => setForm({ ...form, document_number: v })} required tid="kyc-doc-number" />
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('kyc.doc_front')}</label>
-              <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center text-slate-400 text-sm hover:border-blue-300 cursor-pointer"><Upload className="w-6 h-6 mx-auto mb-1" /> Cliquer pour uploader</div>
+        </div>
+      )}
+
+      {canEdit && (
+        <form onSubmit={submit} className="bg-white border border-slate-100 rounded-2xl p-5 sm:p-6 space-y-5">
+          {/* Section 1 - Informations personnelles */}
+          <Section title="Informations personnelles">
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Nom complet (tel que sur le document)" icon={User}>
+                <input data-testid="kyc-full-name" required value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} placeholder="KOTOKOU Kossi Emmanuel" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </Field>
+              <Field label="Numéro de téléphone" icon={Phone}>
+                <input data-testid="kyc-phone" required value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="+228 90 00 00 00" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </Field>
             </div>
-            <div>
-              <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('kyc.selfie')}</label>
-              <div className="border-2 border-dashed border-slate-200 rounded-xl p-6 text-center text-slate-400 text-sm hover:border-blue-300 cursor-pointer"><Upload className="w-6 h-6 mx-auto mb-1" /> Cliquer pour uploader</div>
+          </Section>
+
+          {/* Section 2 - Document */}
+          <Section title="Type de document d'identité">
+            <div className="grid grid-cols-3 gap-2 mb-3">
+              {[
+                { v: 'cni', l: 'Carte nationale d\'identité' },
+                { v: 'passport', l: 'Passeport' },
+                { v: 'driver_license', l: 'Permis de conduire' },
+              ].map((o) => (
+                <button key={o.v} type="button" onClick={() => setForm({ ...form, document_type: o.v })} data-testid={`doc-type-${o.v}`} className={`p-3 rounded-xl border-2 text-center transition-colors ${form.document_type === o.v ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 hover:border-slate-300'}`}>
+                  <IdCard className={`w-4 h-4 mx-auto ${form.document_type === o.v ? 'text-[#2563EB]' : 'text-slate-400'}`} />
+                  <div className="mt-1 font-cabinet font-bold text-[11px] text-slate-900 leading-tight">{o.l}</div>
+                </button>
+              ))}
             </div>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-3">
-            <Input label={t('kyc.address')} value={form.address} onChange={(v) => setForm({ ...form, address: v })} required tid="kyc-address" />
-            <Input label={t('kyc.city')} value={form.city} onChange={(v) => setForm({ ...form, city: v })} required tid="kyc-city" />
-          </div>
-          <button type="submit" disabled={loading} data-testid="btn-submit-kyc" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-4 rounded-xl disabled:opacity-70">
-            {loading ? '…' : t('kyc.submit')}
+            <Field label="Numéro du document" icon={FileText}>
+              <input data-testid="kyc-doc-number" required value={form.document_number} onChange={(e) => setForm({ ...form, document_number: e.target.value })} placeholder="Ex: 123456789" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+            </Field>
+          </Section>
+
+          {/* Section 3 - Activity */}
+          <Section title="Description de l'activité">
+            <Field label="Type d'activité" icon={Briefcase}>
+              <select data-testid="kyc-activity" value={form.activity_description} onChange={(e) => setForm({ ...form, activity_description: e.target.value })} className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm font-semibold">
+                {ACTIVITIES.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </Field>
+          </Section>
+
+          {/* Section 4 - Uploads */}
+          <Section title="Téléversement des documents">
+            <div className={`grid ${needsBack ? 'grid-cols-3' : 'grid-cols-2'} gap-3`}>
+              <UploadTile label="Recto du document" value={form.document_front} onChange={(v) => setForm({ ...form, document_front: v })} onFile={(f) => readFile(f, (v) => setForm((prev) => ({ ...prev, document_front: v })))} testid="kyc-front" />
+              {needsBack && (
+                <UploadTile label="Verso du document" value={form.document_back} onChange={(v) => setForm({ ...form, document_back: v })} onFile={(f) => readFile(f, (v) => setForm((prev) => ({ ...prev, document_back: v })))} testid="kyc-back" />
+              )}
+              <UploadTile label="Selfie + document en main" value={form.selfie} onChange={(v) => setForm({ ...form, selfie: v })} onFile={(f) => readFile(f, (v) => setForm((prev) => ({ ...prev, selfie: v })))} testid="kyc-selfie" />
+            </div>
+            <div className="mt-2 text-[10px] text-slate-500">Formats acceptés : JPG, PNG, WebP · 3 Mo max par fichier. Photos nettes et lisibles.</div>
+          </Section>
+
+          <button type="submit" disabled={loading} data-testid="btn-submit-kyc" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3.5 rounded-xl disabled:opacity-60 text-sm">
+            {loading ? '…' : 'Soumettre la demande de vérification'}
           </button>
         </form>
+      )}
+
+      {status === 'verified' && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 flex items-center gap-4">
+          <CheckCircle2 className="w-10 h-10 text-emerald-600 shrink-0" />
+          <div>
+            <div className="font-cabinet font-bold text-emerald-900">Compte vérifié !</div>
+            <p className="text-xs text-emerald-800 mt-0.5">Toutes les fonctionnalités sont désormais accessibles : retraits, liens de paiement, API avancée, transferts KYC.</p>
+          </div>
+        </div>
       )}
     </div>
   );
 }
 
-function Input({ label, value, onChange, required, tid, type = 'text' }) {
+function Section({ title, children }) {
   return (
     <div>
-      <label className="text-sm font-semibold text-slate-700 mb-2 block">{label}</label>
-      <input data-testid={tid} type={type} value={value} onChange={(e) => onChange(e.target.value)} required={required} className="w-full px-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+      <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">{title}</div>
+      {children}
+    </div>
+  );
+}
+function Field({ label, icon: I, children }) {
+  return (
+    <div>
+      <label className="text-xs font-semibold text-slate-700 mb-1.5 block">{label}</label>
+      <div className="relative">
+        <I className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+        {children}
+      </div>
+    </div>
+  );
+}
+function UploadTile({ label, value, onChange, onFile, testid }) {
+  const ref = useRef();
+  return (
+    <div>
+      <label className="text-xs font-semibold text-slate-700 mb-1.5 block">{label}</label>
+      <div onClick={() => ref.current?.click()} className="relative aspect-[4/3] rounded-xl border-2 border-dashed border-slate-200 hover:border-[#2563EB] cursor-pointer overflow-hidden bg-slate-50">
+        {value ? (
+          <>
+            <img src={value} alt={label} className="w-full h-full object-cover" data-testid={`${testid}-preview`} />
+            <div className="absolute inset-0 bg-black/40 opacity-0 hover:opacity-100 flex items-center justify-center text-white text-[10px] font-bold transition-opacity">Modifier</div>
+          </>
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+            <Upload className="w-5 h-5" />
+            <span className="text-[10px] mt-1 font-semibold">Téléverser</span>
+          </div>
+        )}
+      </div>
+      {value && <button type="button" onClick={(e) => { e.stopPropagation(); onChange(''); }} className="mt-1 text-[10px] text-red-500 font-semibold">Retirer</button>}
+      <input ref={ref} type="file" accept="image/jpeg,image/jpg,image/png,image/webp" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }} className="hidden" data-testid={testid} />
     </div>
   );
 }

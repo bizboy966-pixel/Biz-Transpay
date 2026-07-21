@@ -153,14 +153,14 @@ class ExchangeRequest(BaseModel):
 
 # ---------- KYC ----------
 class KycSubmit(BaseModel):
-    document_type: Literal["id_card", "passport", "driver_license"]
+    full_name: str
+    phone: str
+    document_type: Literal["cni", "passport", "driver_license"]
     document_number: str
-    document_front: Optional[str] = None  # base64 or url
+    activity_description: str
+    document_front: Optional[str] = None  # data URL
     document_back: Optional[str] = None
     selfie: Optional[str] = None
-    address_proof: Optional[str] = None
-    address: str
-    city: str
 
 
 # ---------- API keys ----------
