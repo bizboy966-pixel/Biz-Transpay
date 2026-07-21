@@ -313,6 +313,23 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
     if u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
+    # Check global auto-withdrawals lock (biz_to_mobile & biz_to_bank only)
+    if req.transfer_type in ("biz_to_mobile", "biz_to_bank"):
+        pcfg = await get_platform_config()
+        if pcfg.get("auto_withdrawals_disabled"):
+            # keep the request as "pending" without debiting
+            pending_tx = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                         status="pending", counterparty=req.recipient,
+                                         description=req.description or "En attente de traitement manuel",
+                                         metadata={"transfer_type": req.transfer_type,
+                                                   "country": req.country, "operator": req.operator,
+                                                   "bank": req.bank, "fee_bearer": req.fee_bearer,
+                                                   "recipient_name": req.recipient_name,
+                                                   "auto_withdrawals_disabled": True})
+            return {"transaction": pending_tx.model_dump(), "fee": 0,
+                    "pending_manual": True,
+                    "message": "Les retraits automatiques sont désactivés. Votre demande est en attente de traitement manuel."}
+
     cfg = await get_transfer_config()
 
     # -------- BIZ TO BIZ: instant, no fees --------
@@ -512,10 +529,41 @@ async def stripe_webhook(request: Request):
 
 
 # ==================== EXCHANGE ====================
+DEFAULT_PLATFORM_CONFIG = {
+    "id": "platform_config",
+    "conversion_fee": {
+        "enabled": True,
+        "type": "percent",  # "percent" | "fixed"
+        "value": 0.5,       # 0.5% or fixed amount
+        "min_fee": 0,
+        "max_fee": None,
+    },
+    "auto_withdrawals_disabled": False,
+}
+
+
+async def get_platform_config() -> dict:
+    doc = await db.settings.find_one({"id": "platform_config"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(DEFAULT_PLATFORM_CONFIG.copy())
+        doc = await db.settings.find_one({"id": "platform_config"}, {"_id": 0})
+    return doc
+
+
 @api.get("/exchange/rate")
 async def get_rate(from_currency: str = "XOF", to_currency: str = "XAF"):
+    cfg = await get_platform_config()
+    fee = cfg.get("conversion_fee", {})
     rate = FX_RATE_XOF_TO_XAF if from_currency == "XOF" else FX_RATE_XAF_TO_XOF
-    return {"from": from_currency, "to": to_currency, "rate": rate, "fee_pct": FX_FEE_PCT}
+    return {
+        "from": from_currency, "to": to_currency, "rate": rate,
+        "fee_enabled": fee.get("enabled", True),
+        "fee_type": fee.get("type", "percent"),
+        "fee_value": fee.get("value", 0.5),
+        "fee_min": fee.get("min_fee", 0),
+        "fee_max": fee.get("max_fee"),
+        "fee_pct": (fee.get("value", 0.5) / 100.0) if fee.get("type") == "percent" else 0,
+    }
 
 
 @api.post("/exchange")
@@ -528,8 +576,24 @@ async def do_exchange(req: ExchangeRequest, uid: str = Depends(get_current_user_
     if u.get(from_field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
+    cfg = await get_platform_config()
+    fcfg = cfg.get("conversion_fee", {})
     rate = FX_RATE_XOF_TO_XAF if req.from_currency == "XOF" else FX_RATE_XAF_TO_XOF
-    fee = req.amount * FX_FEE_PCT
+
+    fee = 0.0
+    if fcfg.get("enabled", True):
+        if fcfg.get("type") == "fixed":
+            fee = float(fcfg.get("value", 0))
+        else:
+            fee = req.amount * float(fcfg.get("value", 0.5)) / 100.0
+        if fcfg.get("min_fee") is not None:
+            fee = max(fee, float(fcfg.get("min_fee") or 0))
+        if fcfg.get("max_fee") is not None:
+            fee = min(fee, float(fcfg.get("max_fee")))
+
+    if u.get(from_field, 0) < req.amount + 0:  # amount already includes fee separation
+        raise HTTPException(400, "Solde insuffisant")
+
     converted = (req.amount - fee) * rate
 
     await db.users.update_one({"id": uid}, {
@@ -1060,6 +1124,26 @@ class AdminTransferConfigReq(BaseModel):
 @api.get("/admin/transfer/config")
 async def admin_get_transfer_config(admin=Depends(get_admin)):
     return await get_transfer_config()
+
+
+class AdminPlatformConfigReq(BaseModel):
+    conversion_fee: Optional[dict] = None
+    auto_withdrawals_disabled: Optional[bool] = None
+
+
+@api.get("/admin/platform/config")
+async def admin_get_platform_config(admin=Depends(get_admin)):
+    return await get_platform_config()
+
+
+@api.patch("/admin/platform/config")
+async def admin_update_platform_config(req: AdminPlatformConfigReq, admin=Depends(get_admin)):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    await db.settings.update_one({"id": "platform_config"}, {"$set": updates}, upsert=True)
+    await audit(admin["id"], admin["username"], "update_platform_config", details=updates)
+    return await get_platform_config()
 
 
 class AdminSupportConfigReq(BaseModel):

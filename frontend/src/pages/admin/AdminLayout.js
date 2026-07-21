@@ -12,6 +12,7 @@ const NAV = [
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
   { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC' },
   { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
+  { to: '/admin/platform', i: SettingsIcon, l: 'Frais & Retraits' },
   { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
   { to: '/admin/api', i: Code2, l: 'API & Intégrations' },
   { to: '/admin/support', i: MessageCircle, l: 'Support & Chat' },

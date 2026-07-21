@@ -14,19 +14,24 @@ export default function Exchange() {
   const [to, setTo] = useState('XAF');
   const [amount, setAmount] = useState('');
   const [rate, setRate] = useState(1);
-  const [feePct, setFeePct] = useState(0.005);
+  const [feeInfo, setFeeInfo] = useState({ enabled: true, type: 'percent', value: 0.5, min: 0, max: null });
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(null);
 
   useEffect(() => {
     api.get('/exchange/rate', { params: { from_currency: from, to_currency: to } })
-      .then(({ data }) => { setRate(data.rate); setFeePct(data.fee_pct); }).catch(() => {});
+      .then(({ data }) => { setRate(data.rate); setFeeInfo({ enabled: data.fee_enabled, type: data.fee_type, value: data.fee_value, min: data.fee_min || 0, max: data.fee_max }); }).catch(() => {});
   }, [from, to]);
 
   const swap = () => { setFrom(to); setTo(from); };
 
   const amt = parseFloat(amount) || 0;
-  const fee = amt * feePct;
+  let fee = 0;
+  if (feeInfo.enabled) {
+    fee = feeInfo.type === 'fixed' ? +feeInfo.value : amt * (+feeInfo.value) / 100;
+    fee = Math.max(fee, +(feeInfo.min || 0));
+    if (feeInfo.max != null) fee = Math.min(fee, +feeInfo.max);
+  }
   const receive = (amt - fee) * rate;
 
   const submit = async (e) => {
@@ -94,7 +99,10 @@ export default function Exchange() {
 
         <div className="text-sm text-slate-600 space-y-1.5 pt-2">
           <div className="flex justify-between"><span>{t('exchange.rate')}</span><span className="font-semibold">1 {from} = {rate} {to}</span></div>
-          <div className="flex justify-between"><span>{t('exchange.fee')} ({(feePct * 100).toFixed(1)}%)</span><span className="font-semibold">{fee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {from}</span></div>
+          <div className="flex justify-between">
+            <span>{t('exchange.fee')} {feeInfo.enabled ? `(${feeInfo.type === 'percent' ? feeInfo.value + '%' : 'montant fixe'})` : '(désactivés)'}</span>
+            <span className="font-semibold">{fee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {from}</span>
+          </div>
         </div>
 
         <button type="submit" disabled={loading || from === to || !amt} data-testid="btn-confirm-exchange" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-4 rounded-xl inline-flex items-center justify-center gap-2 disabled:opacity-50">
