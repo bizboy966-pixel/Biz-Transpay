@@ -27,6 +27,7 @@ import AdminTransactions from '@/pages/admin/AdminTransactions';
 import AdminLogs from '@/pages/admin/AdminLogs';
 import AdminAdmins from '@/pages/admin/AdminAdmins';
 import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
+import AdminSupport from '@/pages/admin/AdminSupport';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -79,6 +80,7 @@ function App() {
             <Route path="logs" element={<AdminLogs />} />
             <Route path="admins" element={<AdminAdmins />} />
             <Route path="transfer-config" element={<AdminTransferConfig />} />
+            <Route path="support" element={<AdminSupport />} />
           </Route>
         </Routes>
       </BrowserRouter>

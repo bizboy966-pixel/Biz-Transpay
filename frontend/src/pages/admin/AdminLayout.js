@@ -14,7 +14,7 @@ const NAV = [
   { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
   { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
   { to: '/admin/api', i: Code2, l: 'API & Intégrations' },
-  { to: '/admin/tickets', i: MessageCircle, l: 'Tickets & Support' },
+  { to: '/admin/support', i: MessageCircle, l: 'Support & Chat' },
   { to: '/admin/settings', i: SettingsIcon, l: 'Paramètres' },
   { to: '/admin/admins', i: ShieldCheck, l: 'Administrateurs' },
   { to: '/admin/logs', i: ScrollText, l: 'Journal d\'activités' },

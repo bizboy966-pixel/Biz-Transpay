@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -184,6 +184,65 @@ async def wallet_summary(uid: str = Depends(get_current_user_id)):
         "transactions_count": tx_count,
         "kyc_status": u.get("kyc_status", "not_started"),
     }
+
+
+DEFAULT_SUPPORT_CONFIG = {
+    "id": "support_config",
+    "chat_enabled": True,
+    "telegram_url": "https://t.me/biztranspay",
+    "whatsapp_url": "https://wa.me/22890000000",
+    "email": "support@biz-transpay.com",
+}
+
+
+async def get_support_config() -> dict:
+    doc = await db.settings.find_one({"id": "support_config"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(DEFAULT_SUPPORT_CONFIG.copy())
+        doc = await db.settings.find_one({"id": "support_config"}, {"_id": 0})
+    return doc
+
+
+@api.get("/support/config")
+async def support_config(uid: str = Depends(get_current_user_id)):
+    return await get_support_config()
+
+
+class ChatMessage(BaseModel):
+    text: Optional[str] = ""
+    attachments: List[dict] = Field(default_factory=list)
+
+
+@api.get("/support/messages")
+async def user_get_messages(uid: str = Depends(get_current_user_id)):
+    msgs = await db.support_messages.find({"conversation_id": uid}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    # mark admin msgs as read by user
+    await db.support_messages.update_many(
+        {"conversation_id": uid, "sender": "admin", "read_by_user": {"$ne": True}},
+        {"$set": {"read_by_user": True, "read_at": now_iso()}}
+    )
+    return msgs
+
+
+@api.post("/support/messages")
+async def user_send_message(msg: ChatMessage, uid: str = Depends(get_current_user_id)):
+    u = await get_user(uid)
+    doc = {
+        "id": new_id(),
+        "conversation_id": uid,
+        "sender": "user",
+        "sender_id": uid,
+        "sender_name": u.get("full_name") or u.get("username"),
+        "text": msg.text or "",
+        "attachments": msg.attachments,
+        "created_at": now_iso(),
+        "read_by_user": True,
+        "read_by_admin": False,
+        "status": "sent",
+    }
+    await db.support_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 # ==================== TRANSFER CONFIG ====================
@@ -1001,6 +1060,80 @@ class AdminTransferConfigReq(BaseModel):
 @api.get("/admin/transfer/config")
 async def admin_get_transfer_config(admin=Depends(get_admin)):
     return await get_transfer_config()
+
+
+class AdminSupportConfigReq(BaseModel):
+    chat_enabled: Optional[bool] = None
+    telegram_url: Optional[str] = None
+    whatsapp_url: Optional[str] = None
+    email: Optional[str] = None
+
+
+@api.get("/admin/support/config")
+async def admin_get_support_config(admin=Depends(get_admin)):
+    return await get_support_config()
+
+
+@api.patch("/admin/support/config")
+async def admin_update_support_config(req: AdminSupportConfigReq, admin=Depends(get_admin)):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    await db.settings.update_one({"id": "support_config"}, {"$set": updates}, upsert=True)
+    await audit(admin["id"], admin["username"], "update_support_config", details=updates)
+    return await get_support_config()
+
+
+@api.get("/admin/support/conversations")
+async def admin_conversations(admin=Depends(get_admin)):
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$group": {
+            "_id": "$conversation_id",
+            "last_message": {"$first": "$text"},
+            "last_sender": {"$first": "$sender"},
+            "last_created": {"$first": "$created_at"},
+            "unread_count": {"$sum": {"$cond": [{"$and": [{"$eq": ["$sender", "user"]}, {"$ne": ["$read_by_admin", True]}]}, 1, 0]}},
+        }},
+        {"$sort": {"last_created": -1}},
+    ]
+    convs = await db.support_messages.aggregate(pipeline).to_list(500)
+    # enrich with user info
+    for c in convs:
+        u = await db.users.find_one({"id": c["_id"]}, {"_id": 0, "id": 1, "full_name": 1, "username": 1, "email": 1})
+        c["user"] = u
+        c["conversation_id"] = c.pop("_id")
+    return convs
+
+
+@api.get("/admin/support/conversations/{user_id}/messages")
+async def admin_conversation_messages(user_id: str, admin=Depends(get_admin)):
+    msgs = await db.support_messages.find({"conversation_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    await db.support_messages.update_many(
+        {"conversation_id": user_id, "sender": "user", "read_by_admin": {"$ne": True}},
+        {"$set": {"read_by_admin": True}}
+    )
+    return msgs
+
+
+@api.post("/admin/support/conversations/{user_id}/messages")
+async def admin_reply(user_id: str, msg: ChatMessage, admin=Depends(get_admin)):
+    doc = {
+        "id": new_id(),
+        "conversation_id": user_id,
+        "sender": "admin",
+        "sender_id": admin["id"],
+        "sender_name": admin.get("full_name") or admin.get("username"),
+        "text": msg.text or "",
+        "attachments": msg.attachments,
+        "created_at": now_iso(),
+        "read_by_user": False,
+        "read_by_admin": True,
+        "status": "sent",
+    }
+    await db.support_messages.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 @api.patch("/admin/transfer/config")
