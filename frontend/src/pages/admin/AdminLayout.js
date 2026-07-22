@@ -68,16 +68,9 @@ export default function AdminLayout() {
 
         {/* Quick shortcuts */}
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-white/10">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2 px-1">Raccourcis rapides</div>
           <div className="space-y-1">
-            <Link to="/admin/users" className="flex items-center gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/5 rounded-lg" data-testid="qs-credit">
-              <UserPlus className="w-3.5 h-3.5 text-emerald-400" /> Créditer un compte
-            </Link>
-            <Link to="/admin/users" className="flex items-center gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/5 rounded-lg" data-testid="qs-debit">
-              <MinusCircle className="w-3.5 h-3.5 text-red-400" /> Débiter un compte
-            </Link>
             <Link to="/admin/notifications" className="flex items-center gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/5 rounded-lg" data-testid="qs-notify">
-              <Send className="w-3.5 h-3.5 text-blue-400" /> Envoyer une notification
+              <Send className="w-3.5 h-3.5 text-blue-400" /> Notifications
             </Link>
           </div>
           <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2">
