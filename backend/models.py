@@ -40,6 +40,7 @@ class UserPublic(BaseModel):
     kyc_status: str  # not_started | pending | verified | rejected
     balance_xof: float
     balance_xaf: float
+    balance_usdt: float = 0.0
     created_at: str
     two_fa_enabled: bool = False
     language: str = "fr"
@@ -124,8 +125,8 @@ class Transaction(BaseModel):
 
 # ---------- Transfer ----------
 class TransferRequest(BaseModel):
-    transfer_type: Literal["biz_to_biz", "biz_to_mobile", "biz_to_bank"]
-    recipient: str  # username / phone / iban
+    transfer_type: Literal["biz_to_biz", "biz_to_mobile", "biz_to_bank", "biz_to_binance", "biz_to_crypto"]
+    recipient: str  # username / phone / iban / wallet address / binance id
     recipient_name: Optional[str] = ""
     recipient_phone: Optional[str] = ""  # extra id field for biz_to_biz
     country: Optional[str] = None
@@ -133,8 +134,12 @@ class TransferRequest(BaseModel):
     bank: Optional[str] = None
     fee_bearer: Optional[Literal["sender", "receiver"]] = "sender"
     amount: float
-    currency: Literal["XOF", "XAF"]
+    currency: Literal["XOF", "XAF", "USDT"]
     description: Optional[str] = ""
+    # Crypto/Binance fields
+    crypto: Optional[str] = None       # e.g. "USDT", "BTC", "ETH"
+    network: Optional[str] = None      # e.g. "TRC20", "BEP20", "ERC20", "SOLANA"
+    wallet_address: Optional[str] = None
 
 
 # ---------- Deposit (Stripe) ----------

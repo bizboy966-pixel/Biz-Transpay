@@ -62,6 +62,7 @@ def user_to_public(u: dict) -> UserPublic:
         kyc_status=u.get("kyc_status", "not_started"),
         balance_xof=u.get("balance_xof", 0.0),
         balance_xaf=u.get("balance_xaf", 0.0),
+        balance_usdt=u.get("balance_usdt", 0.0),
         created_at=u.get("created_at", now_iso()),
         two_fa_enabled=u.get("two_fa_enabled", False),
         language=u.get("language", "fr"),
@@ -131,6 +132,7 @@ async def register(req: RegisterRequest):
         "kyc_status": "verified" if is_first else "not_started",
         "balance_xof": 25000.0,  # welcome bonus for demo
         "balance_xaf": 15000.0,
+        "balance_usdt": 0.0,
         "created_at": now_iso(),
         "two_fa_enabled": False,
         "language": "fr",
@@ -181,6 +183,7 @@ async def wallet_summary(uid: str = Depends(get_current_user_id)):
     return {
         "balance_xof": u.get("balance_xof", 0.0),
         "balance_xaf": u.get("balance_xaf", 0.0),
+        "balance_usdt": u.get("balance_usdt", 0.0),
         "transactions_count": tx_count,
         "kyc_status": u.get("kyc_status", "not_started"),
     }
@@ -283,6 +286,41 @@ DEFAULT_TRANSFER_CONFIG = {
         "enabled": False,
         "banks": [],
     },
+    "binance": {
+        "enabled": False,
+        "fee_pct": 0.5,
+        "min": 1,          # USDT
+        "max": 100000,     # USDT
+        "note": "",
+    },
+    "crypto": {
+        "enabled": False,
+        "cryptos": [
+            {"code": "USDT", "name": "Tether", "active": True,
+             "networks": ["TRC20", "BEP20", "ERC20"],
+             "fee_pct": 1.0, "fee_fixed": 1.0, "min": 1, "max": 100000},
+            {"code": "BTC", "name": "Bitcoin", "active": False,
+             "networks": ["BTC"],
+             "fee_pct": 1.5, "fee_fixed": 0.0001, "min": 0.0001, "max": 5},
+            {"code": "ETH", "name": "Ethereum", "active": False,
+             "networks": ["ERC20"],
+             "fee_pct": 1.5, "fee_fixed": 0.001, "min": 0.001, "max": 50},
+        ],
+        "networks": [
+            {"code": "TRC20", "name": "Tron (TRC20)", "active": True,
+             "address_regex": "^T[A-Za-z1-9]{33}$"},
+            {"code": "BEP20", "name": "BNB Smart Chain (BEP20)", "active": True,
+             "address_regex": "^0x[a-fA-F0-9]{40}$"},
+            {"code": "ERC20", "name": "Ethereum (ERC20)", "active": True,
+             "address_regex": "^0x[a-fA-F0-9]{40}$"},
+            {"code": "SOLANA", "name": "Solana", "active": False,
+             "address_regex": "^[1-9A-HJ-NP-Za-km-z]{32,44}$"},
+            {"code": "BTC", "name": "Bitcoin", "active": False,
+             "address_regex": "^(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,62}$"},
+        ],
+        # USDT-specific enabled network codes shown to users when they choose USDT
+        "usdt_networks": ["TRC20", "BEP20", "ERC20"],
+    },
 }
 
 
@@ -309,12 +347,12 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
     if u.get("withdrawals_blocked") and req.transfer_type != "biz_to_biz":
         raise HTTPException(403, "Retraits bloqués pour votre compte")
 
-    field = "balance_xof" if req.currency == "XOF" else "balance_xaf"
+    field = "balance_xof" if req.currency == "XOF" else ("balance_xaf" if req.currency == "XAF" else "balance_usdt")
     if u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
-    # Check global auto-withdrawals lock (biz_to_mobile & biz_to_bank only)
-    if req.transfer_type in ("biz_to_mobile", "biz_to_bank"):
+    # Check global auto-withdrawals lock (all outbound external transfers)
+    if req.transfer_type in ("biz_to_mobile", "biz_to_bank", "biz_to_binance", "biz_to_crypto"):
         pcfg = await get_platform_config()
         if pcfg.get("auto_withdrawals_disabled"):
             # keep the request as "pending" without debiting
@@ -325,6 +363,8 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                                    "country": req.country, "operator": req.operator,
                                                    "bank": req.bank, "fee_bearer": req.fee_bearer,
                                                    "recipient_name": req.recipient_name,
+                                                   "crypto": req.crypto, "network": req.network,
+                                                   "wallet_address": req.wallet_address,
                                                    "auto_withdrawals_disabled": True})
             return {"transaction": pending_tx.model_dump(), "fee": 0,
                     "pending_manual": True,
@@ -418,6 +458,75 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "recipient_gets": recipient_gets, "total_debit": total_debit})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "bank": bank["name"]}
+
+    # -------- BIZ TO BINANCE --------
+    if req.transfer_type == "biz_to_binance":
+        bcfg = cfg.get("binance", {})
+        if not bcfg.get("enabled"):
+            raise HTTPException(403, "Bientôt disponible. Cette fonctionnalité sera disponible prochainement.")
+        if not req.recipient:
+            raise HTTPException(400, "Identifiant Binance (Pay ID / Email) requis")
+        if req.amount < bcfg.get("min", 0) or req.amount > bcfg.get("max", 10**12):
+            raise HTTPException(400, f"Montant hors des limites autorisées ({bcfg.get('min')} - {bcfg.get('max')} {req.currency})")
+        fee_pct = float(bcfg.get("fee_pct", 0)) / 100.0
+        fee = req.amount * fee_pct
+        total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
+        recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
+        if u.get(field, 0) < total_debit:
+            raise HTTPException(400, "Solde insuffisant (frais inclus)")
+        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
+        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 counterparty=req.recipient, description=req.description,
+                                 metadata={"transfer_type": "biz_to_binance",
+                                           "fee": fee, "fee_bearer": req.fee_bearer,
+                                           "recipient_gets": recipient_gets, "total_debit": total_debit,
+                                           "binance_id": req.recipient,
+                                           "recipient_name": req.recipient_name})
+        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
+                "recipient_gets": recipient_gets}
+
+    # -------- BIZ TO CRYPTO --------
+    if req.transfer_type == "biz_to_crypto":
+        import re
+        ccfg = cfg.get("crypto", {})
+        if not ccfg.get("enabled"):
+            raise HTTPException(403, "Bientôt disponible. Les transferts crypto seront disponibles prochainement.")
+        if not req.crypto or not req.network or not req.wallet_address:
+            raise HTTPException(400, "Crypto, réseau et adresse de portefeuille requis")
+        crypto = next((c for c in ccfg.get("cryptos", [])
+                       if c.get("code", "").upper() == req.crypto.upper() and c.get("active", True)), None)
+        if not crypto:
+            raise HTTPException(400, "Cryptomonnaie non disponible")
+        if req.network.upper() not in [n.upper() for n in crypto.get("networks", [])]:
+            raise HTTPException(400, f"Le réseau {req.network} n'est pas compatible avec {req.crypto}")
+        network = next((n for n in ccfg.get("networks", [])
+                        if n.get("code", "").upper() == req.network.upper() and n.get("active", True)), None)
+        if not network:
+            raise HTTPException(400, "Réseau non disponible")
+        # validate address against network regex
+        regex = network.get("address_regex")
+        if regex and not re.match(regex, req.wallet_address.strip()):
+            raise HTTPException(400, f"Adresse invalide pour le réseau {network.get('name', req.network)}")
+        if req.amount < crypto.get("min", 0) or req.amount > crypto.get("max", 10**12):
+            raise HTTPException(400, f"Montant hors des limites autorisées ({crypto['min']} - {crypto['max']} {req.crypto})")
+        fee_pct = float(crypto.get("fee_pct", 0)) / 100.0
+        fee_fixed = float(crypto.get("fee_fixed", 0))
+        fee = (req.amount * fee_pct) + fee_fixed
+        total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
+        recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
+        if u.get(field, 0) < total_debit:
+            raise HTTPException(400, "Solde insuffisant (frais inclus)")
+        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
+        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 counterparty=req.wallet_address, description=req.description,
+                                 metadata={"transfer_type": "biz_to_crypto",
+                                           "crypto": req.crypto.upper(), "network": req.network.upper(),
+                                           "wallet_address": req.wallet_address,
+                                           "fee": fee, "fee_bearer": req.fee_bearer,
+                                           "recipient_gets": recipient_gets, "total_debit": total_debit,
+                                           "recipient_name": req.recipient_name})
+        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
+                "recipient_gets": recipient_gets, "crypto": req.crypto.upper(), "network": req.network.upper()}
 
     raise HTTPException(400, "Type de transfert inconnu")
 
@@ -1141,6 +1250,8 @@ async def admin_list_admins(admin=Depends(get_admin)):
 class AdminTransferConfigReq(BaseModel):
     mobile_money: Optional[dict] = None
     bank: Optional[dict] = None
+    binance: Optional[dict] = None
+    crypto: Optional[dict] = None
 
 
 @api.get("/admin/transfer/config")

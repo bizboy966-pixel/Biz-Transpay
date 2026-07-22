@@ -42,10 +42,26 @@ Le design doit dépasser Stripe/Flutterwave/Paystack/CinetPay/Moneroo/Lemon Sque
 - ✅ Support (tickets + FAQ accordion).
 - ✅ i18n FR/EN + selecteur navbar + settings.
 
+## Implémenté (2026-07-22) — Portefeuille USDT + Binance + Crypto
+- ✅ **Portefeuille USDT** ajouté au Dashboard (3ᵉ carte, dégradé emerald→teal, badge "MULTI-RÉSEAUX", même dimensions/animations que XOF/XAF).
+- ✅ **Toggle Masquer/Afficher solde** (persisté dans localStorage) — s'applique à toutes les cartes ET aux montants dans l'activité récente.
+- ✅ **Backend** : champ `balance_usdt` ajouté à `UserPublic` + tous les endpoints (`/auth/me`, `/wallet/summary`) + colonne DB (patch appliqué aux utilisateurs existants).
+- ✅ **Module Transfer étendu** : 5 options → Biz-to-Biz (avec devise USDT), Mobile Money, Banque, **Binance**, **Crypto**.
+- ✅ **Binance Transfer** : formulaire avec Pay ID/Email + montant + frais bearer + récap → si désactivé : bannière "Bientôt disponible."
+- ✅ **Biz-trans → Crypto** : sélection Crypto (USDT/BTC/ETH configurable), sélection Réseau (TRC20/BEP20/ERC20/SOLANA/BTC configurable), champ adresse avec **validation regex live** contre le réseau choisi (rejet visuel rouge/vert), frais % + fixes, récap complet, protection anti-erreur.
+- ✅ **Admin Panel étendu** (`/admin/transfer-config`) :
+    - Section Binance (enable, fee_pct, min, max, note).
+    - Section Crypto (enable, table éditable cryptomonnaies avec code/nom/réseaux/frais/limites/actif, table éditable réseaux blockchain avec regex d'adresse, sélecteur des réseaux USDT activés).
+- ✅ **Mobile responsive** : toutes les tailles réduites (text-xs/sm, gap-2/3, p-3/4, w-9/w-11 pour icônes) pour smartphones Android.
+- ✅ **Validation adresse** : le backend vérifie via regex que l'adresse est compatible avec le réseau choisi avant tout débit.
+
 ## Prioritized backlog
 
 ### P1 (améliorations importantes)
 - Vraie intégration Wave / MTN / Orange Money (aujourd'hui : Stripe seulement pour dépôts).
+- Vraie intégration Binance Pay API pour Binance Transfer.
+- Vraie exécution on-chain via provider (Circle/Fireblocks) pour biz_to_crypto.
+- Dépôts USDT (avec sélection réseau).
 - Notifications in-app (bell icon actuellement statique).
 - Charts/analytics dans le dashboard (recharts déjà installé).
 - Confirmation par email/SMS (Resend / Twilio).
@@ -56,13 +72,14 @@ Le design doit dépasser Stripe/Flutterwave/Paystack/CinetPay/Moneroo/Lemon Sque
 - Cache Redis pour taux de change.
 - Upload d'images KYC vers object storage.
 - Complétion i18n EN sur options de select FR (Général/Technique).
+- Refactoring `server.py` (fichier volumineux → routes/models split).
 
 ## Tests
-- Backend : 33/33 pytest passed (Stripe désormais OK avec emergentintegrations).
-- Frontend : 100% des pages chargent, tous les data-testid présents.
-- Auth flow, KYC flow, transfer flow, exchange flow, links flow validés.
+- Backend : Transfer USDT (biz_to_crypto + biz_to_binance) validé via curl — validation regex adresse ✅, débit correct ✅, frais % + fixes ✅.
+- Frontend : Dashboard 3 wallets + toggle masquer, Transfer 5 options, Admin config Binance+Crypto — vérifiés visuellement.
 
 ## Next tasks
+- (P1) Intégration réelle Binance Pay + provider crypto on-chain.
+- (P1) Dépôt USDT via passerelle crypto (avec choix réseau).
 - (P1) Ajouter charts d'activité dans le dashboard home avec recharts.
-- (P1) Implémenter notifications en temps réel.
-- (P1) Intégration Wave / MTN pour dépôts locaux.
+- (P2) Refactorer server.py.
