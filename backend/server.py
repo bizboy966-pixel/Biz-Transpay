@@ -867,6 +867,8 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
 
     total_users = await db.users.count_documents({})
     verified = await db.users.count_documents({"kyc_status": "verified"})
+    kyc_pending = await db.users.count_documents({"kyc_status": "pending"})
+    kyc_rejected = await db.users.count_documents({"kyc_status": "rejected"})
     not_verified = total_users - verified
     active_users = await db.transactions.distinct("user_id")
     suspended = await db.users.count_documents({"$or": [{"is_blocked": True}, {"is_banned": True}]})
@@ -878,23 +880,41 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
     succeeded = 0
     pending = 0
     failed = 0
+    dep_pending = {"count": 0, "amount": 0.0}
+    dep_valid = {"count": 0, "amount": 0.0}
+    dep_rejected = {"count": 0, "amount": 0.0}
+    wd_pending = {"count": 0, "amount": 0.0}
+    wd_valid = {"count": 0, "amount": 0.0}
+    wd_rejected = {"count": 0, "amount": 0.0}
     async for tx in tx_all:
         total_tx += 1
-        if tx.get("status") == "completed":
-            succeeded += 1
-        elif tx.get("status") == "pending":
-            pending += 1
-        elif tx.get("status") in ("failed", "cancelled"):
-            failed += 1
-        if tx.get("type") == "deposit" and tx.get("status") == "completed":
-            total_deposits += tx.get("amount", 0)
-        if tx.get("type") in ("withdrawal", "transfer") and tx.get("direction") == "out" and tx.get("status") == "completed":
-            total_withdrawals += tx.get("amount", 0)
+        st = tx.get("status")
+        if st == "completed": succeeded += 1
+        elif st == "pending": pending += 1
+        elif st in ("failed", "cancelled"): failed += 1
+        typ = tx.get("type")
+        amt = tx.get("amount", 0)
+        if typ == "deposit":
+            if st == "completed":
+                dep_valid["count"] += 1; dep_valid["amount"] += amt; total_deposits += amt
+            elif st == "pending":
+                dep_pending["count"] += 1; dep_pending["amount"] += amt
+            elif st in ("failed", "cancelled"):
+                dep_rejected["count"] += 1; dep_rejected["amount"] += amt
+        elif typ in ("withdrawal", "transfer") and tx.get("direction") == "out":
+            if st == "completed":
+                wd_valid["count"] += 1; wd_valid["amount"] += amt; total_withdrawals += amt
+            elif st == "pending":
+                wd_pending["count"] += 1; wd_pending["amount"] += amt
+            elif st in ("failed", "cancelled"):
+                wd_rejected["count"] += 1; wd_rejected["amount"] += amt
 
     return {
         "users": {
             "total": total_users,
             "verified": verified,
+            "kyc_pending": kyc_pending,
+            "kyc_rejected": kyc_rejected,
             "not_verified": not_verified,
             "active": len(active_users),
             "suspended": suspended,
@@ -906,6 +926,8 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
             "succeeded": succeeded,
             "pending": pending,
             "failed": failed,
+            "deposits": {"pending": dep_pending, "valid": dep_valid, "rejected": dep_rejected},
+            "withdrawals": {"pending": wd_pending, "valid": wd_valid, "rejected": wd_rejected},
         },
         "period": period,
     }

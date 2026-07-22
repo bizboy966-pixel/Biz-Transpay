@@ -5,18 +5,22 @@ import { useAuth } from '@/context/AuthContext';
 import { Link } from 'react-router-dom';
 
 const NAV = [
+  { section: 'Général' },
   { to: '/admin', end: true, i: LayoutDashboard, l: 'Tableau de bord' },
+  { section: 'Gestion' },
   { to: '/admin/users', i: Users, l: 'Utilisateurs' },
-  { to: '/admin/transactions', i: ArrowLeftRight, l: 'Transactions' },
+  { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC' },
+  { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
+  { to: '/admin/api', i: Code2, l: 'API de paiement' },
+  { section: 'Transactions' },
+  { to: '/admin/transactions', i: ArrowLeftRight, l: 'Toutes' },
   { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts' },
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
-  { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC' },
+  { section: 'Réglages' },
   { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
   { to: '/admin/platform', i: SettingsIcon, l: 'Frais & Retraits' },
-  { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
-  { to: '/admin/api', i: Code2, l: 'API & Intégrations' },
   { to: '/admin/support', i: MessageCircle, l: 'Support & Chat' },
-  { to: '/admin/settings', i: SettingsIcon, l: 'Paramètres' },
+  { section: 'Administration' },
   { to: '/admin/admins', i: ShieldCheck, l: 'Administrateurs' },
   { to: '/admin/logs', i: ScrollText, l: 'Journal d\'activités' },
 ];
@@ -29,7 +33,6 @@ export default function AdminLayout() {
 
   const initials = (user?.full_name || 'A').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
   const roleLabel = user?.role === 'super_admin' ? 'Super Administrateur' : 'Administrateur';
-  const current = NAV.find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Admin';
 
   return (
     <div className="min-h-screen bg-slate-50 flex" data-testid="admin-layout">
@@ -46,12 +49,14 @@ export default function AdminLayout() {
           <button onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden w-8 h-8 rounded-lg hover:bg-white/10 flex items-center justify-center"><X className="w-4 h-4" /></button>
         </div>
 
-        <nav className="p-3 space-y-0.5 overflow-y-auto h-[calc(100vh-200px)]">
-          {NAV.map((n) => (
+        <nav className="p-3 space-y-0.5 overflow-y-auto h-[calc(100vh-210px)]">
+          {NAV.map((n, idx) => n.section ? (
+            <div key={`s-${idx}`} className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-500 px-3 pt-4 pb-1.5">{n.section}</div>
+          ) : (
             <NavLink
               key={n.to} to={n.to} end={n.end}
               data-testid={`admin-nav-${n.to.replace(/\//g, '-')}`}
-              className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors ${
+              className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
                 isActive ? 'bg-[#2563EB] text-white shadow-lg shadow-blue-600/20' : 'text-slate-300 hover:bg-white/5 hover:text-white'
               }`}
             >
@@ -99,7 +104,9 @@ export default function AdminLayout() {
             <Menu className="w-4 h-4" />
           </button>
           <div>
-            <div className="font-cabinet font-extrabold text-slate-900 text-base">{current}</div>
+            <div className="font-cabinet font-extrabold text-slate-900 text-base">
+              {NAV.filter((n) => n.to).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Admin'}
+            </div>
             <div className="text-[11px] text-slate-500 font-medium">Bienvenue, {user?.full_name?.split(' ')[0] || 'Admin'} 👋</div>
           </div>
           <div className="ml-auto flex items-center gap-2">
