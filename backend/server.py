@@ -286,13 +286,6 @@ DEFAULT_TRANSFER_CONFIG = {
         "enabled": False,
         "banks": [],
     },
-    "binance": {
-        "enabled": False,
-        "fee_pct": 0.5,
-        "min": 1,          # USDT
-        "max": 100000,     # USDT
-        "note": "",
-    },
     "crypto": {
         "enabled": False,
         "cryptos": [
@@ -352,7 +345,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
         raise HTTPException(400, "Solde insuffisant")
 
     # Check global auto-withdrawals lock (all outbound external transfers)
-    if req.transfer_type in ("biz_to_mobile", "biz_to_bank", "biz_to_binance", "biz_to_crypto"):
+    if req.transfer_type in ("biz_to_mobile", "biz_to_bank", "biz_to_crypto"):
         pcfg = await get_platform_config()
         if pcfg.get("auto_withdrawals_disabled"):
             # keep the request as "pending" without debiting
@@ -458,32 +451,6 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "recipient_gets": recipient_gets, "total_debit": total_debit})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "bank": bank["name"]}
-
-    # -------- BIZ TO BINANCE --------
-    if req.transfer_type == "biz_to_binance":
-        bcfg = cfg.get("binance", {})
-        if not bcfg.get("enabled"):
-            raise HTTPException(403, "Bientôt disponible. Cette fonctionnalité sera disponible prochainement.")
-        if not req.recipient:
-            raise HTTPException(400, "Identifiant Binance (Pay ID / Email) requis")
-        if req.amount < bcfg.get("min", 0) or req.amount > bcfg.get("max", 10**12):
-            raise HTTPException(400, f"Montant hors des limites autorisées ({bcfg.get('min')} - {bcfg.get('max')} {req.currency})")
-        fee_pct = float(bcfg.get("fee_pct", 0)) / 100.0
-        fee = req.amount * fee_pct
-        total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
-        recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
-        if u.get(field, 0) < total_debit:
-            raise HTTPException(400, "Solde insuffisant (frais inclus)")
-        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
-        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
-                                 counterparty=req.recipient, description=req.description,
-                                 metadata={"transfer_type": "biz_to_binance",
-                                           "fee": fee, "fee_bearer": req.fee_bearer,
-                                           "recipient_gets": recipient_gets, "total_debit": total_debit,
-                                           "binance_id": req.recipient,
-                                           "recipient_name": req.recipient_name})
-        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
-                "recipient_gets": recipient_gets}
 
     # -------- BIZ TO CRYPTO --------
     if req.transfer_type == "biz_to_crypto":
@@ -1250,7 +1217,6 @@ async def admin_list_admins(admin=Depends(get_admin)):
 class AdminTransferConfigReq(BaseModel):
     mobile_money: Optional[dict] = None
     bank: Optional[dict] = None
-    binance: Optional[dict] = None
     crypto: Optional[dict] = None
 
 

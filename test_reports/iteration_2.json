@@ -1,0 +1,24 @@
+{
+  "summary": "Iteration 2 — validated the 3 bugfixes: (1) Binance option fully removed from Transfer + AdminTransferConfig UI and backend rejects biz_to_binance with 422; (2) Toggle Activer/Désactiver on /admin/transfer-config (crypto, mm, bank) and /admin/platform (fee-enabled, auto-withdrawals) auto-save via PATCH and persist across reload; (3) Wallet cards XOF/XAF/USDT are perfectly uniform (desktop 357×124, mobile 350×101) and Multi-réseaux badge removed. Backend: 10/10 targeted pytest passed. Frontend: all Playwright assertions passed at 1440×900 and 390×844.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": { "ui_bugs": [], "integration_issues": [], "design_issues": [] },
+  "test_report_links": [
+    "/app/backend/tests/test_bugfix_iter2.py",
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/iter2_bugfix.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "models.py line 129 comment still mentions 'binance id' — harmless but stale, consider cleanup for consistency with the Binance removal.",
+    "AdminTransferConfig.js still has a global 'Enregistrer' button that only patches mobile_money/bank/crypto (line 15-23) — this can shadow the auto-save if an admin edits an operator row then clicks 'Enregistrer'. Consider removing or gating it now that toggles auto-save.",
+    "server.py DEFAULT_TRANSFER_CONFIG is only inserted on first read (line 322). If the settings doc was previously created with a 'binance' key, the code relies on an external cleanup — the agent-to-agent note confirms MongoDB was cleaned. A safer approach would be an unset migration on startup."
+  ],
+  "updated_files": ["/app/backend/tests/test_bugfix_iter2.py", "/app/test_reports/iteration_2.json"],
+  "success_rate": { "backend": "100% (10/10)", "frontend": "100% (all assertions)" },
+  "test_credentials": "test@biztranspay.com / Password123! (super_admin per /app/memory/test_credentials.md)",
+  "seed_data_creation": "Registered a couple of TEST_-prefixed ephemeral users for the auto-withdrawals transfer-pending assertion. No cleanup performed (demo DB).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Bugfix suite lives at /app/backend/tests/test_bugfix_iter2.py and requires REACT_APP_BACKEND_URL env var. Final config state was restored: crypto.enabled=false, auto_withdrawals_disabled=false, no 'binance' key present.",
+  "rca of the issue": "N/A — no new bugs found. All three original bugs are resolved by the main agent's changes (Binance stripped from server.py/models.py/DEFAULT_TRANSFER_CONFIG/Transfer.js/AdminTransferConfig.js; toggles now call patchSection/patchNow which PATCH immediately; wallet cards use h-[132px] sm:h-[148px] and MULTI-RÉSEAUX badge removed)."
+}

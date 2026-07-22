@@ -125,7 +125,7 @@ class Transaction(BaseModel):
 
 # ---------- Transfer ----------
 class TransferRequest(BaseModel):
-    transfer_type: Literal["biz_to_biz", "biz_to_mobile", "biz_to_bank", "biz_to_binance", "biz_to_crypto"]
+    transfer_type: Literal["biz_to_biz", "biz_to_mobile", "biz_to_bank", "biz_to_crypto"]
     recipient: str  # username / phone / iban / wallet address / binance id
     recipient_name: Optional[str] = ""
     recipient_phone: Optional[str] = ""  # extra id field for biz_to_biz

@@ -6,6 +6,7 @@ import api from '@/api';
 export default function AdminPlatform() {
   const [cfg, setCfg] = useState(null);
   const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const load = () => api.get('/admin/platform/config').then(({ data }) => setCfg(data));
   useEffect(() => { load(); }, []);
@@ -16,6 +17,17 @@ export default function AdminPlatform() {
       toast.success('Configuration enregistrée');
       setDirty(false);
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+  };
+
+  // Auto-save a single patch immediately (used for toggles)
+  const patchNow = async (patch) => {
+    setSaving(true);
+    try {
+      const { data } = await api.patch('/admin/platform/config', patch);
+      setCfg(data);
+      toast.success('Modification appliquée');
+    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+    finally { setSaving(false); }
   };
 
   if (!cfg) return <div className="text-slate-500 text-sm">Chargement…</div>;
@@ -53,10 +65,10 @@ export default function AdminPlatform() {
           <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Repeat className="w-5 h-5" /></div>
           <div className="flex-1">
             <h2 className="font-cabinet font-bold text-slate-900">Frais de conversion</h2>
-            <p className="text-[11px] text-slate-500">Frais appliqués sur toutes les opérations d'échange XOF ↔ XAF.</p>
+            <p className="text-[11px] text-slate-500">Frais appliqués sur toutes les opérations d&apos;échange XOF ↔ XAF.</p>
           </div>
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" data-testid="fee-enabled" checked={fee.enabled} onChange={(e) => update(['fee', 'enabled'], e.target.checked)} className="w-4 h-4 accent-[#2563EB]" />
+            <input type="checkbox" data-testid="fee-enabled" checked={fee.enabled} onChange={(e) => patchNow({ conversion_fee: { ...fee, enabled: e.target.checked } })} disabled={saving} className="w-4 h-4 accent-[#2563EB]" />
             <span className="text-xs font-semibold">Activer les frais</span>
           </label>
         </div>
@@ -117,7 +129,7 @@ export default function AdminPlatform() {
             )}
           </div>
           <label className="flex items-center cursor-pointer">
-            <input type="checkbox" data-testid="auto-withdrawals-toggle" checked={cfg.auto_withdrawals_disabled} onChange={(e) => update(['auto_withdrawals_disabled'], e.target.checked)} className="sr-only peer" />
+            <input type="checkbox" data-testid="auto-withdrawals-toggle" checked={cfg.auto_withdrawals_disabled} onChange={(e) => patchNow({ auto_withdrawals_disabled: e.target.checked })} disabled={saving} className="sr-only peer" />
             <div className="relative w-12 h-6 bg-slate-200 peer-checked:bg-red-500 rounded-full transition-colors">
               <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${cfg.auto_withdrawals_disabled ? 'translate-x-6' : ''}`} />
             </div>

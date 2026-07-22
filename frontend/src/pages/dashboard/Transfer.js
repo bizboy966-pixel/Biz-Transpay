@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight, Users, Smartphone, Landmark, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin, Wallet } from 'lucide-react';
+import { ArrowRight, Users, Smartphone, Landmark, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
@@ -24,7 +24,6 @@ export default function Transfer() {
     { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais' },
     { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money' },
     { v: 'biz_to_bank', I: Landmark, c: 'bg-violet-50 text-violet-600', l: 'Biz-trans → Compte bancaire', d: 'Vers un compte bancaire' },
-    { v: 'biz_to_binance', I: Wallet, c: 'bg-amber-50 text-amber-600', l: 'Biz-trans → Binance', d: 'Vers un portefeuille Binance' },
     { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux' },
   ];
 
@@ -69,7 +68,6 @@ export default function Transfer() {
       {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} />}
       {step === 2 && type === 'biz_to_mobile' && <BizToMobileForm config={config} onDone={onDone} balance={user} />}
       {step === 2 && type === 'biz_to_bank' && <BizToBankForm config={config} />}
-      {step === 2 && type === 'biz_to_binance' && <BizToBinanceForm config={config} onDone={onDone} balance={user} />}
       {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} />}
 
       {step === 3 && done && (
@@ -319,97 +317,6 @@ function BizToMobileForm({ config, onDone, balance }) {
 function BizToBankForm({ config }) {
   if (!config?.bank?.enabled) return <SoonBanner text="Les transferts bancaires seront disponibles prochainement." />;
   return <SoonBanner text="Configuration bancaire en cours." />;
-}
-
-// ------- BIZ TO BINANCE -------
-function BizToBinanceForm({ config, onDone, balance }) {
-  const bcfg = config?.binance || { enabled: false };
-  const [recipient, setRecipient] = useState('');
-  const [recipientName, setRecipientName] = useState('');
-  const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('USDT');
-  const [feeBearer, setFeeBearer] = useState('sender');
-  const [description, setDescription] = useState('');
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [pending, setPending] = useState(false);
-
-  const amt = parseFloat(amount) || 0;
-  const feePct = bcfg.fee_pct || 0;
-  const fee = amt * feePct / 100;
-  const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
-  const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
-  const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
-  const min = bcfg.min || 0, max = bcfg.max || 10 ** 12;
-  const canSubmit = recipient && amt >= min && amt <= max && totalDebit <= bal;
-
-  const submit = async () => {
-    setPending(true);
-    try {
-      const { data } = await api.post('/transfers', {
-        transfer_type: 'biz_to_binance', recipient, recipient_name: recipientName,
-        fee_bearer: feeBearer, amount: amt, currency, description,
-      });
-      onDone(data, { type: 'biz_to_binance' });
-    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
-    finally { setPending(false); }
-  };
-
-  if (!bcfg.enabled) return <SoonBanner text="Cette fonctionnalité sera disponible prochainement." />;
-
-  return (
-    <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
-      <div className="bg-amber-50 border border-amber-100 rounded-xl p-2.5 sm:p-3 flex items-start gap-2 sm:gap-2.5">
-        <Wallet className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600 mt-0.5 shrink-0" />
-        <div className="text-[11px] sm:text-xs text-slate-700"><b>Binance Pay.</b> Les fonds sont crédités sur le portefeuille Binance du bénéficiaire.</div>
-      </div>
-
-      <Field label="Identifiant Binance Pay (Pay ID / Email)">
-        <input data-testid="bin-recipient" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="ex : 123456789 ou email@binance.com" className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-      </Field>
-
-      <Field label="Nom du bénéficiaire (optionnel)">
-        <input data-testid="bin-name" value={recipientName} onChange={(e) => setRecipientName(e.target.value)} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-      </Field>
-
-      <div className="grid grid-cols-[1fr_auto] gap-2 sm:gap-3">
-        <Field label="Montant">
-          <input data-testid="bin-amount" type="number" step="0.0001" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="100" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-          <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min} · Max {max.toLocaleString()} · Solde : {bal.toLocaleString()} {currency}</div>
-        </Field>
-        <Field label="Devise">
-          <select data-testid="bin-currency" value={currency} onChange={(e) => setCurrency(e.target.value)} className="px-2.5 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
-            <option value="USDT">USDT</option><option value="XOF">XOF</option><option value="XAF">XAF</option>
-          </select>
-        </Field>
-      </div>
-
-      <FeeBearerSwitch value={feeBearer} onChange={setFeeBearer} />
-
-      {amt > 0 && (
-        <div className="p-3 sm:p-4 bg-slate-50 rounded-xl space-y-1 sm:space-y-1.5 text-xs sm:text-sm" data-testid="bin-summary">
-          <Row l="Frais" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${currency} (${feePct}%)`} />
-          <Row l="Total débité" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${currency}`} strong />
-          <Row l="Le bénéficiaire reçoit" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${currency}`} green />
-        </div>
-      )}
-
-      <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-bin-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
-        Continuer
-      </button>
-
-      {confirmOpen && (
-        <ConfirmModal onClose={() => setConfirmOpen(false)} testId="bin-confirm-modal" rows={[
-          ['Binance Pay ID / Email', recipient],
-          ...(recipientName ? [['Nom', recipientName]] : []),
-          ['Montant envoyé', `${amt.toLocaleString()} ${currency}`, 'strong'],
-          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${currency}`],
-          ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
-          ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${currency}`, 'strong'],
-          ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${currency}`, 'green'],
-        ]} onConfirm={submit} pending={pending} confirmTestId="btn-bin-confirm" />
-      )}
-    </div>
-  );
 }
 
 // ------- BIZ TO CRYPTO -------

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, Landmark, Wallet, Bitcoin, Network } from 'lucide-react';
+import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, Landmark, Bitcoin, Network } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { COUNTRIES } from '@/constants/countries';
@@ -7,6 +7,7 @@ import { COUNTRIES } from '@/constants/countries';
 export default function AdminTransferConfig() {
   const [cfg, setCfg] = useState(null);
   const [dirty, setDirty] = useState(false);
+  const [savingSection, setSavingSection] = useState(null);
 
   const load = () => api.get('/admin/transfer/config').then(({ data }) => setCfg(data)).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -14,23 +15,36 @@ export default function AdminTransferConfig() {
   const save = async () => {
     try {
       await api.patch('/admin/transfer/config', {
-        mobile_money: cfg.mobile_money, bank: cfg.bank,
-        binance: cfg.binance, crypto: cfg.crypto,
+        mobile_money: cfg.mobile_money, bank: cfg.bank, crypto: cfg.crypto,
       });
       toast.success('Configuration enregistrée');
       setDirty(false);
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
   };
 
+  // Auto-save immediately when toggling enable/disable of a section
+  const patchSection = async (section, patch) => {
+    setSavingSection(section);
+    try {
+      const merged = { ...(cfg[section] || {}), ...patch };
+      const { data } = await api.patch('/admin/transfer/config', { [section]: merged });
+      setCfg(data);
+      toast.success(patch.enabled ? 'Activé' : 'Désactivé');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Erreur');
+    } finally {
+      setSavingSection(null);
+    }
+  };
+
   if (!cfg) return <div className="text-slate-500 text-sm">Chargement…</div>;
 
   const mm = cfg.mobile_money || { enabled: false, operators: [] };
   const bank = cfg.bank || { enabled: false, banks: [] };
-  const binance = cfg.binance || { enabled: false, fee_pct: 0.5, min: 1, max: 100000 };
   const crypto = cfg.crypto || { enabled: false, cryptos: [], networks: [] };
 
   const setSection = (section, val) => { setCfg({ ...cfg, [section]: val }); setDirty(true); };
-  const toggle = (section) => setSection(section, { ...cfg[section], enabled: !cfg[section].enabled });
+  const setEnabled = (section, enabled) => patchSection(section, { enabled });
 
   const updateOp = (idx, key, val) => {
     const ops = [...mm.operators];
@@ -71,7 +85,7 @@ export default function AdminTransferConfig() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="font-cabinet font-bold text-slate-900 text-base sm:text-lg">Configuration des transferts</h1>
-          <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">Paramétrez les pays, opérateurs, banques, Binance et crypto.</p>
+          <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">Paramétrez les pays, opérateurs, banques et crypto.</p>
         </div>
         <button onClick={save} disabled={!dirty} data-testid="btn-save-transfer-config" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-3 sm:px-4 py-2 rounded-full text-[11px] sm:text-xs disabled:opacity-50">
           <Save className="w-3.5 h-3.5" /> Enregistrer
@@ -79,7 +93,7 @@ export default function AdminTransferConfig() {
       </div>
 
       {/* Mobile Money */}
-      <Section title="Biz-trans → Mobile Money" subtitle={`${mm.operators.length} opérateurs configurés`} Icon={Smartphone} iconBg="bg-emerald-50 text-emerald-600" enabled={mm.enabled} onToggle={() => toggle('mobile_money')} testId="mm">
+      <Section title="Biz-trans → Mobile Money" subtitle={`${mm.operators.length} opérateurs configurés`} Icon={Smartphone} iconBg="bg-emerald-50 text-emerald-600" enabled={mm.enabled} saving={savingSection === 'mobile_money'} onEnabledChange={(v) => setEnabled('mobile_money', v)} testId="mm">
         <div className="overflow-x-auto">
           <table className="w-full text-[11px] sm:text-xs">
             <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
@@ -105,7 +119,7 @@ export default function AdminTransferConfig() {
       </Section>
 
       {/* Banks */}
-      <Section title="Biz-trans → Banque" subtitle={`${bank.banks.length} banques configurées`} Icon={Landmark} iconBg="bg-violet-50 text-violet-600" enabled={bank.enabled} onToggle={() => toggle('bank')} testId="bank">
+      <Section title="Biz-trans → Banque" subtitle={`${bank.banks.length} banques configurées`} Icon={Landmark} iconBg="bg-violet-50 text-violet-600" enabled={bank.enabled} saving={savingSection === 'bank'} onEnabledChange={(v) => setEnabled('bank', v)} testId="bank">
         {bank.banks.length === 0 && <div className="text-center py-4 sm:py-6 text-[11px] sm:text-xs text-slate-500">Aucune banque configurée. Ajoutez-en une pour activer les transferts bancaires.</div>}
         {bank.banks.length > 0 && (
           <div className="overflow-x-auto">
@@ -133,21 +147,8 @@ export default function AdminTransferConfig() {
         <button onClick={addBank} data-testid="btn-add-bank" className="mt-3 inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-[#2563EB]"><Plus className="w-3.5 h-3.5" /> Ajouter une banque</button>
       </Section>
 
-      {/* Binance */}
-      <Section title="Biz-trans → Binance" subtitle="Transferts Binance Pay (Pay ID / Email)" Icon={Wallet} iconBg="bg-amber-50 text-amber-600" enabled={binance.enabled} onToggle={() => toggle('binance')} testId="binance">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <NumberField label="Frais %" value={binance.fee_pct} step="0.1" onChange={(v) => setSection('binance', { ...binance, fee_pct: parseFloat(v) || 0 })} testId="bin-fee-pct" />
-          <NumberField label="Min" value={binance.min} onChange={(v) => setSection('binance', { ...binance, min: parseFloat(v) || 0 })} testId="bin-min" />
-          <NumberField label="Max" value={binance.max} onChange={(v) => setSection('binance', { ...binance, max: parseFloat(v) || 0 })} testId="bin-max" />
-        </div>
-        <div className="mt-3">
-          <label className="text-[11px] sm:text-xs font-semibold text-slate-700 mb-1 block">Note (affichée si désactivé)</label>
-          <input value={binance.note || ''} onChange={(e) => setSection('binance', { ...binance, note: e.target.value })} placeholder="Bientôt disponible…" className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[11px] sm:text-xs" data-testid="bin-note" />
-        </div>
-      </Section>
-
       {/* Crypto */}
-      <Section title="Biz-trans → Crypto" subtitle="Cryptomonnaies, réseaux et frais" Icon={Bitcoin} iconBg="bg-orange-50 text-orange-600" enabled={crypto.enabled} onToggle={() => toggle('crypto')} testId="crypto">
+      <Section title="Biz-trans → Crypto" subtitle="Cryptomonnaies, réseaux et frais" Icon={Bitcoin} iconBg="bg-orange-50 text-orange-600" enabled={crypto.enabled} saving={savingSection === 'crypto'} onEnabledChange={(v) => setEnabled('crypto', v)} testId="crypto">
         {/* Cryptos */}
         <div className="mt-1 mb-4">
           <div className="flex items-center justify-between mb-2">
@@ -228,7 +229,7 @@ export default function AdminTransferConfig() {
   );
 }
 
-function Section({ title, subtitle, Icon, iconBg, enabled, onToggle, testId, children }) {
+function Section({ title, subtitle, Icon, iconBg, enabled, saving, onEnabledChange, testId, children }) {
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5">
       <div className="flex items-center justify-between mb-3 sm:mb-4 gap-3">
@@ -239,10 +240,20 @@ function Section({ title, subtitle, Icon, iconBg, enabled, onToggle, testId, chi
             <p className="text-[10px] sm:text-[11px] text-slate-500 truncate">{subtitle}</p>
           </div>
         </div>
-        <button onClick={onToggle} data-testid={`toggle-${testId}`} className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-full font-bold text-[10px] sm:text-xs shrink-0 ${enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-          {enabled ? <ToggleRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <ToggleLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
-          {enabled ? 'Activé' : 'Désactivé'}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <span data-testid={`state-${testId}`} className={`hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold text-[10px] ${enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${enabled ? 'bg-emerald-500' : 'bg-slate-400'}`} /> {enabled ? 'Activé' : 'Désactivé'}
+          </span>
+          {enabled ? (
+            <button onClick={() => onEnabledChange(false)} disabled={saving} data-testid={`toggle-${testId}-off`} className="inline-flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-full font-bold text-[10px] sm:text-xs bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-50">
+              <ToggleRight className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {saving ? '…' : 'Désactiver'}
+            </button>
+          ) : (
+            <button onClick={() => onEnabledChange(true)} disabled={saving} data-testid={`toggle-${testId}-on`} className="inline-flex items-center gap-1.5 sm:gap-2 px-3 py-1.5 rounded-full font-bold text-[10px] sm:text-xs bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50">
+              <ToggleLeft className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> {saving ? '…' : 'Activer'}
+            </button>
+          )}
+        </div>
       </div>
       {children}
     </div>

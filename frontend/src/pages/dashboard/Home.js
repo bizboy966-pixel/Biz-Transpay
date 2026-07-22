@@ -38,7 +38,7 @@ export default function DashboardHome() {
   const wallets = [
     { curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
     { curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
-    { curr: 'USDT', bal: user?.balance_usdt ?? 0, gradient: 'from-emerald-500 via-emerald-600 to-teal-700', shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]', crypto: true },
+    { curr: 'USDT', bal: user?.balance_usdt ?? 0, gradient: 'from-emerald-500 via-emerald-600 to-teal-700', shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]' },
   ];
 
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
