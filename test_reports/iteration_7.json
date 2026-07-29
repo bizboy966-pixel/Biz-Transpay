@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 7 retest of BUG C fix (refund_address REVERTED to REQUIRED on /api/links/pay) + regression of BUG A/B. Backend: 7/7 pytest pass. Frontend: BUG C flows all work — button always visible with disabled:bg-slate-300 styling, label shows '(obligatoire)', empty refund keeps submit disabled (no silent 400), invalid refund shows Sonner toast with backend msg 'Adresse de remboursement invalide.', valid TRC20 → pay-tracker with pay-address/amount/QR. BUG A (dashboard deposit) and BUG B (public link → login → /dashboard) both pass end-to-end. All 3 production bugs confirmed FIXED.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PublicLink CryptoLinkForm empty-refund attempted submit", "issues": ["When refund_address is empty, the pay button is truly disabled (HTML disabled attr), so clicking it does NOT fire onClick — the 'Merci de remplir tous les champs' toast requested by the spec cannot appear. If UX intent is 'button clickable to show toast', wrap the button in a div with pointer-events, or make submit unguarded with in-handler validation. Currently the button just stays greyed-out, which is acceptable UX but does not match the spec wording."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter7_bugc.py",
+    "/app/test_reports/pytest/iter7_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL UX: If you want the 'Merci de remplir tous les champs' toast to actually appear on empty-refund submit attempt, remove the `disabled` HTML attribute and instead perform the emptiness check inside submit() to fire the toast. Currently the disabled button suppresses the click event entirely so the toast branch is unreachable — not a functional bug, but the spec wording implies it should fire."
+  ],
+  "critical_code_review_comments": [
+    "PublicLink.js CryptoLinkForm: submit() has a toast branch for empty refund but the button is HTML-disabled, making the branch dead code. Either keep disabled+no toast (current UX) or drop disabled and validate inside submit for toast to actually appear.",
+    "server.py still 1832 lines — splitting into routers still recommended (unchanged from iter 6).",
+    "backend.tests: previous iter6 tests still assert the (now reverted) '200 on empty refund' behavior — kept as reference but iter7 file supersedes them for BUG C."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter7_bugc.py", "/app/test_reports/iteration_7.json"],
+  "success_rate": {"backend": "100% (7/7 pytest)", "frontend": "BUG A 100%, BUG B 100%, BUG C 100% (except minor spec-mismatch: disabled button suppresses empty-refund toast — not a functional issue)"},
+  "test_credentials": "test@biztranspay.com / Password123! ; slug NcjVJwMQNLY ; refund TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+  "seed_data_creation": "3 real IzichangePay direct intents created (billable in vendor sandbox): 1x /api/links/pay valid, 1x /api/links/pay valid via UI test, 1x /api/deposits/crypto via UI test (2 USDT each).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter7 suite: /app/backend/tests/test_iter7_bugc.py (needs REACT_APP_BACKEND_URL env, pytest -n 0). Iter6 test file /app/backend/tests/test_iter6_bugs.py contains 2 obsolete tests (test_link_pay_empty_refund_address_returns_200 and _missing_) that now correctly fail — main agent should decide whether to delete or repurpose them. Preview URL: https://secure-pay-preview.preview.emergentagent.com.",
+  "rca of the issue": "BUG C root cause was that IzichangePay strictly validates refund_address as an on-chain address; the main agent's iter6 attempt to make it optional (mapping empty→'manual-refund') was rejected by the vendor. Iter7 reverts to requiring refund_address (min_length=1 on backend, canSubmit requires refundAddress on UI) while keeping UX improvements: button always visible via disabled:bg-slate-300 styling instead of opacity-0, explicit '(obligatoire)' label with helper text, and Sonner toast on API failure surfacing 'Adresse de remboursement invalide.'. All verified passing."
+}

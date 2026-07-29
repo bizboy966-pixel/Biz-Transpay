@@ -113,24 +113,22 @@ function CryptoLinkForm({ link, onSuccess }) {
   const amt = parseFloat(amount) || 0;
   const belowMin = isFree && amt < (link.min_amount || 0);
   const aboveMax = isFree && amt > (link.max_amount || 0);
-  const canSubmit = fullName && email && amt > 0 && !belowMin && !aboveMax && !loading;
+  const canSubmit = fullName && email && refundAddress && amt > 0 && !belowMin && !aboveMax && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!canSubmit) return;
+    if (!canSubmit) { toast.error('Merci de remplir tous les champs (dont l\'adresse de remboursement).'); return; }
     setLoading(true);
     try {
       const { data } = await api.post('/links/pay', {
         slug: link.slug, amount: isFree ? amt : undefined,
         asset_code: assetCode, full_name: fullName, email,
-        // If the customer doesn't have a wallet to refund to, we fallback to a placeholder
-        // that IzichangePay still accepts — real refunds are handled manually via support.
-        refund_address: refundAddress.trim() || 'refund-support@biztranspay',
-        origin_url: window.location.origin,
+        refund_address: refundAddress.trim(), origin_url: window.location.origin,
       });
       onSuccess(data);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erreur');
+      const detail = err.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Erreur lors du paiement');
     } finally { setLoading(false); }
   };
 
@@ -178,9 +176,9 @@ function CryptoLinkForm({ link, onSuccess }) {
         </Field>
       )}
 
-      <Field label={`Adresse ${asset?.coin || ''} de remboursement (optionnel)`}>
-        <input data-testid="pay-refund-address" value={refundAddress} onChange={(e) => setRefundAddress(e.target.value)} placeholder="Uniquement en cas de refund — laissez vide si vous n'en avez pas" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none font-mono text-[10px] sm:text-xs" />
-        <div className="mt-1 text-[9px] text-slate-500">Sauté par défaut si vide — support manuel pour tout remboursement.</div>
+      <Field label={`Votre adresse ${asset?.coin || ''} (${asset?.network || ''}) — obligatoire`}>
+        <input data-testid="pay-refund-address" value={refundAddress} onChange={(e) => setRefundAddress(e.target.value)} placeholder={asset?.network === 'TRC20' ? 'T… (votre wallet)' : asset?.network?.startsWith('BEP') || asset?.network === 'ERC20' ? '0x… (votre wallet)' : 'Votre adresse'} required className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-orange-500 font-mono text-[10px] sm:text-xs" />
+        <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Nécessaire pour la conformité on-chain : en cas de refund, les fonds y seront envoyés.</div>
       </Field>
 
       <button type="submit" disabled={!canSubmit} data-testid="btn-pay-submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl disabled:bg-slate-300 disabled:text-slate-500 text-xs sm:text-sm inline-flex items-center justify-center gap-2">

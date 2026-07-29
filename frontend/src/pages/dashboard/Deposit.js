@@ -106,7 +106,8 @@ function CryptoDepositForm({ onSuccess }) {
       });
       onSuccess(data);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erreur lors de la création du dépôt');
+      const detail = err.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Erreur lors de la création du dépôt');
     } finally {
       setLoading(false);
     }
