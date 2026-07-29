@@ -173,10 +173,11 @@ function CryptoDepositForm({ onSuccess }) {
   );
 }
 
-function CryptoDepositTracker({ deposit }) {
+function CryptoDepositTracker({ deposit: initial }) {
   const nav = useNavigate();
   const { refresh } = useAuth();
-  const [status, setStatus] = useState(deposit?.status || 'pending');
+  const [deposit, setDeposit] = useState(initial);
+  const [status, setStatus] = useState(initial?.status || 'pending');
   const [tick, setTick] = useState(0);
   const stopRef = useRef(false);
 
@@ -186,6 +187,7 @@ function CryptoDepositTracker({ deposit }) {
       if (stopRef.current) return;
       try {
         const { data } = await api.get(`/deposits/crypto/${deposit.id}`);
+        setDeposit(data);
         setStatus(data.status);
         if (['confirmed', 'expired', 'failed'].includes(data.status)) {
           stopRef.current = true;
@@ -217,7 +219,15 @@ function CryptoDepositTracker({ deposit }) {
         <div className="text-center py-6" data-testid="dep-confirmed">
           <div className="mx-auto w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-7 h-7 sm:w-8 sm:h-8 text-emerald-500" /></div>
           <h2 className="mt-3 font-cabinet text-xl sm:text-2xl font-extrabold text-slate-900">Paiement confirmé avec succès !</h2>
-          <p className="mt-1 text-xs sm:text-sm text-slate-500">{deposit.amount} {deposit.coin} ont été crédités sur votre portefeuille.</p>
+          {deposit.amount_net != null ? (
+            <div className="mt-3 mx-auto max-w-xs bg-slate-50 rounded-xl p-3 text-left text-[11px] sm:text-xs space-y-1">
+              <div className="flex justify-between"><span className="text-slate-500">Reçu (brut)</span><span className="font-semibold">{Number(deposit.amount_gross ?? deposit.amount).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.coin}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Frais ({deposit.fee_pct ?? '-'}%)</span><span className="font-semibold text-red-600">−{Number(deposit.fee || 0).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.coin}</span></div>
+              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-700 font-bold">Crédité (net)</span><span className="font-cabinet font-extrabold text-emerald-600">{Number(deposit.amount_net).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.coin}</span></div>
+            </div>
+          ) : (
+            <p className="mt-1 text-xs sm:text-sm text-slate-500">{deposit.amount} {deposit.coin} ont été crédités sur votre portefeuille.</p>
+          )}
           <div className="mt-5 flex gap-2 justify-center">
             <button onClick={() => nav('/dashboard')} data-testid="btn-dep-back-dash" className="px-5 py-2.5 rounded-full bg-[#2563EB] text-white font-bold text-xs">Retour au dashboard</button>
           </div>

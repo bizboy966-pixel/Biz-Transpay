@@ -169,8 +169,8 @@ async def register(req: RegisterRequest):
         "email": req.email.lower(),
         "password_hash": hash_password(req.password),
         "kyc_status": "verified" if is_first else "not_started",
-        "balance_xof": 25000.0,  # welcome bonus for demo
-        "balance_xaf": 15000.0,
+        "balance_xof": 0.0,   # zero-balance policy — credited only via confirmed txns
+        "balance_xaf": 0.0,
         "balance_usdt": 0.0,
         "created_at": now_iso(),
         "two_fa_enabled": False,
@@ -518,24 +518,37 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             raise HTTPException(403, "Bientôt disponible. Les transferts crypto seront disponibles prochainement.")
         if not req.crypto or not req.network or not req.wallet_address:
             raise HTTPException(400, "Crypto, réseau et adresse de portefeuille requis")
-        crypto = next((c for c in ccfg.get("cryptos", [])
-                       if c.get("code", "").upper() == req.crypto.upper() and c.get("active", True)), None)
-        if not crypto:
-            raise HTTPException(400, "Cryptomonnaie non disponible")
-        if req.network.upper() not in [n.upper() for n in crypto.get("networks", [])]:
-            raise HTTPException(400, f"Le réseau {req.network} n'est pas compatible avec {req.crypto}")
-        network = next((n for n in ccfg.get("networks", [])
-                        if n.get("code", "").upper() == req.network.upper() and n.get("active", True)), None)
-        if not network:
-            raise HTTPException(400, "Réseau non disponible")
-        # validate address against network regex
-        regex = network.get("address_regex")
-        if regex and not re.match(regex, req.wallet_address.strip()):
-            raise HTTPException(400, f"Adresse invalide pour le réseau {network.get('name', req.network)}")
-        if req.amount < crypto.get("min", 0) or req.amount > crypto.get("max", 10**12):
-            raise HTTPException(400, f"Montant hors des limites autorisées ({crypto['min']} - {crypto['max']} {req.crypto})")
-        # Per-coin fee from admin config (defaults to 4% if not configured)
+        # ----- Validate crypto/network against IziPay assets (live) -----
         coin_upper = req.crypto.upper()
+        net_upper = req.network.upper()
+        asset_code = f"{coin_upper}.{net_upper}"
+        try:
+            assets = await izipay.list_assets() if izipay.is_configured() else []
+        except Exception:
+            assets = []
+        asset = next((a for a in assets
+                      if (a.get("assetCode") or "").upper() == asset_code
+                      and a.get("isActive")), None)
+        if not asset:
+            # Fallback: allow if configured in static config (backwards compat)
+            crypto = next((c for c in ccfg.get("cryptos", [])
+                           if c.get("code", "").upper() == coin_upper and c.get("active", True)), None)
+            if not crypto or net_upper not in [n.upper() for n in crypto.get("networks", [])]:
+                raise HTTPException(400, f"Le couple {req.crypto}/{req.network} n'est pas disponible")
+            min_amt = float(crypto.get("min", 0))
+            max_amt = float(crypto.get("max", 10**12))
+        else:
+            min_amt = float(asset.get("minimum") or 0)
+            max_amt = float(asset.get("maximum") or 10**12)
+        # Validate address against known network regex
+        regex = _NETWORK_REGEX.get(net_upper) or next(
+            (n.get("address_regex") for n in ccfg.get("networks", [])
+             if n.get("code", "").upper() == net_upper), None)
+        if regex and not re.match(regex, req.wallet_address.strip()):
+            raise HTTPException(400, f"Adresse invalide pour le réseau {req.network}")
+        if req.amount < min_amt or req.amount > max_amt:
+            raise HTTPException(400, f"Montant hors des limites autorisées ({min_amt} - {max_amt} {req.crypto})")
+        # Per-coin fee from admin config (defaults to 4% if not configured)
         fees_map = (ccfg.get("fees") or {})
         fee_pct = float(fees_map.get(coin_upper, 4.0)) / 100.0
         fee = req.amount * fee_pct
@@ -550,9 +563,13 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                  status="pending",
                                  counterparty=req.wallet_address, description=req.description,
                                  metadata={"transfer_type": "biz_to_crypto",
-                                           "crypto": req.crypto.upper(), "network": req.network.upper(),
+                                           "crypto": coin_upper, "network": net_upper,
+                                           "asset_code": asset_code,
                                            "wallet_address": req.wallet_address,
-                                           "fee": fee, "fee_bearer": req.fee_bearer,
+                                           "amount_gross": req.amount,
+                                           "fee": fee, "fee_pct": fee_pct * 100,
+                                           "amount_net": recipient_gets,
+                                           "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "total_debit": total_debit,
                                            "recipient_name": req.recipient_name})
 
@@ -562,7 +579,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
             raise HTTPException(503, "Passerelle crypto non configurée")
-        coin_code = f"{req.crypto.upper()}.{req.network.upper()}"  # e.g. USDT.TRC20 (assetCode)
+        coin_code = asset_code  # e.g. USDT.TRC20
         try:
             payout = await izipay.create_payout(
                 asset_code=coin_code,
@@ -813,6 +830,24 @@ async def get_crypto_deposit(deposit_id: str, uid: str = Depends(get_current_use
 
 
 # ==================== IZICHANGEPAY WEBHOOK ====================
+async def _crypto_fee_pct(coin: str) -> float:
+    """Return the deposit/withdrawal fee percentage (as a float, e.g. 4.0)
+    configured in the Admin Panel for a given coin. Falls back to 4.0.
+    """
+    cfg = await get_transfer_config()
+    fees = ((cfg.get("crypto") or {}).get("fees") or {})
+    return float(fees.get((coin or "").upper(), 4.0))
+
+
+def _apply_fee(amount: float, fee_pct: float) -> tuple[float, float]:
+    """Return (fee, net) — fee = amount * pct/100, net = amount - fee.
+    All values rounded to 6 decimals for USDT/crypto precision.
+    """
+    fee = round(float(amount) * (float(fee_pct) / 100.0), 6)
+    net = round(float(amount) - fee, 6)
+    return fee, net
+
+
 async def _reconcile_intent(intent_id: str) -> None:
     """Fallback: query IziPay for the intent's current status. If it's
     completed but our webhook hasn't fired yet, finalize the deposit or link
@@ -836,42 +871,54 @@ async def _reconcile_intent(intent_id: str) -> None:
     # 1) Crypto deposit
     d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
     if d:
+        gross = float(d["amount"])
+        fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
+        fee, net = _apply_fee(gross, fee_pct)
         r = await db.crypto_deposits.update_one(
             {"id": merchant_ref, "status": {"$ne": "confirmed"}},
             {"$set": {"status": "confirmed", "updated_at": now_iso(),
-                      "izipay_intent_id": intent_id, "tx_hash": tx_hash}}
+                      "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                      "amount_net": net}}
         )
         if r.modified_count > 0:
-            await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": d["amount"]}})
-            await record_tx(d["user_id"], "deposit", "in", d["amount"], "USDT",
+            await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": net}})
+            await record_tx(d["user_id"], "deposit", "in", net, "USDT",
                             status="completed",
                             description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
                             metadata={"izipay_intent_id": intent_id,
                                       "coin": d.get("coin"), "network": d.get("network"),
                                       "asset_code": d.get("asset_code"), "tx_hash": tx_hash,
                                       "deposit_address": d.get("deposit_address"),
+                                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                                      "amount_net": net,
                                       "source": "reconcile"})
         return
 
     # 2) Payment link
     lp = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
     if lp:
+        gross = float(lp["amount"])
+        fee_pct = await _crypto_fee_pct(lp.get("coin", "USDT"))
+        fee, net = _apply_fee(gross, fee_pct)
         r = await db.link_payments.update_one(
             {"id": merchant_ref, "status": {"$ne": "paid"}},
             {"$set": {"status": "paid", "paid_at": now_iso(),
-                      "izipay_intent_id": intent_id, "tx_hash": tx_hash}}
+                      "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                      "amount_net": net}}
         )
         if r.modified_count > 0:
             link = await db.payment_links.find_one({"id": lp["link_id"]})
             if link:
                 await db.users.update_one({"id": link["user_id"]},
-                                          {"$inc": {"balance_usdt": lp["amount"]}})
+                                          {"$inc": {"balance_usdt": net}})
                 await db.payment_links.update_one(
                     {"id": link["id"]},
-                    {"$inc": {"payments_received": 1, "total_received": lp["amount"]}}
+                    {"$inc": {"payments_received": 1, "total_received": net}}
                 )
                 await record_tx(link["user_id"], "link_payment", "in",
-                                lp["amount"], "USDT", status="completed",
+                                net, "USDT", status="completed",
                                 description=f"Paiement lien: {link.get('title','')} · {lp.get('coin','')} {lp.get('network','')}",
                                 counterparty=lp.get("customer_email") or "client",
                                 metadata={"link_id": link["id"],
@@ -879,6 +926,8 @@ async def _reconcile_intent(intent_id: str) -> None:
                                           "coin": lp.get("coin"), "network": lp.get("network"),
                                           "asset_code": lp.get("asset_code"), "tx_hash": tx_hash,
                                           "deposit_address": lp.get("deposit_address"),
+                                          "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                                          "amount_net": net,
                                           "source": "reconcile"})
 
 
@@ -928,15 +977,20 @@ async def izipay_webhook(request: Request):
                 d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
                 if d:
                     tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
+                    gross = float(d["amount"])
+                    fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
+                    fee, net = _apply_fee(gross, fee_pct)
                     await db.crypto_deposits.update_one(
                         {"id": merchant_ref, "status": {"$ne": "confirmed"}},
                         {"$set": {"status": "confirmed", "updated_at": now_iso(),
                                   "izipay_intent_id": intent_id,
-                                  "tx_hash": tx_hash}}
+                                  "tx_hash": tx_hash,
+                                  "amount_gross": gross, "fee": fee,
+                                  "fee_pct": fee_pct, "amount_net": net}}
                     )
-                    # Credit USDT balance
-                    await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": d["amount"]}})
-                    await record_tx(d["user_id"], "deposit", "in", d["amount"], "USDT",
+                    # Credit NET amount (after fee) to user's USDT balance
+                    await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": net}})
+                    await record_tx(d["user_id"], "deposit", "in", net, "USDT",
                                     status="completed",
                                     description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
                                     metadata={"izipay_intent_id": intent_id,
@@ -944,29 +998,36 @@ async def izipay_webhook(request: Request):
                                               "network": d.get("network"),
                                               "asset_code": d.get("asset_code"),
                                               "tx_hash": tx_hash,
-                                              "deposit_address": d.get("deposit_address")})
+                                              "deposit_address": d.get("deposit_address"),
+                                              "amount_gross": gross,
+                                              "fee": fee, "fee_pct": fee_pct,
+                                              "amount_net": net})
                 # 2) Payment link payment?
                 link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if link_pay:
                     tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
+                    gross = float(link_pay["amount"])
+                    fee_pct = await _crypto_fee_pct(link_pay.get("coin", "USDT"))
+                    fee, net = _apply_fee(gross, fee_pct)
                     await db.link_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
                         {"$set": {"status": "paid", "paid_at": now_iso(),
                                   "izipay_intent_id": intent_id,
-                                  "tx_hash": tx_hash}}
+                                  "tx_hash": tx_hash,
+                                  "amount_gross": gross, "fee": fee,
+                                  "fee_pct": fee_pct, "amount_net": net}}
                     )
-                    # Credit merchant
+                    # Credit merchant NET amount
                     link = await db.payment_links.find_one({"id": link_pay["link_id"]})
                     if link:
                         await db.users.update_one({"id": link["user_id"]},
-                                                  {"$inc": {"balance_usdt": link_pay["amount"]}})
-                        # Update link aggregates
+                                                  {"$inc": {"balance_usdt": net}})
                         await db.payment_links.update_one(
                             {"id": link["id"]},
-                            {"$inc": {"payments_received": 1, "total_received": link_pay["amount"]}}
+                            {"$inc": {"payments_received": 1, "total_received": net}}
                         )
                         await record_tx(link["user_id"], "link_payment", "in",
-                                        link_pay["amount"], "USDT", status="completed",
+                                        net, "USDT", status="completed",
                                         description=f"Paiement lien: {link.get('title','')} · {link_pay.get('coin','')} {link_pay.get('network','')}",
                                         counterparty=link_pay.get("customer_email") or "client",
                                         metadata={"link_id": link["id"],
@@ -975,7 +1036,10 @@ async def izipay_webhook(request: Request):
                                                   "network": link_pay.get("network"),
                                                   "asset_code": link_pay.get("asset_code"),
                                                   "tx_hash": tx_hash,
-                                                  "deposit_address": link_pay.get("deposit_address")})
+                                                  "deposit_address": link_pay.get("deposit_address"),
+                                                  "amount_gross": gross,
+                                                  "fee": fee, "fee_pct": fee_pct,
+                                                  "amount_net": net})
                 # 3) Merchant API payment?
                 mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if mp:
@@ -1575,12 +1639,70 @@ async def get_admin(uid: str = Depends(get_current_user_id)) -> dict:
     return u
 
 
+@api.get("/crypto/coins")
+async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
+    """Authenticated user endpoint: full list of coins available on IziPay
+    grouped by ticker, each with the list of supported networks and the fee %
+    configured in the Admin Panel (default 4%).
+    Used by the Transfer → Crypto form and any user-facing crypto selector.
+    Returns: [{coin, name, fee_pct, networks: [{code, name, address_regex, asset_code}]}]
+    """
+    coins: dict[str, dict] = {}
+    if izipay.is_configured():
+        try:
+            assets = await izipay.list_assets()
+            for a in assets:
+                if not a.get("isActive"):
+                    continue
+                asset_code = a.get("assetCode") or ""
+                if "." not in asset_code:
+                    continue
+                coin, network = asset_code.split(".", 1)
+                entry = coins.setdefault(coin, {
+                    "coin": coin,
+                    "name": a.get("coin") or coin,
+                    "networks": [],
+                })
+                entry["networks"].append({
+                    "code": network,
+                    "name": a.get("networkName") or network,
+                    "asset_code": asset_code,
+                    "address_regex": _NETWORK_REGEX.get(network),
+                    "min": float(a.get("minimum") or 0),
+                    "max": float(a.get("maximum") or 10**12),
+                })
+        except Exception:
+            pass
+    cfg = await get_transfer_config()
+    fees = ((cfg.get("crypto") or {}).get("fees") or {})
+    result = []
+    for c in sorted(coins.keys()):
+        entry = coins[c]
+        entry["fee_pct"] = float(fees.get(c, 4.0))
+        result.append(entry)
+    return result
+
+
+# Common on-chain address regex per network — used by user & admin sides.
+_NETWORK_REGEX: dict[str, str] = {
+    "TRC20": r"^T[A-Za-z1-9]{33}$",
+    "BEP20": r"^0x[a-fA-F0-9]{40}$",
+    "ERC20": r"^0x[a-fA-F0-9]{40}$",
+    "POLYGON": r"^0x[a-fA-F0-9]{40}$",
+    "BSC": r"^0x[a-fA-F0-9]{40}$",
+    "AVAX": r"^0x[a-fA-F0-9]{40}$",
+    "SOLANA": r"^[1-9A-HJ-NP-Za-km-z]{32,44}$",
+    "SOL": r"^[1-9A-HJ-NP-Za-km-z]{32,44}$",
+    "BTC": r"^(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,62}$",
+    "LTC": r"^([LM3]|ltc1)[a-zA-HJ-NP-Z0-9]{25,62}$",
+    "DOGE": r"^D[5-9A-HJ-NP-U][1-9A-HJ-NP-Za-km-z]{32}$",
+    "XRP": r"^r[1-9A-HJ-NP-Za-km-z]{25,34}$",
+    "TON": r"^[A-Za-z0-9_\-]{48}$",
+}
+
+
 @api.get("/admin/crypto/coins")
 async def admin_crypto_coins(admin=Depends(get_admin)):
-    """Admin: list all distinct coins available on IzichangePay + current per-coin
-    withdrawal fee (%) from platform config. Default = 4% for coins without a
-    configured fee. Used by the admin panel Fee Configuration.
-    """
     coins: dict[str, str] = {}
     if izipay.is_configured():
         try:

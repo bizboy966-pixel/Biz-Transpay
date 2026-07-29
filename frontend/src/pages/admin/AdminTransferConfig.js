@@ -150,13 +150,13 @@ export default function AdminTransferConfig() {
       {/* Crypto */}
       <Section title="Biz-trans → Crypto" subtitle="Cryptomonnaies, réseaux et frais" Icon={Bitcoin} iconBg="bg-orange-50 text-orange-600" enabled={crypto.enabled} saving={savingSection === 'crypto'} onEnabledChange={(v) => setEnabled('crypto', v)} testId="crypto">
         {/* Frais Crypto - one row per coin from IzichangePay API */}
-        <CryptoFeesTable crypto={crypto} updCrypto={updCrypto} />
+        <CryptoFeesTable crypto={crypto} updCrypto={updCrypto} onSaveAll={save} dirty={dirty} savingAll={savingSection === 'save-all'} />
       </Section>
     </div>
   );
 }
 
-function CryptoFeesTable({ crypto, updCrypto }) {
+function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
   const [coins, setCoins] = useState([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
@@ -215,9 +215,19 @@ function CryptoFeesTable({ crypto, updCrypto }) {
           </tbody>
         </table>
       </div>
-      <div className="mt-3 text-[10px] sm:text-[11px] text-slate-500 flex items-start gap-2">
-        <Bitcoin className="w-3 h-3 text-orange-500 mt-0.5 shrink-0" />
-        <span>Les frais sont appliqués automatiquement au moment du retrait. Cliquez sur <b>Enregistrer</b> en haut pour sauvegarder les modifications.</span>
+      <div className="mt-3 flex items-center justify-between gap-3 flex-wrap p-3 bg-orange-50/50 border border-orange-100 rounded-xl">
+        <div className="text-[10px] sm:text-[11px] text-slate-600 flex items-start gap-2 flex-1 min-w-0">
+          <Bitcoin className="w-3 h-3 text-orange-500 mt-0.5 shrink-0" />
+          <span>Les frais sont appliqués <b>automatiquement</b> à toutes les transactions crypto (dépôts, liens, API, retraits). Une modification prend effet immédiatement après l&apos;enregistrement.</span>
+        </div>
+        <button
+          onClick={onSaveAll}
+          disabled={!dirty || savingAll}
+          data-testid="btn-save-crypto-fees"
+          className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2 rounded-full text-[11px] sm:text-xs disabled:opacity-40 disabled:cursor-not-allowed shrink-0 shadow-sm"
+        >
+          <Save className="w-3.5 h-3.5" /> {savingAll ? 'Enregistrement…' : dirty ? 'Enregistrer les frais' : 'Enregistré'}
+        </button>
       </div>
     </div>
   );

@@ -1,0 +1,41 @@
+{
+  "summary": "Iteration 11 (Phase 1) validated end-to-end. Backend: 7/7 pytest passing in /app/backend/tests/test_iter11_crypto_fees.py. Coverage: (1) Zero-welcome-bonus policy — new user register returns balance_xof=0/xaf=0/usdt=0, wallet/summary confirms; (2) super admin bizboy966@gmail.com has zero balances; (3) GET /api/crypto/coins requires auth (401 without token); (4) authenticated /api/crypto/coins returns 16 coins from live IziPay including BTC + USDT, each with networks[] carrying code/asset_code/address_regex/min/max, and fee_pct field (default 4.0); (5) PATCH /api/admin/transfer/config crypto.fees for BTC → re-GET reflects new fee_pct — validated round-trip; (6) biz_to_crypto with FAKECOIN rejected with 400 (validation runs — either 'solde insuffisant' if 0 balance or 'non disponible' if credited, both are our-side validations, no real IziPay payout triggered); (7) USDT 10 @ 4% = 0.4 fee / 9.6 net arithmetic sanity. Frontend: verified via Playwright on the live preview URL — (a) /admin/transfer-config renders [data-testid=btn-save-crypto-fees], initially disabled; editing any fee input enables it; clicking triggers success toast; page reload confirms value persisted (5.5 → still 5.5 after reload); (b) /dashboard/transfer, after enabling crypto section via PATCH and clicking transfer-type-biz_to_crypto, exposes [data-testid=crypto-select] with 16 options (crypto-opt-ADA, BCH, BTC, CAKE, DOGE, DOGS, …); selecting BTC filters networks to [network-BEP20] only (IziPay only has BTC.BEP20 live); selecting USDT expands to 6 networks. Deposit tracker + Transactions inline fee display code paths reviewed in source (Transactions.js reads metadata.amount_gross/fee/amount_net; Deposit.js CryptoDepositTracker updates deposit state on polling and shows Brut/Frais/Net on confirmed) — cannot exercise live without a real IziPay deposit, but the code is in place. Iter10 SSE/notifications regressions still pass (LOGIN OK, dashboard loaded, no console errors from notifications).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Transfer → Crypto", "issues": ["Crypto section is DISABLED by default on the admin config (crypto.enabled=false). Users navigating to Transfer→Crypto see 'Bientôt disponible' until an admin flips the toggle. Not a bug, but potentially confusing for the owner — recommend defaulting crypto.enabled=true on fresh install since Phase 1 is now live-ready."]},
+      {"screen": "Admin transfer config → Crypto fees table", "issues": ["React console warning: 'A component is changing an uncontrolled input to be controlled' on the fee-percent inputs — happens when crypto.fees is initially undefined for a coin then filled. Cosmetic (default value fallback would fix it: value={crypto.fees?.[coin] ?? 4})."]},
+      {"screen": "Transfer → Crypto dropdown", "issues": ["React hydration warning: '<span> cannot be a child of <option>' — caused by Emergent's x-excluded instrumentation span being injected into <option> elements. This is instrumentation-only, not a product bug."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter11_crypto_fees.py",
+    "/app/test_reports/pytest/iter11_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: default crypto.enabled=true on transfer_config seed so end-users can immediately access Transfer→Crypto without an admin action.",
+    "OPTIONAL cosmetic: initialize fee input value with `?? 4` fallback to silence React controlled-input warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 2276 lines (up from 2155). The fee arithmetic (_apply_fee/_crypto_fee_pct) and the reconcile/webhook branches for deposit+link_payment duplicate the same 20-line block twice. Extract into a single helper `finalize_crypto_credit(kind, doc, intent_id, tx_hash)` returning gross/fee/net and updating balance+txn+link_counters — will cut ~80 lines and remove drift risk.",
+    "The balance check at line 390 runs BEFORE the crypto asset/regex validation (line 522+). This means a user with insufficient balance sees 'Solde insuffisant' even for a syntactically invalid coin/address, obscuring the real error. Move asset+address validation ahead of the balance check for better UX.",
+    "biz_to_crypto uses `fee_pct = float(fees_map.get(coin_upper, 4.0)) / 100.0` (division by 100 to make it a ratio), then stores `fee_pct * 100` in metadata. Elsewhere (_apply_fee) `fee_pct` is stored as-is (4.0 not 0.04). This inconsistency (ratio vs percent) is a foot-gun for downstream reporting — pick one convention and document.",
+    "/api/crypto/coins returns `min`/`max` per network but the frontend BizToCryptoForm doesn't use them — user can submit an amount above IziPay's asset limit and only get the vendor rejection later. Consider client-side min/max validation.",
+    "_NETWORK_REGEX is defined AFTER the /crypto/coins endpoint uses it (line 1687 vs 1670). Python hoists top-level names via module scope so this works at runtime, but it's confusing — move regex map above endpoint.",
+    "No cleanup for the fresh test merchants created by /api/auth/register in test runs (iter11 leaves iter11_XXXX@test.com users behind). Consider adding a teardown or scoping via admin/users/cleanup-test-users.",
+    "Persistent from iter10: server.py should be split into routers (auth, transfers, admin, crypto, webhooks, notifications)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter11_crypto_fees.py",
+    "/app/test_reports/iteration_11.json"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% — admin fees save+persist, transfer crypto-select with 16 coins, network filtering all verified"},
+  "test_credentials": "Super admin: bizboy966@gmail.com / Password123!. Test merchants created via /api/auth/register (iter11_<rand>@test.com / Password123!). All new users get zero balances per Phase 1 policy.",
+  "seed_data_creation": "1× fresh merchant iter11_<rand>@test.com created via /api/auth/register during backend test. Admin transfer_config: crypto.enabled toggled to true; BTC fee_pct was flipped and restored during the fee-config round-trip test — final value should match the pre-test state. One extra crypto fee value (first alphabetical coin, likely ADA) was set to 5.5 during frontend testing and NOT restored — main agent may want to reset via /admin/transfer-config UI if the default matters.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter11 suite: /app/backend/tests/test_iter11_crypto_fees.py — reads REACT_APP_BACKEND_URL from env OR /app/frontend/.env fallback. Fresh merchants are created per run and left in DB. The biz_to_crypto validation test uses admin account (which has 0 balance) so it hits 'Solde insuffisant' before asset validation — this still confirms the endpoint runs OUR validation first (no IziPay call), but if the balance-check order gets changed the assertion may need updating. IziPay is live and /api/crypto/coins returns 16 coins including BTC/USDT/DOGE/ADA/LTC/etc — BTC has only BEP20 active on IziPay (not BTC-native), so 'network-BTC' does NOT exist; expect network-BEP20 for BTC.",
+  "rca of the issue": "N/A — all iter11 features work as specified. Only minor cosmetics noted."
+}

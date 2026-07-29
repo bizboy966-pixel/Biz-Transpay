@@ -321,14 +321,28 @@ function BizToBankForm({ config }) {
 
 // ------- BIZ TO CRYPTO -------
 function BizToCryptoForm({ config, onDone, balance }) {
-  const ccfg = config?.crypto || { enabled: false, cryptos: [], networks: [] };
-  const activeCryptos = (ccfg.cryptos || []).filter((c) => c.active);
-  const [cryptoCode, setCryptoCode] = useState(activeCryptos[0]?.code || 'USDT');
-  const crypto = activeCryptos.find((c) => c.code === cryptoCode);
-  const availableNets = (crypto?.networks || []).filter((nc) => (ccfg.networks || []).find((n) => n.code === nc && n.active));
-  const [networkCode, setNetworkCode] = useState(availableNets[0] || '');
-  useEffect(() => { setNetworkCode(availableNets[0] || ''); /* eslint-disable-next-line */ }, [cryptoCode, config]);
-  const network = (ccfg.networks || []).find((n) => n.code === networkCode);
+  const ccfg = config?.crypto || { enabled: false };
+  const [coins, setCoins] = useState([]);
+  const [loadingCoins, setLoadingCoins] = useState(true);
+  useEffect(() => {
+    setLoadingCoins(true);
+    api.get('/crypto/coins')
+      .then(({ data }) => setCoins(data || []))
+      .catch(() => setCoins([]))
+      .finally(() => setLoadingCoins(false));
+  }, []);
+  const [cryptoCode, setCryptoCode] = useState('');
+  useEffect(() => {
+    if (!cryptoCode && coins.length > 0) setCryptoCode(coins[0].coin);
+  }, [coins, cryptoCode]);
+  const crypto = coins.find((c) => c.coin === cryptoCode);
+  const availableNets = crypto?.networks || [];
+  const [networkCode, setNetworkCode] = useState('');
+  useEffect(() => {
+    setNetworkCode(availableNets[0]?.code || '');
+    /* eslint-disable-next-line */
+  }, [cryptoCode, coins]);
+  const network = availableNets.find((n) => n.code === networkCode);
 
   const [fullName, setFullName] = useState(balance?.full_name || '');
   const [email, setEmail] = useState(balance?.email || '');
@@ -351,16 +365,15 @@ function BizToCryptoForm({ config, onDone, balance }) {
   }, [walletAddress, network]);
 
   const amt = parseFloat(amount) || 0;
-  const feePct = crypto?.fee_pct || 0;
-  const feeFixed = crypto?.fee_fixed || 0;
-  const fee = (amt * feePct / 100) + feeFixed;
+  const feePct = crypto?.fee_pct || 4;
+  const fee = amt * feePct / 100;
   const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
   const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
 
   // For crypto, currency = crypto code (e.g. USDT). Balance is looked up on user object.
-  const currency = cryptoCode;
+  const currency = cryptoCode || 'USDT';
   const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
-  const min = crypto?.min || 0, max = crypto?.max || 10 ** 12;
+  const min = network?.min || 0, max = network?.max || 10 ** 12;
   const canSubmit = crypto && network && walletAddress && addressValidation.ok && amt >= min && amt <= max && totalDebit <= bal && fullName && email;
 
   const submit = async () => {
@@ -378,7 +391,8 @@ function BizToCryptoForm({ config, onDone, balance }) {
   };
 
   if (!ccfg.enabled) return <SoonBanner text="Les transferts crypto seront disponibles prochainement." />;
-  if (activeCryptos.length === 0) return <SoonBanner text="Aucune cryptomonnaie activée pour le moment." />;
+  if (loadingCoins) return <div className="bg-white border border-slate-100 rounded-2xl p-8 text-center text-xs sm:text-sm text-slate-500">Chargement des cryptomonnaies…</div>;
+  if (coins.length === 0) return <SoonBanner text="Aucune cryptomonnaie disponible pour le moment." />;
 
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
@@ -397,15 +411,18 @@ function BizToCryptoForm({ config, onDone, balance }) {
       </div>
 
       <Field label="Cryptomonnaie">
-        <div className="grid grid-cols-3 gap-2">
-          {activeCryptos.map((c) => (
-            <button key={c.code} type="button" onClick={() => setCryptoCode(c.code)} data-testid={`crypto-${c.code}`}
-              className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${cryptoCode === c.code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
-              <div className="font-cabinet font-bold text-xs sm:text-sm text-slate-900">{c.code}</div>
-              <div className="text-[9px] sm:text-[10px] text-slate-500 truncate">{c.name}</div>
-            </button>
+        <select
+          data-testid="crypto-select"
+          value={cryptoCode}
+          onChange={(e) => setCryptoCode(e.target.value)}
+          className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm bg-white"
+        >
+          {coins.map((c) => (
+            <option key={c.coin} value={c.coin} data-testid={`crypto-opt-${c.coin}`}>
+              {c.coin} — {c.name} · frais {c.fee_pct}%
+            </option>
           ))}
-        </div>
+        </select>
       </Field>
 
       <Field label="Réseau blockchain">
@@ -413,17 +430,13 @@ function BizToCryptoForm({ config, onDone, balance }) {
           <div className="p-2.5 sm:p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] sm:text-xs text-amber-800">Aucun réseau disponible pour cette cryptomonnaie.</div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {availableNets.map((code) => {
-              const n = (ccfg.networks || []).find((x) => x.code === code);
-              if (!n) return null;
-              return (
-                <button key={code} type="button" onClick={() => setNetworkCode(code)} data-testid={`network-${code}`}
-                  className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${networkCode === code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                  <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900">{code}</div>
-                  <div className="text-[9px] sm:text-[10px] text-slate-500 truncate">{n.name}</div>
-                </button>
-              );
-            })}
+            {availableNets.map((n) => (
+              <button key={n.code} type="button" onClick={() => setNetworkCode(n.code)} data-testid={`network-${n.code}`}
+                className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${networkCode === n.code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
+                <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900">{n.code}</div>
+                <div className="text-[9px] sm:text-[10px] text-slate-500 truncate">{n.name}</div>
+              </button>
+            ))}
           </div>
         )}
       </Field>
@@ -445,7 +458,7 @@ function BizToCryptoForm({ config, onDone, balance }) {
       {amt > 0 && crypto && (
         <div className="p-3 sm:p-4 bg-slate-50 rounded-xl space-y-1 sm:space-y-1.5 text-xs sm:text-sm" data-testid="crypto-summary">
           <Row l="Réseau" v={network?.name || networkCode} />
-          <Row l="Frais" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}${feePct ? ` (${feePct}%${feeFixed ? ` + ${feeFixed}` : ''})` : ''}`} />
+          <Row l="Frais" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feePct}%)`} />
           <Row l="Total débité" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} strong />
           <Row l="Le bénéficiaire reçoit" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} green />
         </div>

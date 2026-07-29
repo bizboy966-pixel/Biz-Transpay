@@ -101,6 +101,13 @@ export default function Transactions() {
                   )}
                 </div>
               )}
+              {(meta.amount_gross != null || meta.fee != null) && (
+                <div className="mt-1 text-[10px] text-slate-500">
+                  {meta.amount_gross != null && <span>Brut: <b className="text-slate-700">{Number(meta.amount_gross).toLocaleString(undefined,{maximumFractionDigits:6})}</b></span>}
+                  {meta.fee != null && <span className="ml-2">Frais {meta.fee_pct ? `(${meta.fee_pct}%)` : ''}: <b className="text-red-600">−{Number(meta.fee).toLocaleString(undefined,{maximumFractionDigits:6})}</b></span>}
+                  {meta.amount_net != null && <span className="ml-2">Net: <b className="text-emerald-600">{Number(meta.amount_net).toLocaleString(undefined,{maximumFractionDigits:6})}</b></span>}
+                </div>
+              )}
             </div>
             <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${statusColor(tx.status)}`}>{tx.status}</span>
             <div className={`text-right font-bold ${tx.direction === 'in' ? 'text-emerald-600' : 'text-slate-900'}`}>
