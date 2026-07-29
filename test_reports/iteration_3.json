@@ -1,0 +1,42 @@
+{
+  "summary": "IzichangePay integration testing (iteration 3). Backend: 10/11 pytest passed. All security checks OK: no sk_live_/whsec_ leak in /app/frontend/src or built bundle, webhook HMAC/replay/dedup all correctly enforced (400 on bad signature/missing header/old timestamp; 200 no-op on unknown merchantReference; 200 duplicate:true on replayed event_id). Crypto Deposit E2E works: POST /api/deposits/crypto returns izichange checkout URL, GET returns doc, signed 'payment_intent.completed' webhook credits balance_usdt exactly +15 USDT, duplicate webhook returns {duplicate:true} without re-crediting. Payment Link crypto pay works E2E (merchant credited +30 USDT, status=paid). Merchant API works E2E: POST /api/v1/payments with sk_ returns hosted URL, invalid key -> 401, webhook completion credits merchant balance +20 USDT and status=paid. Frontend Deposit page tabs (card/crypto) + network buttons (TRC20/BEP20/ERC20) render correctly, no key leak in DOM. PublicLink /pay/{slug} 'Payer en crypto (USDT)' button successfully creates a payment and redirects to real IzichangePay checkout page (screenshot confirms 30 USDT). CRITICAL BUG discovered in POST /api/transfers biz_to_crypto -> /v1/payouts payload schema is wrong.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/transfers (biz_to_crypto)", "issue": "izipay.create_payout sends wrong payload keys. IziPay /v1/payouts rejects with 400: 'property coin should not exist, property address should not exist, property metadata should not exist, assetCode contains invalid characters / must be <=32 chars / must be a string, destinationAddress must be 3-255 chars / must be a string'. Our code sends {coin:'USDT.TRC20', amount, address, merchantReference, metadata}. IziPay expects {assetCode, destinationAddress, amount, merchantReference} (and no 'metadata' at top level, no 'coin'/'address'). ALSO assetCode should NOT contain '.' (e.g. use 'USDT' + separate network field, or 'USDT_TRC20'). Refund logic on failure works correctly (balance restored).", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "transfer_config /crypto", "issue": "The 'crypto' sub-config in DB got corrupted from previous iterations (cryptos: [{code:''}]). AdminTransferConfigReq.crypto is a full-replace dict — any PATCH that sends {crypto:{enabled:true}} without cryptos/networks lists wipes them. Suggest deep-merge or explicit whitelist for enabled/disabled toggle only."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_izipay_integration.py",
+    "/app/test_reports/pytest/izipay_results.xml"
+  ],
+  "action_items": [
+    "FIX izipay.py::create_payout payload keys. Replace {coin, address, metadata} with the schema expected by IzichangePay /v1/payouts: {assetCode, destinationAddress, amount, merchantReference}. Check docs.pay.izichange.com for exact naming (also confirm whether network is a separate field or embedded in assetCode with underscore instead of dot). Without this fix, biz_to_crypto transfers are 100% broken end-to-end (they always refund).",
+    "Consider making PATCH /api/admin/transfer/config perform a deep-merge for the 'crypto' key (or add a dedicated toggle endpoint) so a partial payload cannot wipe cryptos/networks lists.",
+    "Optional: extend create_payment_intent similarly if izichange 'currencyRequested'/'requestedCurrencyType' schema changes are needed — for now payment intents work (deposits/links/merchant API all returned real checkout URLs)."
+  ],
+  "critical_code_review_comments": [
+    "izipay.py::create_payout: payload contract with IzichangePay is broken (CRITICAL) — see backend_issues above.",
+    "AdminTransferConfigReq (server.py ~L1596): sub-dicts (crypto/bank/mobile_money) are replaced wholesale on PATCH. Combined with the toggle UI, this makes accidental data-loss easy.",
+    "server.py biz_to_crypto (L457-531): the debit-first / refund-on-failure pattern is correct, but the transaction remains at status='failed' after a schema-error refund with metadata.error containing the raw IziPay message (leaks vendor-side details to the client via 400 response). Consider generic error to end-users.",
+    "izipay.py verify_webhook is correctly constant-time (hmac.compare_digest) and timestamp-based anti-replay ±5min. Good.",
+    "webhook_events unique index on event_id is created lazily in startup — if a duplicate arrives concurrently before the index exists it could double-process. Very low risk in practice."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_izipay_integration.py"
+  ],
+  "success_rate": {"backend": "91% (10/11 pytest, only the payout schema test failed by design)", "frontend": "100% (deposit tabs + crypto form + public link crypto redirect to IzichangePay checkout all verified)"},
+  "test_credentials": "test@biztranspay.com / Password123! (super_admin, from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created ephemeral TEST_ui_link / TEST_ui_link2 payment links + a few crypto_deposits + link_payments + merchant_payments via the API. test user balance_usdt was credited multiple times through simulated webhook events (final balance ≈ 1570 USDT). Crypto config in DB restored with cryptos/networks lists populated but enabled=false.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Suite lives at /app/backend/tests/test_izipay_integration.py. Uses REACT_APP_BACKEND_URL. Run with `pytest -n 0` (sequential) — parallel execution races on the test user's balance_usdt. WEBHOOK secret is hard-coded in the test file for signing simulated webhooks — matches backend/.env. The TestCryptoTransfer::enable_crypto fixture fully re-seeds the crypto sub-config (cryptos + networks) because previous iterations left it corrupted. After the create_payout schema fix, re-run TestCryptoTransfer::test_biz_to_crypto_creates_pending_tx_and_debits — with a valid TRC20 test wallet it should return 200 with pending tx + payout_id, and the simulated payout.confirmed webhook should mark it completed. IMPORTANT: DO NOT run with a real high-value wallet in live mode.",
+  "rca of the issue": "The create_payout wrapper in /app/backend/izipay.py builds its JSON body from an outdated understanding of IzichangePay /v1/payouts schema. IziPay validates payloads with class-validator (NestJS) — the error message enumerates the exact violations: 'property X should not exist' means the extra field must be removed; 'assetCode contains invalid characters' proves that the correct field name is `assetCode` (not `coin`) and that '.' is not permitted inside it; 'destinationAddress must be ...' confirms the correct field name is `destinationAddress` (not `address`). Reproduction: (1) login as super_admin, (2) PATCH /api/admin/transfer/config to enable crypto (with full cryptos/networks lists), (3) top up balance_usdt via simulated payment_intent.completed webhook, (4) POST /api/transfers with transfer_type='biz_to_crypto', crypto='USDT', network='TRC20', wallet_address=<TRC20>, amount=5 — observe 400 with the schema errors, and observe that our refund logic correctly restored the balance. Mitigation: update izipay.create_payout to send {assetCode, destinationAddress, amount, merchantReference} and remove the top-level `metadata`. Verify against docs.pay.izichange.com/#/v1/payouts."
+}

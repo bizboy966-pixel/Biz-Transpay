@@ -23,11 +23,12 @@ load_dotenv(ROOT_DIR / ".env")
 from models import (  # noqa: E402
     RegisterRequest, LoginRequest, UserPublic, AuthResponse,
     PaymentLinkCreate, PaymentLinkUpdate, PaymentLink,
-    Transaction, TransferRequest, DepositRequest, ExchangeRequest,
+    Transaction, TransferRequest, DepositRequest, CryptoDepositRequest, LinkPayRequest, ExchangeRequest,
     KycSubmit, ApiKeys, WebhookConfig, UpdateProfile, ChangePassword,
     TicketCreate, Ticket, new_id, now_iso,
 )
 from auth import hash_password, verify_password, create_token, get_current_user_id  # noqa: E402
+import izipay  # IzichangePay integration (server-side only)
 
 # ---------- DB ----------
 mongo_url = os.environ["MONGO_URL"]
@@ -483,8 +484,11 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
         recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
         if u.get(field, 0) < total_debit:
             raise HTTPException(400, "Solde insuffisant (frais inclus)")
+
+        # Debit user balance FIRST (pessimistic). We refund if the payout call fails.
         await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
         tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 status="pending",
                                  counterparty=req.wallet_address, description=req.description,
                                  metadata={"transfer_type": "biz_to_crypto",
                                            "crypto": req.crypto.upper(), "network": req.network.upper(),
@@ -492,8 +496,39 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "fee": fee, "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "total_debit": total_debit,
                                            "recipient_name": req.recipient_name})
+
+        # Call IzichangePay to actually send the crypto on-chain
+        if not izipay.is_configured():
+            # Refund and fail
+            await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+            await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
+            raise HTTPException(503, "Passerelle crypto non configurée")
+        coin_code = f"{req.crypto.upper()}.{req.network.upper()}"  # e.g. USDT.TRC20
+        try:
+            payout = await izipay.create_payout(
+                coin=coin_code,
+                amount=f"{recipient_gets:.6f}",
+                address=req.wallet_address.strip(),
+                merchant_reference=tx_out.id,
+                metadata={"user_id": uid, "tx_id": tx_out.id},
+            )
+        except izipay.IziPayError as e:
+            # Refund on gateway rejection
+            await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+            await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed",
+                                                                          "metadata.error": e.message}})
+            raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+        # Persist payout id for webhook correlation
+        payout_id = payout.get("id") or payout.get("payoutId")
+        await db.transactions.update_one({"id": tx_out.id}, {"$set": {
+            "metadata.izipay_payout_id": payout_id,
+            "metadata.izipay_status": payout.get("status", "pending"),
+        }})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
-                "recipient_gets": recipient_gets, "crypto": req.crypto.upper(), "network": req.network.upper()}
+                "recipient_gets": recipient_gets, "crypto": req.crypto.upper(),
+                "network": req.network.upper(), "payout_id": payout_id,
+                "pending": True,
+                "message": "Transfert crypto en cours de traitement — confirmation on-chain sous quelques minutes."}
 
     raise HTTPException(400, "Type de transfert inconnu")
 
@@ -602,6 +637,352 @@ async def stripe_webhook(request: Request):
                             description="Dépôt Stripe",
                             metadata={"stripe_session_id": event.session_id})
     return {"status": "ok"}
+
+
+# ==================== DEPOSIT (Crypto via IzichangePay) ====================
+@api.post("/deposits/crypto")
+async def create_crypto_deposit(req: CryptoDepositRequest, uid: str = Depends(get_current_user_id)):
+    """Create a crypto deposit intent via IzichangePay. Returns hosted paymentUrl.
+    Credits user's USDT balance on webhook confirmation."""
+    if not izipay.is_configured():
+        raise HTTPException(503, "Passerelle crypto non configurée")
+    if req.amount < 1:
+        raise HTTPException(400, "Montant minimum : 1 USDT")
+
+    # Build accepted coins list from admin config if not passed
+    accepted_coins = None
+    if req.accepted_networks:
+        accepted_coins = [f"{req.coin.upper()}.{n.upper()}" for n in req.accepted_networks]
+    else:
+        cfg = await get_transfer_config()
+        usdt_nets = (cfg.get("crypto") or {}).get("usdt_networks") or ["TRC20", "BEP20", "ERC20"]
+        accepted_coins = [f"{req.coin.upper()}.{n.upper()}" for n in usdt_nets]
+
+    intent_id_local = new_id()  # our internal id, used as merchantReference
+    return_url = f"{req.origin_url.rstrip('/')}/dashboard/deposit?status=success&ref={intent_id_local}"
+
+    try:
+        intent = await izipay.create_payment_intent(
+            amount_requested=f"{req.amount:.6f}",
+            currency_requested=req.coin.upper(),      # request USDT directly
+            requested_currency_type="crypto",
+            accepted_coins=accepted_coins,
+            merchant_reference=intent_id_local,
+            return_url=return_url,
+            metadata={"user_id": uid, "kind": "crypto_deposit"},
+        )
+    except izipay.IziPayError as e:
+        raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+
+    await db.crypto_deposits.insert_one({
+        "id": intent_id_local,
+        "user_id": uid,
+        "amount": req.amount,
+        "coin": req.coin.upper(),
+        "credit_currency": "USDT",   # per user preference 4b
+        "status": "initiated",
+        "izipay_intent_id": intent.get("id"),
+        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    })
+    return {
+        "id": intent_id_local,
+        "izipay_intent_id": intent.get("id"),
+        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "amount": req.amount,
+        "coin": req.coin.upper(),
+        "accepted_coins": accepted_coins,
+        "status": "initiated",
+    }
+
+
+@api.get("/deposits/crypto/{deposit_id}")
+async def get_crypto_deposit(deposit_id: str, uid: str = Depends(get_current_user_id)):
+    d = await db.crypto_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
+    if not d:
+        raise HTTPException(404, "Not found")
+    return d
+
+
+# ==================== IZICHANGEPAY WEBHOOK ====================
+@api.post("/webhooks/izipay")
+async def izipay_webhook(request: Request):
+    """Receive signed webhooks from IzichangePay.
+    - Verify HMAC-SHA256 signature (constant-time)
+    - Anti-replay via timestamp in signed body
+    - Deduplicate via unique event_id
+    - Acknowledge fast (200) then dispatch by event type
+    """
+    raw = await request.body()
+    sig = request.headers.get("X-IziPay-Signature") or request.headers.get("x-izipay-signature") or ""
+    try:
+        event = izipay.verify_webhook(raw, sig)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Invalid webhook: {e}")
+
+    ev_type = event.get("event") or event.get("type") or ""
+    eid = izipay.event_id(event)
+
+    # Deduplicate — insert into a unique-indexed collection
+    try:
+        await db.webhook_events.insert_one({
+            "event_id": eid,
+            "type": ev_type,
+            "payload": event,
+            "received_at": now_iso(),
+            "processed": False,
+        })
+    except Exception:
+        # Duplicate delivery — already processed
+        return {"received": True, "duplicate": True}
+
+    data = event.get("data") or {}
+    intent_id = data.get("intentId")
+    payout_id = data.get("payoutId")
+    merchant_ref = data.get("merchantReference")
+
+    try:
+        if ev_type == "payment_intent.completed":
+            # Could be a crypto_deposit OR a payment-link payment
+            if merchant_ref:
+                # 1) Crypto deposit?
+                d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
+                if d:
+                    await db.crypto_deposits.update_one(
+                        {"id": merchant_ref, "status": {"$ne": "confirmed"}},
+                        {"$set": {"status": "confirmed", "updated_at": now_iso(),
+                                  "izipay_intent_id": intent_id}}
+                    )
+                    # Credit USDT balance
+                    await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": d["amount"]}})
+                    await record_tx(d["user_id"], "deposit", "in", d["amount"], "USDT",
+                                    status="completed",
+                                    description="Dépôt crypto IzichangePay",
+                                    metadata={"izipay_intent_id": intent_id, "coin": d["coin"]})
+                # 2) Payment link payment?
+                link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
+                if link_pay:
+                    await db.link_payments.update_one(
+                        {"id": merchant_ref, "status": {"$ne": "paid"}},
+                        {"$set": {"status": "paid", "paid_at": now_iso(),
+                                  "izipay_intent_id": intent_id}}
+                    )
+                    # Credit merchant
+                    link = await db.payment_links.find_one({"id": link_pay["link_id"]})
+                    if link:
+                        await db.users.update_one({"id": link["user_id"]},
+                                                  {"$inc": {"balance_usdt": link_pay["amount"]}})
+                        await record_tx(link["user_id"], "link_payment", "in",
+                                        link_pay["amount"], "USDT", status="completed",
+                                        description=f"Paiement lien: {link.get('title','')}",
+                                        counterparty=link_pay.get("customer_email") or "client",
+                                        metadata={"link_id": link["id"], "izipay_intent_id": intent_id})
+                # 3) Merchant API payment?
+                mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
+                if mp:
+                    await db.merchant_payments.update_one(
+                        {"id": merchant_ref, "status": {"$ne": "paid"}},
+                        {"$set": {"status": "paid", "paid_at": now_iso(),
+                                  "izipay_intent_id": intent_id}}
+                    )
+                    await db.users.update_one({"id": mp["merchant_id"]},
+                                              {"$inc": {"balance_usdt": mp["amount"]}})
+                    await record_tx(mp["merchant_id"], "payment", "in", mp["amount"], "USDT",
+                                    status="completed", description="Paiement API marchand",
+                                    metadata={"merchant_payment_id": mp["id"], "izipay_intent_id": intent_id})
+
+        elif ev_type == "payment_intent.expired":
+            if merchant_ref:
+                await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "expired", "updated_at": now_iso()}})
+                await db.link_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
+                await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
+
+        elif ev_type in ("payout.confirmed", "payout.completed"):
+            # merchant_reference on our side = tx id
+            if merchant_ref:
+                tx = await db.transactions.find_one({"id": merchant_ref})
+                if tx and tx.get("status") != "completed":
+                    tx_hash = data.get("txHash") or data.get("txhash")
+                    await db.transactions.update_one(
+                        {"id": merchant_ref},
+                        {"$set": {"status": "completed",
+                                  "metadata.tx_hash": tx_hash,
+                                  "metadata.izipay_payout_id": payout_id or tx.get("metadata", {}).get("izipay_payout_id"),
+                                  "metadata.izipay_status": "confirmed"}}
+                    )
+
+        elif ev_type in ("payout.failed", "payout.rejected"):
+            if merchant_ref:
+                tx = await db.transactions.find_one({"id": merchant_ref})
+                if tx and tx.get("status") != "failed":
+                    # Refund balance
+                    meta = tx.get("metadata") or {}
+                    total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
+                    currency = tx.get("currency", "USDT")
+                    field = f"balance_{currency.lower()}"
+                    await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: total_debit}})
+                    await db.transactions.update_one({"id": merchant_ref},
+                                                     {"$set": {"status": "failed",
+                                                               "metadata.izipay_status": ev_type.split(".")[1],
+                                                               "metadata.error": data.get("reason", "")}})
+        # settlement.completed etc. — no local action for now (already credited on completion)
+    finally:
+        await db.webhook_events.update_one({"event_id": eid}, {"$set": {"processed": True, "processed_at": now_iso()}})
+
+    return {"received": True}
+
+
+# ==================== PAYMENT LINK — PAY WITH CRYPTO ====================
+@api.post("/links/pay")
+async def start_link_payment(req: LinkPayRequest):
+    """Public endpoint: a customer opening a payment link chooses to pay with crypto.
+    Creates a payment intent on IzichangePay and returns the hosted paymentUrl.
+    """
+    if not izipay.is_configured():
+        raise HTTPException(503, "Passerelle crypto non configurée")
+    link = await db.payment_links.find_one({"slug": req.slug, "active": True})
+    if not link:
+        raise HTTPException(404, "Lien introuvable ou inactif")
+
+    if link.get("amount_type") == "fixed":
+        amount = float(link.get("amount") or 0)
+    else:
+        if not req.amount or req.amount <= 0:
+            raise HTTPException(400, "Montant requis pour ce lien")
+        amount = float(req.amount)
+
+    lp_id = new_id()
+    return_url = f"{req.origin_url.rstrip('/')}/pay/{req.slug}?paid={lp_id}"
+    try:
+        intent = await izipay.create_payment_intent(
+            amount_requested=f"{amount:.6f}",
+            currency_requested=req.coin.upper(),
+            requested_currency_type="crypto",
+            accepted_coins=[f"{req.coin.upper()}.{n.upper()}" for n in (req.accepted_networks or ["TRC20", "BEP20", "ERC20"])],
+            merchant_reference=lp_id,
+            return_url=return_url,
+            metadata={"link_id": link["id"], "kind": "link_payment",
+                      "customer_email": req.customer_email or "",
+                      "customer_name": req.customer_name or ""},
+        )
+    except izipay.IziPayError as e:
+        raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+
+    await db.link_payments.insert_one({
+        "id": lp_id, "link_id": link["id"], "slug": req.slug,
+        "amount": amount, "coin": req.coin.upper(),
+        "customer_email": req.customer_email, "customer_name": req.customer_name,
+        "status": "initiated", "created_at": now_iso(),
+        "izipay_intent_id": intent.get("id"),
+        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+    })
+    return {
+        "id": lp_id,
+        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "amount": amount, "coin": req.coin.upper(),
+    }
+
+
+@api.get("/links/payments/{payment_id}")
+async def get_link_payment_status(payment_id: str):
+    lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
+    if not lp:
+        raise HTTPException(404, "Not found")
+    return {"id": lp["id"], "status": lp.get("status"), "amount": lp.get("amount"), "coin": lp.get("coin")}
+
+
+# ==================== MERCHANT PAYMENT API (Public — auth via secret key) ====================
+async def _authenticate_merchant(request: Request) -> dict:
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(401, "Missing Authorization header")
+    secret = auth.split(" ", 1)[1].strip()
+    if not secret.startswith(("sk_test_", "sk_live_")):
+        raise HTTPException(401, "Invalid API key format")
+    keys = await db.api_keys.find_one({"secret_key": secret})
+    if not keys:
+        raise HTTPException(401, "Invalid API key")
+    user = await db.users.find_one({"id": keys["user_id"]})
+    if not user or user.get("is_banned") or user.get("is_blocked"):
+        raise HTTPException(403, "Merchant account inactive")
+    return user
+
+
+class MerchantPaymentRequest(BaseModel):
+    amount: float
+    coin: str = "USDT"
+    accepted_networks: Optional[list[str]] = None
+    reference: Optional[str] = None       # merchant's own reference
+    customer_email: Optional[str] = None
+    return_url: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+@api.post("/v1/payments")
+async def merchant_create_payment(payload: MerchantPaymentRequest, request: Request):
+    """Merchant API — create a crypto payment using izichangepay hosted checkout.
+    Requires a valid `sk_...` merchant secret key in the Authorization header.
+    The merchant's USDT balance is credited when the webhook confirms the payment.
+    """
+    merchant = await _authenticate_merchant(request)
+    if not izipay.is_configured():
+        raise HTTPException(503, "Passerelle crypto non configurée")
+    if payload.amount < 1:
+        raise HTTPException(400, "Montant minimum : 1 USDT")
+
+    mp_id = new_id()
+    accepted = [f"{payload.coin.upper()}.{n.upper()}" for n in (payload.accepted_networks or ["TRC20", "BEP20", "ERC20"])]
+    try:
+        intent = await izipay.create_payment_intent(
+            amount_requested=f"{payload.amount:.6f}",
+            currency_requested=payload.coin.upper(),
+            requested_currency_type="crypto",
+            accepted_coins=accepted,
+            merchant_reference=mp_id,
+            return_url=payload.return_url,
+            metadata={"merchant_id": merchant["id"], "kind": "merchant_payment",
+                      "merchant_reference": payload.reference or "",
+                      **(payload.metadata or {})},
+        )
+    except izipay.IziPayError as e:
+        raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+
+    await db.merchant_payments.insert_one({
+        "id": mp_id,
+        "merchant_id": merchant["id"],
+        "amount": payload.amount,
+        "coin": payload.coin.upper(),
+        "reference": payload.reference,
+        "customer_email": payload.customer_email,
+        "izipay_intent_id": intent.get("id"),
+        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "status": "initiated",
+        "created_at": now_iso(),
+    })
+    return {
+        "id": mp_id,
+        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "amount": payload.amount,
+        "coin": payload.coin.upper(),
+        "accepted_networks": payload.accepted_networks or ["TRC20", "BEP20", "ERC20"],
+        "status": "initiated",
+    }
+
+
+@api.get("/v1/payments/{payment_id}")
+async def merchant_get_payment(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    mp = await db.merchant_payments.find_one({"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not mp:
+        raise HTTPException(404, "Payment not found")
+    return {"id": mp["id"], "status": mp.get("status"), "amount": mp.get("amount"),
+            "coin": mp.get("coin"), "reference": mp.get("reference"),
+            "payment_url": mp.get("payment_url"), "created_at": mp.get("created_at"),
+            "paid_at": mp.get("paid_at")}
+
 
 
 # ==================== EXCHANGE ====================
@@ -1365,6 +1746,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_db_client():
+    try:
+        await db.webhook_events.create_index("event_id", unique=True)
+    except Exception:
+        pass
 
 
 @app.on_event("shutdown")

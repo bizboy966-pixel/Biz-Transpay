@@ -149,6 +149,25 @@ class DepositRequest(BaseModel):
     origin_url: str
 
 
+# ---------- Deposit (Crypto via IzichangePay) ----------
+class CryptoDepositRequest(BaseModel):
+    amount: float                                # in crypto units (USDT)
+    coin: str                                    # e.g. "USDT"
+    accepted_networks: Optional[list[str]] = None  # e.g. ["TRC20","BEP20"]
+    origin_url: str
+
+
+# ---------- Payment link crypto ----------
+class LinkPayRequest(BaseModel):
+    slug: str
+    amount: Optional[float] = None  # for flexible links
+    coin: str = "USDT"
+    accepted_networks: Optional[list[str]] = None
+    origin_url: str
+    customer_email: Optional[str] = None
+    customer_name: Optional[str] = None
+
+
 # ---------- Exchange ----------
 class ExchangeRequest(BaseModel):
     from_currency: Literal["XOF", "XAF"]
