@@ -1,5 +1,17 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Phase 2 (Gestion utilisateurs admin)
+- ✅ **Menu d'actions par ligne** dans `/admin/users` : Voir profil · Modifier informations · Vérifier KYC · Suspendre/Réactiver · Réinitialiser mot de passe · Supprimer définitivement.
+- ✅ **Modal Modifier informations** : formulaire (full_name, username, email, phone, country) → `PATCH /api/admin/users/{uid}` avec vérifications d'unicité username/email (`409` si doublon).
+- ✅ **Modal Réinitialiser mot de passe** : saisie manuelle ou bouton "Générer" (13 caractères aléatoires). Après validation, le nouveau mot de passe est **copié automatiquement dans le presse-papier** de l'admin.
+- ✅ **Modal Supprimer définitivement** : bandeau rouge d'avertissement, admin doit **taper exactement le username** pour activer le bouton. Cascade sur : users, transactions, payment_links, link_payments, kyc, api_keys, tickets, crypto_deposits, notifications, support_messages, payment_transactions, merchant_payments. Audit log `delete_user_permanent` créé.
+- ✅ **Garde-fous** : DELETE renvoie 403 pour un super_admin cible, 403 pour auto-suppression, 404 utilisateur inconnu. Les items menu Delete + Suspend sont désactivés côté UI pour ces cas.
+- ✅ **Robustesse UI** : l'axios interceptor normalise `err.response.data.detail` — les erreurs 422 (Pydantic array) sont converties en string lisible pour empêcher la crash "Objects are not valid as a React child".
+- ✅ **API contract cleanup** : `POST /admin/users/{uid}/action/{block|unblock}` accepte désormais un body **truly optional** (`Body(default_factory=AdminUserAction)`), plus de 422 si le client oublie `{}`.
+- ✅ **PATCH /admin/users** accepte enfin `username` avec vérification d'unicité (evite le drop silencieux flagué en iter12).
+
+**Testing** : iter12 — 10/10 pytest backend + Playwright 100% (menu, modals, suspend/reactivate, edit, reset-pwd, delete avec confirmation typée). 3 corrections post-review appliquées (interceptor + PATCH username + body optional).
+
 ## Implémenté (2026-02-XX) — Phase 1 (Correctifs de production)
 - ✅ **Bonus de bienvenue supprimé** : nouveaux inscrits ont désormais balance XOF/XAF/USDT = 0. Le portefeuille ne se crédite que sur transaction confirmée (dépôt, paiement lien, crédit admin manuel).
 - ✅ **Tous les comptes de test supprimés** ; seul `bizboy966@gmail.com` (super_admin, balances = 0) subsiste.

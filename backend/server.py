@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -1755,6 +1755,7 @@ class AdminBalanceAction(BaseModel):
 
 class AdminUpdateUser(BaseModel):
     full_name: Optional[str] = None
+    username: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
     country: Optional[str] = None
@@ -1889,7 +1890,8 @@ async def admin_get_user(user_id: str, admin=Depends(get_admin)):
 
 
 @api.post("/admin/users/{user_id}/action/{action}")
-async def admin_user_action(user_id: str, action: str, req: AdminUserAction,
+async def admin_user_action(user_id: str, action: str,
+                            req: AdminUserAction = Body(default_factory=AdminUserAction),
                             admin=Depends(get_admin)):
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
@@ -1957,6 +1959,15 @@ async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(ge
     # only super_admin can change roles
     if "role" in updates and admin.get("role") != "super_admin":
         raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
+    # Enforce uniqueness on username/email if being changed
+    if "username" in updates and updates["username"] != target.get("username"):
+        exists = await db.users.find_one({"username": updates["username"], "id": {"$ne": user_id}}, {"_id": 0, "id": 1})
+        if exists:
+            raise HTTPException(409, "Nom d'utilisateur déjà utilisé")
+    if "email" in updates and updates["email"] != target.get("email"):
+        exists = await db.users.find_one({"email": updates["email"], "id": {"$ne": user_id}}, {"_id": 0, "id": 1})
+        if exists:
+            raise HTTPException(409, "Adresse email déjà utilisée")
     if updates:
         await db.users.update_one({"id": user_id}, {"$set": updates})
     await audit(admin["id"], admin["username"], "update_user",
