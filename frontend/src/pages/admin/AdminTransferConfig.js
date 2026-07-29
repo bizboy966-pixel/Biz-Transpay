@@ -206,7 +206,7 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
                 <td className="px-2 sm:px-3 py-2 text-slate-600">{c.name}</td>
                 <td className="px-2 sm:px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1">
-                    <input type="number" step="0.1" min="0" max="100" value={c.fee_pct} onChange={(e) => setFee(c.coin, e.target.value)} data-testid={`crypto-fee-${c.coin}`} className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
+                    <input type="number" step="0.1" min="0" max="100" value={c.fee_pct ?? 4} onChange={(e) => setFee(c.coin, e.target.value)} data-testid={`crypto-fee-${c.coin}`} className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
                     <span className="text-slate-400 text-[10px]">%</span>
                   </div>
                 </td>

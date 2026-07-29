@@ -326,7 +326,7 @@ DEFAULT_TRANSFER_CONFIG = {
         "banks": [],
     },
     "crypto": {
-        "enabled": False,
+        "enabled": True,
         # Per-coin withdrawal fee (%). Pulled from IzichangePay /v1/assets on demand.
         # If a coin is missing from this map, the default fee is 4%.
         "fees": {
@@ -550,8 +550,8 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             raise HTTPException(400, f"Montant hors des limites autorisées ({min_amt} - {max_amt} {req.crypto})")
         # Per-coin fee from admin config (defaults to 4% if not configured)
         fees_map = (ccfg.get("fees") or {})
-        fee_pct = float(fees_map.get(coin_upper, 4.0)) / 100.0
-        fee = req.amount * fee_pct
+        fee_pct = float(fees_map.get(coin_upper, 4.0))  # stored as percent (e.g. 4.0 = 4%)
+        fee = req.amount * (fee_pct / 100.0)
         total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
         recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
         if u.get(field, 0) < total_debit:
@@ -567,7 +567,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "asset_code": asset_code,
                                            "wallet_address": req.wallet_address,
                                            "amount_gross": req.amount,
-                                           "fee": fee, "fee_pct": fee_pct * 100,
+                                           "fee": fee, "fee_pct": fee_pct,
                                            "amount_net": recipient_gets,
                                            "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "total_debit": total_debit,

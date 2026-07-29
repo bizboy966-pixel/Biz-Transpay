@@ -1,5 +1,19 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Phase 1 (Correctifs de production)
+- ✅ **Bonus de bienvenue supprimé** : nouveaux inscrits ont désormais balance XOF/XAF/USDT = 0. Le portefeuille ne se crédite que sur transaction confirmée (dépôt, paiement lien, crédit admin manuel).
+- ✅ **Tous les comptes de test supprimés** ; seul `bizboy966@gmail.com` (super_admin, balances = 0) subsiste.
+- ✅ **Frais crypto appliqués automatiquement** sur : dépôt direct, paiement via lien, retrait (biz→crypto). Helper `_apply_fee(amount, fee_pct)` centralise le calcul (`fee = amount * pct/100`, `net = amount - fee`). Le portefeuille est crédité du **montant net** (ex : dépôt 10 USDT à 4% → 9.6 USDT crédités).
+- ✅ **Nouveaux champs stockés** sur crypto_deposits, link_payments et transactions : `amount_gross`, `fee`, `fee_pct`, `amount_net`.
+- ✅ **Bouton "Enregistrer les frais"** ajouté directement dans la section Crypto du panneau Admin (`btn-save-crypto-fees`), avec état actif/désactivé sur changement.
+- ✅ **Transfert Crypto — dropdown IziPay-live** : nouveau endpoint `GET /api/crypto/coins` retourne les **16 cryptos disponibles** groupées par ticker avec leurs réseaux compatibles, `fee_pct` (config admin), regex d'adresse et limites min/max. Le formulaire Transfer→Crypto liste tous les coins et filtre dynamiquement les réseaux compatibles à la sélection.
+- ✅ **Validation on-chain** : la validation `biz_to_crypto` accepte tout `coin.network` **actif sur IziPay** (plus limitée à la liste statique de 3 cryptos).
+- ✅ **Historique enrichi** : `/dashboard/transactions` et `/admin/transactions` affichent inline "Brut · Frais (Y%) · Net" pour toute transaction crypto.
+- ✅ **Écran de confirmation dépôt** : montre la ventilation Brut / Frais / Net.
+- ✅ **Crypto activé par défaut** dans la config admin (`crypto.enabled=true`) pour que les nouveaux marchands puissent utiliser Transfer→Crypto sans intervention.
+
+**Testing** : iter11 — 7/7 pytest backend + validation Playwright complète (admin fees save+persist, transfer 16 coins & filtering réseaux). Ceased regressions.
+
 ## Implémenté (2026-02-XX) — Notifications temps réel (SSE)
 - ✅ **Nouveau système de notifications in-app** avec push temps réel via **Server-Sent Events** (`/api/notifications/stream?token=<JWT>`).
 - ✅ **Cloche 🔔 avec badge de compteur** dans le header dashboard + admin (`/app/frontend/src/components/NotificationBell.js`).
