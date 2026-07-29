@@ -16,7 +16,10 @@ export default function Links() {
   const load = () => api.get('/links').then(({ data }) => setLinks(data)).catch(() => {});
   useEffect(() => { load(); }, []);
 
-  const publicUrl = (slug) => `${window.location.origin}/pay/${slug}`;
+  // Public share URL — always uses the OFFICIAL domain in production so the
+  // preview host never leaks into merchant-facing share/copy actions.
+  const OFFICIAL = process.env.REACT_APP_PUBLIC_DOMAIN || window.location.origin;
+  const publicUrl = (slug) => `${OFFICIAL.replace(/\/$/, '')}/pay/${slug}`;
 
   const copy = (slug) => {
     navigator.clipboard.writeText(publicUrl(slug));

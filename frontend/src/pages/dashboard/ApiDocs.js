@@ -3,7 +3,10 @@ import { Link } from 'react-router-dom';
 import { Copy, ArrowLeft, Code2, ShieldCheck, Zap, Webhook, ListChecks, AlertCircle, Book } from 'lucide-react';
 import { toast } from 'sonner';
 
-const API_BASE = (process.env.REACT_APP_BACKEND_URL || '') + '/api';
+// Always show the OFFICIAL public domain in curl/SDK examples — never the
+// preview host. Overridable at build time via REACT_APP_PUBLIC_DOMAIN.
+const OFFICIAL = process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com';
+const API_BASE = OFFICIAL.replace(/\/$/, '') + '/api';
 
 // ------------------------- CODE SNIPPETS -------------------------
 const CREATE_SNIPPETS = {

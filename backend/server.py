@@ -1598,7 +1598,9 @@ def _mask(secret: str) -> str:
 
 
 def _default_webhook_url(request: Request, uid: str) -> str:
-    host = str(request.base_url).rstrip("/")
+    """Public webhook URL exposed to merchants. Always resolves to the
+    OFFICIAL_DOMAIN (biz-transppayy.com) — never leaks the preview host."""
+    host = os.environ.get("OFFICIAL_DOMAIN", "https://biz-transppayy.com").rstrip("/")
     return f"{host}/api/v1/webhooks/{uid}"
 
 

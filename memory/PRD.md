@@ -1,5 +1,13 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Domaine officiel (remplacement Emergent → biz-transppayy.com)
+- ✅ **Nouvelle variable env** `OFFICIAL_DOMAIN=https://biz-transppayy.com` (backend `.env`) + `REACT_APP_PUBLIC_DOMAIN=https://biz-transppayy.com` (frontend `.env`).
+- ✅ **URL webhook par défaut** — `_default_webhook_url(uid)` retourne désormais `https://biz-transppayy.com/api/v1/webhooks/{uid}` (au lieu de la preview URL Emergent). Migration DB automatique pour tous les comptes existants dont le webhook pointait vers emergent.
+- ✅ **Documentation API** (`/dashboard/api/docs`) — tous les snippets cURL, Node.js, Python, PHP, Laravel, JavaScript affichent maintenant `https://biz-transppayy.com/api/v1/...` (vérifié : 6× `biz-transppayy`, 0× `emergentagent` dans le bundle).
+- ✅ **URLs de partage de liens de paiement** (`/dashboard/links`) — utilise `REACT_APP_PUBLIC_DOMAIN` avec fallback `window.location.origin`. Les marchands copient/partagent des URLs `biz-transppayy.com/pay/{slug}`.
+- ✅ **Pas de fuites côté user** — grep exhaustif : aucune référence `emergentagent` dans les pages frontend. Les seules mentions restantes sont des imports Python internes (`emergentintegrations` SDK, non-user-facing) et des tests unitaires backend.
+- ⚠️ **Restent dynamiques (correct)** : `NotificationBell.js` (SSE endpoint interne), `Deposit.js` + `PublicLink.js` (`window.location.origin` envoyé à IziPay comme URL de retour — devient `biz-transppayy.com` en production).
+
 ## Implémenté (2026-02-XX) — Phase 3b (Documentation + Encryption at rest + SDK)
 - ✅ **Chiffrement au repos du webhook secret** via **Fernet** (`SECRETS_ENCRYPTION_KEY` dans `.env`). Chaque merchant a `webhook.secret_encrypted` (ciphertext `gAAAAA...`) en plus de `secret_hash`.
 - ✅ **HMAC signé avec le PLAINTEXT** (déchiffré à la volée) → les merchants peuvent utiliser directement le secret qu'ils ont copié à la génération. Vérifié en round-trip via httpbin.org (signature reçue = signature recalculée avec plaintext = MATCH).
