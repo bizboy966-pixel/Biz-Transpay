@@ -50,7 +50,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Toaster position="top-right" richColors closeButton />
+        <Toaster position="top-right" richColors closeButton offset={72} />
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />

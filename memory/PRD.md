@@ -1,5 +1,17 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Notifications temps réel (SSE)
+- ✅ **Nouveau système de notifications in-app** avec push temps réel via **Server-Sent Events** (`/api/notifications/stream?token=<JWT>`).
+- ✅ **Cloche 🔔 avec badge de compteur** dans le header dashboard + admin (`/app/frontend/src/components/NotificationBell.js`).
+- ✅ **Dropdown avec les 20 dernières notifs** — indicateur "non lu" (point bleu), icônes contextuelles, temps relatif ("à l'instant", "il y a 5 min"…), bouton **"Tout marquer lu"**.
+- ✅ **Toast Sonner** (top-right, offset 72px) pop-up instantané dès réception.
+- ✅ **Événements déclencheurs** : `withdrawal_success` (biz→mobile, biz→bank, biz→crypto on-chain confirmé), `withdrawal_failed` (crypto rejeté par IziPay avec remboursement auto), `kyc_verified`, `kyc_rejected`, `kyc_resubmit_requested`.
+- ✅ **Endpoints** : `GET /notifications`, `GET /notifications/unread-count`, `POST /notifications/{id}/read`, `POST /notifications/read-all`, `GET /notifications/stream` (SSE).
+- ✅ **Sécurité** : isolation user (user A ne peut pas marquer les notifs de user B), JWT via query param pour SSE (`EventSource` ne supporte pas les headers).
+- ✅ **Persistence Mongo** : collection `notifications` (id, user_id, type, title, body, data, read, created_at).
+
+**Testing** : 13/13 tests pytest backend + Playwright frontend (badge, dropdown, SSE, toast temps réel) — iteration 10 validée à 100%.
+
 ## Implémenté (2026-02-XX) — 5 correctifs post-déploiement
 - ✅ **Devise USDT sur liens de paiement** : `PaymentLinkCreate.currency` accepte maintenant `USDT` en plus de `XOF`/`XAF` (`models.py`). Le formulaire de création (`Links.js`) propose "USDT (Crypto)" avec un helper indiquant "Ce lien acceptera uniquement les paiements crypto". Sur `PublicLink.js`, la méthode Crypto est **désactivée** si `link.currency !== 'USDT'` avec le message "Ce lien n'accepte pas les paiements crypto". Le backend `/api/links/pay` refuse (400) toute tentative crypto sur un lien non-USDT.
 - ✅ **Vérification & finalisation automatique des dépôts crypto** : nouveau helper `_reconcile_intent(intent_id)` dans `server.py` qui appelle `izipay.get_payment_intent()` puis finalise dépôts / paiements lien exactement comme le webhook. Appelé en fallback à chaque poll `GET /api/deposits/crypto/{id}` et `GET /api/links/payments/{id}` — garantit finalisation même si le webhook IziPay n'arrive pas.
