@@ -149,82 +149,76 @@ export default function AdminTransferConfig() {
 
       {/* Crypto */}
       <Section title="Biz-trans → Crypto" subtitle="Cryptomonnaies, réseaux et frais" Icon={Bitcoin} iconBg="bg-orange-50 text-orange-600" enabled={crypto.enabled} saving={savingSection === 'crypto'} onEnabledChange={(v) => setEnabled('crypto', v)} testId="crypto">
-        {/* Cryptos */}
-        <div className="mt-1 mb-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 flex items-center gap-1.5"><Bitcoin className="w-3.5 h-3.5" /> Cryptomonnaies</div>
-            <button onClick={addCryptoRow} data-testid="btn-add-crypto" className="text-[11px] sm:text-xs font-semibold text-[#2563EB] inline-flex items-center gap-1.5"><Plus className="w-3.5 h-3.5" /> Ajouter</button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px] sm:text-xs">
-              <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                <tr><th className="text-left px-2 py-2">Code</th><th className="text-left px-2 py-2">Nom</th><th className="text-left px-2 py-2">Réseaux</th><th className="text-right px-2 py-2">Frais %</th><th className="text-right px-2 py-2">Frais fixes</th><th className="text-right px-2 py-2">Min</th><th className="text-right px-2 py-2">Max</th><th className="text-center px-2 py-2">Actif</th><th className="text-center px-2 py-2"></th></tr>
-              </thead>
-              <tbody>
-                {(crypto.cryptos || []).map((c, idx) => (
-                  <tr key={idx} className="border-t border-slate-50" data-testid={`crypto-row-${idx}`}>
-                    <td className="px-2 py-2"><input value={c.code} onChange={(e) => updCryptoRow(idx, 'code', e.target.value.toUpperCase())} className="w-16 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs font-mono" /></td>
-                    <td className="px-2 py-2"><input value={c.name} onChange={(e) => updCryptoRow(idx, 'name', e.target.value)} className="w-28 sm:w-36 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs" /></td>
-                    <td className="px-2 py-2"><input value={(c.networks || []).join(',')} onChange={(e) => updCryptoRow(idx, 'networks', e.target.value.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean))} placeholder="TRC20,BEP20,ERC20" className="w-40 sm:w-52 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs font-mono" /></td>
-                    <td className="px-2 py-2"><input type="number" step="0.1" value={c.fee_pct} onChange={(e) => updCryptoRow(idx, 'fee_pct', parseFloat(e.target.value) || 0)} className="w-14 sm:w-16 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 py-2"><input type="number" step="0.0001" value={c.fee_fixed || 0} onChange={(e) => updCryptoRow(idx, 'fee_fixed', parseFloat(e.target.value) || 0)} className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 py-2"><input type="number" step="0.0001" value={c.min} onChange={(e) => updCryptoRow(idx, 'min', parseFloat(e.target.value) || 0)} className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 py-2"><input type="number" step="0.0001" value={c.max} onChange={(e) => updCryptoRow(idx, 'max', parseFloat(e.target.value) || 0)} className="w-20 sm:w-24 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 py-2 text-center"><input type="checkbox" checked={c.active} onChange={(e) => updCryptoRow(idx, 'active', e.target.checked)} className="w-4 h-4 accent-[#2563EB]" /></td>
-                    <td className="px-2 py-2 text-center"><button onClick={() => removeCryptoRow(idx)} className="text-red-500"><Trash2 className="w-3.5 h-3.5" /></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Networks */}
-        <div className="mt-3 pt-4 border-t border-slate-100">
-          <div className="flex items-center justify-between mb-2">
-            <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 flex items-center gap-1.5"><Network className="w-3.5 h-3.5" /> Réseaux blockchain</div>
-            <button onClick={addNetworkRow} data-testid="btn-add-network" className="text-[11px] sm:text-xs font-semibold text-[#2563EB] inline-flex items-center gap-1.5"><Plus className="w-3.5 h-3.5" /> Ajouter</button>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px] sm:text-xs">
-              <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                <tr><th className="text-left px-2 py-2">Code</th><th className="text-left px-2 py-2">Nom</th><th className="text-left px-2 py-2">Regex adresse</th><th className="text-center px-2 py-2">Actif</th><th className="text-center px-2 py-2"></th></tr>
-              </thead>
-              <tbody>
-                {(crypto.networks || []).map((n, idx) => (
-                  <tr key={idx} className="border-t border-slate-50" data-testid={`network-row-${idx}`}>
-                    <td className="px-2 py-2"><input value={n.code} onChange={(e) => updNetworkRow(idx, 'code', e.target.value.toUpperCase())} className="w-20 sm:w-24 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs font-mono" /></td>
-                    <td className="px-2 py-2"><input value={n.name} onChange={(e) => updNetworkRow(idx, 'name', e.target.value)} className="w-40 sm:w-52 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs" /></td>
-                    <td className="px-2 py-2"><input value={n.address_regex || ''} onChange={(e) => updNetworkRow(idx, 'address_regex', e.target.value)} placeholder="^T[A-Za-z1-9]{33}$" className="w-56 sm:w-72 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs font-mono" /></td>
-                    <td className="px-2 py-2 text-center"><input type="checkbox" checked={n.active} onChange={(e) => updNetworkRow(idx, 'active', e.target.checked)} className="w-4 h-4 accent-[#2563EB]" /></td>
-                    <td className="px-2 py-2 text-center"><button onClick={() => removeNetworkRow(idx)} className="text-red-500"><Trash2 className="w-3.5 h-3.5" /></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* USDT networks quick selector */}
-        <div className="mt-3 pt-4 border-t border-slate-100">
-          <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 mb-2">Réseaux USDT activés (portefeuille utilisateur)</div>
-          <div className="flex flex-wrap gap-2">
-            {(crypto.networks || []).filter((n) => n.active).map((n) => {
-              const active = (crypto.usdt_networks || []).includes(n.code);
-              return (
-                <button key={n.code} onClick={() => {
-                  const cur = new Set(crypto.usdt_networks || []);
-                  if (active) cur.delete(n.code); else cur.add(n.code);
-                  updCrypto({ usdt_networks: Array.from(cur) });
-                }} data-testid={`usdt-net-${n.code}`} className={`px-3 py-1.5 rounded-full border text-[11px] font-semibold ${active ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-500'}`}>
-                  {active ? '✓' : '+'} {n.code}
-                </button>
-              );
-            })}
-          </div>
-          <div className="mt-1.5 text-[10px] text-slate-500">Choisissez les réseaux proposés aux utilisateurs lors des opérations USDT.</div>
-        </div>
+        {/* Frais Crypto - one row per coin from IzichangePay API */}
+        <CryptoFeesTable crypto={crypto} updCrypto={updCrypto} />
       </Section>
+    </div>
+  );
+}
+
+function CryptoFeesTable({ crypto, updCrypto }) {
+  const [coins, setCoins] = useState([]);
+  const [filter, setFilter] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get('/admin/crypto/coins').then(({ data }) => setCoins(data)).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const setFee = (coin, val) => {
+    const fees = { ...(crypto.fees || {}) };
+    fees[coin] = parseFloat(val);
+    if (isNaN(fees[coin])) fees[coin] = 4.0;
+    updCrypto({ fees });
+    // Also reflect in the local coins list for immediate UI feedback
+    setCoins((cs) => cs.map((c) => c.coin === coin ? { ...c, fee_pct: fees[coin] } : c));
+  };
+
+  const filtered = coins.filter((c) => !filter || c.coin.includes(filter.toUpperCase()) || (c.name || '').toLowerCase().includes(filter.toLowerCase()));
+
+  return (
+    <div className="mt-1">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div>
+          <div className="font-cabinet font-bold text-[12px] sm:text-sm text-slate-900 flex items-center gap-1.5"><Bitcoin className="w-3.5 h-3.5" /> Frais de retrait par cryptomonnaie</div>
+          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">Défaut : 4 %. Les cryptos sont chargées automatiquement depuis IzichangePay.</div>
+        </div>
+        <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Rechercher (BTC, USDT…)" className="px-3 py-1.5 border border-slate-200 rounded-lg text-[11px] sm:text-xs w-40 sm:w-48" data-testid="crypto-fee-filter" />
+      </div>
+      {loading && <div className="text-center py-4 text-[11px] sm:text-xs text-slate-500">Chargement des cryptos…</div>}
+      {!loading && filtered.length === 0 && (
+        <div className="text-center py-4 text-[11px] sm:text-xs text-slate-500">Aucune cryptomonnaie disponible.</div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px] sm:text-xs">
+          <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            <tr>
+              <th className="text-left px-2 sm:px-3 py-2">Code</th>
+              <th className="text-left px-2 sm:px-3 py-2">Cryptomonnaie</th>
+              <th className="text-right px-2 sm:px-3 py-2">Frais (%)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((c) => (
+              <tr key={c.coin} className="border-t border-slate-50" data-testid={`crypto-fee-row-${c.coin}`}>
+                <td className="px-2 sm:px-3 py-2 font-mono font-bold text-slate-900">{c.coin}</td>
+                <td className="px-2 sm:px-3 py-2 text-slate-600">{c.name}</td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <div className="inline-flex items-center gap-1">
+                    <input type="number" step="0.1" min="0" max="100" value={c.fee_pct} onChange={(e) => setFee(c.coin, e.target.value)} data-testid={`crypto-fee-${c.coin}`} className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
+                    <span className="text-slate-400 text-[10px]">%</span>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 text-[10px] sm:text-[11px] text-slate-500 flex items-start gap-2">
+        <Bitcoin className="w-3 h-3 text-orange-500 mt-0.5 shrink-0" />
+        <span>Les frais sont appliqués automatiquement au moment du retrait. Cliquez sur <b>Enregistrer</b> en haut pour sauvegarder les modifications.</span>
+      </div>
     </div>
   );
 }

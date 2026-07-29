@@ -289,6 +289,13 @@ DEFAULT_TRANSFER_CONFIG = {
     },
     "crypto": {
         "enabled": False,
+        # Per-coin withdrawal fee (%). Pulled from IzichangePay /v1/assets on demand.
+        # If a coin is missing from this map, the default fee is 4%.
+        "fees": {
+            "USDT": 4.0, "USDC": 4.0, "BTC": 4.0, "ETH": 4.0,
+            "BNB": 4.0, "TRX": 4.0, "LTC": 4.0, "SOL": 4.0, "TON": 4.0,
+            "XRP": 4.0, "DOGE": 4.0, "MATIC": 4.0,
+        },
         "cryptos": [
             {"code": "USDT", "name": "Tether", "active": True,
              "networks": ["TRC20", "BEP20", "ERC20"],
@@ -477,9 +484,11 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             raise HTTPException(400, f"Adresse invalide pour le réseau {network.get('name', req.network)}")
         if req.amount < crypto.get("min", 0) or req.amount > crypto.get("max", 10**12):
             raise HTTPException(400, f"Montant hors des limites autorisées ({crypto['min']} - {crypto['max']} {req.crypto})")
-        fee_pct = float(crypto.get("fee_pct", 0)) / 100.0
-        fee_fixed = float(crypto.get("fee_fixed", 0))
-        fee = (req.amount * fee_pct) + fee_fixed
+        # Per-coin fee from admin config (defaults to 4% if not configured)
+        coin_upper = req.crypto.upper()
+        fees_map = (ccfg.get("fees") or {})
+        fee_pct = float(fees_map.get(coin_upper, 4.0)) / 100.0
+        fee = req.amount * fee_pct
         total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
         recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
         if u.get(field, 0) < total_debit:
@@ -1318,6 +1327,37 @@ async def get_admin(uid: str = Depends(get_current_user_id)) -> dict:
     if u.get("role") not in ("admin", "super_admin"):
         raise HTTPException(403, "Accès administrateur requis")
     return u
+
+
+@api.get("/admin/crypto/coins")
+async def admin_crypto_coins(admin=Depends(get_admin)):
+    """Admin: list all distinct coins available on IzichangePay + current per-coin
+    withdrawal fee (%) from platform config. Default = 4% for coins without a
+    configured fee. Used by the admin panel Fee Configuration.
+    """
+    coins: dict[str, str] = {}
+    if izipay.is_configured():
+        try:
+            assets = await izipay.list_assets()
+            for a in assets:
+                if not a.get("isActive"):
+                    continue
+                # Use assetCode prefix as the canonical ticker (USDT.TRC20 → USDT).
+                # This is consistent across all coins, unlike the "coin" field.
+                code = (a.get("assetCode") or "").split(".")[0]
+                if code and code not in coins:
+                    coins[code] = a.get("coin") or code
+        except Exception:
+            pass
+    cfg = await get_transfer_config()
+    fees = ((cfg.get("crypto") or {}).get("fees") or {})
+    # Always include configured coins even if not returned by API (e.g. temporarily disabled)
+    for c in fees:
+        coins.setdefault(c, c)
+    return [
+        {"coin": c, "name": coins[c], "fee_pct": float(fees.get(c, 4.0))}
+        for c in sorted(coins.keys())
+    ]
 
 
 async def audit(admin_id: str, admin_username: str, action: str,

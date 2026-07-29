@@ -1,0 +1,27 @@
+{
+  "summary": "Iteration 8 — Full-stack validation of the new per-coin crypto withdrawal fee flow. Backend: 8/8 pytest pass covering (1) GET /admin/crypto/coins returns 22 distinct tickers pulled from IzichangePay /v1/assets with ticker extracted from assetCode prefix (USDT.TRC20 -> USDT); (2) auth guard: 401 on missing/bogus token; (3) PATCH /admin/transfer/config with {crypto:{fees:{...}}} deep-merges — configured coins reflect (ETH=3, LTC=2, BTC=5.5, USDT=4), other coins default to 4.0, and crypto.cryptos + crypto.networks lists are preserved; (4) biz_to_crypto correctly uses fees_map[coin_upper] — USDT amount=100 -> fee=4.0/total=104, ETH amount=10 -> fee=0.3/total=10.3 (NOT the legacy 1.5% hardcoded), status=failed, balance restored via refund; (5) toggles crypto.enabled / mobile_money.enabled continue to auto-save. Frontend (/admin/transfer-config with test@biztranspay.com): 'Frais de retrait par cryptomonnaie' section renders 22 rows [data-testid=crypto-fee-row-{COIN}], crypto-fee-filter present, main coins USDT/BTC/ETH/LTC/TRX/BNB all rendered, typing 3.5 in crypto-fee-ETH + clicking btn-save-transfer-config shows Sonner toast 'Configuration enregistrée', persists after reload, filter='USDT' restricts to exactly 1 row. Regression: 22 coins from real IzichangePay API confirmed.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter8_crypto_fees.py",
+    "/app/test_reports/pytest/iter8_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py still 1867 lines — refactor into routers (unchanged recommendation from iter 6/7).",
+    "PATCH /admin/transfer/config deep-merge is only 1 level deep — a partial patch {crypto:{fees:{USDT:4}}} REPLACES the whole crypto.fees dict rather than merging keys. This is fine today because the frontend always sends the full fees object, and unknown coins fall back to 4.0 in fees_map lookup, but if a future caller sends only one key they will silently wipe the others. Consider a real recursive deep-merge or documenting the contract.",
+    "AdminTransferConfig.js CryptoFeesTable calls setFee -> updCrypto({fees}) which spreads the whole crypto object into cfg.crypto. The global save then PATCHes cfg.crypto (full object) so this works, but the section-level auto-save (patchSection) is NOT used for fee edits — user must click Enregistrer. Minor UX inconsistency with mobile_money/bank toggles which auto-save.",
+    "Legacy fields crypto.cryptos[*].fee_pct and fee_fixed are now dead for fee calculation (biz_to_crypto ignores them) but still shipped in the config payload — consider removing them to avoid confusion in future maintenance."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter8_crypto_fees.py",
+    "/app/test_reports/iteration_8.json"
+  ],
+  "success_rate": {"backend": "100% (8/8 pytest)", "frontend": "100% (all crypto-fee UI checks pass)"},
+  "test_credentials": "test@biztranspay.com / Password123! (super_admin)",
+  "seed_data_creation": "Two failed IzichangePay payout attempts (USDT 100 to TRC20 T111..., ETH 10 to 0x000...0). Both correctly refunded. Config restored to crypto.enabled=false after tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter8 suite: /app/backend/tests/test_iter8_crypto_fees.py (needs REACT_APP_BACKEND_URL env, pytest -n 0). ETH fee left at 4.0 in DB, crypto.enabled reset to false. Test file uses regex-valid but vendor-invalid addresses (T+33x1 for TRC20, 0x40x0 for ERC20) so vendor rejects the payout — tx is created with fee metadata then refunded. This design lets us verify the fee wiring without spending real crypto. All 22 IzichangePay coins verified: ADA BCH BNB BTC CAKE DOGE DOGS DOT ETH LTC MATIC SHIB SOL SUI TON TRX TWT USDC USDT XLM XRP XTZ.",
+  "rca of the issue": "N/A — no bug. Verified new-feature spec end-to-end."
+}
