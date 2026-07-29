@@ -1979,6 +1979,59 @@ async def admin_reset_password(user_id: str, req: AdminResetPwd, admin=Depends(g
     return {"ok": True}
 
 
+@api.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, admin=Depends(get_admin)):
+    """Permanently delete a user and ALL related data (transactions, KYC,
+    payment links, link_payments, crypto_deposits, API keys, tickets,
+    notifications, support messages, audit-log entries stay for traceability).
+    This action is IRREVERSIBLE.
+
+    - Only admins can invoke.
+    - super_admin accounts CANNOT be deleted (protective guard).
+    - Admin cannot delete themselves.
+    """
+    target = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "Utilisateur introuvable")
+    if target.get("role") == "super_admin":
+        raise HTTPException(403, "Impossible de supprimer un super_admin")
+    if target["id"] == admin["id"]:
+        raise HTTPException(403, "Vous ne pouvez pas supprimer votre propre compte")
+
+    # Cascade delete across all user-linked collections.
+    r_user = await db.users.delete_one({"id": user_id})
+    r_tx = await db.transactions.delete_many({"user_id": user_id})
+    # Payment links → also delete their child link_payments.
+    links = await db.payment_links.find({"user_id": user_id}, {"_id": 0, "id": 1}).to_list(10000)
+    link_ids = [ln["id"] for ln in links]
+    r_lp = 0
+    if link_ids:
+        rr = await db.link_payments.delete_many({"link_id": {"$in": link_ids}})
+        r_lp = rr.deleted_count
+    r_links = await db.payment_links.delete_many({"user_id": user_id})
+    r_kyc = await db.kyc.delete_many({"user_id": user_id})
+    r_keys = await db.api_keys.delete_many({"user_id": user_id})
+    r_tk = await db.tickets.delete_many({"user_id": user_id})
+    r_dep = await db.crypto_deposits.delete_many({"user_id": user_id})
+    r_notif = await db.notifications.delete_many({"user_id": user_id})
+    r_sm = await db.support_messages.delete_many({"conversation_id": user_id})
+    r_pt = await db.payment_transactions.delete_many({"user_id": user_id})
+    r_mp = await db.merchant_payments.delete_many({"merchant_id": user_id})
+
+    counts = {
+        "user": r_user.deleted_count, "transactions": r_tx.deleted_count,
+        "payment_links": r_links.deleted_count, "link_payments": r_lp,
+        "kyc": r_kyc.deleted_count, "api_keys": r_keys.deleted_count,
+        "tickets": r_tk.deleted_count, "crypto_deposits": r_dep.deleted_count,
+        "notifications": r_notif.deleted_count, "support_messages": r_sm.deleted_count,
+        "payment_transactions": r_pt.deleted_count, "merchant_payments": r_mp.deleted_count,
+    }
+    await audit(admin["id"], admin["username"], "delete_user_permanent",
+                target_user_id=user_id, target_username=target.get("username"),
+                details=counts)
+    return {"ok": True, "deleted": counts}
+
+
 @api.post("/admin/users/cleanup-test-users")
 async def admin_cleanup_test_users(admin=Depends(get_admin)):
     """Danger: super_admin only. Deletes ALL users except super_admins,

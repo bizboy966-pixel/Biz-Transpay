@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 12 (Phase 2 - admin user management + irreversible delete) validated end-to-end. Backend: 10/10 pytest in /app/backend/tests/test_iter12_admin_delete.py — auth guards (401 anon, 403 non-admin), 403 super_admin target, 403 self-delete, 404 non-existent, full cascade delete verified (user/tx/payment_links/link_payments/kyc/api_keys/tickets/crypto_deposits/notifications/support_messages/payment_transactions/merchant_payments — user auto-created 1 payment_link + 1 api_key, all removed, orphan-check via GET /admin/users/{id}→404 and /auth/me with old token→401), audit log 'delete_user_permanent' entry created, PATCH /admin/users updates persisted, reset-password 6-char guard + login-with-new-password OK, block/unblock toggles is_blocked. Frontend: Playwright on live preview — [data-testid=row-actions-{uid}] opens [data-testid=actions-menu-{uid}] with all 6 items visible (act-view, act-edit, act-kyc, act-suspend, act-reset, act-delete). Full happy path: suspend→is_blocked=true→menu shows act-reactivate→unblock→is_blocked=false; edit modal saves full_name; reset-pwd 'Générer' auto-fills 13-char pwd, submit → login with new pwd returns 200; delete modal disables submit when input empty or wrong, enables only on exact username match, DELETE call succeeds toast '(N enregistrements)' and user disappears from the list. Guards: for super_admin/self row (bizboy966), both act-delete and act-suspend are rendered disabled. Cleanup: 8 test merchants created during the run were all deleted via cascade or /admin/users/cleanup-test-users. Only bizboy966 remains.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/admin/users/{uid}/action/{block|unblock}", "issue": "Body Pydantic model (AdminUserAction) is technically all-optional but FastAPI still enforces the body itself as required — calling without JSON body yields 422 'body: Field required'. Front-end originally omitted the body → 422. Fixed on the frontend side by sending {reason:''} but the API contract would be cleaner if the body were fully optional (e.g. `req: AdminUserAction = Body(default=AdminUserAction())`)."},
+      {"endpoint": "PATCH /api/admin/users/{uid}", "issue": "AdminUpdateUser model has no 'username' field — the frontend edit form exposes a username input but it is silently dropped by the backend. Either add username to the model (with uniqueness check) or remove the field from EditUserModal."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "AdminUsers → global toast on API error", "issue": "toast.error(e?.response?.data?.detail) renders the raw value; when detail is a Pydantic 422 array of objects, React throws 'Objects are not valid as a React child' and the whole admin app crashes to the red error overlay until reload. Robust fix: `toast.error(typeof detail === 'string' ? detail : 'Erreur de validation')`.", "selector": "n/a", "priority": "HIGH"},
+      {"component": "EditUserModal", "issue": "Includes an 'username' input field but backend PATCH /admin/users does NOT accept username — change is silently dropped, misleading to admins.", "selector": "[data-testid=edit-username]", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter12_admin_delete.py",
+    "/app/test_reports/pytest/iter12_results.xml"
+  ],
+  "action_items": [
+    "HIGH: harden toast error path in AdminUsers (and ideally the global api interceptor) to stringify object/array error details — otherwise any 422 from any admin endpoint will crash the SPA.",
+    "MEDIUM: either accept 'username' in AdminUpdateUser (with uniqueness check) or remove the username input from EditUserModal so admins aren't surprised.",
+    "LOW: make POST /admin/users/{uid}/action/{action} body truly optional at FastAPI level (Body(default=AdminUserAction())) so old clients don't 422."
+  ],
+  "critical_code_review_comments": [
+    "server.py DELETE cascade should also delete admin_logs rows targeting the user? Kept intentionally 'for traceability' per docstring — good, but note that admin_logs still references target_user_id/target_username of a now-gone user; downstream UIs must handle that.",
+    "Frontend `doAction(action, ok)` used to POST without a body; several admin endpoints will 422. Systemic gap — consider centralising an axios helper that always sends `{}` for POST when no body given.",
+    "AdminUsers.js DeleteUserModal comparison is case-sensitive on username (spec-correct), but username is lowercased in DB so admins who type their casing will already match. If a legacy user's username has mixed case, delete-confirm would fail — worth documenting.",
+    "DeleteUserModal fallback: `expected = user.username || user.email` — this is defensive but the label shown to the admin only ever shows the username. If username is missing, the admin sees '@undefined' in the confirmation text and won't know they must type the email.",
+    "server.py still 2330 lines — split into routers is overdue (persistent from iter10/11)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter12_admin_delete.py",
+    "/app/frontend/src/pages/admin/AdminUsers.js"
+  ],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% — all 6 menu items rendered, suspend/reactivate/edit/reset-password/delete flows all pass; super_admin/self guard disables act-delete and act-suspend as spec'd"},
+  "test_credentials": "Super admin: bizboy966@gmail.com / Password123!. Fresh test merchants iter12ui_<hex>@test.com created with password Password123! and torn down at end of run via cascade delete or /admin/users/cleanup-test-users.",
+  "seed_data_creation": "8 fresh merchants created via /api/auth/register during pytest + Playwright, all cleaned up (cleanup-test-users deleted the 3 leftover ones at run end).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter12 suite: /app/backend/tests/test_iter12_admin_delete.py — creates merchants via /api/auth/register (needs account_type=merchant, RFC-valid email domain e.g. @test.com), asserts token key is 'token' (backend returns access_token=token pydantic alias but Python dict key is 'token'). One frontend change was applied (AdminUsers.js doAction now sends `{reason:''}` to avoid 422). If action endpoints ever change body shape, update accordingly. Toast-crashes-on-object-error is still an open bug — a 422 from any endpoint currently kills the admin SPA.",
+  "rca of the issue": "Root cause of the SPA crash observed during suspend testing: FastAPI enforces a JSON body on POST /admin/users/{uid}/action/{block|unblock} because AdminUserAction is passed as a plain BaseModel param without a Body(default=…) — an omitted body yields HTTP 422 with detail: List[{type,loc,msg,input,url}]. AdminUsers.js's toast.error(e?.response?.data?.detail) passed that array straight to sonner, which handed it to React as a child → 'Objects are not valid as a React child'. Reproduction: click any suspend/reactivate action WITHOUT the frontend fix. Mitigation applied: pass `{reason:''}` body; long-term fix should stringify error details in the axios interceptor OR make the FastAPI body optional."
+}

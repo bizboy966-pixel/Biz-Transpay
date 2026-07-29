@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Search, Filter, Download, MoreHorizontal } from 'lucide-react';
+import {
+  Search, Filter, Download, MoreHorizontal,
+  Eye, Pencil, ShieldCheck, Ban, RefreshCcw, KeyRound, Trash2, X, AlertTriangle,
+} from 'lucide-react';
+import { toast } from 'sonner';
 import api from '@/api';
 
 const flags = { CI: '🇨🇮', SN: '🇸🇳', TG: '🇹🇬', ML: '🇲🇱', BF: '🇧🇫', CM: '🇨🇲', BJ: '🇧🇯' };
@@ -10,6 +14,7 @@ export default function AdminUsers() {
   const [q, setQ] = useState('');
   const [kyc, setKyc] = useState('');
   const [status, setStatus] = useState('');
+  const [me, setMe] = useState(null);
   const nav = useNavigate();
 
   const load = () => {
@@ -18,10 +23,11 @@ export default function AdminUsers() {
     api.get('/admin/users', { params: p }).then(({ data }) => setUsers(data)).catch(() => {});
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [kyc, status]);
+  useEffect(() => { api.get('/auth/me').then(({ data }) => setMe(data)).catch(() => {}); }, []);
 
   const exportCsv = () => {
-    const rows = [['ID', 'Name', 'Username', 'Email', 'Phone', 'Country', 'KYC', 'XOF', 'XAF', 'Status', 'Created']];
-    users.forEach((u) => rows.push([u.id, u.full_name, u.username, u.email, u.phone, u.country, u.kyc_status, u.balance_xof, u.balance_xaf, u.is_banned ? 'banned' : u.is_blocked ? 'blocked' : 'active', u.created_at]));
+    const rows = [['ID', 'Name', 'Username', 'Email', 'Phone', 'Country', 'KYC', 'XOF', 'XAF', 'USDT', 'Status', 'Created']];
+    users.forEach((u) => rows.push([u.id, u.full_name, u.username, u.email, u.phone, u.country, u.kyc_status, u.balance_xof, u.balance_xaf, u.balance_usdt, u.is_banned ? 'banned' : u.is_blocked ? 'blocked' : 'active', u.created_at]));
     const csv = rows.map((r) => r.map((c) => `"${c}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     const a = document.createElement('a'); a.href = url; a.download = 'users.csv'; a.click();
@@ -87,9 +93,7 @@ export default function AdminUsers() {
                   <td className="px-5 py-3 text-right font-semibold text-xs">{(u.balance_xaf || 0).toLocaleString()}</td>
                   <td className="px-5 py-3 text-center"><StatusBadge blocked={u.is_blocked} banned={u.is_banned} /></td>
                   <td className="px-5 py-3 text-center">
-                    <button onClick={() => nav(`/admin/users/${u.id}`)} data-testid={`row-actions-${u.id}`} className="w-8 h-8 rounded-lg border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center">
-                      <MoreHorizontal className="w-4 h-4 text-slate-500" />
-                    </button>
+                    <UserActionsMenu user={u} me={me} onChanged={load} onNav={nav} />
                   </td>
                 </tr>
               ))}
@@ -101,6 +105,231 @@ export default function AdminUsers() {
         </div>
       </div>
     </div>
+  );
+}
+
+// -------------------- Row actions dropdown + modals --------------------
+function UserActionsMenu({ user, me, onChanged, onNav }) {
+  const [open, setOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [pwdOpen, setPwdOpen] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const isSuperAdmin = user.role === 'super_admin';
+  const isSelf = me && me.id === user.id;
+  const suspended = user.is_blocked || user.is_banned;
+
+  const doAction = async (action, ok) => {
+    try {
+      await api.post(`/admin/users/${user.id}/action/${action}`, { reason: '' });
+      toast.success(ok);
+      setOpen(false); onChanged();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
+  };
+
+  const doKycApprove = async () => {
+    try {
+      await api.post(`/admin/kyc/${user.id}/decision`, { approve: true });
+      toast.success('KYC approuvé');
+      setOpen(false); onChanged();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
+  };
+
+  return (
+    <div className="relative inline-block" ref={wrapRef}>
+      <button
+        data-testid={`row-actions-${user.id}`}
+        onClick={() => setOpen((v) => !v)}
+        className="w-8 h-8 rounded-lg border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center"
+      >
+        <MoreHorizontal className="w-4 h-4 text-slate-500" />
+      </button>
+
+      {open && (
+        <div
+          data-testid={`actions-menu-${user.id}`}
+          className="absolute right-0 mt-1 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-30 overflow-hidden"
+        >
+          <MenuItem I={Eye} label="Voir le profil" onClick={() => { setOpen(false); onNav(`/admin/users/${user.id}`); }} testId={`act-view-${user.id}`} />
+          <MenuItem I={Pencil} label="Modifier les informations" onClick={() => { setOpen(false); setEditOpen(true); }} testId={`act-edit-${user.id}`} />
+          <MenuItem I={ShieldCheck} label="Vérifier le KYC" onClick={doKycApprove} disabled={user.kyc_status === 'verified'} testId={`act-kyc-${user.id}`} />
+          {suspended ? (
+            <MenuItem I={RefreshCcw} label="Réactiver le compte" onClick={() => doAction('unblock', 'Compte réactivé')} testId={`act-reactivate-${user.id}`} />
+          ) : (
+            <MenuItem I={Ban} label="Suspendre le compte" onClick={() => doAction('block', 'Compte suspendu')} disabled={isSelf || isSuperAdmin} testId={`act-suspend-${user.id}`} />
+          )}
+          <MenuItem I={KeyRound} label="Réinitialiser le mot de passe" onClick={() => { setOpen(false); setPwdOpen(true); }} testId={`act-reset-${user.id}`} />
+          <div className="border-t border-slate-100" />
+          <MenuItem
+            I={Trash2}
+            label="Supprimer définitivement"
+            onClick={() => { setOpen(false); setConfirmDel(true); }}
+            danger
+            disabled={isSelf || isSuperAdmin}
+            testId={`act-delete-${user.id}`}
+          />
+        </div>
+      )}
+
+      {editOpen && (
+        <EditUserModal user={user} onClose={() => setEditOpen(false)} onSaved={() => { setEditOpen(false); onChanged(); }} />
+      )}
+      {pwdOpen && (
+        <ResetPasswordModal user={user} onClose={() => setPwdOpen(false)} />
+      )}
+      {confirmDel && (
+        <DeleteUserModal user={user} onClose={() => setConfirmDel(false)} onDeleted={() => { setConfirmDel(false); onChanged(); }} />
+      )}
+    </div>
+  );
+}
+
+function MenuItem({ I, label, onClick, disabled, danger, testId }) {
+  return (
+    <button
+      data-testid={testId}
+      onClick={onClick}
+      disabled={disabled}
+      className={`w-full text-left px-3 py-2 text-xs flex items-center gap-2 transition-colors ${danger ? 'text-red-600 hover:bg-red-50' : 'text-slate-700 hover:bg-slate-50'} disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent`}
+    >
+      <I className="w-3.5 h-3.5" strokeWidth={1.75} /> {label}
+    </button>
+  );
+}
+
+function ModalShell({ title, onClose, children, testId }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" data-testid={testId}>
+      <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+          <h3 className="font-cabinet font-bold text-slate-900 text-sm">{title}</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 inline-flex items-center justify-center" data-testid="modal-close">
+            <X className="w-4 h-4 text-slate-500" />
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function EditUserModal({ user, onClose, onSaved }) {
+  const [form, setForm] = useState({
+    full_name: user.full_name || '',
+    username: user.username || '',
+    email: user.email || '',
+    phone: user.phone || '',
+    country: user.country || '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/admin/users/${user.id}`, form);
+      toast.success('Informations mises à jour');
+      onSaved();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <ModalShell title={`Modifier ${user.username}`} onClose={onClose} testId={`edit-user-modal-${user.id}`}>
+      <div className="space-y-3">
+        {[
+          ['full_name', 'Nom complet'],
+          ['username', 'Nom d\'utilisateur'],
+          ['email', 'Email'],
+          ['phone', 'Téléphone'],
+          ['country', 'Pays (code ISO)'],
+        ].map(([k, l]) => (
+          <div key={k}>
+            <label className="text-[11px] font-semibold text-slate-700 mb-1 block">{l}</label>
+            <input value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} data-testid={`edit-${k}`} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#2563EB]" />
+          </div>
+        ))}
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold hover:bg-slate-50" data-testid="edit-cancel">Annuler</button>
+        <button onClick={save} disabled={saving} data-testid="edit-save" className="px-4 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold disabled:opacity-50">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ResetPasswordModal({ user, onClose }) {
+  const [pwd, setPwd] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const genRandom = () => setPwd(Math.random().toString(36).slice(-10) + 'A9!');
+
+  const submit = async () => {
+    if (pwd.length < 6) { toast.error('6 caractères minimum'); return; }
+    setSaving(true);
+    try {
+      await api.post(`/admin/users/${user.id}/reset-password`, { new_password: pwd });
+      await navigator.clipboard.writeText(pwd).catch(() => {});
+      toast.success('Mot de passe réinitialisé (copié dans le presse-papier)');
+      onClose();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <ModalShell title={`Réinitialiser mot de passe · ${user.username}`} onClose={onClose} testId={`reset-pwd-modal-${user.id}`}>
+      <p className="text-xs text-slate-500 mb-3">Le mot de passe sera copié dans votre presse-papier après validation. Communiquez-le à l&apos;utilisateur par un canal sûr.</p>
+      <div className="flex gap-2">
+        <input value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="Nouveau mot de passe (min. 6 caractères)" data-testid="reset-pwd-input" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#2563EB]" />
+        <button onClick={genRandom} data-testid="reset-pwd-gen" className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-semibold hover:bg-slate-50">Générer</button>
+      </div>
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold hover:bg-slate-50" data-testid="reset-pwd-cancel">Annuler</button>
+        <button onClick={submit} disabled={saving} data-testid="reset-pwd-submit" className="px-4 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold disabled:opacity-50">{saving ? 'Réinitialisation…' : 'Réinitialiser'}</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function DeleteUserModal({ user, onClose, onDeleted }) {
+  const [confirm, setConfirm] = useState('');
+  const [saving, setSaving] = useState(false);
+  const expected = user.username || user.email;
+
+  const doDelete = async () => {
+    if (confirm !== expected) { toast.error('Confirmation incorrecte'); return; }
+    setSaving(true);
+    try {
+      const { data } = await api.delete(`/admin/users/${user.id}`);
+      toast.success(`Utilisateur supprimé (${Object.values(data.deleted || {}).reduce((a, b) => a + b, 0)} enregistrements)`);
+      onDeleted();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <ModalShell title="Supprimer définitivement" onClose={onClose} testId={`delete-user-modal-${user.id}`}>
+      <div className="rounded-xl bg-red-50 border border-red-100 p-3 flex items-start gap-2 mb-3">
+        <AlertTriangle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+        <div className="text-[11px] text-red-800 leading-relaxed">
+          <b>Cette action est irréversible.</b> Le compte, ses transactions, son KYC, ses liens de paiement, clés API, tickets et notifications seront <b>définitivement supprimés</b>.
+        </div>
+      </div>
+      <p className="text-xs text-slate-700">Vous êtes sur le point de supprimer <b>{user.full_name}</b> (<span className="font-mono">@{user.username}</span>).</p>
+      <p className="text-xs text-slate-500 mt-3 mb-1">Pour confirmer, tapez <span className="font-mono font-bold text-red-600">{expected}</span> ci-dessous :</p>
+      <input value={confirm} onChange={(e) => setConfirm(e.target.value)} data-testid="delete-confirm-input" className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-red-500" placeholder={expected} />
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold hover:bg-slate-50" data-testid="delete-cancel">Annuler</button>
+        <button onClick={doDelete} disabled={saving || confirm !== expected} data-testid="delete-confirm-submit" className="px-4 py-2 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed">{saving ? 'Suppression…' : 'Supprimer définitivement'}</button>
+      </div>
+    </ModalShell>
   );
 }
 
