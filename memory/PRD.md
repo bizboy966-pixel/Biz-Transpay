@@ -26,6 +26,14 @@ Le design doit dépasser Stripe/Flutterwave/Paystack/CinetPay/Moneroo/Lemon Sque
 - API keys (public/secret) + webhook config (marchands uniquement).
 - i18n FR + EN.
 
+## Implémenté (2026-07-29d) — Frais crypto par coin
+- ✅ **Nouvelle config** : `crypto.fees` (map coin→%) dans le transfer_config. Défauts : USDT/BTC/ETH/BNB/TRX/LTC/SOL/TON/XRP/DOGE/MATIC/USDC = 4%.
+- ✅ **Section "Frais Crypto"** dans `/admin/transfer-config` : une ligne par cryptomonnaie tirée automatiquement d'IzichangePay `/v1/assets` (22 coins actifs — ADA/BCH/BNB/BTC/CAKE/DOGE/DOT/ETH/LTC/MATIC/SHIB/SOL/SUI/TON/TRX/TWT/USDC/USDT/XLM/XRP/XTZ). Input % éditable par coin, filtre de recherche, sauvegarde par bouton global.
+- ✅ **Nouvel endpoint admin** : `GET /api/admin/crypto/coins` — fusion API + config, retourne `[{coin, name, fee_pct}]` trié.
+- ✅ **Application automatique** : `POST /api/transfers biz_to_crypto` lit maintenant `crypto.fees[coin]` (défaut 4%), remplace l'ancien `crypto.cryptos[*].fee_pct` hardcodé. Pas besoin de code pour ajouter un nouveau coin — il apparaît dès qu'IzichangePay l'active côté API.
+
+**Testing** : 8/8 pytest backend, 100 % frontend (iteration 8). Aucun bug, aucune régression.
+
 ## Correctifs (2026-07-29c) — 3 bugs production
 - ✅ **Bug A** — Page blanche après clic "Payer maintenant" sur `/dashboard/deposit` corrigé : suppression du hack `window.__crypto_deposit` (global fragile qui cassait en build production), state React proprement lifté via `useState(deposit)` dans le composant parent.
 - ✅ **Bug B** — Page blanche après login depuis `/pay/{slug}` corrigé : validé E2E sur preview (public link → logout → /login → /dashboard OK avec dashboard-home rendu).
