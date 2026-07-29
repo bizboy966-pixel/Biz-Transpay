@@ -1,5 +1,26 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Phase 3b (Documentation + Encryption at rest + SDK)
+- ✅ **Chiffrement au repos du webhook secret** via **Fernet** (`SECRETS_ENCRYPTION_KEY` dans `.env`). Chaque merchant a `webhook.secret_encrypted` (ciphertext `gAAAAA...`) en plus de `secret_hash`.
+- ✅ **HMAC signé avec le PLAINTEXT** (déchiffré à la volée) → les merchants peuvent utiliser directement le secret qu'ils ont copié à la génération. Vérifié en round-trip via httpbin.org (signature reçue = signature recalculée avec plaintext = MATCH).
+- ✅ **Fallback legacy** : si un compte n'a pas de `secret_encrypted` (créés avant Phase 3b), la signature retombe sur le hash — pas de crash, pas d'interruption de service.
+- ✅ **Rotation** : `POST /api-keys/webhook/regenerate-secret` met à jour hash + ciphertext simultanément.
+- ✅ **Page Documentation API `/dashboard/api/docs`** — 7 sections avec nav sticky : Authentification · Créer un paiement · Récupérer · Lister · Webhooks · Codes d'erreur · SDK.
+- ✅ **Snippets multi-langages** : LangTabs interactif avec **6 langages** (cURL · Node.js · JavaScript · Python · PHP · Laravel) pour créer un paiement, **4 langages** (Node/Python/PHP/Laravel) pour vérifier la signature.
+- ✅ **Copy-paste** : chaque `CodeBlock` a un bouton Copy visible au hover + toast Sonner "Code copié".
+- ✅ **Exemples pédagogiques** : payload webhook complet, tableau des codes HTTP (200/400/401/403/404/429/500/503), tableau des en-têtes signés, format des erreurs JSON.
+- ✅ **Section SDK** avec placeholders pour `@biztranspay/sdk` (npm), `biztranspay/php-sdk` (composer), `biztranspay` (pip) — publication réelle sur les registries reportée à Phase 4.
+- ✅ **Node.js sample MAJ** dans `ApiKeys.js` : `YOUR_WEBHOOK_SECRET // whsec_... plaintext` (plus de `_HASH` suffix).
+
+**Testing** : iter14 — **14/14 pytest backend** + Playwright frontend 100%. HMAC round-trip vérifié : merchant peut vraiment vérifier la signature avec le plaintext copié depuis le reveal one-time.
+
+**Suggestions du review agent** (non-bloquantes, backlog) :
+- Bannière warning dans `/dashboard/api/deliveries` si `secret_encrypted` manque (comptes legacy)
+- Key versioning `v1$gAAAA...` pour permettre rotation de la clé de chiffrement sans casser l'existant
+- Prism.js/Shiki pour coloration syntaxique des CodeBlock
+- Copy button toujours visible sur mobile (`< md` breakpoint)
+- Publication réelle des SDK sur npm/composer/pypi
+
 ## Implémenté (2026-02-XX) — Phase 3a (Module API pro : clés + webhooks HMAC + logs)
 - ✅ **Clés API test/live séparées** — `sk_test_` et `sk_live_` avec préfixes distincts. Nouveau schéma `api_keys.keys.{env}` (public_key, secret_hint, secret_hash SHA-256, created_at, last_used_at). Endpoint `POST /api/api-keys/regenerate` accepte `{env: 'test'|'live'}` (body optionnel, défaut = test).
 - ✅ **Reveal one-time** — plaintext secret retourné **une seule fois** à la génération, jamais stocké en clair. Modal frontend `OneTimeSecretModal` avec bloc noir + acknowledge checkbox obligatoire avant fermeture.
