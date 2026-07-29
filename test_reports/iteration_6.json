@@ -1,0 +1,51 @@
+{
+  "summary": "Iteration 6: validated the 3 production bug fixes (Deposit whitepage, PublicLink refund optional, PublicLink+Login blank). BUG A (dashboard deposit) and BUG B (public-link -> login -> dashboard) fully pass end-to-end on the preview URL. BUG C is only PARTIALLY fixed: the UI is corrected (button visible + not disabled with empty refund_address, label 'optionnel'), but clicking with an empty refund_address still fails silently because the backend fallback string 'manual-refund' is rejected by IzichangePay ('Adresse de remboursement invalide.' -> HTTP 400). With a valid TRC20 address the flow reaches pay-tracker with QR + address, so BUG C's original 'button invisible' report IS fixed, but the empty-refund path is not truly functional. Backend validation for /api/deposits/crypto with empty refund_address correctly returns 422 (strict, per spec). 6/8 backend pytest pass; the 2 failing tests are the ones asserting empty refund_address should return 200 on /api/links/pay.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/links/pay",
+        "issue": "With refund_address='' (or missing), backend returns 400 'Adresse de remboursement invalide.' instead of 200. Root cause: server.py::start_link_payment substitutes an empty refund_address with the literal string 'manual-refund' before calling izipay.create_direct_intent, but IzichangePay validates that field as a crypto address and rejects any non-address string. Effect: production users leaving the refund field empty (which the UI now allows) hit the same failure -> silent front-end failure (no toast is rendered). Fix options: (a) require refund_address on the UI for crypto (revert button to disabled), (b) use a real system-owned TRC20 address as fallback, or (c) reuse the merchant's own wallet address as fallback.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "PublicLink pay with empty refund_address",
+        "issue": "Clicking 'Payer maintenant' with an empty refund_address makes the POST fail with 400 but no toast/error is shown to the user. pay-tracker never appears. UX is a silent freeze even though the button is enabled.",
+        "affected_selectors": ["[data-testid=btn-pay-submit]", "[data-testid=pay-tracker]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter6_bugs.py",
+    "/app/test_reports/pytest/iter6_results.xml"
+  ],
+  "action_items": [
+    "Fix backend fallback in server.py::start_link_payment: 'manual-refund' is rejected by IzichangePay. Substitute a valid TRC20 fallback address (env var IZIPAY_FALLBACK_REFUND_ADDRESS) OR reuse the merchant's crypto_config address OR mark refund_address required on the UI (client-side) with a helpful message. Preferred: env var fallback + surface izipay error via toast in PublicLink CryptoLinkForm's catch block so users are not left staring at a still page.",
+    "In /app/frontend/src/pages/PublicLink.js CryptoLinkForm submit(): the catch branch should display an error toast (window.dispatchEvent CustomEvent 'toast' or setError state) when POST /api/links/pay fails, so users see the 'Adresse de remboursement invalide' response instead of a no-op click."
+  ],
+  "critical_code_review_comments": [
+    "server.py:908 — fallback string 'manual-refund' is not a valid crypto address; will always trigger vendor 400. Either drop the optional feature (require refund_address again) or use a valid on-chain address.",
+    "PublicLink.js CryptoLinkForm.submit — no user feedback on POST failure; add error toast/inline error to prevent silent failures.",
+    "server.py is 1832 lines — should be split into routers (crypto/deposits/links/webhooks/merchant).",
+    "models.py — LinkPayRequest.refund_address is Optional[str]='' (spec-compliant), CryptoDepositRequest.refund_address stays Field(..., min_length=1) (spec-compliant). Both verified via pytest."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter6_bugs.py"
+  ],
+  "success_rate": {
+    "backend": "75% (6/8 pytest, 2 failures are the empty-refund /api/links/pay cases)",
+    "frontend": "BUG A 100%, BUG B 100%, BUG C UI 100% but BUG C empty-refund end-to-end 0%"
+  },
+  "test_credentials": "test@biztranspay.com / Password123! ; test slug NcjVJwMQNLY ; refund address TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+  "seed_data_creation": "Several real IzichangePay direct intents were created (billable in vendor sandbox): 1 x /api/deposits/crypto (2 USDT via dashboard), 1 x /api/links/pay (25 XOF slug NcjVJwMQNLY with valid refund).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Suite: /app/backend/tests/test_iter6_bugs.py (needs REACT_APP_BACKEND_URL env from /app/frontend/.env, pytest -n 0). Two known failures are the intended check that empty refund_address on /api/links/pay should return 200: they will pass once the 'manual-refund' fallback is replaced with a valid TRC20 address (or feature reverted). Do NOT delete existing test_inapp_crypto_flow.py or test_izipay_integration.py without main agent confirmation. Preview URL: https://secure-pay-preview.preview.emergentagent.com.",
+  "rca of the issue": "BUG C backend fix is incomplete: models.py correctly relaxes LinkPayRequest.refund_address to Optional[str]='' and server.py maps empty -> 'manual-refund'. However IzichangePay validates refund_address as an on-chain address and returns an error containing 'address', which server.py maps to 400 'Adresse de remboursement invalide.'. The customer-side UI has removed refund_address from canSubmit, so users can now submit with it empty and hit this failure. Reproduction: curl -s -X POST $API/api/links/pay -H 'Content-Type: application/json' -d '{\"slug\":\"NcjVJwMQNLY\",\"asset_code\":\"USDT.TRC20\",\"full_name\":\"X\",\"email\":\"x@x.com\",\"refund_address\":\"\",\"origin_url\":\"https://x\"}' -> 400. Mitigation: replace fallback with a valid TRC20 address (env-driven), or use link.owner_id merchant's wallet, or restore refund_address as required in the customer UI."
+}

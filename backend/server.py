@@ -902,12 +902,17 @@ async def start_link_payment(req: LinkPayRequest):
     first = parts[0] if parts else "Client"
     last = parts[1] if len(parts) > 1 else first
 
+    # For customer-side link payments, refund_address may be empty. Provide a
+    # reasonable placeholder so IzichangePay accepts the intent — manual refund
+    # handling via support in edge cases.
+    refund_addr = (req.refund_address or "").strip() or "manual-refund"
+
     try:
         intent = await izipay.create_direct_intent(
             requested_coin=req.asset_code,
             amount=f"{amount:.6f}",
             first_name=first, last_name=last, email=req.email,
-            refund_address=req.refund_address.strip(),
+            refund_address=refund_addr,
             merchant_reference=lp_id,
             metadata={"link_id": link["id"], "kind": "link_payment"},
         )

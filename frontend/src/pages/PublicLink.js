@@ -113,7 +113,7 @@ function CryptoLinkForm({ link, onSuccess }) {
   const amt = parseFloat(amount) || 0;
   const belowMin = isFree && amt < (link.min_amount || 0);
   const aboveMax = isFree && amt > (link.max_amount || 0);
-  const canSubmit = fullName && email && refundAddress && amt > 0 && !belowMin && !aboveMax && !loading;
+  const canSubmit = fullName && email && amt > 0 && !belowMin && !aboveMax && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -123,7 +123,10 @@ function CryptoLinkForm({ link, onSuccess }) {
       const { data } = await api.post('/links/pay', {
         slug: link.slug, amount: isFree ? amt : undefined,
         asset_code: assetCode, full_name: fullName, email,
-        refund_address: refundAddress.trim(), origin_url: window.location.origin,
+        // If the customer doesn't have a wallet to refund to, we fallback to a placeholder
+        // that IzichangePay still accepts — real refunds are handled manually via support.
+        refund_address: refundAddress.trim() || 'refund-support@biztranspay',
+        origin_url: window.location.origin,
       });
       onSuccess(data);
     } catch (err) {
@@ -175,11 +178,12 @@ function CryptoLinkForm({ link, onSuccess }) {
         </Field>
       )}
 
-      <Field label={`Adresse ${asset?.coin || ''} de remboursement`}>
-        <input data-testid="pay-refund-address" value={refundAddress} onChange={(e) => setRefundAddress(e.target.value)} placeholder="Votre wallet en cas de refund" required className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none font-mono text-[10px] sm:text-xs" />
+      <Field label={`Adresse ${asset?.coin || ''} de remboursement (optionnel)`}>
+        <input data-testid="pay-refund-address" value={refundAddress} onChange={(e) => setRefundAddress(e.target.value)} placeholder="Uniquement en cas de refund — laissez vide si vous n'en avez pas" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none font-mono text-[10px] sm:text-xs" />
+        <div className="mt-1 text-[9px] text-slate-500">Sauté par défaut si vide — support manuel pour tout remboursement.</div>
       </Field>
 
-      <button type="submit" disabled={!canSubmit} data-testid="btn-pay-submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl disabled:opacity-50 text-xs sm:text-sm inline-flex items-center justify-center gap-2">
+      <button type="submit" disabled={!canSubmit} data-testid="btn-pay-submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl disabled:bg-slate-300 disabled:text-slate-500 text-xs sm:text-sm inline-flex items-center justify-center gap-2">
         {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Génération…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
       </button>
     </form>

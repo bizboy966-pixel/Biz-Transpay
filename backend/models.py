@@ -166,7 +166,7 @@ class LinkPayRequest(BaseModel):
     asset_code: str = Field("USDT.TRC20", min_length=1)
     full_name: str = Field(..., min_length=1)
     email: EmailStr
-    refund_address: str = Field(..., min_length=1)
+    refund_address: Optional[str] = ""   # optional for customer-side payments
     origin_url: str
 
 

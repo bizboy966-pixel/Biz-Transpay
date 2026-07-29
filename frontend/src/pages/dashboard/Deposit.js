@@ -10,6 +10,7 @@ export default function Deposit() {
   const nav = useNavigate();
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState(null);
+  const [deposit, setDeposit] = useState(null);
 
   return (
     <div className="max-w-2xl mx-auto space-y-4 sm:space-y-5" data-testid="page-deposit">
@@ -31,10 +32,15 @@ export default function Deposit() {
       {step === 1 && (
         <MethodPicker onPick={(m) => { setMethod(m); setStep(2); }} />
       )}
-      {step === 2 && method === 'crypto' && <CryptoDepositForm onSuccess={() => setStep(3)} setDeposit={(d) => (window.__crypto_deposit = d)} />}
+      {step === 2 && method === 'crypto' && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
       {step === 2 && method === 'card' && <CardDepositForm />}
       {step === 2 && method === 'mobile_money' && <SoonMobileMoney />}
-      {step === 3 && <CryptoDepositTracker deposit={window.__crypto_deposit} />}
+      {step === 3 && deposit && <CryptoDepositTracker deposit={deposit} />}
+      {step === 3 && !deposit && (
+        <div className="bg-white border border-slate-100 rounded-2xl p-8 text-center text-sm text-slate-500">
+          Session perdue. <button onClick={() => setStep(1)} className="text-[#2563EB] font-semibold underline">Recommencer</button>
+        </div>
+      )}
 
       <div className="text-[11px] sm:text-xs text-slate-500 flex items-start gap-2">
         <ShieldCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-emerald-500 mt-0.5 shrink-0" />
@@ -67,7 +73,7 @@ function MethodPicker({ onPick }) {
   );
 }
 
-function CryptoDepositForm({ onSuccess, setDeposit }) {
+function CryptoDepositForm({ onSuccess }) {
   const { user } = useAuth();
   const [assets, setAssets] = useState([]);
   const [fullName, setFullName] = useState(user?.full_name || '');
@@ -98,8 +104,7 @@ function CryptoDepositForm({ onSuccess, setDeposit }) {
         amount: amt, asset_code: assetCode, full_name: fullName, email,
         refund_address: refundAddress.trim(), origin_url: window.location.origin,
       });
-      setDeposit(data);
-      onSuccess();
+      onSuccess(data);
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erreur lors de la création du dépôt');
     } finally {
