@@ -149,23 +149,25 @@ class DepositRequest(BaseModel):
     origin_url: str
 
 
-# ---------- Deposit (Crypto via IzichangePay) ----------
+# ---------- Deposit (Crypto via IzichangePay — direct in-app flow) ----------
 class CryptoDepositRequest(BaseModel):
-    amount: float                                # in crypto units (USDT)
-    coin: str                                    # e.g. "USDT"
-    accepted_networks: Optional[list[str]] = None  # e.g. ["TRC20","BEP20"]
+    amount: float                                # in crypto units (e.g. USDT)
+    asset_code: str                              # e.g. "USDT.TRC20" from /crypto/assets
+    full_name: str                               # required for KYC/refund
+    email: EmailStr
+    refund_address: str                          # required by izichangepay
     origin_url: str
 
 
-# ---------- Payment link crypto ----------
+# ---------- Payment link crypto (customer-side) ----------
 class LinkPayRequest(BaseModel):
     slug: str
-    amount: Optional[float] = None  # for flexible links
-    coin: str = "USDT"
-    accepted_networks: Optional[list[str]] = None
+    amount: Optional[float] = None  # required for flexible links
+    asset_code: str = "USDT.TRC20"
+    full_name: str
+    email: EmailStr
+    refund_address: str
     origin_url: str
-    customer_email: Optional[str] = None
-    customer_name: Optional[str] = None
 
 
 # ---------- Exchange ----------

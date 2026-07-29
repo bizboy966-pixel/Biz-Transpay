@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 5: IN-APP crypto flow (direct intent, no hosted redirect) fully validated. 16/17 backend pytest pass and both frontends (/dashboard/deposit, /pay/<slug>) reach step-3 tracker with real Tron deposit address, QR, amount and status polling. Real IzichangePay /v1/payment-intents/direct calls return valid TRC20 addresses (e.g. TUEQs6L3gUx6S7wNP4N4WZ6zG77Dj7D2gQ, TU25df5ZErQma8sJb81qUbEgxCMPirXxQ4). Webhook payment_intent.completed correctly credits balance_usdt and transitions status to confirmed/paid for both /api/deposits/crypto and /api/links/pay. Webhook security (bad sig / missing header / old timestamp / duplicate) all pass. GET /api/crypto/assets is public, returns 47+ assets, contains USDT.TRC20 with memo_required=false, and NEVER exposes sk_live_ / whsec_ keys. Frontend bundle grep + fetched main.*.js from the served URL also contain no secrets. Merchant API /api/v1/payments (hosted flow) still works and rejects invalid bearer with 401.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/deposits/crypto",
+        "issue": "Empty refund_address (\"\") is ACCEPTED and returns 200 with a valid deposit address. Spec requires 422 (Pydantic validation). Root cause: models.py CryptoDepositRequest.refund_address has no min_length constraint AND server.py only does .strip() without a non-empty check. Same issue for LinkPayRequest.refund_address and probably full_name. Fix: use Field(..., min_length=1) or add explicit `if not req.refund_address.strip(): raise HTTPException(422, ...)`. Vendor unexpectedly does not reject empty refundAddress."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_inapp_crypto_flow.py",
+    "/app/test_reports/pytest/iter5_results.xml"
+  ],
+  "action_items": [
+    "Add min_length=1 validation on CryptoDepositRequest.refund_address, LinkPayRequest.refund_address (and ideally full_name) so empty strings return 422 as specified. This is a real security/UX gap: an empty refund address means IzichangePay has no way to refund the customer in an edge case."
+  ],
+  "critical_code_review_comments": [
+    "models.py: CryptoDepositRequest.refund_address and LinkPayRequest.refund_address are plain `str` — no min_length. Empty strings pass validation and reach IzichangePay which accepts them (200). Add Field(..., min_length=1).",
+    "server.py::create_crypto_deposit: full_name is split with maxsplit=1; single-word names produce first==last (harmless but odd). Consider a dedicated last_name field or default last='.' per IzichangePay convention.",
+    "server.py::webhook payment_intent.completed handler is idempotent per doc via unique event_id on webhook_events collection — verified via duplicate test (200 + duplicate:true). Good.",
+    "server.py sanitized error mapping (address/coin/other) is present and vendor phrasing 'Passerelle crypto: ...' is no longer surfaced from /api/deposits/crypto for direct-intent errors — confirmed via test_invalid_refund_address_format and test_unknown_asset_code_sanitized.",
+    "server.py is 1826 lines — increasingly hard to navigate. Consider splitting into routers/{crypto,deposits,links,merchant,webhooks}.py."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_inapp_crypto_flow.py"
+  ],
+  "success_rate": {
+    "backend": "94% (16/17 pytest, sequential)",
+    "frontend": "100% (dashboard deposit + public link both reach step-3 with valid Tron address, QR, amount, polling)"
+  },
+  "test_credentials": "test@biztranspay.com / Password123! (super_admin) — webhook secret whsec_2a08...a568ab — refund_address TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+  "seed_data_creation": "Multiple ephemeral crypto_deposits (each is a real IzichangePay direct intent) + 1 payment_link (slug NcjVJwMQNLY 'TEST_public_link' fixed 25 XOF) + 1 link_payment. Test user balance_usdt was incremented several times (deposit credits of 3 + 2 + 25 + 20 USDT ~= +50). Crypto config left as-is (no admin/transfer/config toggles in this iteration).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Suite: /app/backend/tests/test_inapp_crypto_flow.py. MUST run with -n 0 (sequential). Requires env: REACT_APP_BACKEND_URL, MONGO_URL, DB_NAME. All tests hit real IzichangePay — each test creates a real payment-intent (billable object in vendor system). Frontend data-testids for wizard: method-{crypto,mobile_money,card} + dep-{name,email,coin,net-<NET>,refund-address,amount} + btn-dep-submit + dep-tracker/address/amount-to-send/qr. Public link uses pay-method-{crypto,mm,card} + pay-{name,email,coin,net-<NET>,refund-address} + btn-pay-submit + pay-tracker/address/amount-to-send. Old test_izipay_integration.py is now OUTDATED — its /deposits/crypto payload uses the old hosted-flow schema (coin+accepted_networks+origin_url) which no longer matches CryptoDepositRequest (422). Recommend deleting or migrating.",
+  "rca of the issue": "Only issue is validation gap: CryptoDepositRequest.refund_address / LinkPayRequest.refund_address in /app/backend/models.py are plain `str` with no min_length. Server code does `req.refund_address.strip()` and forwards to IzichangePay which unexpectedly ACCEPTS empty strings, so empty refund_address returns 200 instead of the specified 422. Reproduction: POST /api/deposits/crypto with refund_address:\"\" and other valid fields → 200 with a valid deposit address. Fix: add Field(..., min_length=1) in models.py OR raise HTTPException(422) in server.py before calling izipay.create_direct_intent when the stripped value is empty."
+}

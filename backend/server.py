@@ -650,62 +650,94 @@ async def stripe_webhook(request: Request):
     return {"status": "ok"}
 
 
+# ==================== CRYPTO ASSETS (public catalog) ====================
+@api.get("/crypto/assets")
+async def crypto_assets():
+    """Public list of active crypto assets available on IzichangePay.
+    Used by /dashboard/deposit and public payment link pages to show a list of
+    supported cryptocurrencies. No auth: this is a catalog, contains no secrets.
+    """
+    if not izipay.is_configured():
+        return []
+    try:
+        assets = await izipay.list_assets()
+    except Exception:
+        return []
+    return [
+        {
+            "asset_code": a.get("assetCode"),
+            "coin": a.get("coin"),
+            "network": a.get("network"),
+            "blockchain_name": a.get("blockchainName"),
+            "memo_required": a.get("memoRequired", False),
+            "memo_type": a.get("memoType"),
+        }
+        for a in assets if a.get("isActive")
+    ]
+
+
 # ==================== DEPOSIT (Crypto via IzichangePay) ====================
 @api.post("/deposits/crypto")
 async def create_crypto_deposit(req: CryptoDepositRequest, uid: str = Depends(get_current_user_id)):
-    """Create a crypto deposit intent via IzichangePay. Returns hosted paymentUrl.
-    Credits user's USDT balance on webhook confirmation."""
+    """Create a crypto deposit — direct in-app flow. Returns depositAddress
+    + amount + expiry so the frontend can display them and poll for confirmation.
+    """
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
     if req.amount < 1:
         raise HTTPException(400, "Montant minimum : 1 USDT")
 
-    # Build accepted coins list from admin config if not passed
-    accepted_coins = None
-    if req.accepted_networks:
-        accepted_coins = [f"{req.coin.upper()}.{n.upper()}" for n in req.accepted_networks]
-    else:
-        cfg = await get_transfer_config()
-        usdt_nets = (cfg.get("crypto") or {}).get("usdt_networks") or ["TRC20", "BEP20", "ERC20"]
-        accepted_coins = [f"{req.coin.upper()}.{n.upper()}" for n in usdt_nets]
+    # Split full name into first / last (izipay requires both)
+    parts = (req.full_name or "").strip().split(maxsplit=1)
+    first = parts[0] if parts else "Client"
+    last = parts[1] if len(parts) > 1 else first
 
-    intent_id_local = new_id()  # our internal id, used as merchantReference
-    return_url = f"{req.origin_url.rstrip('/')}/dashboard/deposit?status=success&ref={intent_id_local}"
-
+    intent_id_local = new_id()
     try:
-        intent = await izipay.create_payment_intent(
-            amount_requested=f"{req.amount:.6f}",
-            currency_requested=req.coin.upper(),      # request USDT directly
-            requested_currency_type="crypto",
-            accepted_coins=accepted_coins,
+        intent = await izipay.create_direct_intent(
+            requested_coin=req.asset_code,
+            amount=f"{req.amount:.6f}",
+            first_name=first, last_name=last,
+            email=req.email,
+            refund_address=req.refund_address.strip(),
             merchant_reference=intent_id_local,
-            return_url=return_url,
             metadata={"user_id": uid, "kind": "crypto_deposit"},
         )
     except izipay.IziPayError as e:
-        raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+        # Log full detail server-side, return sanitized message
+        print(f"izipay direct intent rejected [{e.code}] {e.message}")
+        msg = (e.message or "").lower()
+        if "address" in msg or "adresse" in msg:
+            user_msg = "Adresse de remboursement crypto invalide."
+        elif "coin" in msg or "asset" in msg:
+            user_msg = "Cryptomonnaie non prise en charge."
+        else:
+            user_msg = "La passerelle crypto a refusé la demande. Réessayez."
+        raise HTTPException(400 if e.status < 500 else 502, user_msg)
 
-    await db.crypto_deposits.insert_one({
+    doc = {
         "id": intent_id_local,
         "user_id": uid,
         "amount": req.amount,
-        "coin": req.coin.upper(),
-        "credit_currency": "USDT",   # per user preference 4b
-        "status": "initiated",
+        "asset_code": req.asset_code,
+        "coin": req.asset_code.split(".")[0],
+        "network": req.asset_code.split(".")[1] if "." in req.asset_code else None,
+        "customer_email": req.email,
+        "customer_name": req.full_name,
+        "credit_currency": "USDT",   # per user preference
+        "status": intent.get("status") or "pending",
         "izipay_intent_id": intent.get("id"),
-        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "deposit_address": intent.get("depositAddress"),
+        "memo": intent.get("memo"),
+        "memo_type": intent.get("memoType"),
+        "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
+        "expires_at": intent.get("expiresAt"),
         "created_at": now_iso(),
         "updated_at": now_iso(),
-    })
-    return {
-        "id": intent_id_local,
-        "izipay_intent_id": intent.get("id"),
-        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
-        "amount": req.amount,
-        "coin": req.coin.upper(),
-        "accepted_coins": accepted_coins,
-        "status": "initiated",
     }
+    await db.crypto_deposits.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 @api.get("/deposits/crypto/{deposit_id}")
@@ -849,8 +881,8 @@ async def izipay_webhook(request: Request):
 # ==================== PAYMENT LINK — PAY WITH CRYPTO ====================
 @api.post("/links/pay")
 async def start_link_payment(req: LinkPayRequest):
-    """Public endpoint: a customer opening a payment link chooses to pay with crypto.
-    Creates a payment intent on IzichangePay and returns the hosted paymentUrl.
+    """Public endpoint: a customer opening a payment link pays with crypto.
+    Uses direct intent (no redirect) — deposit address + amount are shown in-app.
     """
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
@@ -866,35 +898,46 @@ async def start_link_payment(req: LinkPayRequest):
         amount = float(req.amount)
 
     lp_id = new_id()
-    return_url = f"{req.origin_url.rstrip('/')}/pay/{req.slug}?paid={lp_id}"
+    parts = (req.full_name or "").strip().split(maxsplit=1)
+    first = parts[0] if parts else "Client"
+    last = parts[1] if len(parts) > 1 else first
+
     try:
-        intent = await izipay.create_payment_intent(
-            amount_requested=f"{amount:.6f}",
-            currency_requested=req.coin.upper(),
-            requested_currency_type="crypto",
-            accepted_coins=[f"{req.coin.upper()}.{n.upper()}" for n in (req.accepted_networks or ["TRC20", "BEP20", "ERC20"])],
+        intent = await izipay.create_direct_intent(
+            requested_coin=req.asset_code,
+            amount=f"{amount:.6f}",
+            first_name=first, last_name=last, email=req.email,
+            refund_address=req.refund_address.strip(),
             merchant_reference=lp_id,
-            return_url=return_url,
-            metadata={"link_id": link["id"], "kind": "link_payment",
-                      "customer_email": req.customer_email or "",
-                      "customer_name": req.customer_name or ""},
+            metadata={"link_id": link["id"], "kind": "link_payment"},
         )
     except izipay.IziPayError as e:
-        raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+        print(f"izipay link pay rejected [{e.code}] {e.message}")
+        msg = (e.message or "").lower()
+        if "address" in msg or "adresse" in msg:
+            user_msg = "Adresse de remboursement invalide."
+        else:
+            user_msg = "La passerelle crypto a refusé la demande. Réessayez."
+        raise HTTPException(400 if e.status < 500 else 502, user_msg)
 
-    await db.link_payments.insert_one({
+    doc = {
         "id": lp_id, "link_id": link["id"], "slug": req.slug,
-        "amount": amount, "coin": req.coin.upper(),
-        "customer_email": req.customer_email, "customer_name": req.customer_name,
-        "status": "initiated", "created_at": now_iso(),
+        "amount": amount, "asset_code": req.asset_code,
+        "coin": req.asset_code.split(".")[0],
+        "network": req.asset_code.split(".")[1] if "." in req.asset_code else None,
+        "customer_email": req.email, "customer_name": req.full_name,
+        "status": intent.get("status") or "pending",
         "izipay_intent_id": intent.get("id"),
-        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
-    })
-    return {
-        "id": lp_id,
-        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
-        "amount": amount, "coin": req.coin.upper(),
+        "deposit_address": intent.get("depositAddress"),
+        "memo": intent.get("memo"),
+        "memo_type": intent.get("memoType"),
+        "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
+        "expires_at": intent.get("expiresAt"),
+        "created_at": now_iso(),
     }
+    await db.link_payments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
 
 
 @api.get("/links/payments/{payment_id}")
@@ -902,7 +945,7 @@ async def get_link_payment_status(payment_id: str):
     lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     if not lp:
         raise HTTPException(404, "Not found")
-    return {"id": lp["id"], "status": lp.get("status"), "amount": lp.get("amount"), "coin": lp.get("coin")}
+    return lp
 
 
 # ==================== MERCHANT PAYMENT API (Public — auth via secret key) ====================

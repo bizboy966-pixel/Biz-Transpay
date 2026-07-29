@@ -330,6 +330,8 @@ function BizToCryptoForm({ config, onDone, balance }) {
   useEffect(() => { setNetworkCode(availableNets[0] || ''); /* eslint-disable-next-line */ }, [cryptoCode, config]);
   const network = (ccfg.networks || []).find((n) => n.code === networkCode);
 
+  const [fullName, setFullName] = useState(balance?.full_name || '');
+  const [email, setEmail] = useState(balance?.email || '');
   const [walletAddress, setWalletAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [feeBearer, setFeeBearer] = useState('sender');
@@ -359,13 +361,14 @@ function BizToCryptoForm({ config, onDone, balance }) {
   const currency = cryptoCode;
   const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
   const min = crypto?.min || 0, max = crypto?.max || 10 ** 12;
-  const canSubmit = crypto && network && walletAddress && addressValidation.ok && amt >= min && amt <= max && totalDebit <= bal;
+  const canSubmit = crypto && network && walletAddress && addressValidation.ok && amt >= min && amt <= max && totalDebit <= bal && fullName && email;
 
   const submit = async () => {
     setPending(true);
     try {
       const { data } = await api.post('/transfers', {
         transfer_type: 'biz_to_crypto', recipient: walletAddress,
+        recipient_name: fullName,
         crypto: cryptoCode, network: networkCode, wallet_address: walletAddress,
         fee_bearer: feeBearer, amount: amt, currency, description,
       });
@@ -382,6 +385,15 @@ function BizToCryptoForm({ config, onDone, balance }) {
       <div className="bg-orange-50 border border-orange-100 rounded-xl p-2.5 sm:p-3 flex items-start gap-2 sm:gap-2.5">
         <Bitcoin className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-orange-600 mt-0.5 shrink-0" />
         <div className="text-[11px] sm:text-xs text-slate-700"><b>Transfert on-chain.</b> Vérifiez soigneusement le réseau et l&apos;adresse. Les erreurs sont irréversibles.</div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+        <Field label="Nom complet">
+          <input data-testid="crypto-name" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Votre nom" required className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+        </Field>
+        <Field label="Adresse e-mail">
+          <input data-testid="crypto-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="vous@email.com" required className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+        </Field>
       </div>
 
       <Field label="Cryptomonnaie">

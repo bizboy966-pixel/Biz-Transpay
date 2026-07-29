@@ -81,6 +81,55 @@ async def _get(path: str) -> dict:
 
 # --------- Public API wrappers ---------
 
+async def create_direct_intent(
+    *,
+    requested_coin: str,          # e.g. "USDT.TRC20"
+    amount: str,                  # decimal string
+    first_name: str,
+    last_name: str,
+    email: str,
+    refund_address: str,          # required by IzichangePay
+    merchant_reference: str,
+    metadata: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
+) -> dict:
+    """Create a direct crypto payment intent — returns depositAddress, memo,
+    amountToSend, expiresAt without any redirect.
+    Docs: /v1/payment-intents/direct
+    """
+    body: dict[str, Any] = {
+        "requestedCoin": requested_coin,
+        "amount": str(amount),
+        "customer": {
+            "firstName": first_name,
+            "lastName": last_name,
+            "email": email,
+            "refundAddress": refund_address,
+        },
+        "merchantReference": merchant_reference,
+    }
+    if metadata:
+        body["metadata"] = metadata
+    return await _post("/v1/payment-intents/direct", body,
+                       idempotency_key=idempotency_key or f"pid-{uuid.uuid4()}")
+
+
+# Simple in-memory cache for /v1/assets (invalidated on process restart)
+_assets_cache: dict[str, Any] = {"at": 0, "data": None}
+
+
+async def list_assets(force: bool = False) -> list[dict]:
+    """List active crypto assets available on IzichangePay account. Cached 5 min."""
+    now = int(time.time())
+    if not force and _assets_cache["data"] and (now - _assets_cache["at"]) < 300:
+        return _assets_cache["data"]
+    data = await _get("/v1/assets")
+    if isinstance(data, list):
+        _assets_cache["at"] = now
+        _assets_cache["data"] = data
+    return data
+
+
 async def create_payment_intent(
     *,
     amount_requested: str,
