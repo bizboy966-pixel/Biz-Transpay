@@ -513,11 +513,22 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                 metadata={"user_id": uid, "tx_id": tx_out.id},
             )
         except izipay.IziPayError as e:
+            # Log vendor-side detail server-side; return generic message to caller
+            log_msg = f"IziPay payout rejected [{e.code}] {e.message}"
+            print(log_msg)  # picked up by supervisor logs
             # Refund on gateway rejection
             await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed",
-                                                                          "metadata.error": e.message}})
-            raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+                                                                          "metadata.error_code": e.code,
+                                                                          "metadata.error_internal": e.message}})
+            # Sanitize address-related errors so the wallet address hint remains useful,
+            # but don't expose internal codes.
+            msg = e.message or ""
+            if "adresse" in msg.lower() or "address" in msg.lower():
+                user_msg = f"Adresse crypto invalide pour {req.crypto.upper()}/{req.network.upper()}. Vérifiez le format."
+            else:
+                user_msg = "La passerelle crypto a refusé la transaction. Réessayez plus tard."
+            raise HTTPException(400 if e.status < 500 else 502, user_msg)
         # Persist payout id for webhook correlation
         payout_id = payout.get("id") or payout.get("payoutId")
         await db.transactions.update_one({"id": tx_out.id}, {"$set": {
