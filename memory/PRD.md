@@ -1,5 +1,28 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Phase 3a (Module API pro : clés + webhooks HMAC + logs)
+- ✅ **Clés API test/live séparées** — `sk_test_` et `sk_live_` avec préfixes distincts. Nouveau schéma `api_keys.keys.{env}` (public_key, secret_hint, secret_hash SHA-256, created_at, last_used_at). Endpoint `POST /api/api-keys/regenerate` accepte `{env: 'test'|'live'}` (body optionnel, défaut = test).
+- ✅ **Reveal one-time** — plaintext secret retourné **une seule fois** à la génération, jamais stocké en clair. Modal frontend `OneTimeSecretModal` avec bloc noir + acknowledge checkbox obligatoire avant fermeture.
+- ✅ **Webhook secret séparé** (`whsec_...`) régénérable + URL webhook configurable (`PATCH /api/api-keys/webhook` + `POST /webhook/regenerate-secret`). Défaut auto-généré : `https://{host}/api/v1/webhooks/{merchant_id}`.
+- ✅ **Livraison webhooks HMAC-signés** — chaque événement produit `X-BizTransPay-Signature: sha256=<hex>` (signé avec `f"{timestamp}.{body}"`), `X-BizTransPay-Timestamp`, `X-BizTransPay-Event-Id`, `X-BizTransPay-Event-Type`. Retry auto sur échec (2 tentatives supplémentaires, backoff exponentiel 30s → 60s). Task fire-and-forget via `asyncio.create_task`. NOTE (Phase 3b) : signature actuellement faite avec le HASH du secret (pas plaintext).
+- ✅ **Événements émis** : `payment.created` (POST /v1/payments), `payment.completed` (webhook izipay), `payment.expired`.
+- ✅ **Endpoints REST publics** (Bearer sk_test/sk_live) :
+  - `POST /api/v1/payments` — crée paiement, retourne `{id, payment_url, deposit_address, amount_to_send, expires_at (10 min), status: 'initiated'}`
+  - `GET /api/v1/payments/{id}` — statut complet + reconcile fallback IziPay
+  - `GET /api/v1/payments?limit=&status=` — liste paginée
+- ✅ **Middleware log API** — chaque `/api/v1/*` enregistré dans `api_logs` (method, path, status, duration_ms, ip, user_agent, user_id, timestamp). Résolu automatiquement depuis Bearer key.
+- ✅ **UI Dashboard `/dashboard/api`** — 4 onglets : **Clés API** (env-test/env-live), **Webhooks** (URL + secret + événements + snippet Node.js de vérification), **Livraisons** (statut, HTTP, tentatives), **Logs API** (100 dernières).
+- ✅ **`_authenticate_merchant` mis à jour** — lookup par hash SHA-256 (temps constant), fallback legacy plaintext. `last_used_at` mis à jour à chaque appel.
+
+**Testing** : iter13 — 22/22 pytest backend + Playwright 10/10 UI. httpbin.org/post confirme la livraison réelle des webhooks avec headers HMAC.
+
+**Suite prévue en Phase 3b** (doc + SDK + exemples) :
+- Documentation API interactive `/dashboard/api/docs` avec exemples curl
+- SDK `@biztranspay/sdk` (npm + composer + pypi + rubygem)
+- Exemples PHP · Laravel · Node.js · JavaScript · Python
+- Chiffrement au repos du webhook secret plaintext pour permettre la signature HMAC classique
+- Alerte admin pour tentatives d'auth 401 sur /v1/* (probing)
+
 ## Implémenté (2026-02-XX) — Phase 2 (Gestion utilisateurs admin)
 - ✅ **Menu d'actions par ligne** dans `/admin/users` : Voir profil · Modifier informations · Vérifier KYC · Suspendre/Réactiver · Réinitialiser mot de passe · Supprimer définitivement.
 - ✅ **Modal Modifier informations** : formulaire (full_name, username, email, phone, country) → `PATCH /api/admin/users/{uid}` avec vérifications d'unicité username/email (`409` si doublon).
