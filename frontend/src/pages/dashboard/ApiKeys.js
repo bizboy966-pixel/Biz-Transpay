@@ -104,9 +104,14 @@ export default function ApiKeys() {
     <div className="space-y-5" data-testid="page-api">
       {reveal && <OneTimeSecretModal {...reveal} onClose={() => setReveal(null)} />}
 
-      <div>
-        <h1 className="font-cabinet text-3xl font-extrabold tracking-tighter text-slate-900">API de paiement</h1>
-        <p className="text-slate-500 text-sm mt-1">Intégrez Biz-transPay dans votre application avec nos clés API et webhooks HMAC-signés.</p>
+      <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="font-cabinet text-3xl font-extrabold tracking-tighter text-slate-900">API de paiement</h1>
+          <p className="text-slate-500 text-sm mt-1">Intégrez Biz-transPay dans votre application avec nos clés API et webhooks HMAC-signés.</p>
+        </div>
+        <a href="/dashboard/api/docs" data-testid="btn-open-docs" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-full bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-sm">
+          <Book className="w-3.5 h-3.5" /> Documentation API
+        </a>
       </div>
 
       {/* Tabs */}
@@ -240,7 +245,7 @@ const timestamp = req.headers['x-biztranspay-timestamp'];
 const signature = req.headers['x-biztranspay-signature'];
 
 const expected = 'sha256=' + crypto
-  .createHmac('sha256', YOUR_WEBHOOK_SECRET_HASH)
+  .createHmac('sha256', YOUR_WEBHOOK_SECRET) // whsec_... plaintext
   .update(\`\${timestamp}.\${raw}\`)
   .digest('hex');
 

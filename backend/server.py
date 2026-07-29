@@ -1554,6 +1554,32 @@ async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
 import hmac
 import hashlib
 import base64
+from cryptography.fernet import Fernet, InvalidToken
+
+_FERNET: Optional[Fernet] = None
+
+
+def _fernet() -> Fernet:
+    global _FERNET
+    if _FERNET is None:
+        key = os.environ.get("SECRETS_ENCRYPTION_KEY")
+        if not key:
+            raise RuntimeError("SECRETS_ENCRYPTION_KEY missing from .env")
+        _FERNET = Fernet(key.encode("utf-8"))
+    return _FERNET
+
+
+def _encrypt(plaintext: str) -> str:
+    return _fernet().encrypt(plaintext.encode("utf-8")).decode("utf-8")
+
+
+def _decrypt(ciphertext: str) -> Optional[str]:
+    if not ciphertext:
+        return None
+    try:
+        return _fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError):
+        return None
 
 
 def _gen_key(prefix: str, nbytes: int = 24) -> str:
@@ -1605,6 +1631,7 @@ async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
             "url": (doc or {}).get("webhook_url") or (_default_webhook_url(request, uid) if request else ""),
             "secret_hint": _mask(webhook_secret),
             "secret_hash": _hash_secret(webhook_secret),
+            "secret_encrypted": _encrypt(webhook_secret),
             "events": ["payment.created", "payment.completed", "payment.failed",
                        "payment.expired", "refund.created", "refund.completed"],
             "created_at": now_iso(),
@@ -1709,6 +1736,7 @@ async def regenerate_webhook_secret(uid: str = Depends(get_current_user_id)):
         {"user_id": uid},
         {"$set": {"webhook.secret_hint": _mask(new_secret),
                   "webhook.secret_hash": _hash_secret(new_secret),
+                  "webhook.secret_encrypted": _encrypt(new_secret),
                   "webhook.created_at": now_iso()}}
     )
     return {"webhook_secret": new_secret, "secret_hint": _mask(new_secret),
@@ -1755,14 +1783,15 @@ async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
     }
     body_json = json.dumps(payload, separators=(",", ":"), default=str, sort_keys=True)
     timestamp = str(int(datetime.now(timezone.utc).timestamp()))
-    # We don't have the plaintext webhook secret (only hash). Compute signature
-    # using the *hash* — merchants will verify with the plaintext secret they
-    # copied at creation. So we sign with the hash instead of secret? No, that
-    # defeats HMAC. Instead we keep the plaintext for signing only, in-memory.
-    # For MVP, sign with secret_hash as the signing key — merchants must use
-    # the same hash on their side (i.e. hash their copy first). This is
-    # documented in the API docs. TODO: store an encrypted plaintext secret.
-    sign_key = (wh.get("secret_hash") or "").encode("utf-8")
+    # Sign with the plaintext webhook secret (decrypted from secret_encrypted).
+    # Legacy accounts without an encrypted secret fall back to signing with the
+    # hash — those merchants are advised to regenerate their webhook secret so
+    # signature verification works with the plaintext they copied.
+    plaintext_secret = _decrypt(wh.get("secret_encrypted") or "")
+    if plaintext_secret:
+        sign_key = plaintext_secret.encode("utf-8")
+    else:
+        sign_key = (wh.get("secret_hash") or "").encode("utf-8")
     signed_payload = f"{timestamp}.{body_json}".encode("utf-8")
     signature = "sha256=" + hmac.new(sign_key, signed_payload, hashlib.sha256).hexdigest()
 

@@ -12,6 +12,7 @@ import DashboardHome from '@/pages/dashboard/Home';
 import Transactions from '@/pages/dashboard/Transactions';
 import Links from '@/pages/dashboard/Links';
 import ApiKeys from '@/pages/dashboard/ApiKeys';
+import ApiDocs from '@/pages/dashboard/ApiDocs';
 import Kyc from '@/pages/dashboard/Kyc';
 import Settings from '@/pages/dashboard/Settings';
 import Support from '@/pages/dashboard/Support';
@@ -63,6 +64,7 @@ function App() {
             <Route path="transactions" element={<Transactions />} />
             <Route path="links" element={<Links />} />
             <Route path="api" element={<ApiKeys />} />
+            <Route path="api/docs" element={<ApiDocs />} />
             <Route path="kyc" element={<Kyc />} />
             <Route path="settings" element={<Settings />} />
             <Route path="support" element={<Support />} />
