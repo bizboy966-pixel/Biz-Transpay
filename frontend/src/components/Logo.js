@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 
-const LOGO_URL = 'https://customer-assets-agu9un31.emergentagent.net/job_secure-pay-preview/artifacts/dqsrigbq_IMG-20260717-WA0050.jpg';
+const LOGO_URL = '/logo.jpg';
 
 export function Logo({ compact = false, dark = false }) {
   return (
