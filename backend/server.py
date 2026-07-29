@@ -503,12 +503,12 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
             raise HTTPException(503, "Passerelle crypto non configurée")
-        coin_code = f"{req.crypto.upper()}.{req.network.upper()}"  # e.g. USDT.TRC20
+        coin_code = f"{req.crypto.upper()}.{req.network.upper()}"  # e.g. USDT.TRC20 (assetCode)
         try:
             payout = await izipay.create_payout(
-                coin=coin_code,
+                asset_code=coin_code,
                 amount=f"{recipient_gets:.6f}",
-                address=req.wallet_address.strip(),
+                destination_address=req.wallet_address.strip(),
                 merchant_reference=tx_out.id,
                 metadata={"user_id": uid, "tx_id": tx_out.id},
             )
@@ -1705,7 +1705,18 @@ async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depend
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "Aucune modification")
-    await db.settings.update_one({"id": "transfer_config"}, {"$set": updates}, upsert=True)
+    # Deep-merge sub-dicts so partial toggles (e.g. {"crypto": {"enabled": true}})
+    # don't wipe cryptos/networks/operators lists.
+    current = await get_transfer_config()
+    dot_updates: dict = {}
+    for section, patch in updates.items():
+        cur_section = current.get(section) or {}
+        if isinstance(patch, dict) and isinstance(cur_section, dict):
+            for k, v in patch.items():
+                dot_updates[f"{section}.{k}"] = v
+        else:
+            dot_updates[section] = patch
+    await db.settings.update_one({"id": "transfer_config"}, {"$set": dot_updates}, upsert=True)
     await audit(admin["id"], admin["username"], "update_transfer_config", details=updates)
     return await get_transfer_config()
 

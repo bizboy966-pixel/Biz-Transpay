@@ -18,8 +18,14 @@ import hmac
 import hashlib
 import subprocess
 import glob
+import asyncio
+import secrets
 import pytest
 import requests
+from motor.motor_asyncio import AsyncIOMotorClient
+
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "test_database")
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://secure-pay-preview.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
@@ -232,7 +238,11 @@ class TestCryptoTransfer:
         except Exception:
             pass
 
-    def test_biz_to_crypto_creates_pending_tx_and_debits(self, enable_crypto, auth_headers):
+    def test_biz_to_crypto_schema_fix_no_property_errors(self, enable_crypto, auth_headers):
+        """After schema fix, /v1/payouts must not return 'property should not exist' errors.
+        With a placeholder TRC20 address it likely gets a 400 'Format d'adresse invalide'
+        from IzichangePay itself — refund logic must restore balance exactly.
+        """
         hdrs = enable_crypto
         # Ensure sufficient balance by simulating a deposit webhook of 100 USDT
         deposit_payload = {"amount": 100, "coin": "USDT",
@@ -255,43 +265,257 @@ class TestCryptoTransfer:
                     "recipient": "TXYZabcdefghijklmnopqrstuvwxyz1234",
                     "crypto": "USDT", "network": "TRC20",
                     "wallet_address": "TXYZabcdefghijklmnopqrstuvwxyz1234",
-                    "amount": 5, "currency": "USDT", "fee_bearer": "sender"}
+                    "amount": 1, "currency": "USDT", "fee_bearer": "sender"}
         tr = requests.post(f"{API}/transfers", json=tpayload, headers=hdrs, timeout=30)
 
-        if tr.status_code != 200:
-            # BUG: izipay.create_payout sends wrong payload keys (coin/address/metadata)
-            # IziPay expects: assetCode/destinationAddress (see /v1/payouts docs).
-            # Verify that refund happened (balance restored).
+        # Schema check: 'property XYZ should not exist' MUST NOT appear anymore
+        body_lower = tr.text.lower()
+        for forbidden in ["property coin should not exist",
+                          "property address should not exist",
+                          "property metadata should not exist",
+                          "property clientmetadata should not exist",
+                          "property network should not exist"]:
+            assert forbidden not in body_lower, \
+                f"Schema error still present: {forbidden!r} in {tr.text}"
+
+        if tr.status_code == 200:
+            # Happy path — unexpected with the placeholder address but valid
+            b = tr.json()
+            tx = b.get("transaction") or {}
+            assert tx.get("status") == "pending"
+            assert b.get("payout_id")
+        else:
+            # Expected: IzichangePay rejects the placeholder address format
+            # Backend must return a 400 with 'Passerelle crypto:' prefix
+            assert tr.status_code == 400, f"Unexpected status: {tr.status_code} {tr.text}"
+            assert "passerelle crypto" in body_lower, \
+                f"Expected 'Passerelle crypto:' prefix, got {tr.text}"
+            # Refund must be exact
             bal_after = float(_me(hdrs).get("balance_usdt") or 0)
-            assert abs(bal_after - bal_before) < 0.01, \
-                f"Balance NOT refunded after payout rejection! before={bal_before} after={bal_after}"
-            pytest.fail(f"BUG in izipay.create_payout — wrong payload schema. "
-                        f"IziPay response: {tr.status_code} {tr.text}. "
-                        f"Refund logic OK (balance restored to {bal_after}).")
+            assert abs(bal_after - bal_before) < 0.001, \
+                f"Balance NOT refunded exactly! before={bal_before} after={bal_after}"
 
-        # If it succeeded (unexpected), verify the happy path
-        body = tr.json()
-        tx = body.get("transaction") or {}
-        assert tx.get("status") == "pending"
-        assert body.get("payout_id")
-        assert (tx.get("metadata") or {}).get("izipay_payout_id")
+    def test_payout_confirmed_webhook_completes_tx(self, enable_crypto, auth_headers):
+        """Simulate payout.confirmed webhook against a hand-inserted pending tx."""
+        hdrs = enable_crypto
+        me = _me(hdrs)
+        uid = me["id"]
+        bal_before = float(me.get("balance_usdt") or 0)
 
-        bal_after = float(_me(hdrs).get("balance_usdt") or 0)
-        assert bal_before - bal_after >= 5
+        # Insert a pending tx directly into DB
+        tx_id = "test-tx-" + secrets.token_hex(6)
+        tx_doc = {
+            "id": tx_id, "user_id": uid, "type": "transfer", "direction": "out",
+            "amount": 2.0, "currency": "USDT", "status": "pending",
+            "counterparty": "TXYZ", "reference": "BTP-TEST",
+            "description": "sim payout confirm test",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "metadata": {"transfer_type": "biz_to_crypto",
+                         "crypto": "USDT", "network": "TRC20",
+                         "total_debit": 2.0,
+                         "izipay_payout_id": "po_test_confirmed"},
+        }
 
+        async def _insert():
+            client = AsyncIOMotorClient(MONGO_URL)
+            try:
+                await client[DB_NAME].transactions.insert_one(dict(tx_doc))
+            finally:
+                client.close()
+
+        asyncio.run(_insert())
+
+        # Fire signed payout.confirmed webhook
         pevent = {"event": "payout.confirmed",
                   "timestamp": int(time.time()),
-                  "data": {"payoutId": body["payout_id"],
-                           "merchantReference": tx["id"],
-                           "txHash": "0xdeadbeef1234"}}
+                  "data": {"payoutId": "po_test_confirmed",
+                           "merchantReference": tx_id,
+                           "txHash": "0xabc123"}}
         pwr = _post_webhook(pevent)
-        assert pwr.status_code == 200
+        assert pwr.status_code == 200, f"webhook rejected: {pwr.status_code} {pwr.text}"
 
-        txr = requests.get(f"{API}/transactions", headers=hdrs, timeout=15)
-        assert txr.status_code == 200
-        found = next((t for t in txr.json() if t.get("id") == tx["id"]), None)
-        assert found and found.get("status") == "completed"
-        assert (found.get("metadata") or {}).get("tx_hash") == "0xdeadbeef1234"
+        # Verify tx moved to completed with tx_hash
+        async def _fetch():
+            client = AsyncIOMotorClient(MONGO_URL)
+            try:
+                doc = await client[DB_NAME].transactions.find_one({"id": tx_id})
+                return doc
+            finally:
+                client.close()
+
+        doc = asyncio.run(_fetch())
+        assert doc is not None
+        assert doc.get("status") == "completed", f"tx status should be completed, got {doc.get('status')}"
+        assert (doc.get("metadata") or {}).get("tx_hash") == "0xabc123"
+
+        # Balance UNCHANGED (we never debited on this hand-inserted tx)
+        bal_after = float(_me(hdrs).get("balance_usdt") or 0)
+        assert abs(bal_after - bal_before) < 0.001
+
+    def test_payout_failed_webhook_refunds(self, enable_crypto, auth_headers):
+        """Simulate payout.failed webhook — must refund balance and mark failed."""
+        hdrs = enable_crypto
+        me = _me(hdrs)
+        uid = me["id"]
+        bal_before = float(me.get("balance_usdt") or 0)
+
+        tx_id = "test-tx-" + secrets.token_hex(6)
+        tx_doc = {
+            "id": tx_id, "user_id": uid, "type": "transfer", "direction": "out",
+            "amount": 3.0, "currency": "USDT", "status": "pending",
+            "counterparty": "TXYZ", "reference": "BTP-TEST",
+            "description": "sim payout fail test",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "metadata": {"transfer_type": "biz_to_crypto",
+                         "crypto": "USDT", "network": "TRC20",
+                         "total_debit": 3.0,
+                         "izipay_payout_id": "po_test_failed"},
+        }
+
+        async def _setup():
+            client = AsyncIOMotorClient(MONGO_URL)
+            try:
+                await client[DB_NAME].transactions.insert_one(dict(tx_doc))
+                # Simulate pre-transfer debit so we can verify refund brings it back
+                await client[DB_NAME].users.update_one(
+                    {"id": uid}, {"$inc": {"balance_usdt": -3.0}})
+            finally:
+                client.close()
+
+        asyncio.run(_setup())
+
+        bal_after_debit = float(_me(hdrs).get("balance_usdt") or 0)
+        assert abs(bal_after_debit - (bal_before - 3.0)) < 0.001, \
+            f"debit sim failed: {bal_before} -> {bal_after_debit}"
+
+        pevent = {"event": "payout.failed",
+                  "timestamp": int(time.time()),
+                  "data": {"payoutId": "po_test_failed",
+                           "merchantReference": tx_id,
+                           "reason": "insufficient liquidity"}}
+        pwr = _post_webhook(pevent)
+        assert pwr.status_code == 200, f"webhook rejected: {pwr.status_code} {pwr.text}"
+
+        # Verify refund
+        bal_final = float(_me(hdrs).get("balance_usdt") or 0)
+        assert abs(bal_final - bal_before) < 0.001, \
+            f"Refund not exact! before={bal_before} final={bal_final}"
+
+        # Verify tx status=failed
+        async def _fetch():
+            client = AsyncIOMotorClient(MONGO_URL)
+            try:
+                return await client[DB_NAME].transactions.find_one({"id": tx_id})
+            finally:
+                client.close()
+
+        doc = asyncio.run(_fetch())
+        assert doc and doc.get("status") == "failed"
+
+
+# ==================== 4b) CONFIG DEEP-MERGE ====================
+class TestConfigDeepMerge:
+    """PATCH /api/admin/transfer/config with partial sub-dict must NOT wipe arrays."""
+
+    @pytest.fixture(scope="class")
+    def admin_hdrs(self):
+        r = requests.post(f"{API}/auth/login",
+                          json={"email": TEST_EMAIL, "password": TEST_PASSWORD}, timeout=15)
+        if r.status_code != 200:
+            pytest.skip("cannot login")
+        tok = r.json()["token"]
+        return {"Authorization": f"Bearer {tok}", "Content-Type": "application/json"}
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _seed_config(self, admin_hdrs):
+        # Pre-seed a rich config so we can verify preservation
+        full = {
+            "crypto": {
+                "enabled": False,
+                "cryptos": [
+                    {"code": "USDT", "name": "Tether", "active": True,
+                     "networks": ["TRC20", "BEP20", "ERC20"],
+                     "fee_pct": 1.0, "fee_fixed": 1.0, "min": 1, "max": 100000},
+                    {"code": "BTC", "name": "Bitcoin", "active": True,
+                     "networks": ["BTC"], "fee_pct": 1.0, "fee_fixed": 0.5, "min": 0.0001, "max": 10},
+                    {"code": "ETH", "name": "Ethereum", "active": True,
+                     "networks": ["ERC20"], "fee_pct": 1.0, "fee_fixed": 0.5, "min": 0.01, "max": 100},
+                ],
+                "networks": [
+                    {"code": "TRC20", "name": "Tron", "active": True,
+                     "address_regex": "^T[A-Za-z1-9]{33}$"},
+                    {"code": "BEP20", "name": "BNB SC", "active": True,
+                     "address_regex": "^0x[a-fA-F0-9]{40}$"},
+                    {"code": "ERC20", "name": "Ethereum", "active": True,
+                     "address_regex": "^0x[a-fA-F0-9]{40}$"},
+                    {"code": "BTC", "name": "Bitcoin", "active": True,
+                     "address_regex": "^(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,62}$"},
+                ],
+                "usdt_networks": ["TRC20", "BEP20", "ERC20"],
+            },
+            "mobile_money": {
+                "enabled": True,
+                "operators": [
+                    {"code": "TMONEY", "name": "T-Money", "active": True, "countries": ["TG"]},
+                    {"code": "MIXX", "name": "Mixx by Yas", "active": True, "countries": ["TG"]},
+                ],
+            },
+            "bank": {
+                "enabled": True,
+                "banks": [
+                    {"code": "ORABANK", "name": "Orabank", "active": True, "countries": ["TG"]},
+                    {"code": "ECOBANK", "name": "Ecobank", "active": True, "countries": ["TG"]},
+                ],
+            },
+        }
+        r = requests.patch(f"{API}/admin/transfer/config", json=full,
+                           headers=admin_hdrs, timeout=15)
+        assert r.status_code == 200, f"seed config failed: {r.status_code} {r.text}"
+
+    def test_crypto_toggle_enabled_true_preserves_arrays(self, admin_hdrs):
+        r = requests.patch(f"{API}/admin/transfer/config",
+                           json={"crypto": {"enabled": True}}, headers=admin_hdrs, timeout=15)
+        assert r.status_code == 200
+        cfg = r.json()
+        crypto = cfg.get("crypto") or {}
+        assert crypto.get("enabled") is True
+        cryptos = crypto.get("cryptos") or []
+        codes = {c.get("code") for c in cryptos}
+        assert {"USDT", "BTC", "ETH"}.issubset(codes), f"cryptos wiped: {cryptos}"
+        networks = crypto.get("networks") or []
+        ncodes = {n.get("code") for n in networks}
+        assert {"TRC20", "BEP20", "ERC20"}.issubset(ncodes), f"networks wiped: {networks}"
+        assert crypto.get("usdt_networks"), "usdt_networks wiped"
+
+    def test_crypto_toggle_enabled_false_preserves_arrays(self, admin_hdrs):
+        r = requests.patch(f"{API}/admin/transfer/config",
+                           json={"crypto": {"enabled": False}}, headers=admin_hdrs, timeout=15)
+        assert r.status_code == 200
+        cfg = r.json()
+        crypto = cfg.get("crypto") or {}
+        assert crypto.get("enabled") is False
+        codes = {c.get("code") for c in (crypto.get("cryptos") or [])}
+        assert {"USDT", "BTC", "ETH"}.issubset(codes), "cryptos wiped after disable"
+
+    def test_mobile_money_toggle_preserves_operators(self, admin_hdrs):
+        r = requests.patch(f"{API}/admin/transfer/config",
+                           json={"mobile_money": {"enabled": True}},
+                           headers=admin_hdrs, timeout=15)
+        assert r.status_code == 200
+        mm = r.json().get("mobile_money") or {}
+        assert mm.get("enabled") is True
+        ops = {o.get("code") for o in (mm.get("operators") or [])}
+        assert {"TMONEY", "MIXX"}.issubset(ops), f"operators wiped: {mm}"
+
+    def test_bank_toggle_preserves_banks(self, admin_hdrs):
+        r = requests.patch(f"{API}/admin/transfer/config",
+                           json={"bank": {"enabled": True}},
+                           headers=admin_hdrs, timeout=15)
+        assert r.status_code == 200
+        bk = r.json().get("bank") or {}
+        assert bk.get("enabled") is True
+        codes = {b.get("code") for b in (bk.get("banks") or [])}
+        assert {"ORABANK", "ECOBANK"}.issubset(codes), f"banks wiped: {bk}"
 
 
 def _get_crypto(hdrs):

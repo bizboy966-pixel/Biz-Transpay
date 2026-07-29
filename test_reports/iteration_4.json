@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 4 regression: BOTH FIXES VERIFIED. Ran 17/17 pytest sequentially (-n 0). (1) Payout schema fix: POST /api/transfers biz_to_crypto no longer produces any 'property X should not exist' error from IzichangePay. With the placeholder TRC20 wallet the real IziPay API responds 400 'Format d'adresse invalide' (bubbled as 'Passerelle crypto: ...'), and the refund logic restores balance_usdt exactly (delta < 0.001 USDT). (2) Payout webhooks E2E simulated against hand-inserted pending tx docs: payout.confirmed transitions tx.status pending->completed with metadata.tx_hash='0xabc123' (balance unchanged); payout.failed refunds the pre-debited 3 USDT exactly to the balance and sets status='failed'. (3) Deep-merge PATCH /api/admin/transfer/config confirmed: {crypto:{enabled:true}}, {crypto:{enabled:false}}, {mobile_money:{enabled:true}}, {bank:{enabled:true}} all preserve cryptos/networks/usdt_networks/operators/banks arrays intact. (4) All prior tests still pass: crypto deposit E2E + duplicate idempotency, webhook 400 on bad sig / missing header / old timestamp, 200 no-op on unknown merchantReference, payment link crypto pay E2E, merchant API sk_ auth + 401 on invalid + webhook credit. Frontend bundle grep confirms no whsec_/sk_live_ leak.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/transfers biz_to_crypto (error path)", "issue": "On IziPay rejection the 400 body includes the raw vendor message via 'Passerelle crypto: <raw>' (leaks vendor phrasing to end user). Consider a generic user-facing message and log the vendor detail server-side only."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_izipay_integration.py",
+    "/app/test_reports/pytest/iter4_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py biz_to_crypto: still surfaces IziPay's raw error message in the 400 response (metadata.error and HTTP body) — minor info-disclosure. Consider abstracting the user-facing message.",
+    "server.py::admin_update_transfer_config now correctly uses dot-notation $set for one-level deep-merge (section.key). Note: this is one-level only — a payload like {crypto:{cryptos:[...]}} still fully replaces the cryptos array (which is the correct semantics for list updates). Good.",
+    "izipay.create_payout now strictly sends {assetCode, amount, destinationAddress, merchantReference} per the confirmed schema; the `metadata` kwarg is accepted but intentionally ignored (kept in our own DB via server-side update). Comment in the function explains this — good.",
+    "webhook_events unique index on event_id still created lazily in startup (very low race risk; acceptable).",
+    "pytest.ini forces -n 2 loadscope by default; this test file MUST be run with -n 0 because multiple classes hit the same shared user's balance_usdt. Documented in context_for_next_testing_agent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_izipay_integration.py"
+  ],
+  "success_rate": {"backend": "100% (17/17 pytest, sequential)", "frontend": "not retested this iteration (per request)"},
+  "test_credentials": "test@biztranspay.com / Password123! (super_admin) — webhook secret whsec_2a08...a568ab",
+  "seed_data_creation": "Ephemeral deposits/link_payments/merchant_payments + 2 hand-inserted pending transactions (test-tx-*) for payout webhook simulation. Test user balance_usdt increased through the sequential runs (deposit credits) but never over-credited (delta assertions match). Crypto config left with enabled=false but full cryptos/networks/usdt_networks arrays populated. mobile_money and bank left enabled=true with operators/banks seeded (TMONEY/MIXX, ORABANK/ECOBANK).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Suite: /app/backend/tests/test_izipay_integration.py. MUST run with `pytest -n 0` (sequential) — parallel execution races on the shared test user's balance. The suite uses motor directly (MONGO_URL/DB_NAME from env) to hand-insert 2 pending transactions for TestCryptoTransfer::test_payout_{confirmed,failed}_webhook_completes_tx / _refunds. Real IzichangePay /v1/payouts is hit with a placeholder TRC20 address on purpose — the API returns 400 'Format d'adresse invalide' which is the expected negative path; the test asserts NO 'property X should not exist' appears in the body and that the refund is exact. Do NOT change the wallet to a real valid TRC20 unless you accept a real payout being attempted (spends funds).",
+  "rca of the issue": "Fixes from iteration 3 review are both correct: (a) izipay.create_payout now sends the exact schema IzichangePay expects ({assetCode: 'USDT.TRC20', amount, destinationAddress, merchantReference}); the dot IS allowed in assetCode — confirmed by hitting the real API (address-format error, not schema error). (b) admin_update_transfer_config uses dot-notation $set to deep-merge one level so partial toggles no longer wipe sub-arrays. Regression tests cover both paths and also the previously-passing E2E flows."
+}

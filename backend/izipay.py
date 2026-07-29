@@ -119,22 +119,25 @@ async def get_payment_intent(intent_id: str) -> dict:
 
 async def create_payout(
     *,
-    coin: str,               # e.g. "USDT.TRC20"
+    asset_code: str,         # e.g. "USDT.TRC20" — must match /v1/assets
     amount: str,             # decimal string
-    address: str,
+    destination_address: str,
     merchant_reference: str,
     metadata: Optional[dict] = None,
     idempotency_key: Optional[str] = None,
 ) -> dict:
-    """Send crypto to an external wallet."""
+    """Send crypto to an external wallet.
+    Docs: https://docs.pay.izichange.com/api-reference/v1/payouts
+    """
     body: dict[str, Any] = {
-        "coin": coin,
+        "assetCode": asset_code,
         "amount": str(amount),
-        "address": address,
+        "destinationAddress": destination_address,
         "merchantReference": merchant_reference,
     }
-    if metadata:
-        body["metadata"] = metadata
+    # IzichangePay /v1/payouts rejects any extra fields (strict schema).
+    # Metadata is kept in our own DB only.
+    _ = metadata
     return await _post("/v1/payouts", body, idempotency_key=idempotency_key or f"po-{uuid.uuid4()}")
 
 
