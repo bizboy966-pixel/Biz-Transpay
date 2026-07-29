@@ -60,7 +60,7 @@ class AuthResponse(BaseModel):
 class PaymentLinkCreate(BaseModel):
     title: str
     amount: float = 0  # kept for backward compat; used when amount_type = fixed
-    currency: Literal["XOF", "XAF"]
+    currency: Literal["XOF", "XAF", "USDT"]
     description: Optional[str] = ""
     expires_at: Optional[str] = None
     single_use: bool = False
@@ -74,7 +74,7 @@ class PaymentLinkCreate(BaseModel):
 class PaymentLinkUpdate(BaseModel):
     title: Optional[str] = None
     amount: Optional[float] = None
-    currency: Optional[Literal["XOF", "XAF"]] = None
+    currency: Optional[Literal["XOF", "XAF", "USDT"]] = None
     description: Optional[str] = None
     expires_at: Optional[str] = None
     single_use: Optional[bool] = None

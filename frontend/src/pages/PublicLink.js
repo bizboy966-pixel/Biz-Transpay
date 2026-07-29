@@ -58,7 +58,7 @@ export default function PublicLink() {
             {step === 1 && (
               <div className="mt-4 space-y-2">
                 <div className="text-xs sm:text-sm font-semibold text-slate-700 mb-2">Choisissez le moyen de paiement</div>
-                <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub="USDT · USDC · BTC · ETH" onClick={() => { setMethod('crypto'); setStep(2); }} />
+                <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={link.currency === 'USDT' ? 'USDT · USDC · BTC · ETH' : 'Ce lien n\'accepte pas les paiements crypto'} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT'} />
                 <MethodBtn testId="pay-method-mm" I={Smartphone} c="bg-emerald-50 text-emerald-500" title="Mobile Money" sub="Bientôt disponible" disabled />
                 <MethodBtn testId="pay-method-card" I={CreditCard} c="bg-blue-50 text-[#2563EB]" title="Carte bancaire" sub="Bientôt disponible" disabled />
               </div>
@@ -140,9 +140,12 @@ function CryptoLinkForm({ link, onSuccess }) {
       <div className="rounded-xl bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] p-3 sm:p-4 text-white">
         <div className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-80">{link.title}</div>
         {isFree ? (
-          <input data-testid="pay-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} min={link.min_amount} max={link.max_amount} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold outline-none placeholder:text-white/50" />
+          <>
+            <input data-testid="pay-amount" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} min={link.min_amount} max={link.max_amount} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold outline-none placeholder:text-white/50" />
+            <div className="mt-1 text-[9px] sm:text-[10px] opacity-80">{link.min_amount} – {link.max_amount} {link.currency}</div>
+          </>
         ) : (
-          <div className="font-cabinet text-xl sm:text-2xl font-extrabold mt-1">{link.amount.toLocaleString()} <span className="text-xs sm:text-sm opacity-80">{link.currency}</span></div>
+          <div className="font-cabinet text-xl sm:text-2xl font-extrabold mt-1">{Number(link.amount).toLocaleString(undefined, { maximumFractionDigits: link.currency === 'USDT' ? 6 : 0 })} <span className="text-xs sm:text-sm opacity-80">{link.currency}</span></div>
         )}
         {link.description && <div className="mt-1 text-[10px] sm:text-[11px] opacity-80">{link.description}</div>}
       </div>

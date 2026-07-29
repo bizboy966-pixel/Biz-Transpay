@@ -242,12 +242,12 @@ function LinkForm({ initial, onClose, onSaved }) {
             <div className="grid grid-cols-[1fr_auto] gap-2">
               <div>
                 <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant</label>
-                <input data-testid="link-amount" type="number" required min="1" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="5000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                <input data-testid="link-amount" type="number" required min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder={form.currency === 'USDT' ? '10' : '5000'} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div>
                 <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Devise</label>
                 <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
-                  <option value="XOF">XOF</option><option value="XAF">XAF</option>
+                  <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USDT (Crypto)</option>
                 </select>
               </div>
             </div>
@@ -255,17 +255,23 @@ function LinkForm({ initial, onClose, onSaved }) {
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant minimum</label>
-                <input data-testid="link-min" type="number" required min="1" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder="500" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                <input data-testid="link-min" type="number" required min="0.01" step="0.01" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder={form.currency === 'USDT' ? '1' : '500'} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div>
                 <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant maximum</label>
-                <input data-testid="link-max" type="number" required min="1" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder="50000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                <input data-testid="link-max" type="number" required min="0.01" step="0.01" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder={form.currency === 'USDT' ? '100' : '50000'} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div className="col-span-2">
                 <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
-                  <option value="XOF">XOF</option><option value="XAF">XAF</option>
+                  <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USDT (Crypto)</option>
                 </select>
               </div>
+            </div>
+          )}
+          {form.currency === 'USDT' && (
+            <div className="mt-2 p-2.5 bg-orange-50 border border-orange-100 rounded-lg text-[10px] sm:text-[11px] text-orange-800 flex items-start gap-1.5">
+              <Info className="w-3 h-3 mt-0.5 shrink-0" />
+              <span>Ce lien acceptera uniquement les paiements crypto. Le montant est exprimé directement en USDT.</span>
             </div>
           )}
         </Section>

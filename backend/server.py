@@ -740,7 +740,8 @@ async def create_crypto_deposit(req: CryptoDepositRequest, uid: str = Depends(ge
         "memo": intent.get("memo"),
         "memo_type": intent.get("memoType"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
-        "expires_at": intent.get("expiresAt"),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+        "izipay_expires_at": intent.get("expiresAt"),
         "created_at": now_iso(),
         "updated_at": now_iso(),
     }
@@ -754,10 +755,83 @@ async def get_crypto_deposit(deposit_id: str, uid: str = Depends(get_current_use
     d = await db.crypto_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
     if not d:
         raise HTTPException(404, "Not found")
+    # Fallback: if webhook hasn't finalized yet, actively poll IziPay status.
+    if d.get("status") not in ("confirmed", "expired", "failed") and d.get("izipay_intent_id"):
+        await _reconcile_intent(d["izipay_intent_id"])
+        d = await db.crypto_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
     return d
 
 
 # ==================== IZICHANGEPAY WEBHOOK ====================
+async def _reconcile_intent(intent_id: str) -> None:
+    """Fallback: query IziPay for the intent's current status. If it's
+    completed but our webhook hasn't fired yet, finalize the deposit or link
+    payment locally. Safe to call repeatedly — matches webhook's guard logic.
+    """
+    if not intent_id or not izipay.is_configured():
+        return
+    try:
+        intent = await izipay.get_payment_intent(intent_id)
+    except Exception as e:
+        logger.warning("izipay reconcile failed for %s: %s", intent_id, e)
+        return
+    status = (intent.get("status") or "").lower()
+    if status not in ("completed", "confirmed", "paid", "success", "successful"):
+        return
+    merchant_ref = intent.get("merchantReference") or intent.get("merchant_reference")
+    tx_hash = intent.get("txHash") or intent.get("txhash") or intent.get("transactionHash")
+    if not merchant_ref:
+        return
+
+    # 1) Crypto deposit
+    d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
+    if d:
+        r = await db.crypto_deposits.update_one(
+            {"id": merchant_ref, "status": {"$ne": "confirmed"}},
+            {"$set": {"status": "confirmed", "updated_at": now_iso(),
+                      "izipay_intent_id": intent_id, "tx_hash": tx_hash}}
+        )
+        if r.modified_count > 0:
+            await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": d["amount"]}})
+            await record_tx(d["user_id"], "deposit", "in", d["amount"], "USDT",
+                            status="completed",
+                            description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
+                            metadata={"izipay_intent_id": intent_id,
+                                      "coin": d.get("coin"), "network": d.get("network"),
+                                      "asset_code": d.get("asset_code"), "tx_hash": tx_hash,
+                                      "deposit_address": d.get("deposit_address"),
+                                      "source": "reconcile"})
+        return
+
+    # 2) Payment link
+    lp = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
+    if lp:
+        r = await db.link_payments.update_one(
+            {"id": merchant_ref, "status": {"$ne": "paid"}},
+            {"$set": {"status": "paid", "paid_at": now_iso(),
+                      "izipay_intent_id": intent_id, "tx_hash": tx_hash}}
+        )
+        if r.modified_count > 0:
+            link = await db.payment_links.find_one({"id": lp["link_id"]})
+            if link:
+                await db.users.update_one({"id": link["user_id"]},
+                                          {"$inc": {"balance_usdt": lp["amount"]}})
+                await db.payment_links.update_one(
+                    {"id": link["id"]},
+                    {"$inc": {"payments_received": 1, "total_received": lp["amount"]}}
+                )
+                await record_tx(link["user_id"], "link_payment", "in",
+                                lp["amount"], "USDT", status="completed",
+                                description=f"Paiement lien: {link.get('title','')} · {lp.get('coin','')} {lp.get('network','')}",
+                                counterparty=lp.get("customer_email") or "client",
+                                metadata={"link_id": link["id"],
+                                          "izipay_intent_id": intent_id,
+                                          "coin": lp.get("coin"), "network": lp.get("network"),
+                                          "asset_code": lp.get("asset_code"), "tx_hash": tx_hash,
+                                          "deposit_address": lp.get("deposit_address"),
+                                          "source": "reconcile"})
+
+
 @api.post("/webhooks/izipay")
 async def izipay_webhook(request: Request):
     """Receive signed webhooks from IzichangePay.
@@ -803,35 +877,55 @@ async def izipay_webhook(request: Request):
                 # 1) Crypto deposit?
                 d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
                 if d:
+                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
                     await db.crypto_deposits.update_one(
                         {"id": merchant_ref, "status": {"$ne": "confirmed"}},
                         {"$set": {"status": "confirmed", "updated_at": now_iso(),
-                                  "izipay_intent_id": intent_id}}
+                                  "izipay_intent_id": intent_id,
+                                  "tx_hash": tx_hash}}
                     )
                     # Credit USDT balance
                     await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": d["amount"]}})
                     await record_tx(d["user_id"], "deposit", "in", d["amount"], "USDT",
                                     status="completed",
-                                    description="Dépôt crypto IzichangePay",
-                                    metadata={"izipay_intent_id": intent_id, "coin": d["coin"]})
+                                    description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
+                                    metadata={"izipay_intent_id": intent_id,
+                                              "coin": d.get("coin"),
+                                              "network": d.get("network"),
+                                              "asset_code": d.get("asset_code"),
+                                              "tx_hash": tx_hash,
+                                              "deposit_address": d.get("deposit_address")})
                 # 2) Payment link payment?
                 link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if link_pay:
+                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
                     await db.link_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
                         {"$set": {"status": "paid", "paid_at": now_iso(),
-                                  "izipay_intent_id": intent_id}}
+                                  "izipay_intent_id": intent_id,
+                                  "tx_hash": tx_hash}}
                     )
                     # Credit merchant
                     link = await db.payment_links.find_one({"id": link_pay["link_id"]})
                     if link:
                         await db.users.update_one({"id": link["user_id"]},
                                                   {"$inc": {"balance_usdt": link_pay["amount"]}})
+                        # Update link aggregates
+                        await db.payment_links.update_one(
+                            {"id": link["id"]},
+                            {"$inc": {"payments_received": 1, "total_received": link_pay["amount"]}}
+                        )
                         await record_tx(link["user_id"], "link_payment", "in",
                                         link_pay["amount"], "USDT", status="completed",
-                                        description=f"Paiement lien: {link.get('title','')}",
+                                        description=f"Paiement lien: {link.get('title','')} · {link_pay.get('coin','')} {link_pay.get('network','')}",
                                         counterparty=link_pay.get("customer_email") or "client",
-                                        metadata={"link_id": link["id"], "izipay_intent_id": intent_id})
+                                        metadata={"link_id": link["id"],
+                                                  "izipay_intent_id": intent_id,
+                                                  "coin": link_pay.get("coin"),
+                                                  "network": link_pay.get("network"),
+                                                  "asset_code": link_pay.get("asset_code"),
+                                                  "tx_hash": tx_hash,
+                                                  "deposit_address": link_pay.get("deposit_address")})
                 # 3) Merchant API payment?
                 mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if mp:
@@ -898,6 +992,8 @@ async def start_link_payment(req: LinkPayRequest):
     link = await db.payment_links.find_one({"slug": req.slug, "active": True})
     if not link:
         raise HTTPException(404, "Lien introuvable ou inactif")
+    if link.get("currency") != "USDT":
+        raise HTTPException(400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT)")
 
     if link.get("amount_type") == "fixed":
         amount = float(link.get("amount") or 0)
@@ -941,7 +1037,8 @@ async def start_link_payment(req: LinkPayRequest):
         "memo": intent.get("memo"),
         "memo_type": intent.get("memoType"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
-        "expires_at": intent.get("expiresAt"),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+        "izipay_expires_at": intent.get("expiresAt"),
         "created_at": now_iso(),
     }
     await db.link_payments.insert_one(doc)
@@ -954,6 +1051,10 @@ async def get_link_payment_status(payment_id: str):
     lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     if not lp:
         raise HTTPException(404, "Not found")
+    # Fallback: reconcile against IziPay if not yet paid.
+    if lp.get("status") not in ("paid", "expired", "failed") and lp.get("izipay_intent_id"):
+        await _reconcile_intent(lp["izipay_intent_id"])
+        lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     return lp
 
 
@@ -1609,6 +1710,36 @@ async def admin_reset_password(user_id: str, req: AdminResetPwd, admin=Depends(g
     await audit(admin["id"], admin["username"], "reset_password",
                 target_user_id=user_id, target_username=target["username"])
     return {"ok": True}
+
+
+@api.post("/admin/users/cleanup-test-users")
+async def admin_cleanup_test_users(admin=Depends(get_admin)):
+    """Danger: super_admin only. Deletes ALL users except super_admins,
+    along with all their transactions, links, KYC, API keys, tickets,
+    crypto deposits, link payments, and support messages.
+    """
+    if admin.get("role") != "super_admin":
+        raise HTTPException(403, "Réservé aux super_admin")
+    keep = await db.users.find({"role": "super_admin"}, {"_id": 0, "id": 1}).to_list(100)
+    keep_ids = [u["id"] for u in keep]
+    victims = await db.users.find({"id": {"$nin": keep_ids}}, {"_id": 0, "id": 1, "email": 1}).to_list(10000)
+    victim_ids = [u["id"] for u in victims]
+    if not victim_ids:
+        return {"deleted": 0, "kept": keep_ids}
+    r1 = await db.users.delete_many({"id": {"$in": victim_ids}})
+    await db.transactions.delete_many({"user_id": {"$in": victim_ids}})
+    await db.payment_links.delete_many({"user_id": {"$in": victim_ids}})
+    await db.kyc.delete_many({"user_id": {"$in": victim_ids}})
+    await db.api_keys.delete_many({"user_id": {"$in": victim_ids}})
+    await db.tickets.delete_many({"user_id": {"$in": victim_ids}})
+    await db.crypto_deposits.delete_many({"user_id": {"$in": victim_ids}})
+    await db.link_payments.delete_many({})  # link payments are tied to links (already deleted)
+    await db.merchant_payments.delete_many({"merchant_id": {"$in": victim_ids}})
+    await db.support_messages.delete_many({"conversation_id": {"$in": victim_ids}})
+    await db.payment_transactions.delete_many({"user_id": {"$in": victim_ids}})
+    await audit(admin["id"], admin["username"], "cleanup_test_users",
+                details={"deleted_count": r1.deleted_count})
+    return {"deleted": r1.deleted_count, "kept_super_admins": keep_ids}
 
 
 @api.get("/admin/kyc")
