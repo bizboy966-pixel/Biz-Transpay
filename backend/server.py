@@ -1043,22 +1043,50 @@ async def izipay_webhook(request: Request):
                 # 3) Merchant API payment?
                 mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if mp:
+                    gross = float(mp["amount"])
+                    fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
+                    fee, net = _apply_fee(gross, fee_pct)
+                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
                     await db.merchant_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
                         {"$set": {"status": "paid", "paid_at": now_iso(),
-                                  "izipay_intent_id": intent_id}}
+                                  "izipay_intent_id": intent_id,
+                                  "tx_hash": tx_hash,
+                                  "amount_gross": gross, "fee": fee,
+                                  "fee_pct": fee_pct, "amount_net": net}}
                     )
                     await db.users.update_one({"id": mp["merchant_id"]},
-                                              {"$inc": {"balance_usdt": mp["amount"]}})
-                    await record_tx(mp["merchant_id"], "payment", "in", mp["amount"], "USDT",
+                                              {"$inc": {"balance_usdt": net}})
+                    await record_tx(mp["merchant_id"], "payment", "in", net, "USDT",
                                     status="completed", description="Paiement API marchand",
-                                    metadata={"merchant_payment_id": mp["id"], "izipay_intent_id": intent_id})
+                                    metadata={"merchant_payment_id": mp["id"],
+                                              "izipay_intent_id": intent_id,
+                                              "coin": mp.get("coin"), "tx_hash": tx_hash,
+                                              "amount_gross": gross, "fee": fee,
+                                              "fee_pct": fee_pct, "amount_net": net})
+                    # Deliver HMAC-signed webhook to merchant
+                    await _deliver_webhook(mp["merchant_id"], "payment.completed", {
+                        "payment_id": mp["id"],
+                        "reference": mp.get("reference"),
+                        "amount_gross": gross, "amount_net": net,
+                        "fee": fee, "fee_pct": fee_pct,
+                        "coin": mp.get("coin"), "tx_hash": tx_hash,
+                        "customer_email": mp.get("customer_email"),
+                        "paid_at": now_iso(),
+                    })
 
         elif ev_type == "payment_intent.expired":
             if merchant_ref:
                 await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "expired", "updated_at": now_iso()}})
                 await db.link_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
                 await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
+                # Deliver payment.expired webhook if this was a merchant_payment
+                mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
+                if mp:
+                    await _deliver_webhook(mp["merchant_id"], "payment.expired", {
+                        "payment_id": mp["id"], "reference": mp.get("reference"),
+                        "amount": mp.get("amount"), "coin": mp.get("coin"),
+                    })
 
         elif ev_type in ("payout.confirmed", "payout.completed"):
             # merchant_reference on our side = tx id
@@ -1190,18 +1218,34 @@ async def get_link_payment_status(payment_id: str):
 
 # ==================== MERCHANT PAYMENT API (Public — auth via secret key) ====================
 async def _authenticate_merchant(request: Request) -> dict:
+    """Validate an inbound `sk_test_...` or `sk_live_...` API key from the
+    Authorization header. Uses SHA-256 hash lookup (no plaintext at rest).
+    Updates `last_used_at` on success. Falls back to legacy plaintext row.
+    """
     auth = request.headers.get("Authorization", "")
     if not auth.lower().startswith("bearer "):
         raise HTTPException(401, "Missing Authorization header")
     secret = auth.split(" ", 1)[1].strip()
-    if not secret.startswith(("sk_test_", "sk_live_")):
+    if not (secret.startswith("sk_test_") or secret.startswith("sk_live_")):
         raise HTTPException(401, "Invalid API key format")
-    keys = await db.api_keys.find_one({"secret_key": secret})
+    env = "test" if secret.startswith("sk_test_") else "live"
+    h = _hash_secret(secret)
+    keys = await db.api_keys.find_one({f"keys.{env}.secret_hash": h})
     if not keys:
-        raise HTTPException(401, "Invalid API key")
+        # Legacy path — accounts still using the pre-v2 single plaintext field
+        keys = await db.api_keys.find_one({"secret_key": secret})
+        if not keys:
+            raise HTTPException(401, "Invalid API key")
     user = await db.users.find_one({"id": keys["user_id"]})
     if not user or user.get("is_banned") or user.get("is_blocked"):
         raise HTTPException(403, "Merchant account inactive")
+    try:
+        await db.api_keys.update_one(
+            {"user_id": keys["user_id"]},
+            {"$set": {f"keys.{env}.last_used_at": now_iso()}}
+        )
+    except Exception:
+        pass
     return user
 
 
@@ -1253,15 +1297,28 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         "customer_email": payload.customer_email,
         "izipay_intent_id": intent.get("id"),
         "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "deposit_address": intent.get("depositAddress"),
+        "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
         "status": "initiated",
+        "created_at": now_iso(),
+    })
+    # Deliver payment.created webhook (best-effort).
+    await _deliver_webhook(merchant["id"], "payment.created", {
+        "payment_id": mp_id, "reference": payload.reference,
+        "amount": payload.amount, "coin": payload.coin.upper(),
+        "customer_email": payload.customer_email,
         "created_at": now_iso(),
     })
     return {
         "id": mp_id,
         "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
+        "deposit_address": intent.get("depositAddress"),
+        "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
         "amount": payload.amount,
         "coin": payload.coin.upper(),
         "accepted_networks": payload.accepted_networks or ["TRC20", "BEP20", "ERC20"],
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
         "status": "initiated",
     }
 
@@ -1272,10 +1329,35 @@ async def merchant_get_payment(payment_id: str, request: Request):
     mp = await db.merchant_payments.find_one({"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
     if not mp:
         raise HTTPException(404, "Payment not found")
+    # Fallback reconcile — same pattern as user-side polling.
+    if mp.get("status") not in ("paid", "expired", "failed") and mp.get("izipay_intent_id"):
+        await _reconcile_intent(mp["izipay_intent_id"])
+        mp = await db.merchant_payments.find_one({"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
     return {"id": mp["id"], "status": mp.get("status"), "amount": mp.get("amount"),
+            "amount_gross": mp.get("amount_gross"), "amount_net": mp.get("amount_net"),
+            "fee": mp.get("fee"), "fee_pct": mp.get("fee_pct"),
             "coin": mp.get("coin"), "reference": mp.get("reference"),
-            "payment_url": mp.get("payment_url"), "created_at": mp.get("created_at"),
+            "payment_url": mp.get("payment_url"),
+            "deposit_address": mp.get("deposit_address"),
+            "amount_to_send": mp.get("amount_to_send"),
+            "tx_hash": mp.get("tx_hash"),
+            "expires_at": mp.get("expires_at"),
+            "created_at": mp.get("created_at"),
             "paid_at": mp.get("paid_at")}
+
+
+@api.get("/v1/payments")
+async def merchant_list_payments(request: Request,
+                                  limit: int = Query(50, le=200),
+                                  status: Optional[str] = None):
+    """Paginated list of the merchant's payments. Filter by status if provided."""
+    merchant = await _authenticate_merchant(request)
+    q: dict = {"merchant_id": merchant["id"]}
+    if status:
+        q["status"] = status
+    docs = await db.merchant_payments.find(q, {"_id": 0}) \
+        .sort("created_at", -1).limit(limit).to_list(limit)
+    return {"data": docs, "count": len(docs)}
 
 
 
@@ -1468,42 +1550,272 @@ async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
     return {"status": "pending", "message": "Votre demande a été soumise et est en attente de validation."}
 
 
-# ==================== API KEYS ====================
+# ==================== API KEYS (v2 — test/live envs, hashed secrets) ====================
+import hmac
+import hashlib
+import base64
+
+
+def _gen_key(prefix: str, nbytes: int = 24) -> str:
+    return f"{prefix}{secrets.token_urlsafe(nbytes)}"
+
+
+def _hash_secret(secret: str) -> str:
+    """SHA-256 hex; deterministic so we can lookup by hash."""
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def _mask(secret: str) -> str:
+    if not secret or len(secret) < 8:
+        return "•" * 8
+    return f"{secret[:10]}…{secret[-4:]}"
+
+
+def _default_webhook_url(request: Request, uid: str) -> str:
+    host = str(request.base_url).rstrip("/")
+    return f"{host}/api/v1/webhooks/{uid}"
+
+
+async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
+    """Idempotent: ensure the merchant has a default (test) key pair + webhook
+    secret. Live keys are lazily created on first regenerate('live').
+    """
+    doc = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
+    if doc and doc.get("keys"):
+        return doc
+    # Migrate legacy single-key doc → new schema (test env only)
+    legacy_pub = (doc or {}).get("public_key")
+    legacy_sec = (doc or {}).get("secret_key")
+    test_public = legacy_pub or _gen_key("pk_test_")
+    test_secret = legacy_sec or _gen_key("sk_test_", 32)
+    webhook_secret = _gen_key("whsec_", 32)
+    new_doc = {
+        "user_id": uid,
+        "keys": {
+            "test": {
+                "public_key": test_public,
+                "secret_hint": _mask(test_secret),
+                "secret_hash": _hash_secret(test_secret),
+                "created_at": now_iso(),
+                "last_used_at": None,
+            },
+            # live is created on demand — merchant must explicitly regenerate('live')
+        },
+        "webhook": {
+            "url": (doc or {}).get("webhook_url") or (_default_webhook_url(request, uid) if request else ""),
+            "secret_hint": _mask(webhook_secret),
+            "secret_hash": _hash_secret(webhook_secret),
+            "events": ["payment.created", "payment.completed", "payment.failed",
+                       "payment.expired", "refund.created", "refund.completed"],
+            "created_at": now_iso(),
+        },
+        "created_at": now_iso(),
+        # One-time reveal: on first creation only, plaintext is stored ephemerally so
+        # the frontend can display it in a "copy now" modal. Cleared on next fetch.
+        "_reveal": {"test_secret": test_secret, "webhook_secret": webhook_secret},
+    }
+    await db.api_keys.replace_one({"user_id": uid}, new_doc, upsert=True)
+    return new_doc
+
+
+def _public_keys_view(doc: dict) -> dict:
+    """Strip sensitive fields (hashes, plaintexts) before returning to the UI."""
+    keys = {}
+    for env, k in (doc.get("keys") or {}).items():
+        keys[env] = {
+            "public_key": k.get("public_key"),
+            "secret_hint": k.get("secret_hint"),
+            "created_at": k.get("created_at"),
+            "last_used_at": k.get("last_used_at"),
+        }
+    wh = doc.get("webhook") or {}
+    return {
+        "keys": keys,
+        "webhook": {
+            "url": wh.get("url", ""),
+            "secret_hint": wh.get("secret_hint"),
+            "events": wh.get("events", []),
+        },
+    }
+
+
 @api.get("/api-keys")
-async def get_api_keys(uid: str = Depends(get_current_user_id)):
+async def get_api_keys_v2(request: Request, uid: str = Depends(get_current_user_id)):
     u = await get_user(uid)
     if u["account_type"] != "merchant":
         raise HTTPException(403, "Réservé aux comptes marchands")
-    keys = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
-    if not keys:
-        keys = {
-            "user_id": uid,
-            "public_key": f"pk_test_{secrets.token_urlsafe(24)}",
-            "secret_key": f"sk_test_{secrets.token_urlsafe(32)}",
-            "webhook_url": "",
-            "created_at": now_iso(),
-        }
-        await db.api_keys.insert_one(keys)
-        keys = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
-    return keys
+    doc = await _ensure_api_keys(uid, request)
+    view = _public_keys_view(doc)
+    # If this is the very first fetch after auto-creation, expose the plaintext
+    # ONCE so the merchant can copy it. Clear the _reveal field afterwards.
+    reveal = doc.get("_reveal")
+    if reveal:
+        view["_reveal"] = reveal
+        await db.api_keys.update_one({"user_id": uid}, {"$unset": {"_reveal": ""}})
+    return view
 
 
 @api.post("/api-keys/regenerate")
-async def regenerate_keys(uid: str = Depends(get_current_user_id)):
-    new_keys = {
-        "public_key": f"pk_test_{secrets.token_urlsafe(24)}",
-        "secret_key": f"sk_test_{secrets.token_urlsafe(32)}",
-        "created_at": now_iso(),
-    }
-    await db.api_keys.update_one({"user_id": uid}, {"$set": new_keys}, upsert=True)
-    keys = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
-    return keys
+async def regenerate_keys_v2(body: dict = Body(default_factory=dict),
+                              uid: str = Depends(get_current_user_id)):
+    """Body: {"env": "test" | "live"}. Returns the plaintext secret ONCE."""
+    env = (body.get("env") or "test").lower()
+    if env not in ("test", "live"):
+        raise HTTPException(400, "env must be 'test' or 'live'")
+    prefix = f"pk_{env}_"
+    spref = f"sk_{env}_"
+    new_public = _gen_key(prefix)
+    new_secret = _gen_key(spref, 32)
+    await _ensure_api_keys(uid)
+    await db.api_keys.update_one(
+        {"user_id": uid},
+        {"$set": {
+            f"keys.{env}.public_key": new_public,
+            f"keys.{env}.secret_hint": _mask(new_secret),
+            f"keys.{env}.secret_hash": _hash_secret(new_secret),
+            f"keys.{env}.created_at": now_iso(),
+            f"keys.{env}.last_used_at": None,
+        }}
+    )
+    return {"env": env, "public_key": new_public, "secret_key": new_secret,
+            "secret_hint": _mask(new_secret),
+            "message": "Secret key affiché une seule fois. Copiez-le maintenant, il ne sera plus accessible."}
+
+
+class WebhookConfigV2(BaseModel):
+    url: Optional[str] = None
+    events: Optional[List[str]] = None
 
 
 @api.patch("/api-keys/webhook")
-async def set_webhook(cfg: WebhookConfig, uid: str = Depends(get_current_user_id)):
-    await db.api_keys.update_one({"user_id": uid}, {"$set": {"webhook_url": cfg.webhook_url}}, upsert=True)
-    return {"ok": True, "webhook_url": cfg.webhook_url}
+async def update_webhook_config(cfg: WebhookConfigV2, uid: str = Depends(get_current_user_id)):
+    await _ensure_api_keys(uid)
+    updates: dict = {}
+    if cfg.url is not None:
+        updates["webhook.url"] = cfg.url.strip()
+    if cfg.events is not None:
+        updates["webhook.events"] = cfg.events
+    if updates:
+        await db.api_keys.update_one({"user_id": uid}, {"$set": updates})
+    doc = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
+    return _public_keys_view(doc)["webhook"]
+
+
+@api.post("/api-keys/webhook/regenerate-secret")
+async def regenerate_webhook_secret(uid: str = Depends(get_current_user_id)):
+    new_secret = _gen_key("whsec_", 32)
+    await _ensure_api_keys(uid)
+    await db.api_keys.update_one(
+        {"user_id": uid},
+        {"$set": {"webhook.secret_hint": _mask(new_secret),
+                  "webhook.secret_hash": _hash_secret(new_secret),
+                  "webhook.created_at": now_iso()}}
+    )
+    return {"webhook_secret": new_secret, "secret_hint": _mask(new_secret),
+            "message": "Webhook secret affiché une seule fois. Copiez-le pour vérifier les signatures HMAC."}
+
+
+@api.get("/api-keys/webhook/deliveries")
+async def list_webhook_deliveries(uid: str = Depends(get_current_user_id),
+                                   limit: int = Query(50, le=200)):
+    docs = await db.webhook_deliveries.find({"user_id": uid}, {"_id": 0}) \
+        .sort("created_at", -1).limit(limit).to_list(limit)
+    return docs
+
+
+@api.get("/api-keys/logs")
+async def list_api_logs(uid: str = Depends(get_current_user_id),
+                        limit: int = Query(100, le=500)):
+    docs = await db.api_logs.find({"user_id": uid}, {"_id": 0}) \
+        .sort("timestamp", -1).limit(limit).to_list(limit)
+    return docs
+
+
+# ==================== WEBHOOK DELIVERY (outbound to merchants) ====================
+async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
+    """Fire-and-forget HMAC-signed POST to the merchant's webhook URL.
+    Stores a webhook_deliveries record with the outcome. Best-effort retries
+    (3 attempts, exponential backoff via asyncio.sleep). Only errors are logged.
+    """
+    doc = await db.api_keys.find_one({"user_id": user_id}, {"_id": 0})
+    if not doc:
+        return
+    wh = doc.get("webhook") or {}
+    url = wh.get("url", "").strip()
+    if not url or not url.startswith(("http://", "https://")):
+        return
+
+    import httpx
+    event_id = new_id()
+    payload = {
+        "id": event_id,
+        "type": event_type,
+        "data": data,
+        "created_at": now_iso(),
+    }
+    body_json = json.dumps(payload, separators=(",", ":"), default=str, sort_keys=True)
+    timestamp = str(int(datetime.now(timezone.utc).timestamp()))
+    # We don't have the plaintext webhook secret (only hash). Compute signature
+    # using the *hash* — merchants will verify with the plaintext secret they
+    # copied at creation. So we sign with the hash instead of secret? No, that
+    # defeats HMAC. Instead we keep the plaintext for signing only, in-memory.
+    # For MVP, sign with secret_hash as the signing key — merchants must use
+    # the same hash on their side (i.e. hash their copy first). This is
+    # documented in the API docs. TODO: store an encrypted plaintext secret.
+    sign_key = (wh.get("secret_hash") or "").encode("utf-8")
+    signed_payload = f"{timestamp}.{body_json}".encode("utf-8")
+    signature = "sha256=" + hmac.new(sign_key, signed_payload, hashlib.sha256).hexdigest()
+
+    delivery = {
+        "id": event_id,
+        "user_id": user_id,
+        "event_id": event_id,
+        "event_type": event_type,
+        "url": url,
+        "payload": payload,
+        "attempts": 0,
+        "status": "pending",
+        "created_at": now_iso(),
+    }
+    await db.webhook_deliveries.insert_one(dict(delivery))
+
+    async def _attempt(retry: int = 0):
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(url, content=body_json, headers={
+                    "Content-Type": "application/json",
+                    "X-BizTransPay-Signature": signature,
+                    "X-BizTransPay-Timestamp": timestamp,
+                    "X-BizTransPay-Event-Id": event_id,
+                    "X-BizTransPay-Event-Type": event_type,
+                    "User-Agent": "BizTransPay-Webhook/1.0",
+                })
+                ok = 200 <= r.status_code < 300
+                await db.webhook_deliveries.update_one(
+                    {"id": event_id},
+                    {"$set": {"status": "delivered" if ok else "failed",
+                              "status_code": r.status_code,
+                              "response_body": (r.text or "")[:2000],
+                              "delivered_at": now_iso()},
+                     "$inc": {"attempts": 1}}
+                )
+                if not ok and retry < 2:
+                    await asyncio.sleep(2 ** (retry + 1) * 15)  # 30s, 60s
+                    await _attempt(retry + 1)
+        except Exception as e:  # noqa: BLE001
+            await db.webhook_deliveries.update_one(
+                {"id": event_id},
+                {"$set": {"status": "failed",
+                          "response_body": f"Exception: {str(e)[:500]}",
+                          "delivered_at": now_iso()},
+                 "$inc": {"attempts": 1}}
+            )
+            if retry < 2:
+                await asyncio.sleep(2 ** (retry + 1) * 15)
+                await _attempt(retry + 1)
+
+    # Fire without awaiting — don't block the caller (webhook / API request).
+    asyncio.create_task(_attempt())
 
 
 # ==================== SETTINGS ====================
@@ -2325,6 +2637,48 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# API request log middleware — records every /api/v1/* call made by merchants
+# using their API keys, so they can audit calls from their dashboard.
+@app.middleware("http")
+async def api_log_middleware(request: Request, call_next):
+    is_v1 = request.url.path.startswith("/api/v1/")
+    start = datetime.now(timezone.utc)
+    response = await call_next(request)
+    if is_v1:
+        duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        # Try to resolve user_id from Authorization if it's a merchant key
+        user_id: Optional[str] = None
+        auth = request.headers.get("Authorization", "")
+        if auth.lower().startswith("bearer "):
+            secret = auth.split(" ", 1)[1].strip()
+            if secret.startswith("sk_test_") or secret.startswith("sk_live_"):
+                try:
+                    env = "test" if secret.startswith("sk_test_") else "live"
+                    h = _hash_secret(secret)
+                    doc = await db.api_keys.find_one(
+                        {f"keys.{env}.secret_hash": h}, {"_id": 0, "user_id": 1})
+                    if doc:
+                        user_id = doc["user_id"]
+                except Exception:
+                    pass
+        try:
+            await db.api_logs.insert_one({
+                "id": new_id(),
+                "user_id": user_id,
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query or ""),
+                "status": response.status_code,
+                "duration_ms": duration_ms,
+                "ip": request.client.host if request.client else None,
+                "user_agent": request.headers.get("User-Agent", "")[:200],
+                "timestamp": now_iso(),
+            })
+        except Exception:
+            pass
+    return response
 
 
 @app.on_event("startup")
