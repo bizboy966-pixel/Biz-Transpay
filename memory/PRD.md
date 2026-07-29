@@ -1,5 +1,16 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — 5 correctifs post-déploiement
+- ✅ **Devise USDT sur liens de paiement** : `PaymentLinkCreate.currency` accepte maintenant `USDT` en plus de `XOF`/`XAF` (`models.py`). Le formulaire de création (`Links.js`) propose "USDT (Crypto)" avec un helper indiquant "Ce lien acceptera uniquement les paiements crypto". Sur `PublicLink.js`, la méthode Crypto est **désactivée** si `link.currency !== 'USDT'` avec le message "Ce lien n'accepte pas les paiements crypto". Le backend `/api/links/pay` refuse (400) toute tentative crypto sur un lien non-USDT.
+- ✅ **Vérification & finalisation automatique des dépôts crypto** : nouveau helper `_reconcile_intent(intent_id)` dans `server.py` qui appelle `izipay.get_payment_intent()` puis finalise dépôts / paiements lien exactement comme le webhook. Appelé en fallback à chaque poll `GET /api/deposits/crypto/{id}` et `GET /api/links/payments/{id}` — garantit finalisation même si le webhook IziPay n'arrive pas.
+- ✅ **Timeout dépôt crypto → 10 min** : `expires_at` overridé côté serveur à `now + 10 minutes` (au lieu de la valeur IziPay ~4 min). L'expiration IziPay reste stockée dans `izipay_expires_at` pour référence.
+- ✅ **Historique crypto enrichi** : `record_tx` reçoit maintenant `coin`, `network`, `asset_code`, `tx_hash`, `deposit_address` dans `metadata` (webhook + reconcile). `Transactions.js` (user) et `AdminTransactions.js` (admin) affichent le badge coin·network + tx_hash avec lien vers l'explorer on-chain (TronScan/BscScan/Etherscan/Solscan/Mempool).
+- ✅ **Wipe test users** : tous les utilisateurs supprimés sauf `bizboy966@gmail.com` (promu super_admin). Nouvel endpoint admin idempotent `POST /api/admin/users/cleanup-test-users` (super_admin only) — supprime users + transactions + links + KYC + API keys + tickets + crypto_deposits + support_messages.
+
+⚠️ **Attention** : le mot de passe de `bizboy966@gmail.com` a été réinitialisé à `Password123!` pendant le processus de test — merci de le changer via `/dashboard/settings` avant de retourner en production.
+
+**Testing** : 11/11 pytest backend (iteration 9). Frontend validé sur USDT & XOF liens publics.
+
 ## Original problem statement
 Créer une passerelle de paiement fintech premium (`Biz-transPay`) avec 3 surfaces :
 1. **Landing page** ultra-moderne (nav, hero 3D phone, features, moyens de paiement, stats, sécurité, politique, CTA, footer).

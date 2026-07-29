@@ -61,9 +61,17 @@ export default function AdminTransactions({ filterType }) {
             </thead>
             <tbody>
               {txs.length === 0 && <tr><td colSpan={6} className="p-10 text-center text-slate-400 text-sm">Aucune transaction</td></tr>}
-              {txs.map((tx) => (
+              {txs.map((tx) => {
+                const meta = tx.metadata || {};
+                const coin = meta.coin;
+                const network = meta.network;
+                const txHash = meta.tx_hash;
+                return (
                 <tr key={tx.id} data-testid={`admin-tx-row-${tx.id}`} className="border-t border-slate-50 hover:bg-slate-50/50">
-                  <td className="px-5 py-3 font-mono text-xs text-slate-700">{tx.reference}</td>
+                  <td className="px-5 py-3 font-mono text-xs text-slate-700">
+                    <div>{tx.reference}</div>
+                    {txHash && <div className="text-[10px] text-slate-400 truncate max-w-[180px]" title={txHash}>{txHash}</div>}
+                  </td>
                   <td className="px-5 py-3">
                     <div className="text-xs font-semibold text-slate-900">{tx.user?.full_name || '—'}</div>
                     <div className="text-[11px] text-slate-500">@{tx.user?.username}</div>
@@ -73,14 +81,16 @@ export default function AdminTransactions({ filterType }) {
                       {tx.direction === 'in' ? <ArrowDownToLine className="w-3.5 h-3.5 text-emerald-600" /> : <ArrowUpFromLine className="w-3.5 h-3.5 text-red-500" />}
                       {tx.type}
                     </span>
+                    {(coin || network) && <div className="mt-0.5 text-[10px] text-orange-700 font-semibold">{coin}{network ? ` · ${network}` : ''}</div>}
                   </td>
                   <td className={`px-5 py-3 text-right text-xs font-bold ${tx.direction === 'in' ? 'text-emerald-600' : 'text-slate-900'}`}>
-                    {tx.direction === 'in' ? '+' : '-'}{tx.amount.toLocaleString()} <span className="opacity-70">{tx.currency}</span>
+                    {tx.direction === 'in' ? '+' : '-'}{tx.amount.toLocaleString(undefined, { maximumFractionDigits: tx.currency === 'USDT' ? 6 : 0 })} <span className="opacity-70">{tx.currency}</span>
                   </td>
                   <td className="px-5 py-3 text-center"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${statusColor(tx.status)}`}>{tx.status}</span></td>
                   <td className="px-5 py-3 text-[11px] text-slate-500">{new Date(tx.created_at).toLocaleString()}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

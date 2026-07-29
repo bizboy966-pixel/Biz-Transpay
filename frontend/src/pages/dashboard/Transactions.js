@@ -1,11 +1,20 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Search, ArrowDownLeft, ArrowUpRight, Download } from 'lucide-react';
+import { Search, ArrowDownLeft, ArrowUpRight, Download, ExternalLink } from 'lucide-react';
 import api from '@/api';
 
 const TYPES = ['all', 'deposit', 'transfer', 'link_payment', 'exchange', 'withdrawal'];
 const STATUSES = ['all', 'completed', 'pending', 'failed'];
+
+// Public block explorers to build a link for tx_hash inspection.
+const EXPLORER = {
+  TRC20: 'https://tronscan.org/#/transaction/',
+  BEP20: 'https://bscscan.com/tx/',
+  ERC20: 'https://etherscan.io/tx/',
+  SOLANA: 'https://solscan.io/tx/',
+  BTC: 'https://mempool.space/tx/',
+};
 
 export default function Transactions() {
   const { t } = useTranslation();
@@ -65,21 +74,41 @@ export default function Transactions() {
           <div>Type</div><div>Détails</div><div>Statut</div><div className="text-right">Montant</div>
         </div>
         {txs.length === 0 && <div className="p-10 text-center text-slate-400 text-sm">Aucune transaction</div>}
-        {txs.map((tx) => (
+        {txs.map((tx) => {
+          const meta = tx.metadata || {};
+          const coin = meta.coin;
+          const network = meta.network;
+          const txHash = meta.tx_hash;
+          const explorer = network && EXPLORER[network];
+          return (
           <div key={tx.id} data-testid={`tx-row-${tx.id}`} className="grid grid-cols-[auto_1fr_auto_auto] gap-4 items-center px-6 py-4 border-t border-slate-50 hover:bg-slate-50/50">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${tx.direction === 'in' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
               {tx.direction === 'in' ? <ArrowDownLeft className="w-5 h-5" /> : <ArrowUpRight className="w-5 h-5" />}
             </div>
             <div>
               <div className="font-semibold text-slate-900 text-sm">{tx.type}{tx.counterparty && ` → ${tx.counterparty}`}</div>
-              <div className="text-xs text-slate-500">{tx.reference} · {new Date(tx.created_at).toLocaleString()}</div>
+              <div className="text-xs text-slate-500">
+                {tx.reference} · {new Date(tx.created_at).toLocaleString()}
+                {(coin || network) && <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-50 text-orange-700 font-semibold text-[10px]">{coin}{network ? ` · ${network}` : ''}</span>}
+              </div>
+              {txHash && (
+                <div className="mt-1 text-[10px] text-slate-500 flex items-center gap-1">
+                  <span className="font-mono truncate max-w-[240px] sm:max-w-[380px]" title={txHash}>{txHash}</span>
+                  {explorer && (
+                    <a href={`${explorer}${txHash}`} target="_blank" rel="noreferrer" className="text-[#2563EB] hover:underline inline-flex items-center gap-0.5" data-testid={`tx-explorer-${tx.id}`}>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
             <span className={`px-2.5 py-1 rounded-full text-[11px] font-bold ${statusColor(tx.status)}`}>{tx.status}</span>
             <div className={`text-right font-bold ${tx.direction === 'in' ? 'text-emerald-600' : 'text-slate-900'}`}>
-              {tx.direction === 'in' ? '+' : '-'}{tx.amount.toLocaleString()} <span className="text-xs opacity-70">{tx.currency}</span>
+              {tx.direction === 'in' ? '+' : '-'}{tx.amount.toLocaleString(undefined, { maximumFractionDigits: tx.currency === 'USDT' ? 6 : 0 })} <span className="text-xs opacity-70">{tx.currency}</span>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

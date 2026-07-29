@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Home, Receipt, Link2, Code2, IdCard, Settings as SettingsIcon, Headphones, Menu, Bell, ChevronDown, LogOut, X } from 'lucide-react';
+import { Home, Receipt, Link2, Code2, IdCard, Settings as SettingsIcon, Headphones, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
+import NotificationBell from '@/components/NotificationBell';
 import { useAuth } from '@/context/AuthContext';
 
 export default function DashboardLayout() {
@@ -95,10 +96,7 @@ export default function DashboardLayout() {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
-            <button data-testid="btn-notifications" className="relative w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center">
-              <Bell className="w-4 h-4 text-slate-600" strokeWidth={1.75} />
-              <span className="absolute top-2 right-2.5 w-1.5 h-1.5 rounded-full bg-[#2563EB]" />
-            </button>
+            <NotificationBell />
             <div className="relative">
               <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full hover:bg-slate-100 transition-colors">
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>

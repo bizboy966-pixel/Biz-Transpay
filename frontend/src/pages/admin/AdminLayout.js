@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, Bell, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2 } from 'lucide-react';
+import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
+import NotificationBell from '@/components/NotificationBell';
 import { Link } from 'react-router-dom';
 
 const NAV = [
@@ -104,10 +105,7 @@ export default function AdminLayout() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <button className="w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="admin-search"><Search className="w-4 h-4 text-slate-600" /></button>
-            <button className="relative w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="admin-notif">
-              <Bell className="w-4 h-4 text-slate-600" />
-              <span className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">5</span>
-            </button>
+            <NotificationBell />
             <div className="relative">
               <button onClick={() => setProfileOpen((v) => !v)} data-testid="admin-profile" className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full hover:bg-slate-100">
                 <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>

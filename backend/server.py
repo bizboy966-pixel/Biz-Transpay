@@ -3,13 +3,15 @@ import os
 import logging
 import secrets
 import uuid
+import asyncio
+import json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -28,6 +30,7 @@ from models import (  # noqa: E402
     TicketCreate, Ticket, new_id, now_iso,
 )
 from auth import hash_password, verify_password, create_token, get_current_user_id  # noqa: E402
+import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
 
 # ---------- DB ----------
@@ -102,6 +105,41 @@ async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
     )
     await db.transactions.insert_one(tx.model_dump())
     return tx
+
+
+# ==================== NOTIFICATIONS ====================
+# Per-user Server-Sent Events subscribers for real-time push.
+_sse_subscribers: dict[str, list[asyncio.Queue]] = {}
+
+
+async def notify(user_id: str, ntype: str, title: str, body: str,
+                 data: Optional[dict] = None) -> dict:
+    """Persist a notification and push it to any live SSE subscribers.
+    ntype examples: 'withdrawal_success', 'withdrawal_failed', 'kyc_verified',
+    'kyc_rejected', 'kyc_resubmit_requested'.
+    """
+    doc = {
+        "id": new_id(),
+        "user_id": user_id,
+        "type": ntype,
+        "title": title,
+        "body": body,
+        "data": data or {},
+        "read": False,
+        "created_at": now_iso(),
+    }
+    try:
+        await db.notifications.insert_one(dict(doc))
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning("notify insert failed: %s", e)
+    # Fan-out to any live SSE subscriber queues (best-effort).
+    for q in list(_sse_subscribers.get(user_id, [])):
+        try:
+            q.put_nowait(doc)
+        except Exception:
+            pass
+    return doc
+
 
 
 # ==================== AUTH ====================
@@ -431,6 +469,12 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "country": req.country, "fee": fee, "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "recipient_name": req.recipient_name,
                                            "total_debit": total_debit})
+        await notify(uid, "withdrawal_success",
+                     "Retrait Mobile Money effectué",
+                     f"Votre retrait de {req.amount:,.0f} {req.currency} vers {req.recipient} ({op['name']}) a été effectué avec succès.",
+                     data={"transaction_id": tx_out.id, "reference": tx_out.reference,
+                           "amount": req.amount, "currency": req.currency,
+                           "transfer_type": "biz_to_mobile"})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "operator": op["name"]}
 
@@ -457,6 +501,12 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                  metadata={"transfer_type": "biz_to_bank", "bank": bank["name"],
                                            "fee": fee, "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "total_debit": total_debit})
+        await notify(uid, "withdrawal_success",
+                     "Virement bancaire effectué",
+                     f"Votre virement de {req.amount:,.0f} {req.currency} vers {req.recipient} ({bank['name']}) a été effectué avec succès.",
+                     data={"transaction_id": tx_out.id, "reference": tx_out.reference,
+                           "amount": req.amount, "currency": req.currency,
+                           "transfer_type": "biz_to_bank"})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "bank": bank["name"]}
 
@@ -959,6 +1009,16 @@ async def izipay_webhook(request: Request):
                                   "metadata.izipay_payout_id": payout_id or tx.get("metadata", {}).get("izipay_payout_id"),
                                   "metadata.izipay_status": "confirmed"}}
                     )
+                    meta = tx.get("metadata") or {}
+                    coin = meta.get("crypto") or ""
+                    network = meta.get("network") or ""
+                    await notify(tx["user_id"], "withdrawal_success",
+                                 "Retrait crypto confirmé",
+                                 f"Votre retrait de {tx['amount']:.6f} {coin} sur {network} a été confirmé on-chain.",
+                                 data={"transaction_id": tx["id"], "reference": tx.get("reference"),
+                                       "amount": tx["amount"], "currency": tx.get("currency", "USDT"),
+                                       "transfer_type": "biz_to_crypto",
+                                       "tx_hash": tx_hash, "coin": coin, "network": network})
 
         elif ev_type in ("payout.failed", "payout.rejected"):
             if merchant_ref:
@@ -974,6 +1034,12 @@ async def izipay_webhook(request: Request):
                                                      {"$set": {"status": "failed",
                                                                "metadata.izipay_status": ev_type.split(".")[1],
                                                                "metadata.error": data.get("reason", "")}})
+                    await notify(tx["user_id"], "withdrawal_failed",
+                                 "Retrait crypto échoué",
+                                 f"Votre retrait de {tx['amount']:.6f} {meta.get('crypto','')} a échoué. Votre solde a été remboursé.",
+                                 data={"transaction_id": tx["id"], "reference": tx.get("reference"),
+                                       "amount": tx["amount"], "currency": currency,
+                                       "reason": data.get("reason", "")})
         # settlement.completed etc. — no local action for now (already credited on completion)
     finally:
         await db.webhook_events.update_one({"event_id": eid}, {"$set": {"processed": True, "processed_at": now_iso()}})
@@ -1420,6 +1486,85 @@ async def create_ticket(req: TicketCreate, uid: str = Depends(get_current_user_i
     return t
 
 
+
+# ==================== NOTIFICATIONS API ====================
+@api.get("/notifications")
+async def list_notifications(uid: str = Depends(get_current_user_id),
+                             limit: int = Query(50, le=200),
+                             unread_only: bool = False):
+    q: dict = {"user_id": uid}
+    if unread_only:
+        q["read"] = False
+    docs = await db.notifications.find(q, {"_id": 0}) \
+        .sort("created_at", -1).limit(limit).to_list(limit)
+    return docs
+
+
+@api.get("/notifications/unread-count")
+async def unread_count(uid: str = Depends(get_current_user_id)):
+    n = await db.notifications.count_documents({"user_id": uid, "read": False})
+    return {"count": n}
+
+
+@api.post("/notifications/{nid}/read")
+async def notification_mark_read(nid: str, uid: str = Depends(get_current_user_id)):
+    r = await db.notifications.update_one(
+        {"id": nid, "user_id": uid}, {"$set": {"read": True}}
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Notification introuvable")
+    return {"ok": True}
+
+
+@api.post("/notifications/read-all")
+async def notification_mark_all_read(uid: str = Depends(get_current_user_id)):
+    r = await db.notifications.update_many(
+        {"user_id": uid, "read": False}, {"$set": {"read": True}}
+    )
+    return {"ok": True, "updated": r.modified_count}
+
+
+@api.get("/notifications/stream")
+async def notifications_stream(request: Request, token: str = Query(...)):
+    """Server-Sent Events stream. Since EventSource cannot set Authorization
+    headers, we accept the JWT via ?token= query. Emits:
+        event: notification\ndata: {json}\n\n
+    and heartbeats (': ping\n\n') every 25s to keep the socket alive.
+    """
+    try:
+        payload = pyjwt.decode(token, os.environ.get("JWT_SECRET", "dev-secret"),
+                               algorithms=[os.environ.get("JWT_ALGORITHM", "HS256")])
+        uid = payload["sub"]
+    except Exception:
+        raise HTTPException(401, "Token invalide")
+
+    q: asyncio.Queue = asyncio.Queue()
+    _sse_subscribers.setdefault(uid, []).append(q)
+
+    async def gen():
+        try:
+            # Initial comment so proxies flush headers immediately.
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    doc = await asyncio.wait_for(q.get(), timeout=25.0)
+                    yield f"event: notification\ndata: {json.dumps(doc, default=str)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+        finally:
+            try:
+                _sse_subscribers.get(uid, []).remove(q)
+            except ValueError:
+                pass
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
 # ==================== ADMIN ====================
 async def get_admin(uid: str = Depends(get_current_user_id)) -> dict:
     u = await db.users.find_one({"id": uid}, {"_id": 0})
@@ -1766,18 +1911,30 @@ async def admin_kyc_decision(user_id: str, req: AdminKycDecision, admin=Depends(
                                                                  "verified_at": now_iso(),
                                                                  "reject_reason": None}})
         act = "kyc_approve"
+        await notify(user_id, "kyc_verified",
+                     "KYC vérifié ✓",
+                     "Votre identité a été vérifiée. Vous pouvez maintenant utiliser toutes les fonctionnalités (liens de paiement, API, retraits).",
+                     data={"status": "verified"})
     elif req.request_resubmit:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "not_started"}})
         await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "resubmit_requested",
                                                                  "reject_reason": req.reason,
                                                                  "reviewed_at": now_iso()}})
         act = "kyc_request_resubmit"
+        await notify(user_id, "kyc_resubmit_requested",
+                     "KYC — nouveaux documents demandés",
+                     req.reason or "Merci de renvoyer vos documents KYC.",
+                     data={"status": "resubmit_requested", "reason": req.reason})
     else:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "rejected"}})
         await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "rejected",
                                                                  "reject_reason": req.reason,
                                                                  "reviewed_at": now_iso()}})
         act = "kyc_reject"
+        await notify(user_id, "kyc_rejected",
+                     "KYC rejeté",
+                     req.reason or "Votre demande de KYC a été rejetée. Contactez le support pour plus d'informations.",
+                     data={"status": "rejected", "reason": req.reason})
     await audit(admin["id"], admin["username"], act,
                 target_user_id=user_id, target_username=target["username"],
                 details={"reason": req.reason})
