@@ -2743,6 +2743,87 @@ async def admin_cleanup_test_users(admin=Depends(get_admin)):
     return {"deleted": r1.deleted_count, "kept_super_admins": keep_ids}
 
 
+class AdminPlatformResetReq(BaseModel):
+    confirmation: str  # must be exactly "RÉINITIALISER" (case-sensitive)
+
+
+@api.post("/admin/platform/reset")
+async def admin_platform_reset(req: AdminPlatformResetReq,
+                               admin=Depends(get_admin)):
+    """DESTRUCTIVE — Full platform reset. Super_admin only.
+
+    Deletes ALL non-super_admin users and their data, wipes ALL transactional
+    collections platform-wide (transactions, links, webhooks, api_logs,
+    notifications, kyc, tickets, etc.), and resets balances of every
+    remaining super_admin to 0. Idempotent and audited.
+
+    Requires body `{"confirmation": "RÉINITIALISER"}` to prevent accidents.
+    """
+    if admin.get("role") != "super_admin":
+        raise HTTPException(403, "Réservé aux super_admin")
+    if req.confirmation != "RÉINITIALISER":
+        raise HTTPException(400, "Confirmation invalide. Tapez exactement RÉINITIALISER.")
+
+    keep = await db.users.find({"role": "super_admin"}, {"_id": 0, "id": 1, "email": 1}).to_list(100)
+    keep_ids = [u["id"] for u in keep]
+
+    # 1) Delete every non-super_admin user
+    r_users = await db.users.delete_many({"role": {"$ne": "super_admin"}})
+
+    # 2) Wipe platform-wide transactional collections (all of them, including
+    #    the ones belonging to the preserved super_admin — the user wants
+    #    every counter reset to 0).
+    wipe_collections = [
+        "transactions",
+        "payment_links",
+        "link_payments",
+        "crypto_deposits",
+        "webhook_events",
+        "webhook_deliveries",
+        "api_logs",
+        "notifications",
+        "tickets",
+        "support_messages",
+        "payment_transactions",
+        "merchant_payments",
+        "kyc",
+        "audit_logs",
+        "api_keys",
+    ]
+    wiped: dict[str, int] = {}
+    for coll in wipe_collections:
+        r = await db[coll].delete_many({})
+        wiped[coll] = r.deleted_count
+
+    # 3) Reset balances of preserved super_admins to 0
+    await db.users.update_many(
+        {"role": "super_admin"},
+        {"$set": {"balance_xof": 0.0, "balance_xaf": 0.0, "balance_usdt": 0.0}},
+    )
+
+    # 4) Re-provision fresh API keys for preserved super_admins so /dashboard/api
+    #    keeps working after the wipe.
+    for sa_id in keep_ids:
+        try:
+            await _ensure_api_keys(sa_id)
+        except Exception:
+            pass
+
+    # Audit (recreates the collection we just wiped — that's fine, gives us a
+    # historical trace of the reset itself).
+    await audit(admin["id"], admin["username"], "platform_reset",
+                details={"deleted_users": r_users.deleted_count,
+                         "wiped": wiped,
+                         "kept_super_admins": [u["email"] for u in keep]})
+
+    return {
+        "deleted_users": r_users.deleted_count,
+        "kept_super_admins": [u["email"] for u in keep],
+        "wiped": wiped,
+        "balances_reset": True,
+    }
+
+
 @api.get("/admin/kyc")
 async def admin_list_kyc(admin=Depends(get_admin), status: Optional[str] = None):
     query = {}

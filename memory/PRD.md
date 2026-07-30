@@ -1,5 +1,11 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Reset plateforme depuis Admin Panel (self-service)
+- ✅ **Nouveau endpoint** `POST /api/admin/platform/reset` (super_admin only) — accepte `{"confirmation": "RÉINITIALISER"}` (case-sensitive, sinon 400). Supprime : tous les non-super_admin users + `transactions`, `payment_links`, `link_payments`, `crypto_deposits`, `webhook_events`, `webhook_deliveries`, `api_logs`, `notifications`, `tickets`, `support_messages`, `payment_transactions`, `merchant_payments`, `kyc`, `audit_logs`, `api_keys`. Remet à zéro les soldes des super_admins. Re-provisionne automatiquement les clés API des super_admin restants (via `_ensure_api_keys`). Audit log recréé.
+- ✅ **Nouvelle "Zone de danger"** en bas de `/admin/platform` — encart rouge avec bouton `btn-open-platform-reset`. Modal de confirmation qui exige à l'admin de **taper exactement `RÉINITIALISER`** (fonte monospace) pour activer le bouton `btn-confirm-platform-reset`. État "Réinitialisation…" avec spinner pendant l'opération. Toast succès/erreur.
+- ✅ **Test end-to-end** (preview) : injection user+tx+link fake → reset avec confirmation vide → 400 (message d'erreur clair) → reset avec `RÉINITIALISER` → 1 user supprimé, 1 tx wipée, 1 link wipé, soldes super_admin à 0. Post-reset : `users.total=1`, `transactions.count=0`. ✅
+- ⚠️ **Production** : le bouton apparaîtra en production après redéploiement depuis Emergent. L'admin peut alors cliquer "Réinitialiser" → taper `RÉINITIALISER` → tout est nettoyé en <1s (backup Mongo non inclus dans l'endpoint — utiliser le script `reset_production_data.py` si un backup est requis avant).
+
 ## Implémenté (2026-02-XX) — Stats Admin Panel : cartes Crypto + Transactions totales
 - ✅ **Backend `/api/admin/stats`** enrichi avec 2 nouvelles clés :
   - `deposits_by_channel.{mobile_money, crypto}` (count + amount_xof/amount_usdt)
