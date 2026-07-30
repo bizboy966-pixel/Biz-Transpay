@@ -1,5 +1,27 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Module API v2 Vague M5 : UI CRUD multi-clés + multi-webhooks
+- ✅ **Rewrite complet de `/dashboard/api`** (ApiKeys.js, 500 → 550 lignes) :
+  - Onglet **Clés API** — table avec colonnes Nom / Env / Clé publique (copy) / Secret (hint) / Actif toggle / Utilisée / Actions (renommer via prompt, régénérer avec confirm, supprimer). Bouton "+ Créer une clé" → modal (nom + env test/live). Après création : modal "OneTime Secret Reveal" avec checkbox ack + copie one-time.
+  - Onglet **Webhooks** — table avec colonnes Nom / URL (truncate + title) / Événements (badge count) / Actif toggle / Échecs / Actions (envoyer test, modifier, régénérer secret, supprimer). Bouton "+ Ajouter un webhook" → modal (nom + URL + événements checkboxes filtrables). Modal réutilisée pour édition.
+  - Onglet **Livraisons** — inchangé (montre webhook_deliveries)
+  - Onglet **Logs API** — inchangé (montre api_logs)
+- ✅ **Composants réutilisables** ajoutés :
+  - `OneTimeSecretModal` (checkbox ack obligatoire avant fermeture)
+  - `ConfirmModal` (générique avec variante danger rouge)
+  - `CreateKeyModal` (nom + env)
+  - `WebhookModal` (nom + url + events multi-select, réutilisé create/edit)
+- ✅ **Data-testids** ajoutés : `page-api`, `keys-tab`, `webhooks-tab`, `btn-create-key`, `btn-create-webhook`, `create-key-modal`, `webhook-modal`, `key-row-{id}`, `webhook-row-{id}`, `btn-regen-{id}`, `wh-test-{id}`, `wh-delete-{id}`, `wh-event-{ev}`, `input-key-name`, `input-wh-name`, `input-wh-url`, `btn-onetime-close`, `onetime-ack`, `btn-confirm-yes`.
+
+**Testing** : lint 0 erreur, screenshot preview validé (table clés visible avec la clé "Test (migré)" migrée automatiquement, boutons Créer/Renommer/Régénérer/Supprimer présents, tabs fonctionnels, modal Créer une clé s'ouvre correctement).
+
+**Module API v2 complet** :
+- Vague M1 (multi-clés backend) ✅
+- Vague M2 (multi-webhooks backend + fan-out) ✅
+- Vague M3 (API Mobile Money marchand) ✅
+- Vague M4 (doc + playground MoMo) ✅
+- Vague M5 (UI CRUD complet) ✅
+
 ## Implémenté (2026-02-XX) — Module API v2 : Multi-clés + Multi-webhooks + API Mobile Money
 - ✅ **Multi clés API** (`db.merchant_keys`) — 1 doc par clé (id, user_id, **name**, env, public_key, secret_hash, secret_hint, **active**, created_at, last_used_at). Migration auto de l'ancien schéma vers "Production (migrée)" + "Test (migré)" au premier appel.
   - Endpoints : `GET /api/merchant/keys`, `POST /api/merchant/keys {name, env}`, `PATCH /api/merchant/keys/{id} {name?, active?}`, `POST /api/merchant/keys/{id}/regenerate`, `DELETE /api/merchant/keys/{id}`
