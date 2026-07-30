@@ -52,6 +52,146 @@ api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("biz-transpay")
 
+# App start time for uptime reporting on /v1/health
+_APP_STARTED_AT = datetime.now(timezone.utc)
+API_VERSION = "1.0.0"
+
+# ==================== V1 PUBLIC API HELPERS ====================
+# Normalized error format + error codes (IziChangePay-inspired).
+#
+#   {
+#       "statusCode": 400,
+#       "message": "Human readable explanation",
+#       "code": "MACHINE_CODE"
+#   }
+#
+# Every route under /api/v1/* returns this shape on errors, thanks to the
+# global exception handlers registered below.
+
+# Default mapping HTTP status -> machine code. Individual raise sites may
+# override the code by passing detail as {"message": "...", "code": "..."}.
+_DEFAULT_ERROR_CODES = {
+    400: "BAD_REQUEST",
+    401: "UNAUTHENTICATED",
+    403: "FORBIDDEN",
+    404: "NOT_FOUND",
+    409: "CONFLICT",
+    410: "GONE",
+    422: "UNPROCESSABLE_ENTITY",
+    429: "RATE_LIMITED",
+    500: "INTERNAL_ERROR",
+    502: "BAD_GATEWAY",
+    503: "SERVICE_UNAVAILABLE",
+}
+
+
+class BizAPIError(HTTPException):
+    """HTTPException subclass carrying an explicit machine code."""
+
+    def __init__(self, status_code: int, message: str, code: str,
+                 headers: Optional[dict] = None) -> None:
+        super().__init__(status_code=status_code,
+                         detail={"message": message, "code": code},
+                         headers=headers or {})
+        self.message = message
+        self.code = code
+
+
+def _is_v1_path(path: str) -> bool:
+    return path.startswith("/api/v1/") or path == "/api/v1"
+
+
+def _v1_error_response(status_code: int, message: str, code: Optional[str],
+                       headers: Optional[dict] = None) -> JSONResponse:
+    payload = {
+        "statusCode": status_code,
+        "message": message,
+        "code": code or _DEFAULT_ERROR_CODES.get(status_code, "ERROR"),
+    }
+    return JSONResponse(status_code=status_code, content=payload,
+                        headers=headers or {})
+
+
+# ---------- Idempotency (POST /v1/payments) ----------
+# TTL 24h. Stored in Mongo collection `idempotency_keys` with a compound key
+# (user_id, key). On a repeat POST with the same key we return the cached
+# response verbatim.
+_IDEMPOTENCY_TTL_HOURS = 24
+
+
+async def _idempotency_lookup(user_id: str, key: str) -> Optional[dict]:
+    doc = await db.idempotency_keys.find_one(
+        {"user_id": user_id, "key": key}, {"_id": 0})
+    if not doc:
+        return None
+    try:
+        exp = datetime.fromisoformat(doc["expires_at"])
+    except Exception:
+        return None
+    if exp < datetime.now(timezone.utc):
+        await db.idempotency_keys.delete_one({"user_id": user_id, "key": key})
+        return None
+    return doc
+
+
+async def _idempotency_store(user_id: str, key: str, method: str, path: str,
+                             status_code: int, body: dict) -> None:
+    exp = datetime.now(timezone.utc) + timedelta(hours=_IDEMPOTENCY_TTL_HOURS)
+    await db.idempotency_keys.update_one(
+        {"user_id": user_id, "key": key},
+        {"$set": {"user_id": user_id, "key": key, "method": method,
+                  "path": path, "status_code": status_code, "body": body,
+                  "expires_at": exp.isoformat(),
+                  "created_at": now_iso()}},
+        upsert=True,
+    )
+
+
+# ---------- Rate limiter (informative + soft cap 100 req/min per key) ----------
+# In-memory sliding window per merchant_id. Fine for a single-pod deployment;
+# a Redis-backed store would be needed once we run multiple replicas.
+_RATE_LIMIT_PER_MIN = 100
+_rate_bucket: dict[str, list[float]] = {}
+
+
+def _rate_touch(user_id: str) -> tuple[int, int, int]:
+    """Register one hit for `user_id`. Returns (remaining, limit, reset_ts)."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    window_start = now_ts - 60.0
+    bucket = _rate_bucket.setdefault(user_id, [])
+    # Drop expired entries in place
+    _rate_bucket[user_id] = [t for t in bucket if t > window_start]
+    _rate_bucket[user_id].append(now_ts)
+    used = len(_rate_bucket[user_id])
+    remaining = max(_RATE_LIMIT_PER_MIN - used, 0)
+    reset_ts = int(min(_rate_bucket[user_id]) + 60)
+    return remaining, _RATE_LIMIT_PER_MIN, reset_ts
+
+
+def _rate_headers(remaining: int, limit: int, reset_ts: int) -> dict:
+    return {
+        "X-RateLimit-Limit": str(limit),
+        "X-RateLimit-Remaining": str(remaining),
+        "X-RateLimit-Reset": str(reset_ts),
+    }
+
+
+def _format_amount(amount: float) -> str:
+    """Format an amount as a decimal string in the major unit (e.g. '100.00')."""
+    return f"{float(amount):.2f}"
+
+
+def _format_iso(dt) -> str:
+    """Return an ISO-8601 UTC string with the 'Z' suffix, accepting either a
+    datetime or an already-serialised ISO string."""
+    if isinstance(dt, datetime):
+        s = dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+    else:
+        s = str(dt or "")
+    if s.endswith("+00:00"):
+        s = s[:-6] + "Z"
+    return s
+
 
 # ---------- helpers ----------
 def user_to_public(u: dict) -> UserPublic:
@@ -1041,11 +1181,13 @@ async def izipay_webhook(request: Request):
                     await _deliver_webhook(mp["merchant_id"], "payment.completed", {
                         "payment_id": mp["id"],
                         "reference": mp.get("reference"),
-                        "amount_gross": gross, "amount_net": net,
-                        "fee": fee, "fee_pct": fee_pct,
+                        "amount_gross": _format_amount(gross),
+                        "amount_net": _format_amount(net),
+                        "fee": _format_amount(fee),
+                        "fee_pct": fee_pct,
                         "coin": mp.get("coin"), "tx_hash": tx_hash,
                         "customer_email": mp.get("customer_email"),
-                        "paid_at": now_iso(),
+                        "paid_at": _format_iso(datetime.now(timezone.utc)),
                     })
 
         elif ev_type == "payment_intent.expired":
@@ -1058,7 +1200,44 @@ async def izipay_webhook(request: Request):
                 if mp:
                     await _deliver_webhook(mp["merchant_id"], "payment.expired", {
                         "payment_id": mp["id"], "reference": mp.get("reference"),
-                        "amount": mp.get("amount"), "coin": mp.get("coin"),
+                        "amount": _format_amount(mp.get("amount", 0)),
+                        "coin": mp.get("coin"),
+                    })
+
+        elif ev_type in ("payment_intent.confirming", "payment_intent.confirmed_partial"):
+            # Emitted by IziPay when the client's transaction was seen on-chain
+            # but has not yet gathered the required confirmations.
+            if merchant_ref:
+                mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
+                if mp and mp.get("status") == "initiated":
+                    await db.merchant_payments.update_one(
+                        {"id": merchant_ref},
+                        {"$set": {"status": "confirming",
+                                  "izipay_intent_id": intent_id}}
+                    )
+                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
+                    await _deliver_webhook(mp["merchant_id"], "payment.confirming", {
+                        "payment_id": mp["id"], "reference": mp.get("reference"),
+                        "amount": _format_amount(mp.get("amount", 0)),
+                        "coin": mp.get("coin"),
+                        "tx_hash": tx_hash,
+                        "customer_email": mp.get("customer_email"),
+                    })
+
+        elif ev_type in ("payment_intent.failed", "payment_intent.rejected",
+                          "payment_intent.irregular"):
+            # Payment failed (irregular amount, chain rollback, refunded, etc.)
+            if merchant_ref:
+                await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "failed", "updated_at": now_iso()}})
+                await db.link_payments.update_one({"id": merchant_ref}, {"$set": {"status": "failed"}})
+                await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "failed"}})
+                mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
+                if mp:
+                    await _deliver_webhook(mp["merchant_id"], "payment.failed", {
+                        "payment_id": mp["id"], "reference": mp.get("reference"),
+                        "amount": _format_amount(mp.get("amount", 0)),
+                        "coin": mp.get("coin"),
+                        "reason": ev_type.split(".", 1)[1] if "." in ev_type else "failed",
                     })
 
         elif ev_type in ("payout.confirmed", "payout.completed"):
@@ -1197,10 +1376,12 @@ async def _authenticate_merchant(request: Request) -> dict:
     """
     auth = request.headers.get("Authorization", "")
     if not auth.lower().startswith("bearer "):
-        raise HTTPException(401, "Missing Authorization header")
+        raise BizAPIError(401, "Missing Authorization header. Expected 'Bearer sk_test_… or sk_live_…'.",
+                          "MISSING_AUTH_HEADER")
     secret = auth.split(" ", 1)[1].strip()
     if not (secret.startswith("sk_test_") or secret.startswith("sk_live_")):
-        raise HTTPException(401, "Invalid API key format")
+        raise BizAPIError(401, "Invalid API key format. Expected prefix 'sk_test_' or 'sk_live_'.",
+                          "INVALID_API_KEY_FORMAT")
     env = "test" if secret.startswith("sk_test_") else "live"
     h = _hash_secret(secret)
     keys = await db.api_keys.find_one({f"keys.{env}.secret_hash": h})
@@ -1208,12 +1389,12 @@ async def _authenticate_merchant(request: Request) -> dict:
         # Legacy path — accounts still using the pre-v2 single plaintext field
         keys = await db.api_keys.find_one({"secret_key": secret})
         if not keys:
-            raise HTTPException(401, "Invalid API key")
+            raise BizAPIError(401, "Invalid API key", "INVALID_API_KEY")
     if keys.get("suspended"):
-        raise HTTPException(403, "Clés API suspendues par l'administrateur")
+        raise BizAPIError(403, "API keys suspended by administrator", "API_KEY_SUSPENDED")
     user = await db.users.find_one({"id": keys["user_id"]})
     if not user or user.get("is_banned") or user.get("is_blocked"):
-        raise HTTPException(403, "Merchant account inactive")
+        raise BizAPIError(403, "Merchant account inactive", "ACCOUNT_INACTIVE")
     try:
         await db.api_keys.update_one(
             {"user_id": keys["user_id"]},
@@ -1221,6 +1402,7 @@ async def _authenticate_merchant(request: Request) -> dict:
         )
     except Exception:
         pass
+    user["_api_env"] = env  # attach environment so downstream can vary behaviour
     return user
 
 
@@ -1234,20 +1416,78 @@ class MerchantPaymentRequest(BaseModel):
     metadata: Optional[dict] = None
 
 
+@api.get("/v1/health")
+async def v1_health():
+    """Public health endpoint — no authentication required.
+
+    Returns a normalised status document so monitoring tools (StatusCake,
+    Uptime Kuma, Grafana Synthetic, etc.) can probe the API from anywhere.
+    """
+    uptime_seconds = int((datetime.now(timezone.utc) - _APP_STARTED_AT).total_seconds())
+    return {
+        "status": "ok",
+        "version": API_VERSION,
+        "timestamp": _format_iso(datetime.now(timezone.utc)),
+        "uptime_seconds": uptime_seconds,
+    }
+
+
+def _serialize_payment(mp: dict) -> dict:
+    """Normalize a merchant_payment document for the /v1/payments API surface."""
+    return {
+        "id": mp.get("id"),
+        "status": mp.get("status"),
+        "coin": mp.get("coin"),
+        "amount": _format_amount(mp.get("amount", 0)),
+        "amount_gross": _format_amount(mp.get("amount_gross", 0)) if mp.get("amount_gross") is not None else None,
+        "amount_net": _format_amount(mp.get("amount_net", 0)) if mp.get("amount_net") is not None else None,
+        "fee": _format_amount(mp.get("fee", 0)) if mp.get("fee") is not None else None,
+        "fee_pct": mp.get("fee_pct"),
+        "reference": mp.get("reference"),
+        "customer_email": mp.get("customer_email"),
+        "payment_url": mp.get("payment_url"),
+        "deposit_address": mp.get("deposit_address"),
+        "amount_to_send": mp.get("amount_to_send"),
+        "tx_hash": mp.get("tx_hash"),
+        "accepted_networks": mp.get("accepted_networks") or ["TRC20", "BEP20", "ERC20"],
+        "expires_at": _format_iso(mp.get("expires_at", "")) if mp.get("expires_at") else None,
+        "created_at": _format_iso(mp.get("created_at", "")) if mp.get("created_at") else None,
+        "paid_at": _format_iso(mp.get("paid_at", "")) if mp.get("paid_at") else None,
+    }
+
+
 @api.post("/v1/payments")
 async def merchant_create_payment(payload: MerchantPaymentRequest, request: Request):
-    """Merchant API — create a crypto payment using izichangepay hosted checkout.
-    Requires a valid `sk_...` merchant secret key in the Authorization header.
-    The merchant's USDT balance is credited when the webhook confirms the payment.
+    """Create a new crypto payment intent.
+
+    - Auth: `Authorization: Bearer sk_(test|live)_…`
+    - Optional `Idempotency-Key` header (any string ≤ 255 chars): retrying with
+      the same key returns the cached response verbatim within 24h and never
+      creates a duplicate intent.
+    - Returns a `payment_url` the customer can be redirected to.
     """
     merchant = await _authenticate_merchant(request)
+
+    # ---- Idempotency ----------------------------------------------------
+    idem_key = (request.headers.get("Idempotency-Key")
+                or request.headers.get("idempotency-key") or "").strip()
+    if idem_key:
+        if len(idem_key) > 255:
+            raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
+                              "IDEMPOTENCY_KEY_TOO_LONG")
+        cached = await _idempotency_lookup(merchant["id"], idem_key)
+        if cached and cached.get("body") is not None:
+            return JSONResponse(status_code=cached.get("status_code", 200),
+                                content=cached["body"])
+
     if not izipay.is_configured():
-        raise HTTPException(503, "Passerelle crypto non configurée")
+        raise BizAPIError(503, "Crypto gateway not configured", "GATEWAY_UNAVAILABLE")
     if payload.amount < 1:
-        raise HTTPException(400, "Montant minimum : 1 USDT")
+        raise BizAPIError(400, "Minimum amount: 1 USDT", "AMOUNT_TOO_SMALL")
 
     mp_id = new_id()
-    accepted = [f"{payload.coin.upper()}.{n.upper()}" for n in (payload.accepted_networks or ["TRC20", "BEP20", "ERC20"])]
+    accepted_networks = [n.upper() for n in (payload.accepted_networks or ["TRC20", "BEP20", "ERC20"])]
+    accepted = [f"{payload.coin.upper()}.{n}" for n in accepted_networks]
     try:
         intent = await izipay.create_payment_intent(
             amount_requested=f"{payload.amount:.6f}",
@@ -1261,9 +1501,12 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                       **(payload.metadata or {})},
         )
     except izipay.IziPayError as e:
-        raise HTTPException(400 if e.status < 500 else 502, f"Passerelle crypto: {e.message}")
+        raise BizAPIError(400 if e.status < 500 else 502,
+                          f"Crypto gateway: {e.message}",
+                          "GATEWAY_ERROR" if e.status >= 500 else "GATEWAY_REJECTED")
 
-    await db.merchant_payments.insert_one({
+    expires_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
+    doc = {
         "id": mp_id,
         "merchant_id": merchant["id"],
         "amount": payload.amount,
@@ -1274,65 +1517,64 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
         "deposit_address": intent.get("depositAddress"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+        "expires_at": expires_dt.isoformat(),
         "status": "initiated",
+        "accepted_networks": accepted_networks,
         "created_at": now_iso(),
-    })
+    }
+    await db.merchant_payments.insert_one(doc)
+
     # Deliver payment.created webhook (best-effort).
     await _deliver_webhook(merchant["id"], "payment.created", {
         "payment_id": mp_id, "reference": payload.reference,
-        "amount": payload.amount, "coin": payload.coin.upper(),
+        "amount": _format_amount(payload.amount), "coin": payload.coin.upper(),
         "customer_email": payload.customer_email,
-        "created_at": now_iso(),
+        "created_at": _format_iso(datetime.now(timezone.utc)),
     })
-    return {
-        "id": mp_id,
-        "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
-        "deposit_address": intent.get("depositAddress"),
-        "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
-        "amount": payload.amount,
-        "coin": payload.coin.upper(),
-        "accepted_networks": payload.accepted_networks or ["TRC20", "BEP20", "ERC20"],
-        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
-        "status": "initiated",
-    }
+
+    body = _serialize_payment(doc)
+    if idem_key:
+        try:
+            await _idempotency_store(merchant["id"], idem_key, "POST",
+                                     "/api/v1/payments", 200, body)
+        except Exception:
+            pass
+    return body
 
 
 @api.get("/v1/payments/{payment_id}")
 async def merchant_get_payment(payment_id: str, request: Request):
     merchant = await _authenticate_merchant(request)
-    mp = await db.merchant_payments.find_one({"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    mp = await db.merchant_payments.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
     if not mp:
-        raise HTTPException(404, "Payment not found")
+        raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
     # Fallback reconcile — same pattern as user-side polling.
     if mp.get("status") not in ("paid", "expired", "failed") and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
-        mp = await db.merchant_payments.find_one({"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
-    return {"id": mp["id"], "status": mp.get("status"), "amount": mp.get("amount"),
-            "amount_gross": mp.get("amount_gross"), "amount_net": mp.get("amount_net"),
-            "fee": mp.get("fee"), "fee_pct": mp.get("fee_pct"),
-            "coin": mp.get("coin"), "reference": mp.get("reference"),
-            "payment_url": mp.get("payment_url"),
-            "deposit_address": mp.get("deposit_address"),
-            "amount_to_send": mp.get("amount_to_send"),
-            "tx_hash": mp.get("tx_hash"),
-            "expires_at": mp.get("expires_at"),
-            "created_at": mp.get("created_at"),
-            "paid_at": mp.get("paid_at")}
+        mp = await db.merchant_payments.find_one(
+            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+    return _serialize_payment(mp)
 
 
 @api.get("/v1/payments")
 async def merchant_list_payments(request: Request,
-                                  limit: int = Query(50, le=200),
+                                  limit: int = Query(50, ge=1, le=200),
                                   status: Optional[str] = None):
-    """Paginated list of the merchant's payments. Filter by status if provided."""
+    """Paginated list of the merchant's payments. Filter by `status` if provided."""
     merchant = await _authenticate_merchant(request)
     q: dict = {"merchant_id": merchant["id"]}
     if status:
         q["status"] = status
     docs = await db.merchant_payments.find(q, {"_id": 0}) \
-        .sort("created_at", -1).limit(limit).to_list(limit)
-    return {"data": docs, "count": len(docs)}
+        .sort("created_at", -1).limit(limit + 1).to_list(limit + 1)
+    has_more = len(docs) > limit
+    docs = docs[:limit]
+    return {
+        "data": [_serialize_payment(d) for d in docs],
+        "count": len(docs),
+        "has_more": has_more,
+    }
 
 
 
@@ -1621,8 +1863,9 @@ async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
             "secret_hint": _mask(webhook_secret),
             "secret_hash": _hash_secret(webhook_secret),
             "secret_encrypted": _encrypt(webhook_secret),
-            "events": ["payment.created", "payment.completed", "payment.failed",
-                       "payment.expired", "refund.created", "refund.completed"],
+            "events": ["payment.created", "payment.confirming", "payment.completed",
+                       "payment.failed", "payment.expired",
+                       "refund.created", "refund.completed"],
             "created_at": now_iso(),
         },
         "created_at": now_iso(),
@@ -3221,7 +3464,64 @@ app.add_middleware(
     allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining",
+                    "X-RateLimit-Reset", "Retry-After",
+                    "X-BizTransPay-Signature", "X-BizTransPay-Timestamp",
+                    "X-BizTransPay-Event-Id", "X-BizTransPay-Event-Type"],
 )
+
+
+# ==================== V1 EXCEPTION HANDLERS ====================
+# For routes under /api/v1/*, we return the normalized error envelope:
+#   {"statusCode": <int>, "message": "...", "code": "..."}
+# Every other route keeps FastAPI's default `{detail: ...}`.
+@app.exception_handler(HTTPException)
+async def _http_exc_handler(request: Request, exc: HTTPException):
+    if not _is_v1_path(request.url.path):
+        # Non-v1 route: keep the original behaviour to avoid breaking the
+        # existing dashboard/admin endpoints.
+        return JSONResponse(status_code=exc.status_code,
+                            content={"detail": exc.detail},
+                            headers=(getattr(exc, "headers", None) or {}))
+    detail = exc.detail
+    if isinstance(detail, BizAPIError):
+        code = detail.code
+        message = detail.message
+    elif isinstance(detail, dict) and "message" in detail:
+        code = detail.get("code") or _DEFAULT_ERROR_CODES.get(exc.status_code, "ERROR")
+        message = str(detail["message"])
+    else:
+        code = _DEFAULT_ERROR_CODES.get(exc.status_code, "ERROR")
+        message = detail if isinstance(detail, str) else str(detail)
+    return _v1_error_response(exc.status_code, message, code,
+                              headers=getattr(exc, "headers", None))
+
+
+# Pydantic validation errors -> 422 with code=VALIDATION_ERROR on v1 routes.
+from fastapi.exceptions import RequestValidationError  # noqa: E402
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exc_handler(request: Request, exc: RequestValidationError):
+    if not _is_v1_path(request.url.path):
+        return JSONResponse(status_code=422,
+                            content={"detail": exc.errors()})
+    # Take the first error message for a concise machine-friendly message.
+    errs = exc.errors() or []
+    first = errs[0] if errs else {}
+    loc = ".".join(str(x) for x in first.get("loc", ()) if x != "body")
+    msg = first.get("msg", "Validation error")
+    message = f"{loc}: {msg}" if loc else msg
+    return _v1_error_response(422, message, "VALIDATION_ERROR")
+
+
+# Unhandled exceptions -> 500 INTERNAL_ERROR (only on v1 routes).
+@app.exception_handler(Exception)
+async def _unhandled_exc_handler(request: Request, exc: Exception):
+    if not _is_v1_path(request.url.path):
+        raise exc
+    logger.exception("Unhandled error on %s: %s", request.url.path, exc)
+    return _v1_error_response(500, "An unexpected error occurred", "INTERNAL_ERROR")
 
 
 # API request log middleware — records every /api/v1/* call made by merchants
@@ -3248,6 +3548,11 @@ async def api_log_middleware(request: Request, call_next):
                         user_id = doc["user_id"]
                 except Exception:
                     pass
+        # Best-effort informative rate limit headers on v1 responses.
+        if user_id and "X-RateLimit-Limit" not in response.headers:
+            remaining, limit, reset_ts = _rate_touch(user_id)
+            for k, v in _rate_headers(remaining, limit, reset_ts).items():
+                response.headers[k] = v
         try:
             await db.api_logs.insert_one({
                 "id": new_id(),
@@ -3270,6 +3575,12 @@ async def api_log_middleware(request: Request, call_next):
 async def startup_db_client():
     try:
         await db.webhook_events.create_index("event_id", unique=True)
+    except Exception:
+        pass
+    try:
+        # Idempotency-Key uniqueness per (user_id, key)
+        await db.idempotency_keys.create_index(
+            [("user_id", 1), ("key", 1)], unique=True)
     except Exception:
         pass
 

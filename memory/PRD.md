@@ -1,5 +1,42 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Module API Phase A : Fondations DX (inspiré IziChangePay)
+- ✅ **Format d'erreur normalisé** sur toutes les routes `/api/v1/*` → `{statusCode, message, code}` avec codes machine :
+  - `MISSING_AUTH_HEADER`, `INVALID_API_KEY_FORMAT`, `INVALID_API_KEY`, `API_KEY_SUSPENDED`, `ACCOUNT_INACTIVE` (auth)
+  - `AMOUNT_TOO_SMALL`, `IDEMPOTENCY_KEY_TOO_LONG`, `GATEWAY_UNAVAILABLE`, `GATEWAY_ERROR`, `GATEWAY_REJECTED` (paiement)
+  - `PAYMENT_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR` (générique)
+  - Handlers globaux : `HTTPException`, `RequestValidationError`, `Exception` (500)
+  - Les routes hors `/api/v1/*` (dashboard, admin) conservent le format legacy `{detail}`
+- ✅ **Idempotency-Key** sur `POST /v1/payments` (header optionnel, ≤ 255 caractères) — TTL 24h dans `db.idempotency_keys` avec index unique `(user_id, key)`. Retry identique retourne la même réponse (même `id`), zéro doublon. Round-trip vérifié en test.
+- ✅ **Rate limit headers** `X-RateLimit-Limit: 100`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` (sliding window 60s par clé, en mémoire). Informatif — pas d'enforcement 429 en Phase A.
+- ✅ **`GET /v1/health`** public (aucune auth) → `{status:"ok", version:"1.0.0", timestamp, uptime_seconds}`. Utile pour StatusCake/Uptime Kuma/Grafana Synthetic.
+- ✅ **Cycle de vie enrichi** — nouveaux événements webhook :
+  - `payment.confirming` (première confirmation on-chain)
+  - `payment.failed` (paiement rejeté / montant irrégulier / rollback chaîne)
+  - Existants : `payment.created`, `payment.completed`, `payment.expired`
+- ✅ **Réponses `/v1/payments*` normalisées** :
+  - Montants en string decimal ("42.00", "9999.00")
+  - Timestamps ISO 8601 UTC avec suffixe "Z" ("2026-07-30T08:32:17Z")
+  - Liste : envelope `{data:[…], count, has_more}` (pagination cursor prête)
+- ✅ **Backend lint OK** — 0 erreur.
+
+**Testing** (curl) : 7 scénarios validés
+  1. `/v1/health` → 200 avec uptime
+  2. POST /v1/payments sans auth → 401 `MISSING_AUTH_HEADER`
+  3. POST avec mauvais format clé → 401 `INVALID_API_KEY_FORMAT`
+  4. POST avec clé inexistante → 401 `INVALID_API_KEY`
+  5. POST amount=0.5 → 400 `AMOUNT_TOO_SMALL`
+  6. POST body vide → 422 `VALIDATION_ERROR` "amount: Field required"
+  7. GET /v1/payments/nonexistent → 404 `PAYMENT_NOT_FOUND`
+  8. Round-trip Idempotency-Key : 2 POST successifs avec même clé → même `id` ✅
+  9. Headers `X-RateLimit-*` présents avec clé valide ✅
+
+**Restant pour Phase B** (à venir) :
+- Réécriture complète de `/dashboard/api/docs` façon IziChangePay (nav sticky, sections Base URL · Auth · Headers · Idempotency · Cycle de vie · Codes machine · Webhooks + tableaux exhaustifs)
+- **Playground "Try-it"** intégré dans la doc — exécute des appels réels via la clé du marchand
+- Mise à jour PDF (ReportLab) pour matcher le nouveau format
+- Guide "Premier paiement en 5 minutes"
+
 ## Implémenté (2026-02-XX) — Reset plateforme depuis Admin Panel (self-service)
 - ✅ **Nouveau endpoint** `POST /api/admin/platform/reset` (super_admin only) — accepte `{"confirmation": "RÉINITIALISER"}` (case-sensitive, sinon 400). Supprime : tous les non-super_admin users + `transactions`, `payment_links`, `link_payments`, `crypto_deposits`, `webhook_events`, `webhook_deliveries`, `api_logs`, `notifications`, `tickets`, `support_messages`, `payment_transactions`, `merchant_payments`, `kyc`, `audit_logs`, `api_keys`. Remet à zéro les soldes des super_admins. Re-provisionne automatiquement les clés API des super_admin restants (via `_ensure_api_keys`). Audit log recréé.
 - ✅ **Nouvelle "Zone de danger"** en bas de `/admin/platform` — encart rouge avec bouton `btn-open-platform-reset`. Modal de confirmation qui exige à l'admin de **taper exactement `RÉINITIALISER`** (fonte monospace) pour activer le bouton `btn-confirm-platform-reset`. État "Réinitialisation…" avec spinner pendant l'opération. Toast succès/erreur.
