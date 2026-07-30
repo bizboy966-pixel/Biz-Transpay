@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Copy, ArrowLeft, Code2, ShieldCheck, Zap, Webhook, ListChecks, AlertCircle, Book } from 'lucide-react';
+import { Copy, ArrowLeft, Code2, ShieldCheck, Zap, Webhook, ListChecks, AlertCircle, Book, Download } from 'lucide-react';
 import { toast } from 'sonner';
+import api from '@/api';
 
 // Always show the OFFICIAL public domain in curl/SDK examples — never the
 // preview host. Overridable at build time via REACT_APP_PUBLIC_DOMAIN.
@@ -258,17 +259,41 @@ const RESPONSES = {
 // ------------------------- COMPONENT -------------------------
 export default function ApiDocs() {
   const copy = (v) => { navigator.clipboard.writeText(v); toast.success('Code copié'); };
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadPdf = async () => {
+    setDownloading(true);
+    try {
+      const res = await api.get('/api-keys/documentation.pdf', { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'biz-transpay-api-docs.pdf'; document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+      toast.success('Documentation PDF téléchargée');
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Erreur de téléchargement');
+    } finally { setDownloading(false); }
+  };
 
   return (
     <div className="space-y-6" data-testid="page-api-docs">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <Link to="/dashboard/api" className="w-9 h-9 rounded-lg border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center" data-testid="btn-back-api">
           <ArrowLeft className="w-4 h-4 text-slate-600" />
         </Link>
-        <div>
+        <div className="flex-1 min-w-0">
           <h1 className="font-cabinet text-3xl font-extrabold tracking-tighter text-slate-900">Documentation API</h1>
           <p className="text-slate-500 text-sm mt-0.5">Intégrez Biz-transPay en quelques minutes avec notre SDK ou l&apos;API REST brute.</p>
         </div>
+        <button
+          onClick={downloadPdf}
+          disabled={downloading}
+          data-testid="btn-download-pdf"
+          className="inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white px-4 py-2 rounded-full text-xs font-bold shadow-sm shrink-0"
+        >
+          <Download className="w-3.5 h-3.5" />
+          {downloading ? 'Génération…' : 'Télécharger la documentation (PDF)'}
+        </button>
       </div>
 
       {/* Nav de section */}

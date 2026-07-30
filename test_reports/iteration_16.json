@@ -1,0 +1,33 @@
+{
+  "summary": "Iter16 tested — webhook URL migration + PDF documentation download. 7/7 backend pytest tests pass. Frontend UI verified: 'Télécharger la documentation (PDF)' button visible on /dashboard/api/docs, triggers download of 8.6KB PDF with correct filename. All webhook URLs correctly migrated to biz-transppayy.com; no 'emergent' leak in DB or PDF content.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter16_pdf_and_webhook_migration.py",
+    "/app/test_reports/pytest/iter16.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 3110 lines — approaching 700+ threshold; consider splitting api-keys/webhook/pdf routes into a router module.",
+    "PDF endpoint generates PDF synchronously per request (~9KB); consider caching or moving to a background task if traffic grows."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter16_pdf_and_webhook_migration.py"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100%"},
+  "test_credentials": "bizboy966@gmail.com / Password123! (admin, from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created 2 TEST_iter16_* merchant accounts via /api/auth/register (with account_type=merchant, country=TG). Not cleaned up — negligible.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend hot-reloads when files in /app/backend/tests are edited — first request after edit may timeout; wait ~5s. Register schema requires: email, password, username, full_name, account_type ('personal'|'merchant'), country, phone. PDF endpoint at GET /api/api-keys/documentation.pdf uses reportlab==5.0.0; pdfminer.six is available for content extraction.",
+  "verified_features": [
+    "GET /api-keys returns webhook.url = https://biz-transppayy.com/api/v1/webhooks/{uid} for admin and new merchants (no 'emergent' leak)",
+    "Migration is idempotent (2nd GET returns same URL)",
+    "GET /api-keys/documentation.pdf: 401 without auth, 200 with JWT",
+    "PDF Content-Type=application/pdf, Content-Disposition attachment; filename=biz-transpay-api-docs.pdf",
+    "PDF magic %PDF- present, size 8682 bytes (>5KB)",
+    "PDF text contains: Authentification, Clés API, Webhook, HMAC, Créer un paiement, Codes de réponse HTTP, Exemples d'intégration SDK",
+    "PDF contains Node.js, Python, PHP, Laravel, JavaScript code blocks",
+    "PDF contains signature verification snippet (createHmac)",
+    "PDF contains 'biz-transppayy' and 0 mentions of 'emergent'",
+    "Frontend button [data-testid=btn-download-pdf] visible on /dashboard/api/docs, label 'Télécharger la documentation (PDF)', triggers real file download"
+  ]
+}

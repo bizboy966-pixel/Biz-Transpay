@@ -1748,6 +1748,252 @@ async def list_api_logs(uid: str = Depends(get_current_user_id),
     return docs
 
 
+@api.get("/api-keys/documentation.pdf")
+async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
+    """Generate a professional PDF of the Biz-transPay API documentation."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Preformatted,
+    )
+    import io
+
+    OFFICIAL = os.environ.get("OFFICIAL_DOMAIN", "https://biz-transppayy.com").rstrip("/")
+    API_BASE = f"{OFFICIAL}/api"
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=1.8 * cm, rightMargin=1.8 * cm,
+                            topMargin=1.8 * cm, bottomMargin=1.8 * cm,
+                            title="Biz-transPay API — Documentation")
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="H1btp", fontSize=22, textColor=HexColor("#0F172A"),
+                              spaceAfter=8, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="H2btp", fontSize=15, textColor=HexColor("#2563EB"),
+                              spaceBefore=14, spaceAfter=6, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="H3btp", fontSize=11, textColor=HexColor("#0F172A"),
+                              spaceBefore=8, spaceAfter=3, fontName="Helvetica-Bold"))
+    styles.add(ParagraphStyle(name="Bodybtp", fontSize=9.5, textColor=HexColor("#334155"),
+                              leading=14, alignment=TA_LEFT, spaceAfter=4))
+    styles.add(ParagraphStyle(name="Codebtp", fontSize=8, textColor=HexColor("#065F46"),
+                              fontName="Courier", leading=11, backColor=HexColor("#F1F5F9"),
+                              leftIndent=6, rightIndent=6, spaceBefore=4, spaceAfter=6,
+                              borderPadding=6))
+
+    def code(text: str):
+        return Preformatted(text, styles["Codebtp"])
+
+    def h1(t): return Paragraph(t, styles["H1btp"])
+    def h2(t): return Paragraph(t, styles["H2btp"])
+    def h3(t): return Paragraph(t, styles["H3btp"])
+    def p(t): return Paragraph(t, styles["Bodybtp"])
+
+    story = []
+    # Cover
+    story.append(h1("Biz-transPay"))
+    story.append(Paragraph("<b>Documentation officielle de l'API de paiement</b>",
+                           styles["Bodybtp"]))
+    story.append(Spacer(1, 6))
+    story.append(p(f"Version : 1.0 · Domaine : <b>{OFFICIAL}</b>"))
+    story.append(p("Cette documentation couvre l'intégration de l'API REST Biz-transPay pour "
+                   "les marchands. Elle inclut l'authentification, la création et la vérification "
+                   "de paiements, la gestion des webhooks HMAC-signés, ainsi que des exemples "
+                   "d'intégration en 5 langages (PHP, Laravel, Node.js, JavaScript, Python)."))
+    story.append(Spacer(1, 6))
+    story.append(p("<b>Support</b> : contactez-nous depuis votre tableau de bord "
+                   "(&#8250; Support) ou par email."))
+
+    # Auth
+    story.append(h2("1. Authentification"))
+    story.append(p("Chaque requête doit inclure une clé secrète dans l'en-tête "
+                   "<b>Authorization: Bearer sk_test_...</b>. Les clés préfixées "
+                   "<b>sk_test_</b> sont pour l'environnement de test, celles préfixées "
+                   "<b>sk_live_</b> pour la production."))
+    story.append(p("<b>Sécurité</b> : la clé secrète ne doit JAMAIS être exposée côté "
+                   "navigateur ni committée dans un dépôt Git."))
+    story.append(code(f'curl {API_BASE}/v1/payments \\\n  -H "Authorization: Bearer sk_test_XXXXX"'))
+
+    # Keys
+    story.append(h2("2. Clés API"))
+    story.append(p("Deux paires de clés séparées : test et live."))
+    story.append(p("<b>Clé publique</b> (pk_test_/pk_live_) : identifiant public, "
+                   "peut être exposé côté client."))
+    story.append(p("<b>Clé secrète</b> (sk_test_/sk_live_) : usage serveur uniquement. "
+                   "Elle est affichée UNE SEULE FOIS à la génération. Copiez-la immédiatement."))
+    story.append(p("Régénération : dans le tableau de bord &#8250; API de paiement &#8250; onglet Clés API."))
+
+    # Webhook
+    story.append(h2("3. Webhook & signature HMAC"))
+    story.append(p(f"URL par défaut : <b>{OFFICIAL}/api/v1/webhooks/{{merchant_id}}</b>. "
+                   "Vous pouvez la remplacer par n'importe quelle URL HTTPS accessible depuis Internet."))
+    story.append(p("Chaque événement est envoyé en POST JSON avec les en-têtes :"))
+    tbl = Table([
+        ["En-tête", "Description"],
+        ["X-BizTransPay-Signature", "HMAC-SHA256 hex, préfixé sha256="],
+        ["X-BizTransPay-Timestamp", "Timestamp Unix utilisé pour signer"],
+        ["X-BizTransPay-Event-Id", "ID unique — utilisez-le pour l'idempotence"],
+        ["X-BizTransPay-Event-Type", "Ex. payment.completed"],
+    ], colWidths=[5.5 * cm, 11 * cm])
+    tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#0F172A")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E2E8F0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 6))
+    story.append(p("Le signature est calculée ainsi (en Python) :"))
+    story.append(code("expected = 'sha256=' + hmac.new(\n    webhook_secret.encode(),\n    f'{timestamp}.{raw_body}'.encode(),\n    hashlib.sha256\n).hexdigest()"))
+    story.append(p("Événements émis : <b>payment.created, payment.completed, payment.failed, "
+                   "payment.expired, refund.created, refund.completed</b>."))
+
+    # Create payment
+    story.append(PageBreak())
+    story.append(h2("4. Créer un paiement"))
+    story.append(p(f"<b>POST</b> <font face='Courier'>{API_BASE}/v1/payments</font>"))
+    story.append(h3("Body JSON"))
+    story.append(code('{\n  "amount": 10.00,\n  "coin": "USDT",\n  "reference": "order_123",\n  "customer_email": "buyer@shop.com",\n  "accepted_networks": ["TRC20","BEP20","ERC20"]\n}'))
+    story.append(h3("Réponse 200"))
+    story.append(code('{\n  "id": "3a7b4b73-...",\n  "payment_url": "https://checkout.pay.izichange.com/...",\n  "deposit_address": "TXYZabc...",\n  "amount_to_send": "10.000000",\n  "amount": 10.00,\n  "coin": "USDT",\n  "expires_at": "2026-02-08T15:32:44Z",\n  "status": "initiated"\n}'))
+
+    # Get / List
+    story.append(h2("5. Récupérer / lister"))
+    story.append(p(f"<b>GET</b> <font face='Courier'>{API_BASE}/v1/payments/{{id}}</font>"))
+    story.append(p(f"<b>GET</b> <font face='Courier'>{API_BASE}/v1/payments?limit=50&status=paid</font>"))
+
+    # Errors
+    story.append(h2("6. Codes de réponse HTTP"))
+    err_tbl = Table([
+        ["Code", "Signification"],
+        ["200", "Succès"],
+        ["400", "Requête invalide (paramètre manquant, montant hors limites)"],
+        ["401", "Clé API invalide ou manquante"],
+        ["403", "Compte marchand suspendu ou clés suspendues"],
+        ["404", "Paiement introuvable"],
+        ["410", "Endpoint retiré (ex. transferts bancaires)"],
+        ["429", "Trop de requêtes"],
+        ["500", "Erreur serveur"],
+        ["503", "Passerelle indisponible"],
+    ], colWidths=[2 * cm, 14.5 * cm])
+    err_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E2E8F0")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(err_tbl)
+
+    # SDK examples
+    story.append(PageBreak())
+    story.append(h2("7. Exemples d'intégration SDK"))
+
+    story.append(h3("Node.js"))
+    story.append(code(f"""const res = await fetch('{API_BASE}/v1/payments', {{
+  method: 'POST',
+  headers: {{
+    Authorization: 'Bearer sk_test_XXXXX',
+    'Content-Type': 'application/json',
+  }},
+  body: JSON.stringify({{
+    amount: 10, coin: 'USDT', reference: 'order_123',
+    customer_email: 'buyer@shop.com',
+  }}),
+}});
+const payment = await res.json();
+window.location.href = payment.payment_url;"""))
+
+    story.append(h3("Python"))
+    story.append(code(f"""import requests
+
+r = requests.post(
+    '{API_BASE}/v1/payments',
+    json={{'amount': 10, 'coin': 'USDT', 'reference': 'order_123',
+          'customer_email': 'buyer@shop.com'}},
+    headers={{'Authorization': 'Bearer sk_test_XXXXX'}},
+)
+payment = r.json()
+print(payment['payment_url'])"""))
+
+    story.append(h3("PHP"))
+    story.append(code(f"""<?php
+$ch = curl_init('{API_BASE}/v1/payments');
+curl_setopt_array($ch, [
+  CURLOPT_POST => true,
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => [
+    'Authorization: Bearer sk_test_XXXXX',
+    'Content-Type: application/json',
+  ],
+  CURLOPT_POSTFIELDS => json_encode([
+    'amount' => 10, 'coin' => 'USDT',
+    'reference' => 'order_123',
+    'customer_email' => 'buyer@shop.com',
+  ]),
+]);
+$response = json_decode(curl_exec($ch), true);
+header('Location: ' . $response['payment_url']);"""))
+
+    story.append(h3("Laravel"))
+    story.append(code(f"""use Illuminate\\Support\\Facades\\Http;
+
+$payment = Http::withToken(config('services.biztranspay.secret'))
+    ->post('{API_BASE}/v1/payments', [
+        'amount' => 10,
+        'coin' => 'USDT',
+        'reference' => 'order_' . $order->id,
+        'customer_email' => auth()->user()->email,
+    ])->json();
+
+return redirect($payment['payment_url']);"""))
+
+    story.append(h3("JavaScript (navigateur — via votre backend)"))
+    story.append(code("""// Ne JAMAIS exposer sk_test_/sk_live_ côté navigateur.
+// Créez le paiement depuis votre serveur, puis :
+window.location.href = paymentUrlFromServer;"""))
+
+    story.append(h3("Vérification de signature (Node.js)"))
+    story.append(code("""const crypto = require('crypto');
+const raw = req.rawBody;   // Buffer
+const ts = req.headers['x-biztranspay-timestamp'];
+const sig = req.headers['x-biztranspay-signature'];
+
+const expected = 'sha256=' + crypto
+  .createHmac('sha256', process.env.BIZTRANSPAY_WEBHOOK_SECRET)
+  .update(`${ts}.${raw}`)
+  .digest('hex');
+
+if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
+  return res.status(401).send('Invalid signature');
+}"""))
+
+    story.append(Spacer(1, 12))
+    story.append(p(f"<i>Biz-transPay · {OFFICIAL} · Documentation générée automatiquement</i>"))
+
+    doc.build(story)
+    pdf_bytes = buf.getvalue()
+    buf.close()
+
+    from fastapi.responses import Response
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": 'attachment; filename="biz-transpay-api-docs.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 # ==================== WEBHOOK DELIVERY (outbound to merchants) ====================
 async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
     """Fire-and-forget HMAC-signed POST to the merchant's webhook URL.
