@@ -1,5 +1,26 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Stats Admin Panel : cartes Crypto + Transactions totales
+- ✅ **Backend `/api/admin/stats`** enrichi avec 2 nouvelles clés :
+  - `deposits_by_channel.{mobile_money, crypto}` (count + amount_xof/amount_usdt)
+  - `withdrawals_by_channel.{mobile_money, crypto}` (count + amount_xof/amount_usdt) — les biz_to_biz sont explicitement exclus des retraits (ils ne quittent pas la plateforme)
+  - `operations.{link_payments, api_payments, biz_to_biz, exchanges}` — compteurs par type d'opération
+- ✅ **Classification** : deposit est crypto si `currency=USDT` OR `metadata.izipay_intent_id` OR `metadata.coin` présent → sinon Mobile Money (Stripe). Withdrawal est crypto si `metadata.transfer_type=biz_to_crypto` (fallback USDT/metadata.crypto), sinon Mobile Money.
+- ✅ **`transactions.count`** compte TOUS les documents `transactions` : dépôts (mobile+crypto) + retraits (mobile+crypto) + link_payments + payment (API) + transfer (biz_to_biz in+out) + exchange. Mise à jour automatique à chaque nouvelle opération (le dashboard admin recharge toutes les 15s).
+- ✅ **AdminHome.js — 4 cartes Dépôts** : Pending · Validés · Rejetés · **Dépôts Crypto** (nouvelle carte orange/ambre avec icône Bitcoin, count + volume USDT).
+- ✅ **AdminHome.js — 4 cartes Retraits** : Pending · Validés · Rejetés · **Retraits Crypto** (nouvelle carte orange/ambre, count + volume USDT).
+- ✅ **Volume dépôts total** (bandeau bleu) : affiche désormais 2 lignes → **Mobile Money (XOF)** + **Crypto (USDT)** avec compteur total dépôts validés en bas.
+- ✅ **Volume retraits total** (bandeau vert) : affiche désormais 2 lignes → **Mobile Money (XOF)** + **Crypto (USDT)** avec compteur total retraits validés en bas.
+- ✅ **Transactions totales** (bandeau violet) : label enrichi "Dépôts · Retraits · Liens · API · Biz→Biz · Échange" pour bien montrer que TOUS types sont comptés.
+- ✅ **data-testids** ajoutés : `dep-card-crypto`, `wd-card-crypto`, `total-deposits-card`, `total-withdrawals-card`, `total-transactions-card`, `deposit-cards`, `withdrawal-cards`, `summary-strip`.
+
+**Testing** : verification fonctionnelle via injection de 11 fake tx (all types) + curl `/admin/stats` → classification 100% correcte. Screenshot admin dashboard OK (4 cartes visibles dans chaque row, colonne 4 orange pour crypto). Fake data purgée après vérif. Backend lint : 0 erreur.
+
+**Backlog restant** (P2, non-bloquant) :
+- **Refactor server.py** (3162 lignes) → split en `/app/backend/routes/`
+- Convertir automatiquement USDT en XOF (via `_get_rate`) pour afficher un vrai "total" agrégé dans une seule devise (aujourd'hui : deux totaux séparés par devise native)
+- Ajouter période dropdown fonctionnelle sur `/admin/stats` (le param `period` est reçu mais non appliqué au filtre `created_at`)
+
 ## Implémenté (2026-02-XX) — Reset production data (clean slate)
 - ✅ **Nouveau script** `/app/backend/scripts/reset_production_data.py` — reset destructif idempotent, protégé par `CONFIRM_RESET=YES`. Backup mongodump (gzip) obligatoire dans `/app/backups/pre-reset-{timestamp}/` avant toute suppression. Whitelist par email (case-insensitive) : uniquement `bizboy966@gmail.com`.
 - ✅ **Exécuté** (Feb 2026) : backup `/app/backups/pre-reset-20260730T010512Z` créé, puis wipe de 2 test users (`iter14ui_…`, `iter15_638401_…`), 3 payment_links, 36 webhook_events, 5 webhook_deliveries, 31 api_logs, 1 merchant_payment, 12 api_keys orphelines.

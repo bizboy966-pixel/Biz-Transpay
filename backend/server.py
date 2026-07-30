@@ -2371,40 +2371,115 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
     suspended = await db.users.count_documents({"$or": [{"is_blocked": True}, {"is_banned": True}]})
 
     tx_all = db.transactions.find({}, {"_id": 0})
+    # Global totals (across all channels & currencies, native units)
     total_deposits = 0.0
     total_withdrawals = 0.0
     total_tx = 0
     succeeded = 0
     pending = 0
     failed = 0
+    # Legacy 3-bucket view (pending / valid / rejected) — all channels combined
     dep_pending = {"count": 0, "amount": 0.0}
     dep_valid = {"count": 0, "amount": 0.0}
     dep_rejected = {"count": 0, "amount": 0.0}
     wd_pending = {"count": 0, "amount": 0.0}
     wd_valid = {"count": 0, "amount": 0.0}
     wd_rejected = {"count": 0, "amount": 0.0}
+    # Per-channel breakdown for the summary cards
+    dep_mm = {"count": 0, "amount_xof": 0.0}
+    dep_crypto = {"count": 0, "amount_usdt": 0.0}
+    wd_mm = {"count": 0, "amount_xof": 0.0}
+    wd_crypto = {"count": 0, "amount_usdt": 0.0}
+    # Other operations (link payments, API merchant payments, biz-to-biz, exchange)
+    link_payments = {"count": 0, "amount_usdt": 0.0}
+    api_payments = {"count": 0, "amount_usdt": 0.0}
+    biz_to_biz = {"count": 0}
+    exchanges = {"count": 0}
+
     async for tx in tx_all:
         total_tx += 1
         st = tx.get("status")
-        if st == "completed": succeeded += 1
-        elif st == "pending": pending += 1
-        elif st in ("failed", "cancelled"): failed += 1
+        if st == "completed":
+            succeeded += 1
+        elif st == "pending":
+            pending += 1
+        elif st in ("failed", "cancelled"):
+            failed += 1
         typ = tx.get("type")
-        amt = tx.get("amount", 0)
+        direction = tx.get("direction")
+        currency = (tx.get("currency") or "").upper()
+        meta = tx.get("metadata") or {}
+        amt = float(tx.get("amount", 0) or 0)
+
         if typ == "deposit":
             if st == "completed":
-                dep_valid["count"] += 1; dep_valid["amount"] += amt; total_deposits += amt
+                dep_valid["count"] += 1
+                dep_valid["amount"] += amt
+                total_deposits += amt
             elif st == "pending":
-                dep_pending["count"] += 1; dep_pending["amount"] += amt
+                dep_pending["count"] += 1
+                dep_pending["amount"] += amt
             elif st in ("failed", "cancelled"):
-                dep_rejected["count"] += 1; dep_rejected["amount"] += amt
-        elif typ in ("withdrawal", "transfer") and tx.get("direction") == "out":
+                dep_rejected["count"] += 1
+                dep_rejected["amount"] += amt
+            # Per-channel classification (crypto = USDT / IziPay; else Mobile
+            # Money / Stripe).
+            is_crypto = (
+                currency == "USDT"
+                or bool(meta.get("izipay_intent_id"))
+                or bool(meta.get("coin"))
+            )
             if st == "completed":
-                wd_valid["count"] += 1; wd_valid["amount"] += amt; total_withdrawals += amt
+                if is_crypto:
+                    dep_crypto["count"] += 1
+                    dep_crypto["amount_usdt"] += amt
+                else:
+                    dep_mm["count"] += 1
+                    dep_mm["amount_xof"] += amt
+        elif typ in ("withdrawal", "transfer") and direction == "out":
+            # Exclude biz-to-biz internal transfers from the "withdrawals"
+            # cards (they don't leave the platform).
+            transfer_type = meta.get("transfer_type")
+            if transfer_type == "biz_to_biz":
+                biz_to_biz["count"] += 1
+                continue
+            if st == "completed":
+                wd_valid["count"] += 1
+                wd_valid["amount"] += amt
+                total_withdrawals += amt
             elif st == "pending":
-                wd_pending["count"] += 1; wd_pending["amount"] += amt
+                wd_pending["count"] += 1
+                wd_pending["amount"] += amt
             elif st in ("failed", "cancelled"):
-                wd_rejected["count"] += 1; wd_rejected["amount"] += amt
+                wd_rejected["count"] += 1
+                wd_rejected["amount"] += amt
+            # Per-channel: mobile money vs crypto (fallback on currency).
+            is_crypto = (
+                transfer_type == "biz_to_crypto"
+                or currency == "USDT"
+                or bool(meta.get("crypto"))
+            )
+            if st == "completed":
+                if is_crypto:
+                    wd_crypto["count"] += 1
+                    wd_crypto["amount_usdt"] += amt
+                else:
+                    wd_mm["count"] += 1
+                    wd_mm["amount_xof"] += amt
+        elif typ == "transfer" and direction == "in":
+            # Received leg of a biz-to-biz transfer — count for volume view.
+            if (meta.get("transfer_type") or "biz_to_biz") == "biz_to_biz":
+                biz_to_biz["count"] += 1
+        elif typ == "link_payment":
+            if st == "completed":
+                link_payments["count"] += 1
+                link_payments["amount_usdt"] += amt
+        elif typ == "payment":
+            if st == "completed":
+                api_payments["count"] += 1
+                api_payments["amount_usdt"] += amt
+        elif typ == "exchange":
+            exchanges["count"] += 1
 
     return {
         "users": {
@@ -2425,6 +2500,20 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
             "failed": failed,
             "deposits": {"pending": dep_pending, "valid": dep_valid, "rejected": dep_rejected},
             "withdrawals": {"pending": wd_pending, "valid": wd_valid, "rejected": wd_rejected},
+            "deposits_by_channel": {
+                "mobile_money": dep_mm,
+                "crypto": dep_crypto,
+            },
+            "withdrawals_by_channel": {
+                "mobile_money": wd_mm,
+                "crypto": wd_crypto,
+            },
+            "operations": {
+                "link_payments": link_payments,
+                "api_payments": api_payments,
+                "biz_to_biz": biz_to_biz,
+                "exchanges": exchanges,
+            },
         },
         "period": period,
     }
