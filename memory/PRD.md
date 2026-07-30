@@ -1,5 +1,26 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Config admin des frais de dépôt Mobile Money
+- ✅ **Nouveau `deposit_config`** dans `db.settings` (id="deposit_config") — même structure que `transfer_config.mobile_money` mais scopé aux dépôts. Seed par défaut : 17 opérateurs × 8 pays (BJ 3, CI 1, TG 2, SN 1, ML 1, NE 3, BF 2, GN 4). Chaque entrée : `country`, `code`, `name`, **`currency`**, `fee_pct`, `min`, `max`, `active`.
+- ✅ **Endpoint public** `GET /api/deposits/config` — expose les opérateurs actifs seulement, groupés par pays (pour le formulaire de dépôt frontend).
+- ✅ **Endpoints admin** `GET/PATCH /api/admin/deposit/config` (super_admin) — deep-merge type transfer_config.
+- ✅ **Application des frais** — refactorée en 2 points :
+  - **Validation à la création** (`POST /api/deposits/mobile-money`) : `_find_deposit_operator(cfg, country, code)` — rejette 400 si opérateur désactivé, valide `min`/`max`, force la devise depuis l'admin.
+  - **Crédit du portefeuille** (`_credit_momo_deposit`) : relit `deposit_config` live à chaque webhook `transaction.approved` → `fee_pct` appliqué = valeur admin en temps réel (l'admin peut donc corriger un taux rétroactivement).
+- ✅ **Nouvelle page** `/admin/deposit-config` (`AdminDepositConfig.js`) — table éditable pays × opérateur avec colonnes Pays (dropdown 8 pays FedaPay), Code, Nom affiché, Devise (XOF/XAF/GNF/CDF/USD/EUR), Frais %, Min, Max, Actif, Supprimer. Toggle Activer/Désactiver la section entière. Chips résumé par pays. Bouton "Ajouter un opérateur". Enregistrement dirty tracking + toggle instantané.
+- ✅ **Sidebar admin** — nouvelle entrée "Config. dépôts" (icône ArrowDownToLine) juste sous "Config. transferts".
+- ✅ **Route** `/admin/deposit-config` ajoutée à `App.js`.
+- ✅ **Formulaire dépôt utilisateur** (`Deposit.js` MobileMoneyForm) — utilise désormais `/deposits/config` (au lieu de `/fedapay/catalog`), applique la devise/min/max de l'admin dans le validate, affiche un **preview des frais** en direct sous le champ montant (`Frais 1.5% : 15 XOF · Net crédité : 985 XOF`).
+
+**Testing** (curl end-to-end + screenshot admin) :
+- `GET /admin/deposit/config` → 17 operators seed ✅
+- `GET /deposits/config` → 8 countries × opérateurs (public) ✅
+- `PATCH admin` → modifie `fee_pct` de MTN Bénin à 3% → `GET public` reflète 3% immédiatement ✅
+- Screenshot admin table : 17 rangées éditables, chips 8 pays, toggle Activer/Désactiver visibles ✅
+- Backend lint 0 erreur, frontend lint 2 warnings apostrophes non-bloquants.
+
+**Objectif atteint** : l'admin gère toute la config (frais, min/max, devise, activation) depuis `/admin/deposit-config`. Les valeurs sont appliquées **immédiatement** (pas de redémarrage/redéploiement) à tous les futurs dépôts Mobile Money.
+
 ## Implémenté (2026-02-XX) — FedaPay Mobile Money (dépôts + retraits)
 - ✅ **Nouveau module** `/app/backend/fedapay.py` — client HTTP FedaPay (create transaction, generate token, send mobile money USSD, create/start payout, verify webhook HMAC). Catalogue statique des 8 pays × opérateurs (BJ/CI/TG/SN/ML/NE/BF/GN, 22 opérateurs mappés vers les codes legacy FedaPay: mtn_open, moov, mtn_ci, moov_tg, togocel, wave_ci, orange_ci, orange_sn, free_sn, mtn_open_gn, moov_gn, wave_gn, orange_gn, moov_bf, sbin, airtel_ml, airtel_ne, wave_ne, orange_ne, moov_ci, celtiis_bj).
 - ✅ **Variables .env** : `FEDAPAY_SECRET_KEY`, `FEDAPAY_PUBLIC_KEY`, `FEDAPAY_WEBHOOK_SECRET`, `FEDAPAY_BASE_URL=https://api.fedapay.com/v1` (mode LIVE demandé par l'user).

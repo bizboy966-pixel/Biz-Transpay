@@ -436,6 +436,68 @@ async def user_send_message(msg: ChatMessage, uid: str = Depends(get_current_use
     return doc
 
 
+# ==================== DEPOSIT CONFIG (Mobile Money) ====================
+# Same structure as transfer_config.mobile_money.operators, but scoped to
+# deposits. Editable end-to-end from the Admin Panel. Applied uniformly on:
+#   - direct deposits (/api/deposits/mobile-money)
+#   - link payments (public checkout)
+#   - merchant API payments (POST /v1/payments — mobile money mode)
+DEFAULT_DEPOSIT_CONFIG = {
+    "id": "deposit_config",
+    "mobile_money": {
+        "enabled": True,
+        "operators": [
+            # Bénin
+            {"country": "BJ", "code": "mtn_bj", "name": "MTN Bénin", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "BJ", "code": "moov_bj", "name": "Moov Bénin", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "BJ", "code": "celtiis_bj", "name": "Celtiis Bénin", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Côte d'Ivoire
+            {"country": "CI", "code": "mtn_ci", "name": "MTN Côte d'Ivoire", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Togo
+            {"country": "TG", "code": "moov_tg", "name": "Moov Togo", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "TG", "code": "togocel_tg", "name": "TogoCom (T-Money)", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Sénégal
+            {"country": "SN", "code": "orange_sn", "name": "Orange Sénégal", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Mali
+            {"country": "ML", "code": "airtel_ml", "name": "Airtel Mali", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Niger
+            {"country": "NE", "code": "airtel_ne", "name": "Airtel Niger", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "NE", "code": "wave_ne", "name": "Wave Niger", "currency": "XOF", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
+            {"country": "NE", "code": "orange_ne", "name": "Orange Niger", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Burkina Faso
+            {"country": "BF", "code": "moov_bf", "name": "Moov Burkina Faso", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            {"country": "BF", "code": "yas_bf", "name": "Mixx by Yas Burkina", "currency": "XOF", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
+            # Guinée
+            {"country": "GN", "code": "mtn_gn", "name": "MTN Guinée", "currency": "GNF", "fee_pct": 1.5, "min": 1000, "max": 5000000, "active": True},
+            {"country": "GN", "code": "moov_gn", "name": "Moov Guinée", "currency": "GNF", "fee_pct": 1.5, "min": 1000, "max": 5000000, "active": True},
+            {"country": "GN", "code": "wave_gn", "name": "Wave Guinée", "currency": "GNF", "fee_pct": 1.0, "min": 1000, "max": 10000000, "active": True},
+            {"country": "GN", "code": "orange_gn", "name": "Orange Guinée", "currency": "GNF", "fee_pct": 1.5, "min": 1000, "max": 5000000, "active": True},
+        ],
+    },
+}
+
+
+async def get_deposit_config() -> dict:
+    doc = await db.settings.find_one({"id": "deposit_config"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(DEFAULT_DEPOSIT_CONFIG.copy())
+        doc = await db.settings.find_one({"id": "deposit_config"}, {"_id": 0})
+    return doc
+
+
+def _find_deposit_operator(cfg: dict, country: str, code: str) -> Optional[dict]:
+    """Locate the per-operator config entry. Case-insensitive on the code."""
+    mm = (cfg.get("mobile_money") or {})
+    if not mm.get("enabled"):
+        return None
+    country_up = (country or "").upper()
+    code_lo = (code or "").lower()
+    for op in mm.get("operators", []):
+        if op.get("country", "").upper() == country_up and op.get("code", "").lower() == code_lo:
+            return op if op.get("active", True) else None
+    return None
+
+
 # ==================== TRANSFER CONFIG ====================
 DEFAULT_TRANSFER_CONFIG = {
     "id": "transfer_config",
@@ -1012,6 +1074,41 @@ async def fedapay_catalog():
     return {"catalog": fedapay.catalog()}
 
 
+@api.get("/deposits/config")
+async def deposits_config_public():
+    """Public per-country/operator fee & limits for Mobile Money deposits.
+
+    Returned to the frontend so the deposit form can render the correct
+    countries/operators, apply min/max validation, and preview the fee.
+    Any operator that is disabled admin-side is excluded from the result.
+    """
+    cfg = await get_deposit_config()
+    mm = cfg.get("mobile_money") or {}
+    ops = [op for op in mm.get("operators", []) if op.get("active", True)]
+    # Group by country to mirror /fedapay/catalog
+    by_country: dict[str, list[dict]] = {}
+    for op in ops:
+        by_country.setdefault(op["country"], []).append({
+            "code": op["code"],
+            "name": op.get("name") or op["code"],
+            "currency": op.get("currency") or "XOF",
+            "fee_pct": float(op.get("fee_pct", 0)),
+            "min": float(op.get("min", 100)),
+            "max": float(op.get("max", 0)) or None,
+        })
+    catalog = []
+    for iso, operators in by_country.items():
+        catalog.append({
+            "country": iso,
+            "country_label": fedapay.COUNTRY_LABELS.get(iso, iso),
+            "operators": operators,
+        })
+    return {
+        "enabled": bool(mm.get("enabled", True)),
+        "catalog": catalog,
+    }
+
+
 class MobileMoneyDepositRequest(BaseModel):
     amount: int = Field(..., ge=100)  # FedaPay expects integer major units
     currency: str = "XOF"
@@ -1044,6 +1141,23 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
     if op["kind"] not in ("collect", "both"):
         raise HTTPException(400, "Opérateur non disponible pour les dépôts")
 
+    # Enforce the admin-configured limits + activation state per country/operator
+    dep_cfg = await get_deposit_config()
+    admin_op = _find_deposit_operator(dep_cfg, req.country, req.operator)
+    if not admin_op:
+        raise HTTPException(
+            400,
+            "Cet opérateur Mobile Money est désactivé pour les dépôts. "
+            "Contactez le support ou choisissez un autre opérateur.",
+        )
+    currency = (admin_op.get("currency") or req.currency or "XOF").upper()
+    min_amt = float(admin_op.get("min", 100))
+    max_amt = float(admin_op.get("max", 0)) or None
+    if req.amount < min_amt:
+        raise HTTPException(400, f"Montant minimum : {int(min_amt)} {currency}")
+    if max_amt and req.amount > max_amt:
+        raise HTTPException(400, f"Montant maximum : {int(max_amt)} {currency}")
+
     u = await get_user(uid)
     dep_id = new_id()
     parts = (req.full_name or "").strip().split(" ", 1)
@@ -1054,8 +1168,8 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
     try:
         tx = await fedapay.create_transaction(
             amount=int(req.amount),
-            currency=req.currency,
-            description=req.description or f"Dépôt Biz-transPay {req.amount} {req.currency}",
+            currency=currency,
+            description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
             customer_email=req.email,
             customer_firstname=first,
             customer_lastname=last,
@@ -1096,11 +1210,13 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
         "id": dep_id,
         "user_id": uid,
         "amount": req.amount,
-        "currency": req.currency,
+        "currency": currency,
         "email": req.email,
         "full_name": req.full_name,
         "country": req.country,
         "operator": req.operator,
+        "operator_name": admin_op.get("name"),
+        "fee_pct_applied": float(admin_op.get("fee_pct", 1.0)),
         "mode": op["mode"],
         "phone_number": req.phone_number,
         "fee_bearer": req.fee_bearer,
@@ -1117,7 +1233,7 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
         "id": dep_id,
         "status": "pending",
         "amount": req.amount,
-        "currency": req.currency,
+        "currency": currency,
         "operator": {"code": req.operator, "label": op["label"]},
         "phone_number": req.phone_number,
         "checkout_url": checkout_url,
@@ -1153,15 +1269,26 @@ async def _reconcile_momo_deposit(dep_id: str) -> None:
 
 
 async def _credit_momo_deposit(d: dict) -> None:
-    """Credit the user's wallet after a FedaPay approval. Idempotent."""
+    """Credit the user's wallet after a FedaPay approval. Idempotent.
+
+    Fee is resolved from the admin `deposit_config` (per-country x per-operator
+    `fee_pct`). Falls back to the value stored on the deposit doc at creation
+    time, then 1% if nothing is set. Applying fees at credit-time (rather than
+    fee-lock at creation) lets the admin retroactively fix a mis-configured
+    rate without breaking the crediting logic.
+    """
     dep_id = d["id"]
     uid = d["user_id"]
     currency = (d.get("currency") or "XOF").upper()
     gross = float(d["amount"])
-    # Apply Biz-transPay margin (1% by default) — configured admin-side later.
-    pcfg = await get_platform_config()
-    momo_fee_pct = float((pcfg.get("mobile_money") or {}).get("deposit_fee_pct", 1.0))
-    fee = gross * (momo_fee_pct / 100.0)
+    # Live-resolve the fee from admin config
+    dep_cfg = await get_deposit_config()
+    admin_op = _find_deposit_operator(dep_cfg, d.get("country", ""), d.get("operator", ""))
+    if admin_op:
+        momo_fee_pct = float(admin_op.get("fee_pct", 1.0))
+    else:
+        momo_fee_pct = float(d.get("fee_pct_applied") or 1.0)
+    fee = round(gross * (momo_fee_pct / 100.0), 2)
     net = round(gross - fee, 2)
     r = await db.momo_deposits.update_one(
         {"id": dep_id, "status": "pending"},
@@ -3951,6 +4078,38 @@ async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depend
     await db.settings.update_one({"id": "transfer_config"}, {"$set": dot_updates}, upsert=True)
     await audit(admin["id"], admin["username"], "update_transfer_config", details=updates)
     return await get_transfer_config()
+
+
+# ---------- Admin: deposit fee/limit config (Mobile Money) ----------
+class AdminDepositConfigReq(BaseModel):
+    mobile_money: Optional[dict] = None
+
+
+@api.get("/admin/deposit/config")
+async def admin_get_deposit_config(admin=Depends(get_admin)):
+    return await get_deposit_config()
+
+
+@api.patch("/admin/deposit/config")
+async def admin_update_deposit_config(req: AdminDepositConfigReq,
+                                       admin=Depends(get_admin)):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    current = await get_deposit_config()
+    dot_updates: dict = {}
+    for section, patch in updates.items():
+        cur_section = current.get(section) or {}
+        if isinstance(patch, dict) and isinstance(cur_section, dict):
+            for k, v in patch.items():
+                dot_updates[f"{section}.{k}"] = v
+        else:
+            dot_updates[section] = patch
+    await db.settings.update_one(
+        {"id": "deposit_config"}, {"$set": dot_updates}, upsert=True)
+    await audit(admin["id"], admin["username"], "update_deposit_config",
+                details=updates)
+    return await get_deposit_config()
 
 
 @api.get("/users/lookup")

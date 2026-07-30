@@ -377,7 +377,7 @@ function MobileMoneyForm({ onSuccess }) {
   const { user } = useAuth();
 
   useEffect(() => {
-    api.get('/fedapay/catalog').then(({ data }) => {
+    api.get('/deposits/config').then(({ data }) => {
       setCatalog(data.catalog || []);
     }).catch(() => {});
     if (user?.email) setEmail(user.email);
@@ -385,7 +385,10 @@ function MobileMoneyForm({ onSuccess }) {
   }, [user]);
 
   const countryEntry = catalog.find((c) => c.country === country);
-  const operators = (countryEntry?.operators || []).filter((o) => o.kind === 'collect' || o.kind === 'both');
+  const operators = countryEntry?.operators || [];
+  const selectedOp = operators.find((o) => o.code === operator);
+  const previewFee = selectedOp && amount ? (parseFloat(amount) * (selectedOp.fee_pct || 0) / 100) : 0;
+  const previewNet = amount ? Math.max(parseFloat(amount) - previewFee, 0) : 0;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -393,12 +396,19 @@ function MobileMoneyForm({ onSuccess }) {
       toast.error('Tous les champs sont obligatoires');
       return;
     }
-    if (parseInt(amount) < 100) { toast.error('Montant minimum 100'); return; }
+    if (parseInt(amount) < (selectedOp?.min || 100)) {
+      toast.error(`Montant minimum : ${selectedOp?.min || 100} ${selectedOp?.currency || 'XOF'}`);
+      return;
+    }
+    if (selectedOp?.max && parseInt(amount) > selectedOp.max) {
+      toast.error(`Montant maximum : ${selectedOp.max} ${selectedOp.currency || 'XOF'}`);
+      return;
+    }
     setLoading(true);
     try {
       const { data } = await api.post('/deposits/mobile-money', {
         amount: parseInt(amount),
-        currency: 'XOF',
+        currency: selectedOp?.currency || 'XOF',
         email: email.trim(),
         full_name: fullName.trim(),
         country,
@@ -450,10 +460,22 @@ function MobileMoneyForm({ onSuccess }) {
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
       </div>
       <div>
-        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Montant (XOF)</label>
+        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Montant ({selectedOp?.currency || 'XOF'})</label>
         <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="momo-amount"
-          placeholder="1000" min="100" required
+          placeholder={selectedOp ? `Min ${selectedOp.min}${selectedOp.max ? ' — Max ' + selectedOp.max : ''}` : '1000'}
+          min={selectedOp?.min || 100}
+          max={selectedOp?.max || undefined}
+          required
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+        {selectedOp && amount && (
+          <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-600">
+            <span>Frais {selectedOp.fee_pct}% :</span>
+            <span className="font-mono font-semibold text-slate-900">{previewFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+            <span className="text-slate-400">•</span>
+            <span>Net crédité :</span>
+            <span className="font-mono font-bold text-emerald-700">{previewNet.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+          </div>
+        )}
       </div>
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Frais supportés par</label>

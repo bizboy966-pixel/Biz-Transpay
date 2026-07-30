@@ -19,6 +19,7 @@ const NAV = [
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
   { section: 'Réglages' },
   { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
+  { to: '/admin/deposit-config', i: ArrowDownToLine, l: 'Config. dépôts' },
   { to: '/admin/platform', i: SettingsIcon, l: 'Frais & Retraits' },
   { to: '/admin/support', i: MessageCircle, l: 'Support & Chat' },
   { section: 'Administration' },

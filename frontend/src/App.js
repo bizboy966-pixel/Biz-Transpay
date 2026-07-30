@@ -30,6 +30,7 @@ import AdminAdmins from '@/pages/admin/AdminAdmins';
 import AdminLinks from '@/pages/admin/AdminLinks';
 import AdminApi from '@/pages/admin/AdminApi';
 import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
+import AdminDepositConfig from '@/pages/admin/AdminDepositConfig';
 import AdminSupport from '@/pages/admin/AdminSupport';
 import AdminPlatform from '@/pages/admin/AdminPlatform';
 import '@/App.css';
@@ -87,6 +88,7 @@ function App() {
             <Route path="logs" element={<AdminLogs />} />
             <Route path="admins" element={<AdminAdmins />} />
             <Route path="transfer-config" element={<AdminTransferConfig />} />
+            <Route path="deposit-config" element={<AdminDepositConfig />} />
             <Route path="support" element={<AdminSupport />} />
             <Route path="platform" element={<AdminPlatform />} />
           </Route>
