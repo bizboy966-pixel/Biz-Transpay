@@ -1,5 +1,12 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Reset production data (clean slate)
+- ✅ **Nouveau script** `/app/backend/scripts/reset_production_data.py` — reset destructif idempotent, protégé par `CONFIRM_RESET=YES`. Backup mongodump (gzip) obligatoire dans `/app/backups/pre-reset-{timestamp}/` avant toute suppression. Whitelist par email (case-insensitive) : uniquement `bizboy966@gmail.com`.
+- ✅ **Exécuté** (Feb 2026) : backup `/app/backups/pre-reset-20260730T010512Z` créé, puis wipe de 2 test users (`iter14ui_…`, `iter15_638401_…`), 3 payment_links, 36 webhook_events, 5 webhook_deliveries, 31 api_logs, 1 merchant_payment, 12 api_keys orphelines.
+- ✅ **État final** : 1 seul user (`bizboy966@gmail.com`, super_admin, kyc=verified, balances XOF/XAF/USDT = 0). Toutes les autres collections (transactions, links, webhooks, notifications, kyc, audit_logs, api_keys, merchant_payments, etc.) sont vides. Vérifié via `/api/admin/stats` — `users.total=1`, `transactions.count=0`, aucun compteur inflaté.
+- ✅ **Script réutilisable en production** : la même commande (`CONFIRM_RESET=YES python3 scripts/reset_production_data.py`) peut être exécutée sur la DB production pour préserver `bizboy966@gmail.com` (seul email whitelisté). Ajouter d'autres emails dans `PRESERVED_EMAILS` avant exécution si de vrais utilisateurs existent.
+- ⚠️ Les clés API du super_admin ont aussi été purgées ; elles seront régénérées automatiquement à la prochaine consultation de `/dashboard/api` via `_ensure_api_keys` (idempotent).
+
 ## Implémenté (2026-02-XX) — Bug webhook Emergent + PDF docs téléchargeable (iter16)
 - ✅ **BUG — URL webhook migrée** : script exécuté sur TOUS les comptes existants → `webhook.url` désormais `https://biz-transppayy.com/api/v1/webhooks/{merchant_id}` pour l'ensemble de la plateforme. Migration idempotente. Zéro référence `emergent*` restante dans les webhooks (vérifié).
 - ✅ **Nouveau endpoint `GET /api-keys/documentation.pdf`** — génère un PDF pro (reportlab 5.0.0) de ~9 KB à la demande. Requiert JWT (401 sinon). `Content-Type: application/pdf`, filename `biz-transpay-api-docs.pdf`.
