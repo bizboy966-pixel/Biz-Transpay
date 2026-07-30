@@ -86,15 +86,20 @@ _DEFAULT_ERROR_CODES = {
 
 
 class BizAPIError(HTTPException):
-    """HTTPException subclass carrying an explicit machine code."""
+    """HTTPException subclass carrying an explicit machine code and optional
+    upstream details that will be surfaced to the caller."""
 
     def __init__(self, status_code: int, message: str, code: str,
-                 headers: Optional[dict] = None) -> None:
-        super().__init__(status_code=status_code,
-                         detail={"message": message, "code": code},
+                 headers: Optional[dict] = None,
+                 details: Optional[dict] = None) -> None:
+        payload = {"message": message, "code": code}
+        if details:
+            payload["details"] = details
+        super().__init__(status_code=status_code, detail=payload,
                          headers=headers or {})
         self.message = message
         self.code = code
+        self.details = details
 
 
 def _is_v1_path(path: str) -> bool:
@@ -102,12 +107,15 @@ def _is_v1_path(path: str) -> bool:
 
 
 def _v1_error_response(status_code: int, message: str, code: Optional[str],
-                       headers: Optional[dict] = None) -> JSONResponse:
+                       headers: Optional[dict] = None,
+                       details: Optional[dict] = None) -> JSONResponse:
     payload = {
         "statusCode": status_code,
         "message": message,
         "code": code or _DEFAULT_ERROR_CODES.get(status_code, "ERROR"),
     }
+    if details:
+        payload["details"] = details
     return JSONResponse(status_code=status_code, content=payload,
                         headers=headers or {})
 
@@ -1432,6 +1440,48 @@ async def v1_health():
     }
 
 
+@api.get("/v1/diagnostic")
+async def v1_diagnostic(request: Request):
+    """Merchant-authenticated integration diagnostic.
+
+    Requires a valid `sk_(test|live)_…` key. Reports:
+      - the environment your key belongs to (test or live)
+      - whether the crypto gateway (upstream) is configured & reachable
+      - the number of active coin/network pairs currently accepted
+
+    Use this from your integration to verify credentials + upstream health
+    *before* trying to create a real payment. The diagnostic response NEVER
+    exposes any upstream secret.
+    """
+    merchant = await _authenticate_merchant(request)
+    env = merchant.get("_api_env") or "test"
+    gateway_configured = bool(izipay.is_configured())
+    gateway_reachable = False
+    assets_active = 0
+    upstream_error: Optional[str] = None
+    if gateway_configured:
+        try:
+            assets = await izipay.list_assets()
+            gateway_reachable = True
+            assets_active = sum(1 for a in (assets or []) if a.get("isActive"))
+        except Exception as e:
+            upstream_error = str(e)[:200]
+    return {
+        "status": "ok" if (gateway_configured and gateway_reachable) else "degraded",
+        "environment": env,
+        "merchant_id": merchant["id"],
+        "account_type": merchant.get("account_type"),
+        "kyc_status": merchant.get("kyc_status"),
+        "gateway": {
+            "configured": gateway_configured,
+            "reachable": gateway_reachable,
+            "active_coins_count": assets_active,
+            "error": upstream_error,
+        },
+        "timestamp": _format_iso(datetime.now(timezone.utc)),
+    }
+
+
 def _serialize_payment(mp: dict) -> dict:
     """Normalize a merchant_payment document for the /v1/payments API surface."""
     return {
@@ -1501,9 +1551,32 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                       **(payload.metadata or {})},
         )
     except izipay.IziPayError as e:
-        raise BizAPIError(400 if e.status < 500 else 502,
-                          f"Crypto gateway: {e.message}",
-                          "GATEWAY_ERROR" if e.status >= 500 else "GATEWAY_REJECTED")
+        # Log full detail server-side.
+        logger.warning("v1/payments gateway rejected [%s] %s", e.code, e.message)
+        # Surface the upstream reason to the merchant so they can fix
+        # the request (invalid amount range, unsupported coin, etc.).
+        hint = None
+        emsg = (e.message or "").lower()
+        if "address" in emsg or "adresse" in emsg:
+            hint = "Adresse crypto invalide."
+        elif "amount" in emsg or "minimum" in emsg or "maximum" in emsg:
+            hint = "Montant hors de la plage acceptée par la passerelle."
+        elif "coin" in emsg or "asset" in emsg or "network" in emsg:
+            hint = "Crypto ou réseau non supporté. Vérifiez `coin` et `accepted_networks`."
+        elif "unauthorized" in emsg or "api key" in emsg or "credentials" in emsg or e.status == 401:
+            hint = ("Clé passerelle upstream invalide côté serveur. "
+                    "Contactez le support Biz-transPay.")
+        raise BizAPIError(
+            400 if e.status < 500 else 502,
+            f"Crypto gateway rejected the request: {e.message}",
+            "GATEWAY_ERROR" if e.status >= 500 else "GATEWAY_REJECTED",
+            details={
+                "upstream_status": e.status,
+                "upstream_code": e.code,
+                "upstream_message": e.message,
+                "hint": hint,
+            },
+        )
 
     expires_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
     doc = {
@@ -3603,14 +3676,18 @@ async def _http_exc_handler(request: Request, exc: HTTPException):
     if isinstance(detail, BizAPIError):
         code = detail.code
         message = detail.message
+        details = detail.details
     elif isinstance(detail, dict) and "message" in detail:
         code = detail.get("code") or _DEFAULT_ERROR_CODES.get(exc.status_code, "ERROR")
         message = str(detail["message"])
+        details = detail.get("details")
     else:
         code = _DEFAULT_ERROR_CODES.get(exc.status_code, "ERROR")
         message = detail if isinstance(detail, str) else str(detail)
+        details = None
     return _v1_error_response(exc.status_code, message, code,
-                              headers=getattr(exc, "headers", None))
+                              headers=getattr(exc, "headers", None),
+                              details=details)
 
 
 # Pydantic validation errors -> 422 with code=VALIDATION_ERROR on v1 routes.

@@ -1,5 +1,33 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Diagnostic upstream (transparence sur les rejets gateway)
+- ✅ **Nouveau `GET /v1/diagnostic`** (auth `sk_test_/sk_live_`) — vérifie l'intégration de bout en bout :
+  - `environment` (test/live selon la clé utilisée)
+  - `merchant_id`, `account_type`, `kyc_status`
+  - `gateway.{configured, reachable, active_coins_count, error}` — bascule vers upstream IziChangePay puis reporte le nombre de crypto actives (ex: 39 en preview) et rien de sensible.
+- ✅ **BizAPIError enrichi** — supporte un champ `details` structuré exposé dans la réponse d'erreur normalisée.
+- ✅ **Erreur `GATEWAY_REJECTED` transparente** sur `POST /v1/payments` :
+  ```json
+  {
+    "statusCode": 400,
+    "message": "Crypto gateway rejected the request: Aucune des cryptos demandées n'est active sur votre compte.",
+    "code": "GATEWAY_REJECTED",
+    "details": {
+      "upstream_status": 400,
+      "upstream_code": "unknown",
+      "upstream_message": "Aucune des cryptos demandées n'est active sur votre compte.",
+      "hint": null
+    }
+  }
+  ```
+  Le champ `hint` traduit certains messages upstream courants ("adresse invalide", "montant hors plage", "coin non supporté", "clé passerelle invalide côté serveur").
+- ✅ **Nouveau preset Playground** "Diagnostic (auth)" dans `/dashboard/api/docs` — 1 clic pour vérifier son intégration.
+- ✅ **Nouvelle section doc** "Health & diagnostic" — schéma de réponse + InfoBox indiquant que si `active_coins_count = 0`, le compte marchand IziChangePay n'a pas encore de crypto activée (à faire contacter le support Biz-transPay).
+
+**Testing** (curl + playground) : `GET /v1/diagnostic` retourne `active_coins_count=39` en preview (gateway upstream OK). `POST /v1/payments` avec `coin=FAKECOIN` retourne 400 `GATEWAY_REJECTED` avec `details.upstream_message = "Aucune des cryptos demandées n'est active sur votre compte."` ✅ Backend lint 0 erreur.
+
+**Objectif** : rendre visible AU MARCHAND (dans Spillover) la vraie raison du rejet upstream, plutôt que le générique "La passerelle crypto a refusé la demande" — pour qu'il puisse fixer son intégration sans devoir contacter le support.
+
 ## Implémenté (2026-02-XX) — Module API Phase B : Documentation pro + Playground Try-it
 - ✅ **Réécriture complète de `/dashboard/api/docs`** avec sidebar sticky (13 sections), navigation par ancre + scroll-spy actif :
   - Vue d'ensemble (hero + 3 raccourcis vers Try-it / Créer paiement / Webhooks)

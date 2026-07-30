@@ -26,7 +26,7 @@ const SECTIONS = [
   { id: 'create-payment', label: 'Créer un paiement', icon: Code2 },
   { id: 'retrieve-payment', label: 'Récupérer / lister', icon: Radio },
   { id: 'webhooks', label: 'Webhooks & signature', icon: Webhook },
-  { id: 'health', label: 'Health check', icon: ShieldCheck },
+  { id: 'health', label: 'Health & diagnostic', icon: ShieldCheck },
   { id: 'playground', label: 'Playground (Try it)', icon: PlayCircle },
 ];
 
@@ -297,6 +297,7 @@ function Playground() {
 
   const presets = [
     { name: 'Health check', m: 'GET', p: '/v1/health', b: '' },
+    { name: 'Diagnostic (auth)', m: 'GET', p: '/v1/diagnostic', b: '' },
     { name: 'Lister paiements', m: 'GET', p: '/v1/payments', b: '' },
     { name: 'Créer paiement (25 USDT)', m: 'POST', p: '/v1/payments',
       b: JSON.stringify({ amount: 25, coin: 'USDT', reference: 'order_demo_' + Date.now(), customer_email: 'demo@example.com', accepted_networks: ['TRC20', 'BEP20', 'ERC20'] }, null, 2) },
@@ -742,7 +743,7 @@ curl -X POST ${API_BASE}/v1/payments \\
           </div>
 
           {/* Health */}
-          <SectionTitle id="health">Health check</SectionTitle>
+          <SectionTitle id="health">Health check &amp; diagnostic</SectionTitle>
           <div className="flex items-center gap-2 text-xs font-mono mb-1">
             <span className="bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded">GET</span>
             <span className="text-slate-700">{API_BASE}/v1/health</span>
@@ -757,6 +758,34 @@ curl -X POST ${API_BASE}/v1/payments \\
   "uptime_seconds": 3600
 }`} />
           </div>
+
+          <div className="flex items-center gap-2 text-xs font-mono mb-1 mt-6">
+            <span className="bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded">GET</span>
+            <span className="text-slate-700">{API_BASE}/v1/diagnostic</span>
+            <span className="text-[11px] text-slate-500 ml-2">— auth requise (sk_test_ ou sk_live_)</span>
+          </div>
+          <p className="text-slate-600 text-[13px] leading-relaxed">
+            Vérifie <b>de bout en bout</b> votre intégration : votre clé est-elle valide, la passerelle crypto upstream est-elle joignable, combien de crypto/réseaux sont actifs sur votre compte. À appeler <b>avant</b> de créer un vrai paiement pour diagnostiquer rapidement.
+          </p>
+          <div className="mt-2">
+            <CodeBlock lang="json" code={`{
+  "status": "ok",
+  "environment": "live",
+  "merchant_id": "…",
+  "account_type": "merchant",
+  "kyc_status": "verified",
+  "gateway": {
+    "configured": true,
+    "reachable": true,
+    "active_coins_count": 39,
+    "error": null
+  },
+  "timestamp": "2026-08-01T14:20:00Z"
+}`} />
+          </div>
+          <InfoBox tone="amber">
+            Si <InlineCode>gateway.active_coins_count</InlineCode> vaut <b>0</b> ou <InlineCode>gateway.reachable</InlineCode> vaut <b>false</b>, c'est que votre compte n'a pas encore de crypto activée — contactez le support Biz-transPay.
+          </InfoBox>
 
           {/* Playground */}
           <SectionTitle id="playground">Playground — Try it live</SectionTitle>
