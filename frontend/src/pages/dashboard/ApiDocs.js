@@ -23,8 +23,9 @@ const SECTIONS = [
   { id: 'ratelimit', label: 'Rate limits', icon: Zap },
   { id: 'errors', label: 'Format d\u2019erreur & codes', icon: AlertCircle },
   { id: 'lifecycle', label: 'Cycle de vie d\u2019un paiement', icon: ChevronRight },
-  { id: 'create-payment', label: 'Créer un paiement', icon: Code2 },
+  { id: 'create-payment', label: 'Créer un paiement crypto', icon: Code2 },
   { id: 'retrieve-payment', label: 'Récupérer / lister', icon: Radio },
+  { id: 'mobile-money', label: 'API Mobile Money', icon: Radio },
   { id: 'webhooks', label: 'Webhooks & signature', icon: Webhook },
   { id: 'health', label: 'Health & diagnostic', icon: ShieldCheck },
   { id: 'playground', label: 'Playground (Try it)', icon: PlayCircle },
@@ -301,6 +302,9 @@ function Playground() {
     { name: 'Lister paiements', m: 'GET', p: '/v1/payments', b: '' },
     { name: 'Créer paiement (25 USDT)', m: 'POST', p: '/v1/payments',
       b: JSON.stringify({ amount: 25, coin: 'USDT', reference: 'order_demo_' + Date.now(), customer_email: 'demo@example.com', accepted_networks: ['TRC20', 'BEP20', 'ERC20'] }, null, 2) },
+    { name: 'MoMo opérateurs', m: 'GET', p: '/v1/mobile-money/operators', b: '' },
+    { name: 'Créer paiement MoMo', m: 'POST', p: '/v1/mobile-money/payments',
+      b: JSON.stringify({ amount: 1000, currency: 'XOF', country: 'BJ', operator: 'mtn_bj', customer_email: 'demo@example.com', customer_full_name: 'Test Client', customer_phone: '97000001', reference: 'order_demo_' + Date.now() }, null, 2) },
     { name: 'Erreur — montant trop petit', m: 'POST', p: '/v1/payments',
       b: JSON.stringify({ amount: 0.5, coin: 'USDT' }, null, 2) },
   ];
@@ -696,9 +700,78 @@ curl -X POST ${API_BASE}/v1/payments \\
 }`} />
           </div>
 
-          {/* Webhooks */}
-          <SectionTitle id="webhooks">Webhooks &amp; signature HMAC</SectionTitle>
+          {/* Mobile Money */}
+          <SectionTitle id="mobile-money">API Mobile Money</SectionTitle>
           <p className="text-slate-600 text-[13px] leading-relaxed">
+            En plus des paiements crypto (USDT, BTC…), Biz-transPay accepte les paiements <b>Mobile Money</b> dans 8 pays d'Afrique de l'Ouest via une API dédiée. Même logique que l'API crypto : Bearer key, Idempotency-Key, webhooks HMAC signés.
+          </p>
+          <div className="mt-3">
+            <div className="flex items-center gap-2 text-xs font-mono mb-1">
+              <span className="bg-blue-100 text-blue-800 font-bold px-2 py-0.5 rounded">GET</span>
+              <span className="text-slate-700">{API_BASE}/v1/mobile-money/operators</span>
+            </div>
+            <p className="text-slate-600 text-[13px]">Liste des opérateurs disponibles pour VOTRE compte (avec min/max/devise).</p>
+          </div>
+          <div className="mt-4">
+            <div className="flex items-center gap-2 text-xs font-mono mb-1">
+              <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded">POST</span>
+              <span className="text-slate-700">{API_BASE}/v1/mobile-money/payments</span>
+            </div>
+            <p className="text-slate-600 text-[13px]">Crée un paiement Mobile Money : déclenche le prompt USSD sur le téléphone du client + fournit un checkout URL de secours.</p>
+          </div>
+          <div className="mt-3">
+            <CodeBlock lang="bash" code={`curl -X POST ${API_BASE}/v1/mobile-money/payments \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Content-Type: application/json" \\
+  -H "Idempotency-Key: order-42-momo-1" \\
+  -d '{
+    "amount": 1000,
+    "currency": "XOF",
+    "country": "BJ",
+    "operator": "mtn_bj",
+    "customer_email": "client@example.com",
+    "customer_full_name": "Ama Kossi",
+    "customer_phone": "97000001",
+    "reference": "order_42",
+    "return_url": "https://myshop.com/orders/42/done"
+  }'`} />
+          </div>
+          <p className="text-slate-600 text-[13px] leading-relaxed mt-3">Réponse (200 OK) :</p>
+          <div className="mt-2">
+            <CodeBlock lang="json" code={`{
+  "id": "8f1e...",
+  "type": "mobile_money",
+  "status": "pending",
+  "amount": "1000.00",
+  "currency": "XOF",
+  "country": "BJ",
+  "operator": "mtn_bj",
+  "customer_phone": "97000001",
+  "payment_url": "https://checkout.example.com/…",
+  "provider_reference": "BTP-8f1e...",
+  "reference": "order_42",
+  "created_at": "2026-08-01T14:30:00Z"
+}`} />
+          </div>
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {[
+              ['mobile_money.payment.created', 'Payment intent créé', 'bg-slate-50 border-slate-200'],
+              ['mobile_money.payment.approved', 'Fonds encaissés — crédit fait', 'bg-emerald-50 border-emerald-200'],
+              ['mobile_money.payment.declined', 'Client a refusé le prompt', 'bg-red-50 border-red-200'],
+              ['mobile_money.payment.canceled', 'Annulé côté opérateur', 'bg-amber-50 border-amber-200'],
+            ].map(([ev, desc, cls]) => (
+              <div key={ev} className={`p-2.5 rounded-lg border ${cls}`}>
+                <div className="font-mono text-[12px] font-bold text-slate-900">{ev}</div>
+                <div className="text-[11px] text-slate-600 mt-0.5">{desc}</div>
+              </div>
+            ))}
+          </div>
+          <p className="text-slate-600 text-[13px] leading-relaxed mt-3">
+            <b>Récupérer un paiement</b> : <InlineCode>GET {API_BASE}/v1/mobile-money/payments/&#123;id&#125;</InlineCode> — <b>Lister</b> : <InlineCode>GET {API_BASE}/v1/mobile-money/payments?limit=50&amp;status=approved</InlineCode>
+          </p>
+
+          {/* Webhooks */}
+          <SectionTitle id="webhooks">Webhooks &amp; signature HMAC</SectionTitle>          <p className="text-slate-600 text-[13px] leading-relaxed">
             Chaque événement est livré via POST HTTPS avec les headers suivants :
           </p>
           <div className="overflow-x-auto rounded-xl border border-slate-200 mt-3">

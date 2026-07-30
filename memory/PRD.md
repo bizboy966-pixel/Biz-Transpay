@@ -1,5 +1,33 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Module API v2 : Multi-clés + Multi-webhooks + API Mobile Money
+- ✅ **Multi clés API** (`db.merchant_keys`) — 1 doc par clé (id, user_id, **name**, env, public_key, secret_hash, secret_hint, **active**, created_at, last_used_at). Migration auto de l'ancien schéma vers "Production (migrée)" + "Test (migré)" au premier appel.
+  - Endpoints : `GET /api/merchant/keys`, `POST /api/merchant/keys {name, env}`, `PATCH /api/merchant/keys/{id} {name?, active?}`, `POST /api/merchant/keys/{id}/regenerate`, `DELETE /api/merchant/keys/{id}`
+  - `_authenticate_merchant` consulte `merchant_keys` en priorité (avec check `active`), fallback sur schéma legacy — clé désactivée → 403 `API_KEY_DISABLED`.
+- ✅ **Multi webhooks** (`db.merchant_webhooks`) — 1 doc par webhook (id, user_id, **name**, url, secret_hash, secret_hint, secret_encrypted, **events[]**, **active**, created_at, last_delivery_at, failure_count).
+  - Endpoints : `GET /api/merchant/webhooks` (+ liste des événements dispo), `POST /api/merchant/webhooks {name, url, events[]}`, `PATCH /api/merchant/webhooks/{id}`, `POST /api/merchant/webhooks/{id}/regenerate-secret`, `POST /api/merchant/webhooks/{id}/test` (envoie payment.completed factice), `DELETE /api/merchant/webhooks/{id}`
+  - `_deliver_webhook` refactoré en **fan-out** — livre l'événement à TOUS les webhooks actifs qui ont coché ce type d'événement (standard FedaPay/Stripe). Fallback legacy si aucun multi-webhook.
+- ✅ **API Mobile Money marchand** :
+  - `POST /api/v1/mobile-money/payments` — auth Bearer sk_*, body `{amount, currency, country, operator, customer_email, customer_full_name, customer_phone, reference?, return_url?, description?, metadata?}`. Idempotency-Key supportée. Utilise FedaPay upstream (create + token + send USSD). Respect strict de la config admin (`deposit_config`) : opérateur désactivé → 400 `OPERATOR_DISABLED`, min/max → `AMOUNT_TOO_SMALL/LARGE` avec `details.min/max/currency`.
+  - `GET /api/v1/mobile-money/payments/{id}` avec fallback reconcile FedaPay
+  - `GET /api/v1/mobile-money/payments?status=…&limit=…` (envelope `{data, count, has_more}`)
+  - `GET /api/v1/mobile-money/operators` (auth) — liste filtrée par la config admin
+  - Nouveaux événements webhook : `mobile_money.payment.created/approved/declined/canceled/refunded` — fan-out via `_deliver_webhook` sur `transaction.approved/declined/canceled/refunded` de FedaPay (`source="merchant_api"`).
+- ✅ **Documentation `/dashboard/api/docs`** : ajout section **"API Mobile Money"** (dans la sidebar entre Récupérer/lister et Webhooks) — endpoint list (GET operators + POST/GET payments), exemple curl complet, exemple JSON response, 4 événements MoMo en cartes couleur. Playground : 2 nouveaux presets ("MoMo opérateurs", "Créer paiement MoMo").
+- ✅ **PDF ReportLab** — liste des événements enrichie.
+
+**Testing** (curl end-to-end) :
+- Migration auto : legacy → 1 key "Test (migré)" ✅
+- Create key "App mobile" → sk_test retourné une fois, utilisable sur `/v1/health` ✅
+- Deactivate + delete cycle OK ✅
+- Create webhook "Mon serveur crypto" avec events filtrés ✅
+- `/v1/mobile-money/operators` → 17 opérateurs (filtered par admin config) ✅
+- `POST /v1/mobile-money/payments` avec body invalide → 400 `OPERATOR_UNAVAILABLE`, montant hors range → 400 `AMOUNT_TOO_SMALL` avec `details` ✅
+- Backend lint 0 erreur.
+- Screenshot doc → section MoMo rendue avec sidebar mise à jour ✅
+
+**⚠️ UI dashboard restant** (P1) : la page `/dashboard/api` (ApiKeys.js) affiche encore l'ancien layout single-key. Les 5 endpoints backend (`GET/POST/PATCH/DELETE/regenerate`) fonctionnent parfaitement mais un CRUD UI n'est pas encore construit. Priorité pour l'itération suivante.
+
 ## Implémenté (2026-02-XX) — Config admin des frais de dépôt Mobile Money
 - ✅ **Nouveau `deposit_config`** dans `db.settings` (id="deposit_config") — même structure que `transfer_config.mobile_money` mais scopé aux dépôts. Seed par défaut : 17 opérateurs × 8 pays (BJ 3, CI 1, TG 2, SN 1, ML 1, NE 3, BF 2, GN 4). Chaque entrée : `country`, `code`, `name`, **`currency`**, `fee_pct`, `min`, `max`, `active`.
 - ✅ **Endpoint public** `GET /api/deposits/config` — expose les opérateurs actifs seulement, groupés par pays (pour le formulaire de dépôt frontend).

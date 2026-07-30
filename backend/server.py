@@ -1276,12 +1276,15 @@ async def _credit_momo_deposit(d: dict) -> None:
     time, then 1% if nothing is set. Applying fees at credit-time (rather than
     fee-lock at creation) lets the admin retroactively fix a mis-configured
     rate without breaking the crediting logic.
+
+    If the deposit originated from a merchant API call (source="merchant_api"),
+    an additional `mobile_money.payment.approved` webhook event is dispatched
+    to the merchant's configured webhooks after the wallet credit.
     """
     dep_id = d["id"]
     uid = d["user_id"]
     currency = (d.get("currency") or "XOF").upper()
     gross = float(d["amount"])
-    # Live-resolve the fee from admin config
     dep_cfg = await get_deposit_config()
     admin_op = _find_deposit_operator(dep_cfg, d.get("country", ""), d.get("operator", ""))
     if admin_op:
@@ -1318,6 +1321,25 @@ async def _credit_momo_deposit(d: dict) -> None:
                  "Dépôt Mobile Money confirmé",
                  f"Votre dépôt de {gross:,.0f} {currency} a été crédité (net {net:,.0f} {currency} après frais).",
                  data={"deposit_id": dep_id, "amount": net, "currency": currency})
+    # If the deposit was initiated via the merchant API, fan-out a signed
+    # webhook so the merchant's backend can reconcile with their order.
+    if d.get("source") == "merchant_api":
+        await _deliver_webhook(uid, "mobile_money.payment.approved", {
+            "payment_id": dep_id,
+            "reference": d.get("reference"),
+            "amount": _format_amount(gross),
+            "amount_gross": _format_amount(gross),
+            "amount_net": _format_amount(net),
+            "fee": _format_amount(fee),
+            "fee_pct": momo_fee_pct,
+            "currency": currency,
+            "country": d.get("country"),
+            "operator": d.get("operator"),
+            "customer_email": d.get("email"),
+            "customer_phone": d.get("phone_number"),
+            "provider_reference": d.get("fedapay_reference"),
+            "approved_at": _format_iso(datetime.now(timezone.utc)),
+        })
 
 
 @api.get("/deposits/mobile-money/{deposit_id}")
@@ -1367,12 +1389,24 @@ async def fedapay_webhook(request: Request):
                 await _credit_momo_deposit(d)
         elif ev_name in ("transaction.canceled", "transaction.declined", "transaction.refunded"):
             tx_id = entity.get("id")
+            d = await db.momo_deposits.find_one({"fedapay_id": tx_id})
             await db.momo_deposits.update_one(
                 {"fedapay_id": tx_id, "status": "pending"},
                 {"$set": {"status": "failed",
                           "failed_reason": ev_name.split(".", 1)[-1],
                           "failed_at": now_iso()}}
             )
+            if d and d.get("source") == "merchant_api":
+                reason = ev_name.split(".", 1)[-1]
+                event = f"mobile_money.payment.{reason}"  # canceled | declined | refunded
+                await _deliver_webhook(d["user_id"], event, {
+                    "payment_id": d["id"], "reference": d.get("reference"),
+                    "amount": _format_amount(d.get("amount", 0)),
+                    "currency": d.get("currency"),
+                    "country": d.get("country"),
+                    "operator": d.get("operator"),
+                    "reason": reason,
+                })
         elif ev_name in ("payout.sent",):
             po_id = entity.get("id")
             tx = await db.transactions.find_one({"metadata.fedapay_payout_id": po_id})
@@ -1854,9 +1888,27 @@ async def _authenticate_merchant(request: Request) -> dict:
                           "INVALID_API_KEY_FORMAT")
     env = "test" if secret.startswith("sk_test_") else "live"
     h = _hash_secret(secret)
+    # Try the new multi-key collection first (per-key active flag + names)
+    mkey = await db.merchant_keys.find_one({"secret_hash": h, "env": env})
+    if mkey:
+        if not mkey.get("active", True):
+            raise BizAPIError(403, "This API key is disabled", "API_KEY_DISABLED")
+        user = await db.users.find_one({"id": mkey["user_id"]})
+        if not user or user.get("is_banned") or user.get("is_blocked"):
+            raise BizAPIError(403, "Merchant account inactive", "ACCOUNT_INACTIVE")
+        try:
+            await db.merchant_keys.update_one(
+                {"id": mkey["id"]},
+                {"$set": {"last_used_at": now_iso()}}
+            )
+        except Exception:
+            pass
+        user["_api_env"] = env
+        user["_api_key_id"] = mkey["id"]
+        return user
+    # Fallback to legacy single-doc schema
     keys = await db.api_keys.find_one({f"keys.{env}.secret_hash": h})
     if not keys:
-        # Legacy path — accounts still using the pre-v2 single plaintext field
         keys = await db.api_keys.find_one({"secret_key": secret})
         if not keys:
             raise BizAPIError(401, "Invalid API key", "INVALID_API_KEY")
@@ -2109,6 +2161,237 @@ async def merchant_list_payments(request: Request,
         "data": [_serialize_payment(d) for d in docs],
         "count": len(docs),
         "has_more": has_more,
+    }
+
+
+# ==================== V1 MOBILE MONEY API (FedaPay-powered) ====================
+class MerchantMoMoRequest(BaseModel):
+    amount: int = Field(..., ge=100)
+    currency: str = "XOF"
+    country: str = Field(..., min_length=2, max_length=2)  # ISO-2
+    operator: str  # eg mtn_bj, moov_tg, orange_ci
+    customer_email: str
+    customer_full_name: str
+    customer_phone: str
+    reference: Optional[str] = None
+    return_url: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+def _serialize_momo_payment(mp: dict) -> dict:
+    return {
+        "id": mp.get("id"),
+        "type": "mobile_money",
+        "status": mp.get("status"),
+        "amount": _format_amount(mp.get("amount", 0)),
+        "amount_gross": _format_amount(mp.get("amount_gross", 0)) if mp.get("amount_gross") is not None else None,
+        "amount_net": _format_amount(mp.get("amount_net", 0)) if mp.get("amount_net") is not None else None,
+        "fee": _format_amount(mp.get("fee", 0)) if mp.get("fee") is not None else None,
+        "currency": mp.get("currency"),
+        "country": mp.get("country"),
+        "operator": mp.get("operator"),
+        "reference": mp.get("reference"),
+        "customer_email": mp.get("customer_email"),
+        "customer_phone": mp.get("phone_number"),
+        "payment_url": mp.get("checkout_url"),
+        "provider_reference": mp.get("fedapay_reference"),
+        "created_at": _format_iso(mp.get("created_at", "")) if mp.get("created_at") else None,
+        "approved_at": _format_iso(mp.get("approved_at", "")) if mp.get("approved_at") else None,
+    }
+
+
+@api.post("/v1/mobile-money/payments")
+async def merchant_create_momo_payment(payload: MerchantMoMoRequest,
+                                        request: Request):
+    """Create a Mobile Money payment intent using FedaPay upstream.
+
+    Auth: `Authorization: Bearer sk_(test|live)_…`. Optional `Idempotency-Key`.
+    Returns `{id, status, payment_url}` — the checkout URL can be shown to the
+    end customer if the USSD prompt fails (both are triggered).
+    """
+    merchant = await _authenticate_merchant(request)
+
+    idem_key = (request.headers.get("Idempotency-Key")
+                or request.headers.get("idempotency-key") or "").strip()
+    if idem_key:
+        if len(idem_key) > 255:
+            raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
+                              "IDEMPOTENCY_KEY_TOO_LONG")
+        cached = await _idempotency_lookup(merchant["id"], idem_key)
+        if cached and cached.get("body") is not None:
+            return JSONResponse(status_code=cached.get("status_code", 200),
+                                content=cached["body"])
+
+    if not fedapay.is_configured():
+        raise BizAPIError(503, "Mobile Money gateway not configured", "GATEWAY_UNAVAILABLE")
+
+    op = fedapay.operator_for(payload.country, payload.operator)
+    if not op or op["kind"] not in ("collect", "both"):
+        raise BizAPIError(400, "Operator not available for deposits in this country",
+                          "OPERATOR_UNAVAILABLE")
+    # Enforce admin-configured limits + activation state
+    dep_cfg = await get_deposit_config()
+    admin_op = _find_deposit_operator(dep_cfg, payload.country, payload.operator)
+    if not admin_op:
+        raise BizAPIError(400, "This Mobile Money operator is disabled",
+                          "OPERATOR_DISABLED")
+    currency = (admin_op.get("currency") or payload.currency or "XOF").upper()
+    min_amt = float(admin_op.get("min", 100))
+    max_amt = float(admin_op.get("max", 0)) or None
+    if payload.amount < min_amt:
+        raise BizAPIError(400, f"Amount below minimum: {int(min_amt)} {currency}",
+                          "AMOUNT_TOO_SMALL",
+                          details={"min": min_amt, "currency": currency})
+    if max_amt and payload.amount > max_amt:
+        raise BizAPIError(400, f"Amount above maximum: {int(max_amt)} {currency}",
+                          "AMOUNT_TOO_LARGE",
+                          details={"max": max_amt, "currency": currency})
+
+    mp_id = new_id()
+    parts = (payload.customer_full_name or "").strip().split(" ", 1)
+    first = parts[0] or "Customer"
+    last = parts[1] if len(parts) > 1 else first
+    callback = payload.return_url or f"{os.environ.get('OFFICIAL_DOMAIN', '')}/pay/checkout/{mp_id}"
+
+    try:
+        tx = await fedapay.create_transaction(
+            amount=int(payload.amount),
+            currency=currency,
+            description=payload.description or f"Merchant payment {payload.reference or mp_id}",
+            customer_email=payload.customer_email,
+            customer_firstname=first,
+            customer_lastname=last,
+            customer_phone=payload.customer_phone,
+            customer_country=payload.country,
+            callback_url=callback,
+            metadata={
+                "kind": "merchant_momo_payment",
+                "merchant_id": merchant["id"],
+                "merchant_reference": payload.reference or "",
+                "biztranspay_payment_id": mp_id,
+                **(payload.metadata or {}),
+            },
+        )
+    except fedapay.FedaPayError as e:
+        logger.warning("v1/mm gateway rejected [%s] %s", e.status, e.message)
+        raise BizAPIError(
+            400 if e.status < 500 else 502,
+            f"Mobile Money gateway rejected the request: {e.message}",
+            "GATEWAY_ERROR" if e.status >= 500 else "GATEWAY_REJECTED",
+            details={"upstream_status": e.status, "upstream_message": e.message},
+        )
+
+    tx_id = tx.get("id")
+    ref = tx.get("reference") or f"BTP-{mp_id[:8]}"
+    try:
+        token_resp = await fedapay.generate_token(tx_id)
+    except fedapay.FedaPayError as e:
+        raise BizAPIError(400, f"Mobile Money gateway: {e.message}", "GATEWAY_REJECTED")
+    token = token_resp.get("token") or ""
+    checkout_url = token_resp.get("url")
+
+    prompt_sent = False
+    try:
+        await fedapay.send_mobile_money(op["mode"], token)
+        prompt_sent = True
+    except fedapay.FedaPayError:
+        pass  # customer will use checkout_url
+
+    doc = {
+        "id": mp_id,
+        "merchant_id": merchant["id"],
+        "user_id": merchant["id"],  # for _credit_momo_deposit compat
+        "amount": payload.amount,
+        "currency": currency,
+        "email": payload.customer_email,
+        "full_name": payload.customer_full_name,
+        "country": payload.country,
+        "operator": payload.operator,
+        "operator_name": admin_op.get("name"),
+        "fee_pct_applied": float(admin_op.get("fee_pct", 1.0)),
+        "mode": op["mode"],
+        "phone_number": payload.customer_phone,
+        "reference": payload.reference,
+        "fedapay_id": tx_id,
+        "fedapay_reference": ref,
+        "checkout_url": checkout_url,
+        "status": "pending",
+        "prompt_sent": prompt_sent,
+        "created_at": now_iso(),
+        "source": "merchant_api",
+    }
+    await db.momo_deposits.insert_one(doc)
+    await _deliver_webhook(merchant["id"], "mobile_money.payment.created", {
+        "payment_id": mp_id, "reference": payload.reference,
+        "amount": _format_amount(payload.amount), "currency": currency,
+        "country": payload.country, "operator": payload.operator,
+    })
+
+    body = _serialize_momo_payment(doc)
+    if idem_key:
+        try:
+            await _idempotency_store(merchant["id"], idem_key, "POST",
+                                     "/api/v1/mobile-money/payments", 200, body)
+        except Exception:
+            pass
+    return body
+
+
+@api.get("/v1/mobile-money/payments/{payment_id}")
+async def merchant_get_momo_payment(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    mp = await db.momo_deposits.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not mp:
+        raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
+    if mp.get("status") == "pending" and mp.get("fedapay_id"):
+        await _reconcile_momo_deposit(payment_id)
+        mp = await db.momo_deposits.find_one(
+            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+    return _serialize_momo_payment(mp)
+
+
+@api.get("/v1/mobile-money/payments")
+async def merchant_list_momo_payments(request: Request,
+                                        limit: int = Query(50, ge=1, le=200),
+                                        status: Optional[str] = None):
+    merchant = await _authenticate_merchant(request)
+    q: dict = {"merchant_id": merchant["id"]}
+    if status:
+        q["status"] = status
+    docs = await db.momo_deposits.find(q, {"_id": 0}) \
+        .sort("created_at", -1).limit(limit + 1).to_list(limit + 1)
+    has_more = len(docs) > limit
+    docs = docs[:limit]
+    return {
+        "data": [_serialize_momo_payment(d) for d in docs],
+        "count": len(docs),
+        "has_more": has_more,
+    }
+
+
+@api.get("/v1/mobile-money/operators")
+async def v1_momo_operators(request: Request):
+    """Returns the merchant-facing catalog of available Mobile Money operators
+    (filtered by admin deposit config — disabled operators are hidden).
+    """
+    await _authenticate_merchant(request)
+    cfg = await get_deposit_config()
+    mm = cfg.get("mobile_money") or {}
+    return {
+        "enabled": bool(mm.get("enabled", True)),
+        "operators": [
+            {
+                "country": op["country"],
+                "code": op["code"],
+                "name": op.get("name"),
+                "currency": op.get("currency", "XOF"),
+                "min": float(op.get("min", 100)),
+                "max": float(op.get("max", 0)) or None,
+            }
+            for op in mm.get("operators", []) if op.get("active", True)
+        ],
     }
 
 
@@ -2371,9 +2654,14 @@ def _default_webhook_url(request: Request, uid: str) -> str:
 async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
     """Idempotent: ensure the merchant has a default (test) key pair + webhook
     secret. Live keys are lazily created on first regenerate('live').
+
+    Also migrates the legacy single-doc schema to the new multi-key collection
+    `merchant_keys` and multi-webhook collection `merchant_webhooks` on first
+    read, so existing merchants keep working without any manual step.
     """
     doc = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
     if doc and doc.get("keys"):
+        await _migrate_to_multi_keys(uid, doc)
         return doc
     # Migrate legacy single-key doc → new schema (test env only)
     legacy_pub = (doc or {}).get("public_key")
@@ -2391,7 +2679,6 @@ async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
                 "created_at": now_iso(),
                 "last_used_at": None,
             },
-            # live is created on demand — merchant must explicitly regenerate('live')
         },
         "webhook": {
             "url": (doc or {}).get("webhook_url") or (_default_webhook_url(request, uid) if request else ""),
@@ -2404,12 +2691,64 @@ async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
             "created_at": now_iso(),
         },
         "created_at": now_iso(),
-        # One-time reveal: on first creation only, plaintext is stored ephemerally so
-        # the frontend can display it in a "copy now" modal. Cleared on next fetch.
         "_reveal": {"test_secret": test_secret, "webhook_secret": webhook_secret},
     }
     await db.api_keys.replace_one({"user_id": uid}, new_doc, upsert=True)
+    await _migrate_to_multi_keys(uid, new_doc)
     return new_doc
+
+
+# ==================== MULTI KEYS + MULTI WEBHOOKS ====================
+# The legacy `api_keys` document (1 doc per user, with keys.test/keys.live and
+# a single webhook) is preserved as a lookup path for backward compatibility.
+# On top of it we expose N-per-user schemas via two dedicated collections:
+#   - `merchant_keys`   : {id, user_id, name, env, public_key, secret_hash,
+#                          secret_hint, active, created_at, last_used_at}
+#   - `merchant_webhooks`: {id, user_id, name, url, secret_hash, secret_hint,
+#                          secret_encrypted, events[], active, created_at,
+#                          last_delivery_at, failure_count}
+async def _migrate_to_multi_keys(uid: str, legacy: dict) -> None:
+    """Populate merchant_keys / merchant_webhooks from legacy doc if empty."""
+    existing_keys = await db.merchant_keys.count_documents({"user_id": uid})
+    if existing_keys == 0:
+        for env, label in (("live", "Production (migrée)"), ("test", "Test (migré)")):
+            k = (legacy.get("keys") or {}).get(env)
+            if not k:
+                continue
+            await db.merchant_keys.insert_one({
+                "id": new_id(),
+                "user_id": uid,
+                "name": label,
+                "env": env,
+                "public_key": k.get("public_key"),
+                "secret_hash": k.get("secret_hash"),
+                "secret_hint": k.get("secret_hint"),
+                "active": True,
+                "created_at": k.get("created_at") or now_iso(),
+                "last_used_at": k.get("last_used_at"),
+            })
+    existing_hooks = await db.merchant_webhooks.count_documents({"user_id": uid})
+    if existing_hooks == 0 and legacy.get("webhook", {}).get("url"):
+        wh = legacy["webhook"]
+        await db.merchant_webhooks.insert_one({
+            "id": new_id(),
+            "user_id": uid,
+            "name": "Webhook principal",
+            "url": wh["url"],
+            "secret_hash": wh.get("secret_hash"),
+            "secret_hint": wh.get("secret_hint"),
+            "secret_encrypted": wh.get("secret_encrypted"),
+            "events": wh.get("events") or [
+                "payment.created", "payment.confirming", "payment.completed",
+                "payment.failed", "payment.expired",
+                "mobile_money.payment.approved", "mobile_money.payment.declined",
+                "refund.created", "refund.completed",
+            ],
+            "active": True,
+            "created_at": wh.get("created_at") or now_iso(),
+            "last_delivery_at": None,
+            "failure_count": 0,
+        })
 
 
 def _public_keys_view(doc: dict) -> dict:
@@ -2524,6 +2863,258 @@ async def list_api_logs(uid: str = Depends(get_current_user_id),
     docs = await db.api_logs.find({"user_id": uid}, {"_id": 0}) \
         .sort("timestamp", -1).limit(limit).to_list(limit)
     return docs
+
+
+# ==================== MULTI KEYS ENDPOINTS ====================
+ALL_WEBHOOK_EVENTS = [
+    "payment.created", "payment.confirming", "payment.completed",
+    "payment.failed", "payment.expired",
+    "mobile_money.payment.approved", "mobile_money.payment.declined",
+    "mobile_money.payment.canceled",
+    "refund.created", "refund.completed",
+]
+
+
+class CreateMerchantKeyReq(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    env: Literal["test", "live"] = "test"
+
+
+class UpdateMerchantKeyReq(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    active: Optional[bool] = None
+
+
+def _mkey_view(k: dict, reveal: Optional[str] = None) -> dict:
+    out = {
+        "id": k["id"],
+        "name": k.get("name"),
+        "env": k.get("env"),
+        "public_key": k.get("public_key"),
+        "secret_hint": k.get("secret_hint"),
+        "active": bool(k.get("active", True)),
+        "created_at": k.get("created_at"),
+        "last_used_at": k.get("last_used_at"),
+    }
+    if reveal:
+        out["secret"] = reveal
+    return out
+
+
+@api.get("/merchant/keys")
+async def list_merchant_keys(uid: str = Depends(get_current_user_id),
+                              request: Request = None):
+    u = await get_user(uid)
+    if u["account_type"] != "merchant":
+        raise HTTPException(403, "Réservé aux comptes marchands")
+    await _ensure_api_keys(uid, request)  # triggers migration on first read
+    rows = await db.merchant_keys.find({"user_id": uid}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(200)
+    return {"data": [_mkey_view(k) for k in rows]}
+
+
+@api.post("/merchant/keys")
+async def create_merchant_key(req: CreateMerchantKeyReq,
+                                uid: str = Depends(get_current_user_id),
+                                request: Request = None):
+    u = await get_user(uid)
+    if u["account_type"] != "merchant":
+        raise HTTPException(403, "Réservé aux comptes marchands")
+    await _ensure_api_keys(uid, request)
+    prefix_pk = f"pk_{req.env}_"
+    prefix_sk = f"sk_{req.env}_"
+    pub = _gen_key(prefix_pk)
+    sec = _gen_key(prefix_sk, 32)
+    doc = {
+        "id": new_id(),
+        "user_id": uid,
+        "name": req.name.strip(),
+        "env": req.env,
+        "public_key": pub,
+        "secret_hash": _hash_secret(sec),
+        "secret_hint": _mask(sec),
+        "active": True,
+        "created_at": now_iso(),
+        "last_used_at": None,
+    }
+    await db.merchant_keys.insert_one(doc)
+    return _mkey_view(doc, reveal=sec)
+
+
+@api.patch("/merchant/keys/{key_id}")
+async def update_merchant_key(key_id: str, req: UpdateMerchantKeyReq,
+                                uid: str = Depends(get_current_user_id)):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    r = await db.merchant_keys.update_one(
+        {"id": key_id, "user_id": uid}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Clé introuvable")
+    k = await db.merchant_keys.find_one({"id": key_id}, {"_id": 0})
+    return _mkey_view(k)
+
+
+@api.post("/merchant/keys/{key_id}/regenerate")
+async def regenerate_merchant_key(key_id: str,
+                                    uid: str = Depends(get_current_user_id)):
+    k = await db.merchant_keys.find_one({"id": key_id, "user_id": uid}, {"_id": 0})
+    if not k:
+        raise HTTPException(404, "Clé introuvable")
+    env = k.get("env", "test")
+    new_secret = _gen_key(f"sk_{env}_", 32)
+    new_public = _gen_key(f"pk_{env}_")
+    await db.merchant_keys.update_one(
+        {"id": key_id, "user_id": uid},
+        {"$set": {
+            "public_key": new_public,
+            "secret_hash": _hash_secret(new_secret),
+            "secret_hint": _mask(new_secret),
+        }},
+    )
+    k = await db.merchant_keys.find_one({"id": key_id}, {"_id": 0})
+    return _mkey_view(k, reveal=new_secret)
+
+
+@api.delete("/merchant/keys/{key_id}")
+async def delete_merchant_key(key_id: str,
+                                uid: str = Depends(get_current_user_id)):
+    r = await db.merchant_keys.delete_one({"id": key_id, "user_id": uid})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Clé introuvable")
+    return {"deleted": True}
+
+
+# ==================== MULTI WEBHOOKS ENDPOINTS ====================
+class CreateWebhookReq(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    url: str
+    events: list[str] = Field(default_factory=list)
+
+
+class UpdateWebhookReq(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=80)
+    url: Optional[str] = None
+    events: Optional[list[str]] = None
+    active: Optional[bool] = None
+
+
+def _wh_view(w: dict, reveal: Optional[str] = None) -> dict:
+    out = {
+        "id": w["id"],
+        "name": w.get("name"),
+        "url": w.get("url"),
+        "events": w.get("events") or [],
+        "active": bool(w.get("active", True)),
+        "secret_hint": w.get("secret_hint"),
+        "created_at": w.get("created_at"),
+        "last_delivery_at": w.get("last_delivery_at"),
+        "failure_count": w.get("failure_count", 0),
+    }
+    if reveal:
+        out["secret"] = reveal
+    return out
+
+
+@api.get("/merchant/webhooks")
+async def list_webhooks(uid: str = Depends(get_current_user_id),
+                          request: Request = None):
+    await _ensure_api_keys(uid, request)
+    rows = await db.merchant_webhooks.find({"user_id": uid}, {"_id": 0}) \
+        .sort("created_at", -1).to_list(200)
+    return {"data": [_wh_view(w) for w in rows],
+            "available_events": ALL_WEBHOOK_EVENTS}
+
+
+@api.post("/merchant/webhooks")
+async def create_webhook(req: CreateWebhookReq,
+                          uid: str = Depends(get_current_user_id)):
+    url = (req.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "URL invalide (doit commencer par http:// ou https://)")
+    events = [e for e in (req.events or []) if e in ALL_WEBHOOK_EVENTS]
+    if not events:
+        events = list(ALL_WEBHOOK_EVENTS)
+    secret = _gen_key("whsec_", 32)
+    doc = {
+        "id": new_id(),
+        "user_id": uid,
+        "name": req.name.strip(),
+        "url": url,
+        "events": events,
+        "active": True,
+        "secret_hash": _hash_secret(secret),
+        "secret_hint": _mask(secret),
+        "secret_encrypted": _encrypt(secret),
+        "created_at": now_iso(),
+        "last_delivery_at": None,
+        "failure_count": 0,
+    }
+    await db.merchant_webhooks.insert_one(doc)
+    return _wh_view(doc, reveal=secret)
+
+
+@api.patch("/merchant/webhooks/{wh_id}")
+async def update_webhook(wh_id: str, req: UpdateWebhookReq,
+                            uid: str = Depends(get_current_user_id)):
+    payload = req.model_dump(exclude_unset=True)
+    if "url" in payload and not payload["url"].startswith(("http://", "https://")):
+        raise HTTPException(400, "URL invalide")
+    if "events" in payload:
+        payload["events"] = [e for e in payload["events"] if e in ALL_WEBHOOK_EVENTS]
+    if not payload:
+        raise HTTPException(400, "Aucune modification")
+    r = await db.merchant_webhooks.update_one(
+        {"id": wh_id, "user_id": uid}, {"$set": payload})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Webhook introuvable")
+    w = await db.merchant_webhooks.find_one({"id": wh_id}, {"_id": 0})
+    return _wh_view(w)
+
+
+@api.post("/merchant/webhooks/{wh_id}/regenerate-secret")
+async def regenerate_merchant_webhook_secret(wh_id: str,
+                                       uid: str = Depends(get_current_user_id)):
+    w = await db.merchant_webhooks.find_one({"id": wh_id, "user_id": uid}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Webhook introuvable")
+    secret = _gen_key("whsec_", 32)
+    await db.merchant_webhooks.update_one(
+        {"id": wh_id, "user_id": uid},
+        {"$set": {"secret_hash": _hash_secret(secret),
+                  "secret_hint": _mask(secret),
+                  "secret_encrypted": _encrypt(secret)}},
+    )
+    w = await db.merchant_webhooks.find_one({"id": wh_id}, {"_id": 0})
+    return _wh_view(w, reveal=secret)
+
+
+@api.delete("/merchant/webhooks/{wh_id}")
+async def delete_webhook(wh_id: str,
+                          uid: str = Depends(get_current_user_id)):
+    r = await db.merchant_webhooks.delete_one({"id": wh_id, "user_id": uid})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Webhook introuvable")
+    return {"deleted": True}
+
+
+@api.post("/merchant/webhooks/{wh_id}/test")
+async def send_test_webhook(wh_id: str,
+                              uid: str = Depends(get_current_user_id)):
+    w = await db.merchant_webhooks.find_one({"id": wh_id, "user_id": uid}, {"_id": 0})
+    if not w:
+        raise HTTPException(404, "Webhook introuvable")
+    if not w.get("active", True):
+        raise HTTPException(400, "Webhook désactivé")
+    await _deliver_webhook(uid, "payment.completed", {
+        "payment_id": "test_" + new_id()[:8],
+        "reference": "test_event",
+        "amount": "100.00",
+        "coin": "USDT",
+        "note": "This is a test event from Biz-transPay",
+    })
+    return {"ok": True, "message": "Event de test envoyé — vérifiez les livraisons."}
+
 
 
 # ==================== API PLAYGROUND (Try-it) ====================
@@ -2746,6 +3337,8 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     story.append(code("expected = 'sha256=' + hmac.new(\n    webhook_secret.encode(),\n    f'{timestamp}.{raw_body}'.encode(),\n    hashlib.sha256\n).hexdigest()"))
     story.append(p("Événements émis : <b>payment.created, payment.confirming, "
                    "payment.completed, payment.failed, payment.expired, "
+                   "mobile_money.payment.approved, mobile_money.payment.declined, "
+                   "mobile_money.payment.canceled, "
                    "refund.created, refund.completed</b>."))
 
     # Create payment
@@ -2890,16 +3483,38 @@ if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
 
 # ==================== WEBHOOK DELIVERY (outbound to merchants) ====================
 async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
-    """Fire-and-forget HMAC-signed POST to the merchant's webhook URL.
-    Stores a webhook_deliveries record with the outcome. Best-effort retries
-    (3 attempts, exponential backoff via asyncio.sleep). Only errors are logged.
+    """Fan-out webhook delivery — fires an HMAC-signed POST to every ACTIVE
+    endpoint in `merchant_webhooks` that has subscribed to `event_type`.
+
+    Falls back to the legacy single-webhook (`api_keys.webhook`) if the merchant
+    hasn't migrated yet.
     """
-    doc = await db.api_keys.find_one({"user_id": user_id}, {"_id": 0})
-    if not doc:
-        return
-    wh = doc.get("webhook") or {}
-    url = wh.get("url", "").strip()
-    if not url or not url.startswith(("http://", "https://")):
+    # Collect all destinations: multi-webhooks (new) + legacy fallback
+    dests: list[dict] = []
+    async for wh in db.merchant_webhooks.find({"user_id": user_id, "active": True}, {"_id": 0}):
+        events = wh.get("events") or []
+        if events and event_type not in events:
+            continue
+        dests.append({
+            "id": wh["id"],
+            "url": wh.get("url", "").strip(),
+            "secret_encrypted": wh.get("secret_encrypted"),
+            "secret_hash": wh.get("secret_hash"),
+        })
+    # If no dests yet (fresh account, not migrated), fall back to legacy
+    if not dests:
+        legacy = await db.api_keys.find_one({"user_id": user_id}, {"_id": 0})
+        if legacy:
+            wh = legacy.get("webhook") or {}
+            events = wh.get("events") or []
+            if wh.get("url") and (not events or event_type in events):
+                dests.append({
+                    "id": None,
+                    "url": wh.get("url", "").strip(),
+                    "secret_encrypted": wh.get("secret_encrypted"),
+                    "secret_hash": wh.get("secret_hash"),
+                })
+    if not dests:
         return
 
     import httpx
@@ -2912,68 +3527,78 @@ async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
     }
     body_json = json.dumps(payload, separators=(",", ":"), default=str, sort_keys=True)
     timestamp = str(int(datetime.now(timezone.utc).timestamp()))
-    # Sign with the plaintext webhook secret (decrypted from secret_encrypted).
-    # Legacy accounts without an encrypted secret fall back to signing with the
-    # hash — those merchants are advised to regenerate their webhook secret so
-    # signature verification works with the plaintext they copied.
-    plaintext_secret = _decrypt(wh.get("secret_encrypted") or "")
-    if plaintext_secret:
-        sign_key = plaintext_secret.encode("utf-8")
-    else:
-        sign_key = (wh.get("secret_hash") or "").encode("utf-8")
     signed_payload = f"{timestamp}.{body_json}".encode("utf-8")
-    signature = "sha256=" + hmac.new(sign_key, signed_payload, hashlib.sha256).hexdigest()
 
-    delivery = {
-        "id": event_id,
-        "user_id": user_id,
-        "event_id": event_id,
-        "event_type": event_type,
-        "url": url,
-        "payload": payload,
-        "attempts": 0,
-        "status": "pending",
-        "created_at": now_iso(),
-    }
-    await db.webhook_deliveries.insert_one(dict(delivery))
+    async def _fire(dest: dict) -> None:
+        url = dest["url"]
+        if not url or not url.startswith(("http://", "https://")):
+            return
+        plaintext_secret = _decrypt(dest.get("secret_encrypted") or "")
+        sign_key = (plaintext_secret or dest.get("secret_hash") or "").encode("utf-8")
+        signature = "sha256=" + hmac.new(sign_key, signed_payload, hashlib.sha256).hexdigest()
+        delivery = {
+            "id": new_id(),
+            "user_id": user_id,
+            "webhook_id": dest.get("id"),
+            "event_id": event_id,
+            "event_type": event_type,
+            "url": url,
+            "payload": payload,
+            "attempts": 0,
+            "status": "pending",
+            "created_at": now_iso(),
+        }
+        await db.webhook_deliveries.insert_one(dict(delivery))
 
-    async def _attempt(retry: int = 0):
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.post(url, content=body_json, headers={
-                    "Content-Type": "application/json",
-                    "X-BizTransPay-Signature": signature,
-                    "X-BizTransPay-Timestamp": timestamp,
-                    "X-BizTransPay-Event-Id": event_id,
-                    "X-BizTransPay-Event-Type": event_type,
-                    "User-Agent": "BizTransPay-Webhook/1.0",
-                })
-                ok = 200 <= r.status_code < 300
+        async def _attempt(retry: int = 0):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    r = await client.post(url, content=body_json, headers={
+                        "Content-Type": "application/json",
+                        "X-BizTransPay-Signature": signature,
+                        "X-BizTransPay-Timestamp": timestamp,
+                        "X-BizTransPay-Event-Id": event_id,
+                        "X-BizTransPay-Event-Type": event_type,
+                        "User-Agent": "BizTransPay-Webhook/1.0",
+                    })
+                    ok = 200 <= r.status_code < 300
+                    await db.webhook_deliveries.update_one(
+                        {"id": delivery["id"]},
+                        {"$set": {"status": "delivered" if ok else "failed",
+                                  "status_code": r.status_code,
+                                  "response_body": (r.text or "")[:2000],
+                                  "delivered_at": now_iso()},
+                         "$inc": {"attempts": 1}}
+                    )
+                    if dest.get("id"):
+                        await db.merchant_webhooks.update_one(
+                            {"id": dest["id"]},
+                            {"$set": {"last_delivery_at": now_iso()},
+                             "$inc": {"failure_count": 0 if ok else 1}},
+                        )
+                    if not ok and retry < 2:
+                        await asyncio.sleep(2 ** (retry + 1) * 15)
+                        await _attempt(retry + 1)
+            except Exception as e:  # noqa: BLE001
                 await db.webhook_deliveries.update_one(
-                    {"id": event_id},
-                    {"$set": {"status": "delivered" if ok else "failed",
-                              "status_code": r.status_code,
-                              "response_body": (r.text or "")[:2000],
+                    {"id": delivery["id"]},
+                    {"$set": {"status": "failed",
+                              "response_body": f"Exception: {str(e)[:500]}",
                               "delivered_at": now_iso()},
                      "$inc": {"attempts": 1}}
                 )
-                if not ok and retry < 2:
-                    await asyncio.sleep(2 ** (retry + 1) * 15)  # 30s, 60s
+                if dest.get("id"):
+                    await db.merchant_webhooks.update_one(
+                        {"id": dest["id"]}, {"$inc": {"failure_count": 1}}
+                    )
+                if retry < 2:
+                    await asyncio.sleep(2 ** (retry + 1) * 15)
                     await _attempt(retry + 1)
-        except Exception as e:  # noqa: BLE001
-            await db.webhook_deliveries.update_one(
-                {"id": event_id},
-                {"$set": {"status": "failed",
-                          "response_body": f"Exception: {str(e)[:500]}",
-                          "delivered_at": now_iso()},
-                 "$inc": {"attempts": 1}}
-            )
-            if retry < 2:
-                await asyncio.sleep(2 ** (retry + 1) * 15)
-                await _attempt(retry + 1)
 
-    # Fire without awaiting — don't block the caller (webhook / API request).
-    asyncio.create_task(_attempt())
+        asyncio.create_task(_attempt())
+
+    for d in dests:
+        await _fire(d)
 
 
 # ==================== SETTINGS ====================
