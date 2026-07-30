@@ -27,6 +27,8 @@ import AdminKyc from '@/pages/admin/AdminKyc';
 import AdminTransactions from '@/pages/admin/AdminTransactions';
 import AdminLogs from '@/pages/admin/AdminLogs';
 import AdminAdmins from '@/pages/admin/AdminAdmins';
+import AdminLinks from '@/pages/admin/AdminLinks';
+import AdminApi from '@/pages/admin/AdminApi';
 import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
 import AdminSupport from '@/pages/admin/AdminSupport';
 import AdminPlatform from '@/pages/admin/AdminPlatform';
@@ -77,6 +79,8 @@ function App() {
             <Route path="users" element={<AdminUsers />} />
             <Route path="users/:id" element={<AdminUserDetail />} />
             <Route path="kyc" element={<AdminKyc />} />
+            <Route path="links" element={<AdminLinks />} />
+            <Route path="api" element={<AdminApi />} />
             <Route path="transactions" element={<AdminTransactions />} />
             <Route path="deposits" element={<AdminTransactions filterType="deposit" />} />
             <Route path="withdrawals" element={<AdminTransactions filterType="withdrawal" />} />

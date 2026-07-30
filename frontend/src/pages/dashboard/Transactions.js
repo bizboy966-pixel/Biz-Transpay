@@ -34,6 +34,13 @@ export default function Transactions() {
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type, status]);
 
+  // Debounced live search — triggers on typing/paste, no button click needed.
+  useEffect(() => {
+    const id = setTimeout(() => { load(); }, 250);
+    return () => clearTimeout(id);
+    /* eslint-disable-next-line */
+  }, [q]);
+
   const exportCsv = () => {
     const rows = [['ID', 'Type', 'Direction', 'Amount', 'Currency', 'Status', 'Reference', 'Date']];
     txs.forEach((t) => rows.push([t.id, t.type, t.direction, t.amount, t.currency, t.status, t.reference, t.created_at]));
@@ -59,7 +66,7 @@ export default function Transactions() {
       <div className="bg-white border border-slate-100 rounded-[20px] p-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px] flex items-center gap-2 px-3 border border-slate-200 rounded-xl">
           <Search className="w-4 h-4 text-slate-400" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} data-testid="tx-search" placeholder="Rechercher…" className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} data-testid="tx-search" placeholder="ID, référence, email, adresse wallet, hash…" className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
         </div>
         <select value={type} onChange={(e) => setType(e.target.value)} data-testid="tx-filter-type" className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
           {TYPES.map((tt) => <option key={tt} value={tt}>{tt === 'all' ? 'Tous types' : tt}</option>)}
@@ -73,7 +80,7 @@ export default function Transactions() {
         <div className="grid grid-cols-[auto_1fr_auto_auto] gap-4 px-6 py-3 bg-slate-50 text-[11px] font-bold uppercase tracking-wider text-slate-500">
           <div>Type</div><div>Détails</div><div>Statut</div><div className="text-right">Montant</div>
         </div>
-        {txs.length === 0 && <div className="p-10 text-center text-slate-400 text-sm">Aucune transaction</div>}
+        {txs.length === 0 && <div className="p-10 text-center text-slate-400 text-sm" data-testid="tx-empty">{q ? 'Aucune transaction trouvée.' : 'Aucune transaction'}</div>}
         {txs.map((tx) => {
           const meta = tx.metadata || {};
           const coin = meta.coin;

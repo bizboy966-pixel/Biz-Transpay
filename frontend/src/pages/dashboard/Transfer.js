@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight, Users, Smartphone, Landmark, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin } from 'lucide-react';
+import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
@@ -23,7 +23,6 @@ export default function Transfer() {
   const opts = [
     { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais' },
     { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money' },
-    { v: 'biz_to_bank', I: Landmark, c: 'bg-violet-50 text-violet-600', l: 'Biz-trans → Compte bancaire', d: 'Vers un compte bancaire' },
     { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux' },
   ];
 
@@ -67,7 +66,6 @@ export default function Transfer() {
 
       {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} />}
       {step === 2 && type === 'biz_to_mobile' && <BizToMobileForm config={config} onDone={onDone} balance={user} />}
-      {step === 2 && type === 'biz_to_bank' && <BizToBankForm config={config} />}
       {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} />}
 
       {step === 3 && done && (
@@ -311,12 +309,6 @@ function BizToMobileForm({ config, onDone, balance }) {
       )}
     </div>
   );
-}
-
-// ------- BIZ TO BANK -------
-function BizToBankForm({ config }) {
-  if (!config?.bank?.enabled) return <SoonBanner text="Les transferts bancaires seront disponibles prochainement." />;
-  return <SoonBanner text="Configuration bancaire en cours." />;
 }
 
 // ------- BIZ TO CRYPTO -------

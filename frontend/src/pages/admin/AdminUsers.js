@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Search, Filter, Download, MoreHorizontal,
-  Eye, Pencil, ShieldCheck, Ban, RefreshCcw, KeyRound, Trash2, X, AlertTriangle,
+  Eye, Pencil, ShieldCheck, Ban, RefreshCcw, KeyRound, Trash2, X, AlertTriangle, UserCog,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -114,6 +114,7 @@ function UserActionsMenu({ user, me, onChanged, onNav }) {
   const [editOpen, setEditOpen] = useState(false);
   const [pwdOpen, setPwdOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [confirmTypeSwitch, setConfirmTypeSwitch] = useState(false);
   const wrapRef = useRef(null);
 
   useEffect(() => {
@@ -126,6 +127,8 @@ function UserActionsMenu({ user, me, onChanged, onNav }) {
   const isSuperAdmin = user.role === 'super_admin';
   const isSelf = me && me.id === user.id;
   const suspended = user.is_blocked || user.is_banned;
+  const currentType = user.account_type || 'personal';
+  const nextType = currentType === 'merchant' ? 'personal' : 'merchant';
 
   const doAction = async (action, ok) => {
     try {
@@ -140,6 +143,15 @@ function UserActionsMenu({ user, me, onChanged, onNav }) {
       await api.post(`/admin/kyc/${user.id}/decision`, { approve: true });
       toast.success('KYC approuvé');
       setOpen(false); onChanged();
+    } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
+  };
+
+  const switchAccountType = async () => {
+    try {
+      await api.patch(`/admin/users/${user.id}`, { account_type: nextType });
+      toast.success(`Compte converti en ${nextType === 'merchant' ? 'Marchand' : 'Personnel'}`);
+      setConfirmTypeSwitch(false);
+      onChanged();
     } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
   };
 
@@ -161,6 +173,12 @@ function UserActionsMenu({ user, me, onChanged, onNav }) {
           <MenuItem I={Eye} label="Voir le profil" onClick={() => { setOpen(false); onNav(`/admin/users/${user.id}`); }} testId={`act-view-${user.id}`} />
           <MenuItem I={Pencil} label="Modifier les informations" onClick={() => { setOpen(false); setEditOpen(true); }} testId={`act-edit-${user.id}`} />
           <MenuItem I={ShieldCheck} label="Vérifier le KYC" onClick={doKycApprove} disabled={user.kyc_status === 'verified'} testId={`act-kyc-${user.id}`} />
+          <MenuItem
+            I={UserCog}
+            label={nextType === 'merchant' ? 'Convertir en Marchand' : 'Convertir en Personnel'}
+            onClick={() => { setOpen(false); setConfirmTypeSwitch(true); }}
+            testId={`act-account-type-${user.id}`}
+          />
           {suspended ? (
             <MenuItem I={RefreshCcw} label="Réactiver le compte" onClick={() => doAction('unblock', 'Compte réactivé')} testId={`act-reactivate-${user.id}`} />
           ) : (
@@ -187,6 +205,25 @@ function UserActionsMenu({ user, me, onChanged, onNav }) {
       )}
       {confirmDel && (
         <DeleteUserModal user={user} onClose={() => setConfirmDel(false)} onDeleted={() => { setConfirmDel(false); onChanged(); }} />
+      )}
+      {confirmTypeSwitch && (
+        <ModalShell title="Modifier le type de compte" onClose={() => setConfirmTypeSwitch(false)} testId={`switch-type-modal-${user.id}`}>
+          <p className="text-xs text-slate-700">
+            Vous êtes sur le point de convertir <b>{user.full_name}</b> (<span className="font-mono">@{user.username}</span>)
+            de <b>{currentType === 'merchant' ? 'Marchand' : 'Personnel'}</b> vers <b>{nextType === 'merchant' ? 'Marchand' : 'Personnel'}</b>.
+          </p>
+          <div className="mt-3 rounded-xl bg-blue-50 border border-blue-100 p-3 text-[11px] text-slate-700 leading-relaxed">
+            {nextType === 'merchant' ? (
+              <>Cet utilisateur aura immédiatement accès aux outils marchands : <b>API de paiement</b>, gestion des clés API, configuration des webhooks. Les clés API seront auto-générées.</>
+            ) : (
+              <>Cet utilisateur perdra immédiatement l&apos;accès aux outils marchands (API, webhooks). Ses clés API existantes restent en base mais ne seront plus utilisables.</>
+            )}
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button onClick={() => setConfirmTypeSwitch(false)} className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold hover:bg-slate-50" data-testid="switch-type-cancel">Annuler</button>
+            <button onClick={switchAccountType} className="px-4 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold" data-testid="switch-type-submit">Confirmer la conversion</button>
+          </div>
+        </ModalShell>
       )}
     </div>
   );

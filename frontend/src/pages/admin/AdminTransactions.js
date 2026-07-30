@@ -14,6 +14,11 @@ export default function AdminTransactions({ filterType }) {
     api.get('/admin/transactions', { params: p }).then(({ data }) => setTxs(data)).catch(() => {});
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type, status]);
+  useEffect(() => {
+    const id = setTimeout(() => { load(); }, 250);
+    return () => clearTimeout(id);
+    /* eslint-disable-next-line */
+  }, [q]);
 
   const exportCsv = () => {
     const rows = [['ID', 'Reference', 'User', 'Type', 'Direction', 'Amount', 'Currency', 'Status', 'Date']];
@@ -30,7 +35,7 @@ export default function AdminTransactions({ filterType }) {
       <div className="bg-white border border-slate-100 rounded-2xl p-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[240px] flex items-center gap-2 px-3 border border-slate-200 rounded-xl">
           <Search className="w-4 h-4 text-slate-400" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} data-testid="admin-tx-search" placeholder="Rechercher par ID, référence, destinataire…" className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} data-testid="admin-tx-search" placeholder="ID, référence, email, adresse wallet, hash, TXID…" className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
         </div>
         {!filterType && (
           <select value={type} onChange={(e) => setType(e.target.value)} data-testid="admin-tx-type" className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold">
@@ -60,7 +65,7 @@ export default function AdminTransactions({ filterType }) {
               </tr>
             </thead>
             <tbody>
-              {txs.length === 0 && <tr><td colSpan={6} className="p-10 text-center text-slate-400 text-sm">Aucune transaction</td></tr>}
+              {txs.length === 0 && <tr><td colSpan={6} className="p-10 text-center text-slate-400 text-sm" data-testid="admin-tx-empty">{q ? 'Aucune transaction trouvée.' : 'Aucune transaction'}</td></tr>}
               {txs.map((tx) => {
                 const meta = tx.metadata || {};
                 const coin = meta.coin;

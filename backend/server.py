@@ -386,6 +386,10 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
     if u.get("withdrawals_blocked") and req.transfer_type != "biz_to_biz":
         raise HTTPException(403, "Retraits bloqués pour votre compte")
 
+    # Biz-transfer bank is permanently removed from the platform.
+    if req.transfer_type == "biz_to_bank":
+        raise HTTPException(410, "Le transfert bancaire n'est plus disponible sur Biz-transPay.")
+
     field = "balance_xof" if req.currency == "XOF" else ("balance_xaf" if req.currency == "XAF" else "balance_usdt")
     if u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
@@ -480,35 +484,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
 
     # -------- BIZ TO BANK --------
     if req.transfer_type == "biz_to_bank":
-        bank_cfg = cfg.get("bank", {})
-        if not bank_cfg.get("enabled"):
-            raise HTTPException(403, "Bientôt disponible. Les transferts bancaires seront disponibles prochainement.")
-        if not req.bank:
-            raise HTTPException(400, "Banque requise")
-        bank = next((b for b in bank_cfg.get("banks", [])
-                     if b.get("code") == req.bank and b.get("active", True)), None)
-        if not bank:
-            raise HTTPException(400, "Banque non disponible")
-        fee_pct = bank.get("fee_pct", 0) / 100.0
-        fee = req.amount * fee_pct
-        total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
-        recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
-        if u.get(field, 0) < total_debit:
-            raise HTTPException(400, "Solde insuffisant (frais inclus)")
-        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
-        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
-                                 counterparty=req.recipient, description=req.description,
-                                 metadata={"transfer_type": "biz_to_bank", "bank": bank["name"],
-                                           "fee": fee, "fee_bearer": req.fee_bearer,
-                                           "recipient_gets": recipient_gets, "total_debit": total_debit})
-        await notify(uid, "withdrawal_success",
-                     "Virement bancaire effectué",
-                     f"Votre virement de {req.amount:,.0f} {req.currency} vers {req.recipient} ({bank['name']}) a été effectué avec succès.",
-                     data={"transaction_id": tx_out.id, "reference": tx_out.reference,
-                           "amount": req.amount, "currency": req.currency,
-                           "transfer_type": "biz_to_bank"})
-        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
-                "recipient_gets": recipient_gets, "bank": bank["name"]}
+        raise HTTPException(410, "Le transfert bancaire n'est plus disponible sur Biz-transPay.")
 
     # -------- BIZ TO CRYPTO --------
     if req.transfer_type == "biz_to_crypto":
@@ -1236,6 +1212,8 @@ async def _authenticate_merchant(request: Request) -> dict:
         keys = await db.api_keys.find_one({"secret_key": secret})
         if not keys:
             raise HTTPException(401, "Invalid API key")
+    if keys.get("suspended"):
+        raise HTTPException(403, "Clés API suspendues par l'administrateur")
     user = await db.users.find_one({"id": keys["user_id"]})
     if not user or user.get("is_banned") or user.get("is_blocked"):
         raise HTTPException(403, "Merchant account inactive")
@@ -1519,10 +1497,22 @@ async def list_transactions(
     if status:
         query["status"] = status
     if q:
+        # Escape regex-special chars so user input like "0x..." works verbatim
+        esc = __import__("re").escape(q.strip())
+        rx = {"$regex": esc, "$options": "i"}
         query["$or"] = [
-            {"reference": {"$regex": q, "$options": "i"}},
-            {"counterparty": {"$regex": q, "$options": "i"}},
-            {"description": {"$regex": q, "$options": "i"}},
+            {"id": rx}, {"reference": rx}, {"counterparty": rx},
+            {"description": rx}, {"currency": rx}, {"type": rx},
+            {"metadata.tx_hash": rx},
+            {"metadata.wallet_address": rx},
+            {"metadata.deposit_address": rx},
+            {"metadata.customer_email": rx},
+            {"metadata.izipay_intent_id": rx},
+            {"metadata.merchant_payment_id": rx},
+            {"metadata.link_id": rx},
+            {"metadata.coin": rx},
+            {"metadata.recipient": rx},
+            {"metadata.recipient_name": rx},
         ]
     docs = await db.transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return docs
@@ -2103,6 +2093,7 @@ class AdminUpdateUser(BaseModel):
     phone: Optional[str] = None
     country: Optional[str] = None
     role: Optional[Literal["user", "admin", "super_admin"]] = None
+    account_type: Optional[Literal["personal", "merchant"]] = None
 
 
 class AdminKycDecision(BaseModel):
@@ -2313,6 +2304,10 @@ async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(ge
             raise HTTPException(409, "Adresse email déjà utilisée")
     if updates:
         await db.users.update_one({"id": user_id}, {"$set": updates})
+        # If upgrading to merchant, auto-provision API keys idempotently so the
+        # user immediately has access to /dashboard/api after promotion.
+        if updates.get("account_type") == "merchant":
+            await _ensure_api_keys(user_id)
     await audit(admin["id"], admin["username"], "update_user",
                 target_user_id=user_id, target_username=target["username"],
                 details=updates)
@@ -2480,17 +2475,163 @@ async def admin_transactions(admin=Depends(get_admin), q: Optional[str] = None,
     if status:
         query["status"] = status
     if q:
+        esc = __import__("re").escape(q.strip())
+        rx = {"$regex": esc, "$options": "i"}
+        # First resolve users matching email/username so we can filter their txns.
+        matching_users = await db.users.find(
+            {"$or": [{"email": rx}, {"username": rx}, {"full_name": rx}, {"phone": rx}]},
+            {"_id": 0, "id": 1}
+        ).to_list(1000)
+        user_ids = [u["id"] for u in matching_users]
         query["$or"] = [
-            {"reference": {"$regex": q, "$options": "i"}},
-            {"id": {"$regex": q, "$options": "i"}},
-            {"counterparty": {"$regex": q, "$options": "i"}},
+            {"id": rx}, {"reference": rx}, {"counterparty": rx},
+            {"description": rx}, {"currency": rx}, {"type": rx},
+            {"metadata.tx_hash": rx},
+            {"metadata.wallet_address": rx},
+            {"metadata.deposit_address": rx},
+            {"metadata.customer_email": rx},
+            {"metadata.izipay_intent_id": rx},
+            {"metadata.merchant_payment_id": rx},
+            {"metadata.link_id": rx},
+            {"metadata.coin": rx},
+            {"metadata.recipient": rx},
+            {"metadata.recipient_name": rx},
         ]
+        if user_ids:
+            query["$or"].append({"user_id": {"$in": user_ids}})
     docs = await db.transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     # attach user info lightly
     for d in docs:
         u = await db.users.find_one({"id": d["user_id"]}, {"_id": 0, "username": 1, "full_name": 1, "email": 1})
         d["user"] = u
     return docs
+
+
+# ==================== ADMIN — Payment Links & API Keys management ====================
+@api.get("/admin/links")
+async def admin_list_links(admin=Depends(get_admin), q: Optional[str] = None,
+                            status: Optional[str] = None, limit: int = Query(500, le=2000)):
+    """List ALL payment links across all merchants, enriched with owner info.
+    Supports free-text search on slug/title/id/user identity."""
+    query: dict = {}
+    if status == "active":
+        query["active"] = True
+    elif status in ("suspended", "disabled", "inactive"):
+        query["active"] = False
+    if q:
+        esc = __import__("re").escape(q.strip())
+        rx = {"$regex": esc, "$options": "i"}
+        matching = await db.users.find(
+            {"$or": [{"email": rx}, {"username": rx}, {"full_name": rx}]},
+            {"_id": 0, "id": 1}).to_list(1000)
+        uids = [u["id"] for u in matching]
+        query["$or"] = [{"id": rx}, {"slug": rx}, {"title": rx}, {"description": rx}]
+        if uids:
+            query["$or"].append({"user_id": {"$in": uids}})
+    docs = await db.payment_links.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    for d in docs:
+        u = await db.users.find_one({"id": d["user_id"]},
+            {"_id": 0, "username": 1, "full_name": 1, "email": 1, "account_type": 1})
+        d["owner"] = u or {}
+    return docs
+
+
+@api.post("/admin/links/{link_id}/action/{action}")
+async def admin_link_action(link_id: str, action: str, admin=Depends(get_admin)):
+    link = await db.payment_links.find_one({"id": link_id}, {"_id": 0})
+    if not link:
+        raise HTTPException(404, "Lien introuvable")
+    if action == "suspend":
+        await db.payment_links.update_one({"id": link_id}, {"$set": {"active": False}})
+    elif action == "reactivate":
+        await db.payment_links.update_one({"id": link_id}, {"$set": {"active": True}})
+    elif action == "delete":
+        await db.payment_links.delete_one({"id": link_id})
+        await db.link_payments.delete_many({"link_id": link_id})
+    else:
+        raise HTTPException(400, "Action inconnue (suspend|reactivate|delete)")
+    await audit(admin["id"], admin["username"], f"link_{action}",
+                target_user_id=link["user_id"], target_username=link.get("title"),
+                details={"link_id": link_id, "slug": link.get("slug")})
+    return {"ok": True}
+
+
+@api.get("/admin/api-keys")
+async def admin_list_api_keys(admin=Depends(get_admin), q: Optional[str] = None,
+                               status: Optional[str] = None, limit: int = Query(500, le=2000)):
+    """List all merchants' API keys with owner info + status. Secrets are NEVER
+    returned — only public keys + hints."""
+    query: dict = {}
+    if status == "active":
+        query["suspended"] = {"$ne": True}
+    elif status == "suspended":
+        query["suspended"] = True
+    if q:
+        esc = __import__("re").escape(q.strip())
+        rx = {"$regex": esc, "$options": "i"}
+        matching = await db.users.find(
+            {"$or": [{"email": rx}, {"username": rx}, {"full_name": rx}]},
+            {"_id": 0, "id": 1}).to_list(1000)
+        uids = [u["id"] for u in matching]
+        query["$or"] = [{"user_id": rx},
+                         {"keys.test.public_key": rx}, {"keys.live.public_key": rx}]
+        if uids:
+            query["$or"].append({"user_id": {"$in": uids}})
+    docs = await db.api_keys.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    result = []
+    for d in docs:
+        u = await db.users.find_one({"id": d["user_id"]},
+            {"_id": 0, "username": 1, "full_name": 1, "email": 1, "account_type": 1})
+        if not u:
+            continue
+        result.append({
+            "user_id": d["user_id"],
+            "owner": u,
+            "test_public_key": (d.get("keys", {}).get("test") or {}).get("public_key"),
+            "live_public_key": (d.get("keys", {}).get("live") or {}).get("public_key"),
+            "webhook_url": (d.get("webhook") or {}).get("url"),
+            "suspended": bool(d.get("suspended", False)),
+            "created_at": d.get("created_at"),
+            "last_used_at": max(
+                filter(None, [(d.get("keys", {}).get("test") or {}).get("last_used_at"),
+                              (d.get("keys", {}).get("live") or {}).get("last_used_at")]),
+                default=None,
+            ),
+        })
+    return result
+
+
+@api.post("/admin/api-keys/{user_id}/action/{action}")
+async def admin_api_key_action(user_id: str, action: str, admin=Depends(get_admin)):
+    doc = await db.api_keys.find_one({"user_id": user_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Clés API introuvables pour cet utilisateur")
+    if action == "suspend":
+        await db.api_keys.update_one({"user_id": user_id}, {"$set": {"suspended": True}})
+    elif action == "reactivate":
+        await db.api_keys.update_one({"user_id": user_id}, {"$set": {"suspended": False}})
+    elif action == "delete":
+        await db.api_keys.delete_one({"user_id": user_id})
+    elif action == "regenerate":
+        # Regenerate BOTH test and live keys (admin-forced rotation).
+        for env in ("test", "live"):
+            if not (doc.get("keys") or {}).get(env):
+                continue
+            new_public = _gen_key(f"pk_{env}_")
+            new_secret = _gen_key(f"sk_{env}_", 32)
+            await db.api_keys.update_one(
+                {"user_id": user_id},
+                {"$set": {f"keys.{env}.public_key": new_public,
+                          f"keys.{env}.secret_hint": _mask(new_secret),
+                          f"keys.{env}.secret_hash": _hash_secret(new_secret),
+                          f"keys.{env}.created_at": now_iso(),
+                          f"keys.{env}.last_used_at": None}}
+            )
+    else:
+        raise HTTPException(400, "Action inconnue (suspend|reactivate|delete|regenerate)")
+    await audit(admin["id"], admin["username"], f"apikey_{action}",
+                target_user_id=user_id)
+    return {"ok": True}
 
 
 @api.get("/admin/logs")

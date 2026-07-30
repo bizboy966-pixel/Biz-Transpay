@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, Landmark, Bitcoin, Network } from 'lucide-react';
+import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, Bitcoin, Network } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { COUNTRIES } from '@/constants/countries';
@@ -15,7 +15,7 @@ export default function AdminTransferConfig() {
   const save = async () => {
     try {
       await api.patch('/admin/transfer/config', {
-        mobile_money: cfg.mobile_money, bank: cfg.bank, crypto: cfg.crypto,
+        mobile_money: cfg.mobile_money, crypto: cfg.crypto,
       });
       toast.success('Configuration enregistrée');
       setDirty(false);
@@ -40,7 +40,6 @@ export default function AdminTransferConfig() {
   if (!cfg) return <div className="text-slate-500 text-sm">Chargement…</div>;
 
   const mm = cfg.mobile_money || { enabled: false, operators: [] };
-  const bank = cfg.bank || { enabled: false, banks: [] };
   const crypto = cfg.crypto || { enabled: false, cryptos: [], networks: [] };
 
   const setSection = (section, val) => { setCfg({ ...cfg, [section]: val }); setDirty(true); };
@@ -53,14 +52,6 @@ export default function AdminTransferConfig() {
   };
   const addOp = () => setSection('mobile_money', { ...mm, operators: [...mm.operators, { country: 'TG', code: '', name: '', fee_pct: 1.5, min: 100, max: 500000, active: true }] });
   const removeOp = (idx) => setSection('mobile_money', { ...mm, operators: mm.operators.filter((_, i) => i !== idx) });
-
-  const updateBank = (idx, key, val) => {
-    const banks = [...bank.banks];
-    banks[idx] = { ...banks[idx], [key]: val };
-    setSection('bank', { ...bank, banks });
-  };
-  const addBank = () => setSection('bank', { ...bank, banks: [...bank.banks, { country: 'TG', code: '', name: '', fee_pct: 2.0, min: 1000, max: 5000000, active: true }] });
-  const removeBank = (idx) => setSection('bank', { ...bank, banks: bank.banks.filter((_, i) => i !== idx) });
 
   // CRYPTO handlers
   const updCrypto = (patch) => setSection('crypto', { ...crypto, ...patch });
@@ -116,35 +107,6 @@ export default function AdminTransferConfig() {
           </table>
         </div>
         <button onClick={addOp} data-testid="btn-add-op" className="mt-3 inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8]"><Plus className="w-3.5 h-3.5" /> Ajouter un opérateur</button>
-      </Section>
-
-      {/* Banks */}
-      <Section title="Biz-trans → Banque" subtitle={`${bank.banks.length} banques configurées`} Icon={Landmark} iconBg="bg-violet-50 text-violet-600" enabled={bank.enabled} saving={savingSection === 'bank'} onEnabledChange={(v) => setEnabled('bank', v)} testId="bank">
-        {bank.banks.length === 0 && <div className="text-center py-4 sm:py-6 text-[11px] sm:text-xs text-slate-500">Aucune banque configurée. Ajoutez-en une pour activer les transferts bancaires.</div>}
-        {bank.banks.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11px] sm:text-xs">
-              <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                <tr><th className="text-left px-2 sm:px-3 py-2">Pays</th><th className="text-left px-2 sm:px-3 py-2">Code</th><th className="text-left px-2 sm:px-3 py-2">Nom</th><th className="text-right px-2 sm:px-3 py-2">Frais %</th><th className="text-right px-2 sm:px-3 py-2">Min</th><th className="text-right px-2 sm:px-3 py-2">Max</th><th className="text-center px-2 sm:px-3 py-2">Actif</th><th className="text-center px-2 sm:px-3 py-2"></th></tr>
-              </thead>
-              <tbody>
-                {bank.banks.map((b, idx) => (
-                  <tr key={idx} className="border-t border-slate-50">
-                    <td className="px-2 sm:px-3 py-2"><select value={b.country} onChange={(e) => updateBank(idx, 'country', e.target.value)} className="px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs">{COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}</select></td>
-                    <td className="px-2 sm:px-3 py-2"><input value={b.code} onChange={(e) => updateBank(idx, 'code', e.target.value)} className="w-20 sm:w-24 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs" /></td>
-                    <td className="px-2 sm:px-3 py-2"><input value={b.name} onChange={(e) => updateBank(idx, 'name', e.target.value)} className="w-40 sm:w-52 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs" /></td>
-                    <td className="px-2 sm:px-3 py-2"><input type="number" step="0.1" value={b.fee_pct} onChange={(e) => updateBank(idx, 'fee_pct', parseFloat(e.target.value) || 0)} className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 sm:px-3 py-2"><input type="number" value={b.min} onChange={(e) => updateBank(idx, 'min', parseInt(e.target.value) || 0)} className="w-16 sm:w-20 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 sm:px-3 py-2"><input type="number" value={b.max} onChange={(e) => updateBank(idx, 'max', parseInt(e.target.value) || 0)} className="w-20 sm:w-24 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
-                    <td className="px-2 sm:px-3 py-2 text-center"><input type="checkbox" checked={b.active} onChange={(e) => updateBank(idx, 'active', e.target.checked)} className="w-4 h-4 accent-[#2563EB]" /></td>
-                    <td className="px-2 sm:px-3 py-2 text-center"><button onClick={() => removeBank(idx)} className="text-red-500"><Trash2 className="w-3.5 h-3.5" /></button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        <button onClick={addBank} data-testid="btn-add-bank" className="mt-3 inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-[#2563EB]"><Plus className="w-3.5 h-3.5" /> Ajouter une banque</button>
       </Section>
 
       {/* Crypto */}
