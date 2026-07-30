@@ -1,5 +1,26 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Bug webhook Emergent + PDF docs téléchargeable (iter16)
+- ✅ **BUG — URL webhook migrée** : script exécuté sur TOUS les comptes existants → `webhook.url` désormais `https://biz-transppayy.com/api/v1/webhooks/{merchant_id}` pour l'ensemble de la plateforme. Migration idempotente. Zéro référence `emergent*` restante dans les webhooks (vérifié).
+- ✅ **Nouveau endpoint `GET /api-keys/documentation.pdf`** — génère un PDF pro (reportlab 5.0.0) de ~9 KB à la demande. Requiert JWT (401 sinon). `Content-Type: application/pdf`, filename `biz-transpay-api-docs.pdf`.
+- ✅ **Contenu PDF (7 sections)** :
+  - Couverture + présentation
+  - Authentification (Bearer sk_test_/sk_live_, sécurité)
+  - Clés API (test/live, reveal one-time, régénération)
+  - Webhooks + signature HMAC (tableau des en-têtes X-BizTransPay-*, formule Python)
+  - Créer un paiement (body JSON, réponse 200)
+  - Récupérer / lister
+  - Codes de réponse HTTP (tableau 200/400/401/403/404/410/429/500/503)
+  - Exemples SDK 5 langages (Node.js, Python, PHP, Laravel, JavaScript) + snippet vérification signature Node.js
+- ✅ **Bouton "Télécharger la documentation (PDF)"** (`btn-download-pdf`) intégré au header de `/dashboard/api/docs`. Loading state "Génération…", téléchargement via blob.
+
+**Testing** : `testing_agent_v3_fork` iter16 — **7/7 pytest backend + 100% frontend**. PDF vérifié : 8.6 KB, magic `%PDF-1.4`, contient `biz-transppayy`, **zéro** occurrence `emergent`, 7 sections + 5 langages + snippet HMAC.
+
+**Backlog restant (P2, non-bloquant)** :
+- **Refactor server.py** (3110 lignes → très urgent, dette à ce stade)
+- Cache PDF (généré à chaque appel actuellement, ~200ms)
+- Split routes en modules `/app/backend/routes/` : api_keys, admin, webhooks, transfers, transactions
+
 ## Implémenté (2026-02-XX) — Bug fix + 3 features (iter15)
 - ✅ **BUG — Recherche transactions corrigée** (utilisateur + admin) : recherche en temps réel avec **debounce 250ms**, sans bouton. Multi-champs (15 fields) : id, référence, counterparty, description, currency, type, metadata.tx_hash, wallet_address, deposit_address, customer_email, izipay_intent_id, coin, recipient, recipient_name + (admin) email/username/full_name/phone via jointure users. Insensible à la casse via `$options:'i'`, input regex-échappé. Empty state clair : "Aucune transaction trouvée."
 - ✅ **Suppression complète Biz Transfer Bank** — plus dans le menu Transfer (3 options restantes : Biz-trans, Mobile Money, Crypto), section Bank retirée du panneau admin, backend renvoie `410 Gone` sur `biz_to_bank`, composant BizToBankForm supprimé, code mort de bank config nettoyé.
