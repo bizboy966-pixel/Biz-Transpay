@@ -34,8 +34,9 @@ export default function Deposit() {
       )}
       {step === 2 && method === 'crypto' && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
       {step === 2 && method === 'card' && <CardDepositForm />}
-      {step === 2 && method === 'mobile_money' && <SoonMobileMoney />}
-      {step === 3 && deposit && <CryptoDepositTracker deposit={deposit} />}
+      {step === 2 && method === 'mobile_money' && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
+      {step === 3 && deposit?.__momo && <MobileMoneyTracker deposit={deposit} />}
+      {step === 3 && deposit && !deposit.__momo && <CryptoDepositTracker deposit={deposit} />}
       {step === 3 && !deposit && (
         <div className="bg-white border border-slate-100 rounded-2xl p-8 text-center text-sm text-slate-500">
           Session perdue. <button onClick={() => setStep(1)} className="text-[#2563EB] font-semibold underline">Recommencer</button>
@@ -359,6 +360,160 @@ function SoonMobileMoney() {
       <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center"><Smartphone className="w-6 h-6 text-emerald-500" /></div>
       <h2 className="mt-3 font-cabinet text-lg sm:text-xl font-extrabold text-slate-900">Bientôt disponible</h2>
       <p className="mt-2 text-xs sm:text-sm text-slate-500">Les dépôts Mobile Money (Orange, MTN, Moov, Wave) seront activés prochainement.</p>
+    </div>
+  );
+}
+
+function MobileMoneyForm({ onSuccess }) {
+  const [catalog, setCatalog] = useState([]);
+  const [country, setCountry] = useState('');
+  const [operator, setOperator] = useState('');
+  const [phone, setPhone] = useState('');
+  const [amount, setAmount] = useState('');
+  const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [feeBearer, setFeeBearer] = useState('sender');
+  const [loading, setLoading] = useState(false);
+  const { user } = useAuth();
+
+  useEffect(() => {
+    api.get('/fedapay/catalog').then(({ data }) => {
+      setCatalog(data.catalog || []);
+    }).catch(() => {});
+    if (user?.email) setEmail(user.email);
+    if (user?.full_name) setFullName(user.full_name);
+  }, [user]);
+
+  const countryEntry = catalog.find((c) => c.country === country);
+  const operators = (countryEntry?.operators || []).filter((o) => o.kind === 'collect' || o.kind === 'both');
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!country || !operator || !phone.trim() || !amount || !email.trim() || !fullName.trim()) {
+      toast.error('Tous les champs sont obligatoires');
+      return;
+    }
+    if (parseInt(amount) < 100) { toast.error('Montant minimum 100'); return; }
+    setLoading(true);
+    try {
+      const { data } = await api.post('/deposits/mobile-money', {
+        amount: parseInt(amount),
+        currency: 'XOF',
+        email: email.trim(),
+        full_name: fullName.trim(),
+        country,
+        operator,
+        phone_number: phone.trim(),
+        fee_bearer: feeBearer,
+      });
+      toast.success(data.message || 'Vérifiez votre téléphone');
+      onSuccess(data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Erreur lors du dépôt');
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <form onSubmit={submit} className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-4" data-testid="momo-deposit-form">
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Nom complet</label>
+        <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} data-testid="momo-fullname" required
+          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Adresse e-mail</label>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="momo-email" required
+          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1.5">Pays</label>
+          <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); }} data-testid="momo-country" required
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm bg-white">
+            <option value="">— Sélectionnez —</option>
+            {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1.5">Opérateur</label>
+          <select value={operator} onChange={(e) => setOperator(e.target.value)} data-testid="momo-operator" required disabled={!country}
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm bg-white disabled:bg-slate-50">
+            <option value="">— Sélectionnez —</option>
+            {operators.map((o) => <option key={o.code} value={o.code}>{o.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Numéro Mobile Money</label>
+        <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="momo-phone"
+          placeholder="ex: 97000001" required
+          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Montant (XOF)</label>
+        <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="momo-amount"
+          placeholder="1000" min="100" required
+          className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+      </div>
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Frais supportés par</label>
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => setFeeBearer('sender')} data-testid="momo-fee-sender"
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'sender' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
+            Marchand (vous)
+          </button>
+          <button type="button" onClick={() => setFeeBearer('receiver')} data-testid="momo-fee-receiver"
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'receiver' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
+            Client
+          </button>
+        </div>
+      </div>
+      <button type="submit" disabled={loading} data-testid="momo-submit"
+        className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
+        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
+      </button>
+    </form>
+  );
+}
+
+function MobileMoneyTracker({ deposit }) {
+  const [d, setD] = useState(deposit);
+  useEffect(() => {
+    if (d.status !== 'pending') return;
+    const iv = setInterval(async () => {
+      try {
+        const { data } = await api.get(`/deposits/mobile-money/${d.id}`);
+        setD(data);
+        if (data.status !== 'pending') clearInterval(iv);
+      } catch { /* poll silently */ }
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [d.id, d.status]);
+
+  const ok = d.status === 'approved';
+  const failed = d.status === 'failed';
+  const pending = !ok && !failed;
+
+  return (
+    <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 text-center space-y-4" data-testid="momo-tracker">
+      {pending && <div className="mx-auto w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center"><Clock className="w-6 h-6 text-amber-500 animate-pulse" /></div>}
+      {ok && <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-6 h-6 text-emerald-500" /></div>}
+      {failed && <div className="mx-auto w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><XCircle className="w-6 h-6 text-red-500" /></div>}
+      <h2 className="font-cabinet text-lg sm:text-xl font-extrabold text-slate-900">
+        {pending && 'Vérifiez votre téléphone'}
+        {ok && 'Paiement effectué avec succès'}
+        {failed && 'Paiement échoué'}
+      </h2>
+      <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
+        {pending && `Confirmez le paiement de ${d.amount?.toLocaleString?.() || d.amount} ${d.currency || 'XOF'} sur votre téléphone ${d.phone_number}. Cette page se mettra à jour automatiquement.`}
+        {ok && `Votre portefeuille a été crédité de ${d.amount_net?.toLocaleString?.() || d.amount_net || d.amount} ${d.currency || 'XOF'} (net après frais).`}
+        {failed && `La transaction a été refusée ou annulée. ${d.failed_reason ? '('+d.failed_reason+')' : ''}`}
+      </p>
+      {d.checkout_url && pending && (
+        <a href={d.checkout_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-xs font-bold text-[#2563EB] hover:underline">
+          Ouvrir le lien de paiement <ExternalLink className="w-3.5 h-3.5" />
+        </a>
+      )}
     </div>
   );
 }

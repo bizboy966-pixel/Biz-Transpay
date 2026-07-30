@@ -1,5 +1,38 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — FedaPay Mobile Money (dépôts + retraits)
+- ✅ **Nouveau module** `/app/backend/fedapay.py` — client HTTP FedaPay (create transaction, generate token, send mobile money USSD, create/start payout, verify webhook HMAC). Catalogue statique des 8 pays × opérateurs (BJ/CI/TG/SN/ML/NE/BF/GN, 22 opérateurs mappés vers les codes legacy FedaPay: mtn_open, moov, mtn_ci, moov_tg, togocel, wave_ci, orange_ci, orange_sn, free_sn, mtn_open_gn, moov_gn, wave_gn, orange_gn, moov_bf, sbin, airtel_ml, airtel_ne, wave_ne, orange_ne, moov_ci, celtiis_bj).
+- ✅ **Variables .env** : `FEDAPAY_SECRET_KEY`, `FEDAPAY_PUBLIC_KEY`, `FEDAPAY_WEBHOOK_SECRET`, `FEDAPAY_BASE_URL=https://api.fedapay.com/v1` (mode LIVE demandé par l'user).
+- ✅ **Nouvel endpoint public** `GET /api/fedapay/catalog` — retourne les 8 pays × opérateurs pour le frontend (Deposit + Transfer).
+- ✅ **Dépôt Mobile Money** — `POST /api/deposits/mobile-money` (JWT) : formulaire attendu par l'user (email, nom, pays, opérateur, numéro, montant, fee_bearer). Backend :
+  1. Crée la transaction FedaPay (`POST /transactions`)
+  2. Génère le token de paiement (`POST /transactions/{id}/token`)
+  3. Déclenche le prompt USSD sur le téléphone du client (`POST /transactions/{mode}`)
+  4. Retourne `{id, status:"pending", checkout_url (fallback), message}` — le frontend affiche "Vérifiez votre téléphone"
+  5. Sur `transaction.approved` (webhook), le portefeuille est crédité (net = montant – 1% marge Biz-transPay), une transaction est enregistrée, une notification est poussée en temps réel.
+- ✅ **`GET /api/deposits/mobile-money/{id}`** — polling status + fallback reconcile (poll de FedaPay directement si le webhook tarde).
+- ✅ **Retrait Mobile Money** — `POST /api/transfers biz_to_mobile` mis à jour : après le débit optimiste, appelle FedaPay `POST /payouts` + `PUT /payouts/start` avec `merchant_reference=tx.id`. Statut `pending` → `completed` via webhook `payout.sent`, ou refund automatique + notification sur `payout.failed`. Fallback : si l'opérateur n'est pas payout-capable, la transaction reste en pending (traitement manuel admin).
+- ✅ **Webhook** `POST /api/webhooks/fedapay` — HMAC-SHA256 vérifié (format `t=<ts>,s=<sig>` ou hex raw), déduplication event_id, dispatche `transaction.approved/canceled/declined/refunded` (dépôts) + `payout.sent/failed/canceled` (retraits).
+- ✅ **Frontend Deposit.js** — nouveau composant `MobileMoneyForm` (dropdowns dynamiques pays/opérateur depuis `/fedapay/catalog`, auto-fill email/nom depuis session) + `MobileMoneyTracker` (polling 4s, écrans "Vérifiez téléphone" / "Paiement effectué avec succès" / "Paiement échoué"). Remplace l'écran statique "Bientôt disponible".
+- ✅ **Stripe supprimé** du flow Mobile Money (garde-le pour Cartes uniquement, conformément au choix user 2a).
+- ✅ **Data-testids** : `momo-deposit-form`, `momo-fullname`, `momo-email`, `momo-country`, `momo-operator`, `momo-phone`, `momo-amount`, `momo-fee-sender`, `momo-fee-receiver`, `momo-submit`, `momo-tracker`.
+
+**Testing** :
+- `GET /api/fedapay/catalog` retourne les 8 pays avec 22 opérateurs total ✅
+- `POST /api/webhooks/fedapay` sans signature → 400 "Missing webhook signature" ✅
+- Screenshot du formulaire Deposit → Mobile Money validé (tous les champs demandés visibles, dropdown pays fonctionnel) ✅
+- Backend lint 0 erreur, frontend lint sans problèmes bloquants ✅
+- ⚠️ **Test E2E réel non exécuté** (nécessite un vrai numéro Mobile Money + le webhook configuré côté FedaPay dashboard vers `https://biz-transppayy.com/api/webhooks/fedapay`)
+
+**⚠️ À faire côté FedaPay Dashboard AVANT de tester** :
+1. Se connecter sur https://app.fedapay.com
+2. Onglet Webhooks → ajouter l'URL : `https://biz-transppayy.com/api/webhooks/fedapay`
+3. Sélectionner les événements : `transaction.approved`, `transaction.canceled`, `transaction.declined`, `transaction.refunded`, `payout.sent`, `payout.failed`, `payout.canceled`
+4. Utiliser le secret webhook fourni (`wh_live_...`)
+5. Autoriser le domaine `biz-transppayy.com` pour Checkout.js si utilisé côté navigateur
+
+**⚠️ Sécurité** — les clés LIVE ont été partagées dans le chat. Recommandé de les **régénérer** immédiatement sur le dashboard FedaPay, puis mettre à jour `.env` avec les nouvelles.
+
 ## Implémenté (2026-02-XX) — Diagnostic upstream (transparence sur les rejets gateway)
 - ✅ **Nouveau `GET /v1/diagnostic`** (auth `sk_test_/sk_live_`) — vérifie l'intégration de bout en bout :
   - `environment` (test/live selon la clé utilisée)

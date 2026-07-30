@@ -32,6 +32,7 @@ from models import (  # noqa: E402
 from auth import hash_password, verify_password, create_token, get_current_user_id  # noqa: E402
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
+import fedapay  # FedaPay Mobile Money integration (server-side only)
 
 # ---------- DB ----------
 mongo_url = os.environ["MONGO_URL"]
@@ -614,16 +615,68 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
         if u.get(field, 0) < total_debit:
             raise HTTPException(400, "Solde insuffisant (frais inclus)")
 
+        # Pessimistic debit — refund on payout failure via webhook
         await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
         tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+                                 status="pending",
                                  counterparty=req.recipient, description=req.description,
                                  metadata={"transfer_type": "biz_to_mobile", "operator": op["name"],
                                            "country": req.country, "fee": fee, "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "recipient_name": req.recipient_name,
                                            "total_debit": total_debit})
+
+        # Attempt to execute the payout via FedaPay. If FedaPay is not
+        # configured (or the operator is not payout-capable), keep the
+        # transaction in "pending" so an admin can process it manually.
+        fp_op = fedapay.operator_for(req.country, req.operator)
+        # Fallback lookup: the frontend may send "mtn"/"moov" style codes;
+        # match by legacy code within the target country.
+        if fp_op is None:
+            code_needle = (req.operator or "").lower()
+            for cand in fedapay.OPERATORS.get(req.country.upper(), []):
+                if code_needle in cand["code"].lower() or code_needle in cand["mode"].lower():
+                    fp_op = cand
+                    break
+        if fedapay.is_configured() and fp_op and fp_op.get("kind") in ("payout", "both"):
+            recipient_name = req.recipient_name or req.recipient or "Client"
+            parts = recipient_name.strip().split(" ", 1)
+            first = parts[0] or "Client"
+            last = parts[1] if len(parts) > 1 else first
+            try:
+                payout = await fedapay.create_payout(
+                    amount=int(recipient_gets),
+                    currency=req.currency,
+                    description=req.description or f"Retrait Biz-transPay {tx_out.reference}",
+                    mode=fp_op["mode"],
+                    merchant_reference=tx_out.id,
+                    beneficiary_firstname=first,
+                    beneficiary_lastname=last,
+                    beneficiary_email=None,
+                    beneficiary_phone=req.recipient or "",
+                    beneficiary_country=req.country,
+                )
+                fp_id = payout.get("id")
+                await fedapay.start_payout(fp_id)
+                await db.transactions.update_one(
+                    {"id": tx_out.id},
+                    {"$set": {"metadata.fedapay_payout_id": fp_id,
+                              "metadata.fedapay_status": "started"}}
+                )
+            except fedapay.FedaPayError as e:
+                # Refund on synchronous failure
+                await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+                await db.transactions.update_one(
+                    {"id": tx_out.id},
+                    {"$set": {"status": "failed",
+                              "metadata.fedapay_error": e.message,
+                              "metadata.refunded": True}}
+                )
+                raise HTTPException(400 if e.status < 500 else 502,
+                                    f"Passerelle Mobile Money: {e.message}")
+
         await notify(uid, "withdrawal_success",
-                     "Retrait Mobile Money effectué",
-                     f"Votre retrait de {req.amount:,.0f} {req.currency} vers {req.recipient} ({op['name']}) a été effectué avec succès.",
+                     "Retrait Mobile Money en cours",
+                     f"Votre retrait de {req.amount:,.0f} {req.currency} vers {req.recipient} ({op['name']}) est en cours de traitement.",
                      data={"transaction_id": tx_out.id, "reference": tx_out.reference,
                            "amount": req.amount, "currency": req.currency,
                            "transfer_type": "biz_to_mobile"})
@@ -948,6 +1001,288 @@ async def get_crypto_deposit(deposit_id: str, uid: str = Depends(get_current_use
         await _reconcile_intent(d["izipay_intent_id"])
         d = await db.crypto_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
     return d
+
+
+# ==================== FEDAPAY (Mobile Money) ====================
+@api.get("/fedapay/catalog")
+async def fedapay_catalog():
+    """Public catalog of countries + Mobile Money operators available via
+    FedaPay. Used by the frontend to render the Deposit / Transfer forms.
+    """
+    return {"catalog": fedapay.catalog()}
+
+
+class MobileMoneyDepositRequest(BaseModel):
+    amount: int = Field(..., ge=100)  # FedaPay expects integer major units
+    currency: str = "XOF"
+    email: str
+    full_name: str
+    country: str            # ISO-2, e.g. BJ, TG, CI
+    operator: str           # code, e.g. mtn_bj, moov_tg, orange_ci
+    phone_number: str       # e.g. "97000001"
+    fee_bearer: Literal["sender", "receiver"] = "sender"
+    description: Optional[str] = None
+
+
+@api.post("/deposits/mobile-money")
+async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
+                                      uid: str = Depends(get_current_user_id)):
+    """Initiate a Mobile Money deposit via FedaPay.
+
+    Flow:
+      1. Create a FedaPay transaction
+      2. Generate a payment token
+      3. Trigger the USSD prompt on the customer's phone
+      4. Return {id, status} so the frontend can poll status
+      5. Wallet is credited on `transaction.approved` webhook
+    """
+    if not fedapay.is_configured():
+        raise HTTPException(503, "Passerelle Mobile Money non configurée")
+    op = fedapay.operator_for(req.country, req.operator)
+    if not op:
+        raise HTTPException(400, "Opérateur non disponible pour ce pays")
+    if op["kind"] not in ("collect", "both"):
+        raise HTTPException(400, "Opérateur non disponible pour les dépôts")
+
+    u = await get_user(uid)
+    dep_id = new_id()
+    parts = (req.full_name or "").strip().split(" ", 1)
+    first = parts[0] or "Client"
+    last = parts[1] if len(parts) > 1 else first
+    callback = f"{os.environ.get('OFFICIAL_DOMAIN', '')}/dashboard/deposit?ref={dep_id}"
+
+    try:
+        tx = await fedapay.create_transaction(
+            amount=int(req.amount),
+            currency=req.currency,
+            description=req.description or f"Dépôt Biz-transPay {req.amount} {req.currency}",
+            customer_email=req.email,
+            customer_firstname=first,
+            customer_lastname=last,
+            customer_phone=req.phone_number,
+            customer_country=req.country,
+            callback_url=callback,
+            metadata={"kind": "wallet_deposit",
+                      "biztranspay_user_id": uid,
+                      "biztranspay_deposit_id": dep_id,
+                      "fee_bearer": req.fee_bearer},
+        )
+    except fedapay.FedaPayError as e:
+        logger.warning("fedapay create tx failed [%s] %s", e.status, e.message)
+        raise HTTPException(400 if e.status < 500 else 502,
+                            f"Passerelle Mobile Money: {e.message}")
+    tx_id = tx.get("id")
+    ref = tx.get("reference") or f"BTP-{dep_id[:8]}"
+
+    try:
+        token_resp = await fedapay.generate_token(tx_id)
+    except fedapay.FedaPayError as e:
+        raise HTTPException(400, f"Passerelle Mobile Money: {e.message}")
+    token = token_resp.get("token") or ""
+    checkout_url = token_resp.get("url")
+
+    # Trigger the USSD prompt (no-redirect mode). If not supported for the
+    # operator, the checkout URL is a valid fallback (frontend will redirect).
+    prompt_sent = False
+    prompt_error: Optional[str] = None
+    try:
+        await fedapay.send_mobile_money(op["mode"], token)
+        prompt_sent = True
+    except fedapay.FedaPayError as e:
+        prompt_error = e.message
+        logger.info("fedapay send_mobile_money %s failed: %s", op["mode"], e.message)
+
+    doc = {
+        "id": dep_id,
+        "user_id": uid,
+        "amount": req.amount,
+        "currency": req.currency,
+        "email": req.email,
+        "full_name": req.full_name,
+        "country": req.country,
+        "operator": req.operator,
+        "mode": op["mode"],
+        "phone_number": req.phone_number,
+        "fee_bearer": req.fee_bearer,
+        "fedapay_id": tx_id,
+        "fedapay_reference": ref,
+        "checkout_url": checkout_url,
+        "status": "pending",
+        "prompt_sent": prompt_sent,
+        "prompt_error": prompt_error,
+        "created_at": now_iso(),
+    }
+    await db.momo_deposits.insert_one(doc)
+    return {
+        "id": dep_id,
+        "status": "pending",
+        "amount": req.amount,
+        "currency": req.currency,
+        "operator": {"code": req.operator, "label": op["label"]},
+        "phone_number": req.phone_number,
+        "checkout_url": checkout_url,
+        "prompt_sent": prompt_sent,
+        "prompt_error": prompt_error,
+        "message": (
+            "Vérifiez votre téléphone et validez la demande avec votre code Mobile Money."
+            if prompt_sent
+            else "Cliquez sur le lien de paiement pour valider la transaction."
+        ),
+    }
+
+
+async def _reconcile_momo_deposit(dep_id: str) -> None:
+    """Best-effort fallback poll of FedaPay in case the webhook lags."""
+    d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
+    if not d or d.get("status") not in ("pending",):
+        return
+    if not d.get("fedapay_id"):
+        return
+    try:
+        tx = await fedapay.get_transaction(d["fedapay_id"])
+    except Exception:
+        return
+    status = (tx.get("status") or "").lower()
+    if status == "approved":
+        await _credit_momo_deposit(d)
+    elif status in ("declined", "canceled", "failed"):
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"status": "failed", "failed_reason": status}}
+        )
+
+
+async def _credit_momo_deposit(d: dict) -> None:
+    """Credit the user's wallet after a FedaPay approval. Idempotent."""
+    dep_id = d["id"]
+    uid = d["user_id"]
+    currency = (d.get("currency") or "XOF").upper()
+    gross = float(d["amount"])
+    # Apply Biz-transPay margin (1% by default) — configured admin-side later.
+    pcfg = await get_platform_config()
+    momo_fee_pct = float((pcfg.get("mobile_money") or {}).get("deposit_fee_pct", 1.0))
+    fee = gross * (momo_fee_pct / 100.0)
+    net = round(gross - fee, 2)
+    r = await db.momo_deposits.update_one(
+        {"id": dep_id, "status": "pending"},
+        {"$set": {"status": "approved", "approved_at": now_iso(),
+                  "amount_gross": gross, "fee": fee,
+                  "fee_pct": momo_fee_pct, "amount_net": net}}
+    )
+    if r.modified_count == 0:
+        return  # already credited
+    field = f"balance_{currency.lower()}"
+    if field not in ("balance_xof", "balance_xaf"):
+        field = "balance_xof"
+    await db.users.update_one({"id": uid}, {"$inc": {field: net}})
+    await record_tx(uid, "deposit", "in", net, currency,
+                    status="completed",
+                    description=f"Dépôt Mobile Money ({d.get('operator')})",
+                    metadata={"fedapay_id": d.get("fedapay_id"),
+                              "fedapay_reference": d.get("fedapay_reference"),
+                              "operator": d.get("operator"),
+                              "country": d.get("country"),
+                              "phone_number": d.get("phone_number"),
+                              "amount_gross": gross,
+                              "fee": fee, "fee_pct": momo_fee_pct,
+                              "amount_net": net,
+                              "method": "mobile_money"})
+    await notify(uid, "deposit_success",
+                 "Dépôt Mobile Money confirmé",
+                 f"Votre dépôt de {gross:,.0f} {currency} a été crédité (net {net:,.0f} {currency} après frais).",
+                 data={"deposit_id": dep_id, "amount": net, "currency": currency})
+
+
+@api.get("/deposits/mobile-money/{deposit_id}")
+async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_id)):
+    d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
+    if not d:
+        raise HTTPException(404, "Not found")
+    if d.get("status") == "pending":
+        await _reconcile_momo_deposit(deposit_id)
+        d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
+    return d
+
+
+@api.post("/webhooks/fedapay")
+async def fedapay_webhook(request: Request):
+    """Receive signed webhooks from FedaPay."""
+    raw = await request.body()
+    sig = request.headers.get("X-FEDAPAY-SIGNATURE") or request.headers.get("x-fedapay-signature")
+    try:
+        event = fedapay.verify_webhook(raw, sig)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Invalid webhook: {e}")
+
+    ev_name = event.get("name") or event.get("event") or event.get("type") or ""
+    entity = event.get("entity") or event.get("data") or {}
+    eid = str(event.get("id") or entity.get("id") or "")
+
+    # Deduplicate
+    try:
+        await db.webhook_events.insert_one({
+            "event_id": f"fedapay:{eid}:{ev_name}",
+            "type": ev_name,
+            "payload": event,
+            "received_at": now_iso(),
+            "processed": False,
+        })
+    except Exception:
+        return {"received": True, "duplicate": True}
+
+    try:
+        if ev_name in ("transaction.approved",):
+            tx_id = entity.get("id")
+            d = await db.momo_deposits.find_one({"fedapay_id": tx_id})
+            if d:
+                await _credit_momo_deposit(d)
+        elif ev_name in ("transaction.canceled", "transaction.declined", "transaction.refunded"):
+            tx_id = entity.get("id")
+            await db.momo_deposits.update_one(
+                {"fedapay_id": tx_id, "status": "pending"},
+                {"$set": {"status": "failed",
+                          "failed_reason": ev_name.split(".", 1)[-1],
+                          "failed_at": now_iso()}}
+            )
+        elif ev_name in ("payout.sent",):
+            po_id = entity.get("id")
+            tx = await db.transactions.find_one({"metadata.fedapay_payout_id": po_id})
+            if tx and tx.get("status") != "completed":
+                await db.transactions.update_one(
+                    {"id": tx["id"]},
+                    {"$set": {"status": "completed",
+                              "metadata.fedapay_status": "sent"}}
+                )
+                await notify(tx["user_id"], "withdrawal_success",
+                             "Retrait Mobile Money confirmé",
+                             f"Votre retrait de {tx['amount']:,.0f} {tx.get('currency','')} a été envoyé au bénéficiaire.",
+                             data={"transaction_id": tx["id"], "reference": tx.get("reference"),
+                                   "amount": tx["amount"], "transfer_type": "biz_to_mobile"})
+        elif ev_name in ("payout.failed", "payout.canceled"):
+            po_id = entity.get("id")
+            tx = await db.transactions.find_one({"metadata.fedapay_payout_id": po_id})
+            if tx and tx.get("status") not in ("failed", "completed"):
+                meta = tx.get("metadata") or {}
+                total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
+                currency = tx.get("currency", "XOF")
+                field = f"balance_{currency.lower()}"
+                await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: total_debit}})
+                await db.transactions.update_one(
+                    {"id": tx["id"]},
+                    {"$set": {"status": "failed",
+                              "metadata.fedapay_status": ev_name.split(".", 1)[-1],
+                              "metadata.refunded": True}}
+                )
+                await notify(tx["user_id"], "withdrawal_failed",
+                             "Retrait Mobile Money échoué",
+                             "Votre retrait a échoué. Le montant a été remboursé sur votre portefeuille.",
+                             data={"transaction_id": tx["id"], "reference": tx.get("reference")})
+    except Exception as e:
+        logger.exception("fedapay webhook processing error: %s", e)
+
+    return {"received": True}
 
 
 # ==================== IZICHANGEPAY WEBHOOK ====================
