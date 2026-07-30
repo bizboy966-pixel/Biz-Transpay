@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Link2, ShieldCheck, Bitcoin, ArrowRight, ArrowLeft, Copy, CheckCircle2, XCircle, Clock, Loader2, CreditCard, Smartphone } from 'lucide-react';
+import { Link2, ShieldCheck, Bitcoin, ArrowRight, ArrowLeft, Copy, CheckCircle2, XCircle, Clock, Loader2, Smartphone } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -58,9 +58,8 @@ export default function PublicLink() {
             {step === 1 && (
               <div className="mt-4 space-y-2">
                 <div className="text-xs sm:text-sm font-semibold text-slate-700 mb-2">Choisissez le moyen de paiement</div>
-                <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={link.currency === 'USDT' ? 'USDT · USDC · BTC · ETH' : 'Ce lien n\'accepte pas les paiements crypto'} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT'} />
-                <MethodBtn testId="pay-method-mm" I={Smartphone} c="bg-emerald-50 text-emerald-500" title="Mobile Money" sub="Bientôt disponible" disabled />
-                <MethodBtn testId="pay-method-card" I={CreditCard} c="bg-blue-50 text-[#2563EB]" title="Carte bancaire" sub="Bientôt disponible" disabled />
+                <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={link.currency === 'USDT' ? 'USDT · USDC · BTC · ETH' : "Ce lien n'accepte pas les paiements crypto"} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT'} />
+                <MethodBtn testId="pay-method-mm" I={Smartphone} c="bg-emerald-50 text-emerald-500" title="Mobile Money" sub="MTN · Moov · Orange · Wave · T-Money" onClick={() => { setMethod('mm'); setStep(2); }} />
               </div>
             )}
 
@@ -68,13 +67,20 @@ export default function PublicLink() {
               <CryptoLinkForm link={link} onSuccess={(p) => { setPayment(p); setStep(3); }} />
             )}
 
-            {step === 3 && payment && (
+            {step === 2 && method === 'mm' && (
+              <MoMoLinkForm link={link} onSuccess={(p) => { setPayment(p); setStep(3); }} />
+            )}
+
+            {step === 3 && payment && payment.method !== 'mobile_money' && (
               <CryptoLinkTracker payment={payment} link={link} />
+            )}
+            {step === 3 && payment && payment.method === 'mobile_money' && (
+              <MoMoLinkTracker payment={payment} link={link} />
             )}
           </div>
 
           <div className="mt-4 flex items-center justify-center gap-2 text-[10px] sm:text-[11px] text-slate-500">
-            <ShieldCheck className="w-3 h-3 text-emerald-500" /> Paiement sécurisé · IzichangePay + Biz-transPay
+            <ShieldCheck className="w-3 h-3 text-emerald-500" /> Paiement sécurisé · Biz-transPay
           </div>
         </div>
       </main>
@@ -274,6 +280,153 @@ function Field({ label, children }) {
     <div>
       <label className="text-[10px] sm:text-[11px] font-semibold text-slate-700 mb-1 block">{label}</label>
       {children}
+    </div>
+  );
+}
+
+function MoMoLinkForm({ link, onSuccess }) {
+  const isFree = link.amount_type === 'free';
+  const [catalog, setCatalog] = useState([]);
+  const [country, setCountry] = useState('');
+  const [operator, setOperator] = useState('');
+  const [phone, setPhone] = useState('');
+  const [amount, setAmount] = useState(isFree ? '' : String(link.amount || ''));
+  const [email, setEmail] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [feeBearer, setFeeBearer] = useState('sender');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    fetch(`${process.env.REACT_APP_BACKEND_URL}/api/deposits/config`).then(r => r.json())
+      .then(d => setCatalog(d.catalog || [])).catch(() => {});
+  }, []);
+  const countryEntry = catalog.find((c) => c.country === country);
+  const operators = countryEntry?.operators || [];
+  const selectedOp = operators.find((o) => o.code === operator);
+  const previewFee = selectedOp && amount ? (parseFloat(amount) * (selectedOp.fee_pct || 0) / 100) : 0;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!country || !operator || !phone.trim() || !email.trim() || !fullName.trim() || (isFree && !amount)) {
+      setError('Tous les champs sont obligatoires'); return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/links/pay/mobile-money`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          slug: link.slug,
+          amount: isFree ? parseFloat(amount) : undefined,
+          full_name: fullName.trim(), email: email.trim(),
+          country, operator, phone_number: phone.trim(), fee_bearer: feeBearer,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Erreur');
+      onSuccess(data);
+    } catch (err) { setError(err.message || 'Erreur'); }
+    finally { setLoading(false); }
+  };
+
+  return (
+    <form onSubmit={submit} className="mt-4 space-y-3" data-testid="momo-link-form">
+      <Field label="Nom complet">
+        <input value={fullName} onChange={(e) => setFullName(e.target.value)} required
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
+      </Field>
+      <Field label="Email">
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
+      </Field>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="Pays">
+          <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); }} required
+            className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm bg-white">
+            <option value="">—</option>
+            {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
+          </select>
+        </Field>
+        <Field label="Opérateur">
+          <select value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!country} required
+            className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm bg-white disabled:bg-slate-50">
+            <option value="">—</option>
+            {operators.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Numéro Mobile Money">
+        <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="ex: 97000001" required
+          className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
+      </Field>
+      {isFree && (
+        <Field label={`Montant (${selectedOp?.currency || 'XOF'})`}>
+          <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required
+            min={selectedOp?.min || 100} max={selectedOp?.max || undefined}
+            className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
+        </Field>
+      )}
+      {selectedOp && amount && (
+        <div className="text-[11px] text-slate-600">
+          Frais {selectedOp.fee_pct}% : <b>{previewFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</b>
+        </div>
+      )}
+      <Field label="Frais supportés par">
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={() => setFeeBearer('sender')}
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'sender' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Marchand</button>
+          <button type="button" onClick={() => setFeeBearer('receiver')}
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'receiver' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Client</button>
+        </div>
+      </Field>
+      {error && <div className="p-2 rounded-lg bg-red-50 text-red-700 text-[11px]">{error}</div>}
+      <button type="submit" disabled={loading} data-testid="momo-link-submit"
+        className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-2.5 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
+        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
+      </button>
+    </form>
+  );
+}
+
+function MoMoLinkTracker({ payment }) {
+  const [p, setP] = useState(payment);
+  useEffect(() => {
+    if (p.status !== 'pending') return;
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/links/payments/${p.id}`);
+        const d = await res.json();
+        setP(d);
+        if (d.status !== 'pending') clearInterval(iv);
+      } catch { /* poll silently */ }
+    }, 4000);
+    return () => clearInterval(iv);
+  }, [p.id, p.status]);
+
+  const ok = p.status === 'paid';
+  const failed = p.status === 'failed' || p.status === 'expired';
+  const pending = !ok && !failed;
+  return (
+    <div className="mt-4 text-center space-y-3" data-testid="momo-link-tracker">
+      {pending && <div className="mx-auto w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center"><Clock className="w-6 h-6 text-amber-500 animate-pulse" /></div>}
+      {ok && <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-6 h-6 text-emerald-500" /></div>}
+      {failed && <div className="mx-auto w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><XCircle className="w-6 h-6 text-red-500" /></div>}
+      <h2 className="font-cabinet text-base font-extrabold text-slate-900">
+        {pending && 'Vérifiez votre téléphone'}
+        {ok && 'Paiement effectué avec succès'}
+        {failed && 'Paiement échoué'}
+      </h2>
+      <p className="text-xs text-slate-500 leading-relaxed">
+        {pending && `Confirmez le paiement de ${p.amount} ${p.currency || 'XOF'} sur votre téléphone ${p.customer_phone || ''} avec votre code Mobile Money.`}
+        {ok && `Merci ! Le paiement a été confirmé.`}
+        {failed && `La transaction a été refusée ou a expiré.`}
+      </p>
+      {p.checkout_url && pending && (
+        <a href={p.checkout_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] font-bold text-[#2563EB] hover:underline">
+          Ouvrir le lien de paiement <ArrowRight className="w-3 h-3" />
+        </a>
+      )}
     </div>
   );
 }

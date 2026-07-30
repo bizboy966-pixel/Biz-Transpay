@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, CreditCard, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, ExternalLink } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -33,7 +33,6 @@ export default function Deposit() {
         <MethodPicker onPick={(m) => { setMethod(m); setStep(2); }} />
       )}
       {step === 2 && method === 'crypto' && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
-      {step === 2 && method === 'card' && <CardDepositForm />}
       {step === 2 && method === 'mobile_money' && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
       {step === 3 && deposit?.__momo && <MobileMoneyTracker deposit={deposit} />}
       {step === 3 && deposit && !deposit.__momo && <CryptoDepositTracker deposit={deposit} />}
@@ -55,7 +54,6 @@ function MethodPicker({ onPick }) {
   const methods = [
     { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux' },
     { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…' },
-    { key: 'card', I: CreditCard, c: 'bg-blue-50 text-[#2563EB]', l: 'Carte bancaire', d: 'Visa · Mastercard' },
   ];
   return (
     <div className="space-y-2.5 sm:space-y-3">
@@ -312,45 +310,6 @@ function Field({ label, children }) {
       <label className="text-[11px] sm:text-xs font-semibold text-slate-700 mb-1 sm:mb-1.5 block">{label}</label>
       {children}
     </div>
-  );
-}
-
-function CardDepositForm() {
-  const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('XOF');
-  const [loading, setLoading] = useState(false);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    const amt = parseFloat(amount);
-    if (!amt || amt < 300) { toast.error('Montant minimum 300 XOF/XAF'); return; }
-    setLoading(true);
-    try {
-      const { data } = await api.post('/deposits/checkout', {
-        amount: amt, currency, origin_url: window.location.origin,
-      });
-      window.location.href = data.checkout_url;
-    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); setLoading(false); }
-  };
-
-  return (
-    <form onSubmit={submit} className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
-      <div className="grid grid-cols-[1fr_auto] gap-2 sm:gap-3">
-        <div>
-          <label className="text-xs font-semibold text-slate-700 mb-1 block">Montant</label>
-          <input data-testid="card-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10000" min="300" required className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-700 mb-1 block">Devise</label>
-          <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="px-3 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
-            <option value="XOF">XOF</option><option value="XAF">XAF</option>
-          </select>
-        </div>
-      </div>
-      <button type="submit" disabled={loading} data-testid="btn-card-submit" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-60 inline-flex items-center justify-center gap-2">
-        {loading ? 'Redirection…' : <>Continuer avec Stripe <ExternalLink className="w-4 h-4" /></>}
-      </button>
-    </form>
   );
 }
 

@@ -1340,6 +1340,24 @@ async def _credit_momo_deposit(d: dict) -> None:
             "provider_reference": d.get("fedapay_reference"),
             "approved_at": _format_iso(datetime.now(timezone.utc)),
         })
+    elif d.get("source") == "link_payment" and d.get("link_payment_id"):
+        # Mark the link_payment as paid + increment link stats
+        await db.link_payments.update_one(
+            {"id": d["link_payment_id"], "status": "pending"},
+            {"$set": {"status": "paid", "paid_at": now_iso(),
+                      "amount_net": net, "fee": fee}}
+        )
+        lp = await db.link_payments.find_one({"id": d["link_payment_id"]}, {"_id": 0})
+        if lp:
+            await db.payment_links.update_one(
+                {"id": lp["link_id"]},
+                {"$inc": {"paid_count": 1, "total_amount": gross}}
+            )
+            await record_tx(uid, "link_payment", "in", net, currency,
+                            description=f"Paiement lien {lp.get('slug')}",
+                            metadata={"link_id": lp["link_id"], "link_payment_id": lp["id"],
+                                      "amount_gross": gross, "fee": fee, "fee_pct": momo_fee_pct,
+                                      "method": "mobile_money", "operator": d.get("operator")})
 
 
 @api.get("/deposits/mobile-money/{deposit_id}")
@@ -1865,11 +1883,148 @@ async def get_link_payment_status(payment_id: str):
     lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     if not lp:
         raise HTTPException(404, "Not found")
-    # Fallback: reconcile against IziPay if not yet paid.
+    # Mobile Money: poll FedaPay for the latest status
+    if lp.get("method") == "mobile_money" and lp.get("status") == "pending":
+        d = await db.momo_deposits.find_one({"id": lp.get("momo_deposit_id")}, {"_id": 0})
+        if d:
+            if d.get("status") == "approved":
+                await db.link_payments.update_one(
+                    {"id": payment_id, "status": "pending"},
+                    {"$set": {"status": "paid",
+                              "amount_net": d.get("amount_net"),
+                              "fee": d.get("fee"),
+                              "paid_at": now_iso()}}
+                )
+                lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
+            elif d.get("status") == "failed":
+                await db.link_payments.update_one(
+                    {"id": payment_id, "status": "pending"},
+                    {"$set": {"status": "failed"}}
+                )
+                lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
+        return lp
     if lp.get("status") not in ("paid", "expired", "failed") and lp.get("izipay_intent_id"):
         await _reconcile_intent(lp["izipay_intent_id"])
         lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     return lp
+
+
+class LinkPayMoMoRequest(BaseModel):
+    slug: str
+    amount: Optional[float] = None
+    full_name: str
+    email: str
+    country: str  # ISO-2
+    operator: str
+    phone_number: str
+    fee_bearer: Literal["sender", "receiver"] = "sender"
+
+
+@api.post("/links/pay/mobile-money")
+async def start_link_payment_momo(req: LinkPayMoMoRequest):
+    """Public endpoint: a customer paying a payment link via Mobile Money.
+
+    Reuses the FedaPay flow (create_transaction → generate_token → USSD prompt)
+    and mirrors the deposit into a `momo_deposits` row so the existing webhook
+    handler (`_credit_momo_deposit`) credits the merchant's wallet on approval.
+    """
+    if not fedapay.is_configured():
+        raise HTTPException(503, "Passerelle Mobile Money non configurée")
+    link = await db.payment_links.find_one({"slug": req.slug, "active": True})
+    if not link:
+        raise HTTPException(404, "Lien introuvable ou inactif")
+
+    if link.get("amount_type") == "fixed":
+        amount = float(link.get("amount") or 0)
+    else:
+        if not req.amount or req.amount <= 0:
+            raise HTTPException(400, "Montant requis pour ce lien")
+        amount = float(req.amount)
+
+    op = fedapay.operator_for(req.country, req.operator)
+    if not op or op["kind"] not in ("collect", "both"):
+        raise HTTPException(400, "Opérateur indisponible pour ce pays")
+    dep_cfg = await get_deposit_config()
+    admin_op = _find_deposit_operator(dep_cfg, req.country, req.operator)
+    if not admin_op:
+        raise HTTPException(400, "Cet opérateur est désactivé.")
+    currency = (admin_op.get("currency") or "XOF").upper()
+    min_amt = float(admin_op.get("min", 100))
+    max_amt = float(admin_op.get("max", 0)) or None
+    if amount < min_amt:
+        raise HTTPException(400, f"Montant minimum : {int(min_amt)} {currency}")
+    if max_amt and amount > max_amt:
+        raise HTTPException(400, f"Montant maximum : {int(max_amt)} {currency}")
+
+    lp_id = new_id()
+    dep_id = new_id()
+    parts = (req.full_name or "").strip().split(" ", 1)
+    first = parts[0] or "Client"
+    last = parts[1] if len(parts) > 1 else first
+
+    try:
+        tx = await fedapay.create_transaction(
+            amount=int(amount), currency=currency,
+            description=f"Lien Biz-transPay {link.get('title') or req.slug}",
+            customer_email=req.email, customer_firstname=first,
+            customer_lastname=last, customer_phone=req.phone_number,
+            customer_country=req.country,
+            metadata={"kind": "link_payment_momo", "link_id": link["id"],
+                      "link_payment_id": lp_id,
+                      "biztranspay_deposit_id": dep_id,
+                      "fee_bearer": req.fee_bearer},
+        )
+    except fedapay.FedaPayError as e:
+        raise HTTPException(400 if e.status < 500 else 502,
+                            f"Passerelle Mobile Money: {e.message}")
+    tx_id = tx.get("id")
+    ref = tx.get("reference") or f"BTP-{lp_id[:8]}"
+    try:
+        token_resp = await fedapay.generate_token(tx_id)
+    except fedapay.FedaPayError as e:
+        raise HTTPException(400, f"Passerelle Mobile Money: {e.message}")
+    token = token_resp.get("token") or ""
+    checkout_url = token_resp.get("url")
+    prompt_sent = False
+    try:
+        await fedapay.send_mobile_money(op["mode"], token)
+        prompt_sent = True
+    except fedapay.FedaPayError:
+        pass
+
+    # Mirror the deposit → shared credit path via `_credit_momo_deposit`
+    await db.momo_deposits.insert_one({
+        "id": dep_id,
+        "user_id": link["user_id"],  # credit the merchant
+        "amount": amount, "currency": currency,
+        "email": req.email, "full_name": req.full_name,
+        "country": req.country, "operator": req.operator,
+        "operator_name": admin_op.get("name"),
+        "fee_pct_applied": float(admin_op.get("fee_pct", 1.0)),
+        "mode": op["mode"], "phone_number": req.phone_number,
+        "fee_bearer": req.fee_bearer, "fedapay_id": tx_id,
+        "fedapay_reference": ref, "checkout_url": checkout_url,
+        "status": "pending", "prompt_sent": prompt_sent,
+        "created_at": now_iso(), "source": "link_payment",
+        "link_payment_id": lp_id,
+    })
+    doc = {
+        "id": lp_id, "link_id": link["id"], "slug": req.slug,
+        "method": "mobile_money",
+        "amount": amount, "currency": currency,
+        "country": req.country, "operator": req.operator,
+        "customer_email": req.email, "customer_name": req.full_name,
+        "customer_phone": req.phone_number,
+        "status": "pending",
+        "momo_deposit_id": dep_id,
+        "fedapay_id": tx_id, "fedapay_reference": ref,
+        "checkout_url": checkout_url,
+        "prompt_sent": prompt_sent,
+        "created_at": now_iso(),
+    }
+    await db.link_payments.insert_one(dict(doc))
+    doc.pop("_id", None)
+    return doc
 
 
 # ==================== MERCHANT PAYMENT API (Public — auth via secret key) ====================

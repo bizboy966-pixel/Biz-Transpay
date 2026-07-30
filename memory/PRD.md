@@ -1,5 +1,32 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Lien de paiement Mobile Money + suppression Carte bancaire
+- ✅ **Nouveau endpoint public** `POST /api/links/pay/mobile-money` — accepte `{slug, amount?, full_name, email, country, operator, phone_number, fee_bearer}`. Valide via `deposit_config` (opérateur activé + min/max + devise), crée un `momo_deposit` avec `source="link_payment"` + un `link_payment` `method="mobile_money"`. Déclenche le prompt USSD via FedaPay.
+- ✅ **`GET /api/links/payments/{id}`** enrichi — poll FedaPay pour les MoMo pending, met à jour `status` (paid/failed) en fonction du `momo_deposit`.
+- ✅ **`_credit_momo_deposit`** étendu — quand `source="link_payment"` : marque le `link_payment` comme paid, incrémente `payment_links.paid_count/total_amount`, enregistre une transaction `link_payment` dans l'historique du marchand.
+- ✅ **Frontend `PublicLink.js`** :
+  - Supprimé le bouton **Carte bancaire** (référence `CreditCard`, `method-card`, sub "Bientôt disponible")
+  - Enlevé "IzichangePay" du footer sécurité ("Paiement sécurisé · Biz-transPay")
+  - Ajouté `MoMoLinkForm` (dropdowns pays/opérateur depuis `/deposits/config`, montant si free, preview frais live) + `MoMoLinkTracker` (polling 4s, écrans pending/paid/failed)
+  - Le bouton Mobile Money est désormais **actif** et lance le formulaire dédié
+- ✅ **Frontend `Deposit.js`** :
+  - Supprimé la méthode **Carte bancaire** de `methods[]`
+  - Supprimé le composant `CardDepositForm`
+  - Supprimé l'import `CreditCard`
+  - Il ne reste plus que Crypto + Mobile Money dans le picker
+
+**Testing** (curl + screenshot) :
+- Création d'un lien de paiement OK ✅
+- Fetch public du lien OK ✅
+- `POST /links/pay/mobile-money` avec opérateur invalide → 400 "Opérateur indisponible" ✅
+- Screenshot `/dashboard/deposit` confirme méthode Card supprimée, seuls Crypto + Mobile Money visibles ✅
+- Backend lint 0 erreur, frontend lint OK (1 warning apostrophe non-bloquant).
+
+**Objectif atteint** : Crypto et Mobile Money 100% opérationnels dans les 3 flux :
+- **Dépôts directs** ✅ (Deposit.js → `/deposits/mobile-money` + crypto)
+- **Liens de paiement** ✅ (`PublicLink.js` → `/links/pay/crypto` + `/links/pay/mobile-money`)
+- **API marchand** ✅ (`/v1/payments` + `/v1/mobile-money/payments`)
+
 ## Implémenté (2026-02-XX) — Module API v2 Vague M5 : UI CRUD multi-clés + multi-webhooks
 - ✅ **Rewrite complet de `/dashboard/api`** (ApiKeys.js, 500 → 550 lignes) :
   - Onglet **Clés API** — table avec colonnes Nom / Env / Clé publique (copy) / Secret (hint) / Actif toggle / Utilisée / Actions (renommer via prompt, régénérer avec confirm, supprimer). Bouton "+ Créer une clé" → modal (nom + env test/live). Après création : modal "OneTime Secret Reveal" avec checkbox ack + copie one-time.
