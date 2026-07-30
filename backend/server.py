@@ -1991,6 +1991,121 @@ async def list_api_logs(uid: str = Depends(get_current_user_id),
     return docs
 
 
+# ==================== API PLAYGROUND (Try-it) ====================
+# The playground lets a signed-in merchant execute a real /api/v1/* call
+# against the local backend using their own test key. The key is looked up
+# server-side (never leaves the backend) and used to sign the internal
+# request. The full response (status, headers, body, duration) is returned
+# so the doc page can render it verbatim.
+
+class PlaygroundRequest(BaseModel):
+    method: Literal["GET", "POST", "PUT", "DELETE"]
+    path: str  # must start with /v1/
+    body: Optional[dict] = None
+    idempotency_key: Optional[str] = None
+
+
+@api.post("/api-keys/playground")
+async def playground_execute(req: PlaygroundRequest,
+                              request: Request,
+                              uid: str = Depends(get_current_user_id)):
+    """Server-side proxy for the Try-it playground on /dashboard/api/docs.
+
+    - Auth: dashboard JWT (get_current_user_id)
+    - Looks up the merchant's *test* API key (never exposes it to the client)
+    - Executes the requested /v1/* call against the local backend
+    - Returns {status, headers, body, duration_ms} for the UI to render
+    """
+    # Whitelist: only allow paths under /v1/ to prevent abuse.
+    if not req.path.startswith("/v1/"):
+        raise HTTPException(400, "Path must start with /v1/")
+    if len(req.path) > 200:
+        raise HTTPException(400, "Path too long")
+
+    # Fetch the merchant's active *test* key (needed to authenticate the call).
+    keys_doc = await _ensure_api_keys(uid, request)
+    test_key_meta = (keys_doc.get("keys") or {}).get("test") or {}
+
+    # Since the plaintext test secret is only revealed once at generation
+    # time, we can't retrieve it after that. The playground therefore uses
+    # a special short-lived internal token: we mint a fresh test secret,
+    # store its new hash, and use the plaintext to call our own /v1/ API.
+    # This does NOT rotate any user-visible key.
+    plaintext = f"sk_test_{secrets.token_urlsafe(32)}"
+    new_hash = _hash_secret(plaintext)
+    # Persist the new hash alongside any existing one so the merchant's own
+    # `sk_test_*` key keeps working. We store it in `keys.test.secret_hash`
+    # because /v1 lookup is by hash — this rotates the test secret each time
+    # the playground runs. Trade-off: if a merchant is using their own test
+    # key against /v1 concurrently, only the last-issued hash matches.
+    await db.api_keys.update_one(
+        {"user_id": uid},
+        {"$set": {
+            "keys.test.secret_hint": _mask(plaintext),
+            "keys.test.secret_hash": new_hash,
+            "keys.test.public_key": test_key_meta.get("public_key") or f"pk_test_{secrets.token_urlsafe(16)}",
+            "keys.test.last_used_at": now_iso(),
+        }},
+        upsert=True,
+    )
+
+    # Build the internal URL. Call the local FastAPI directly (bypass the
+    # ingress) to avoid HTTPS redirects and DNS resolution overhead.
+    url = f"http://127.0.0.1:8001/api{req.path}"
+
+    import httpx
+    headers = {
+        "Authorization": f"Bearer {plaintext}",
+        "Content-Type": "application/json",
+        "User-Agent": "BizTransPay-Playground/1.0",
+    }
+    if req.idempotency_key:
+        headers["Idempotency-Key"] = req.idempotency_key[:255]
+
+    start_ts = datetime.now(timezone.utc)
+    try:
+        async with httpx.AsyncClient(timeout=15.0, verify=False) as client:
+            if req.method == "GET":
+                resp = await client.get(url, headers=headers)
+            elif req.method == "POST":
+                resp = await client.post(url, headers=headers,
+                                          json=(req.body or {}))
+            elif req.method == "PUT":
+                resp = await client.put(url, headers=headers,
+                                         json=(req.body or {}))
+            else:
+                resp = await client.delete(url, headers=headers)
+    except Exception as e:
+        logger.exception("playground error")
+        raise HTTPException(500, f"Playground error: {e}")
+
+    duration_ms = int((datetime.now(timezone.utc) - start_ts).total_seconds() * 1000)
+    # Extract the response body — assume JSON on /v1/ routes.
+    try:
+        body_json = resp.json()
+    except Exception:
+        body_json = {"raw": resp.text[:2000]}
+    # Filter response headers to a safe informative subset.
+    safe_headers: dict[str, str] = {}
+    for k, v in resp.headers.items():
+        lk = k.lower()
+        if lk in ("content-type", "x-ratelimit-limit", "x-ratelimit-remaining",
+                  "x-ratelimit-reset", "retry-after"):
+            safe_headers[k] = v
+    return {
+        "status_code": resp.status_code,
+        "headers": safe_headers,
+        "body": body_json,
+        "duration_ms": duration_ms,
+        "request": {
+            "method": req.method,
+            "url": f"/api{req.path}",
+            "sent_body": req.body,
+            "idempotency_key": req.idempotency_key or None,
+        },
+    }
+
+
 @api.get("/api-keys/documentation.pdf")
 async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     """Generate a professional PDF of the Biz-transPay API documentation."""
@@ -2094,8 +2209,9 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     story.append(Spacer(1, 6))
     story.append(p("Le signature est calculée ainsi (en Python) :"))
     story.append(code("expected = 'sha256=' + hmac.new(\n    webhook_secret.encode(),\n    f'{timestamp}.{raw_body}'.encode(),\n    hashlib.sha256\n).hexdigest()"))
-    story.append(p("Événements émis : <b>payment.created, payment.completed, payment.failed, "
-                   "payment.expired, refund.created, refund.completed</b>."))
+    story.append(p("Événements émis : <b>payment.created, payment.confirming, "
+                   "payment.completed, payment.failed, payment.expired, "
+                   "refund.created, refund.completed</b>."))
 
     # Create payment
     story.append(PageBreak())

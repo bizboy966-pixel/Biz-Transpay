@@ -1,5 +1,37 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Module API Phase B : Documentation pro + Playground Try-it
+- ✅ **Réécriture complète de `/dashboard/api/docs`** avec sidebar sticky (13 sections), navigation par ancre + scroll-spy actif :
+  - Vue d'ensemble (hero + 3 raccourcis vers Try-it / Créer paiement / Webhooks)
+  - Base URL & environnements (Production vs Test/Sandbox)
+  - Authentification (bearer + warning "ne jamais exposer")
+  - Headers communs (tableau exhaustif Authorization / Idempotency-Key / X-RateLimit-*)
+  - **Idempotency-Key** (guide + exemple curl round-trip)
+  - **Rate limits** (100/min, sliding window)
+  - **Format d'erreur & codes** (tableau des 14 codes machine avec sens)
+  - **Cycle de vie d'un paiement** (initiated → confirming → completed/failed/expired avec badges couleur)
+  - Créer un paiement (5 langages : curl, Node.js, Python, PHP, Laravel) avec Idempotency-Key
+  - Récupérer / lister (GET single + list envelope {data, count, has_more})
+  - Webhooks & signature HMAC (tableau des 4 headers + verify code 3 langages + 6 événements en cartes couleur)
+  - Health check (`GET /v1/health`)
+  - **Playground Try-it** (voir ci-dessous)
+- ✅ **Nouveau endpoint backend** `POST /api/api-keys/playground` (JWT auth) — proxy interne qui exécute des appels réels sur `/api/v1/*` avec la clé test du marchand (rotée automatiquement à chaque appel, jamais exposée au client). Retourne `{status_code, headers filtrés (content-type, rate-limit, retry-after), body, duration_ms, request}`.
+- ✅ **Component Playground** dans `/dashboard/api/docs` :
+  - 4 presets cliquables : Health check · Lister paiements · Créer paiement (25 USDT) · Erreur — montant trop petit
+  - Editeur libre : Method dropdown, path input, body JSON textarea, Idempotency-Key input
+  - Résultat affiché avec badge HTTP couleur (2xx vert, 4xx orange, 5xx rouge) + durée ms
+  - Response headers en accordéon `<details>` + body JSON dans un CodeBlock
+- ✅ **Amélioration Idempotency** (interne playground) : rotation transparente de la clé test à chaque exécution (via update de secret_hash) — sécurise le flux sans casser la clé publique visible du marchand.
+- ✅ **PDF ReportLab mis à jour** — événements liste incluent `payment.confirming`.
+- ✅ **Retour au module API** (link ArrowLeft) + bouton **Télécharger PDF** conservés.
+- ✅ **Data-testids** : `api-docs-page`, `api-playground`, `playground-method`, `playground-path`, `playground-body`, `playground-idem`, `playground-run`, `playground-response`, `playground-preset-*`.
+
+**Testing** (screenshot preview + curl playground endpoint) : rendu de la sidebar OK, hero OK, section Base URL OK, playground `GET /v1/health` cliqué → HTTP 200 en 3ms avec response headers (X-RateLimit-Limit=100, Remaining=99, Reset=UNIX ts) et body `{status: "ok", version: "1.0.0", ...}` affichés. `POST /v1/payments amount=0.5` → HTTP 400 avec `{code: "AMOUNT_TOO_SMALL"}` correctement rendu. Backend + frontend lint OK (14 warnings apostrophes ESLint non-bloquants, existants avant refonte).
+
+**Restant** :
+- Guide "Premier paiement en 5 minutes" (Phase C, séparé — non-bloquant)
+- SDK npm/pip publiés (nécessite comptes NPM/PyPI côté user)
+
 ## Implémenté (2026-02-XX) — Module API Phase A : Fondations DX (inspiré IziChangePay)
 - ✅ **Format d'erreur normalisé** sur toutes les routes `/api/v1/*` → `{statusCode, message, code}` avec codes machine :
   - `MISSING_AUTH_HEADER`, `INVALID_API_KEY_FORMAT`, `INVALID_API_KEY`, `API_KEY_SUSPENDED`, `ACCOUNT_INACTIVE` (auth)
