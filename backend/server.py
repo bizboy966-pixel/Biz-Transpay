@@ -483,9 +483,6 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                 "recipient_gets": recipient_gets, "operator": op["name"]}
 
     # -------- BIZ TO BANK --------
-    if req.transfer_type == "biz_to_bank":
-        raise HTTPException(410, "Le transfert bancaire n'est plus disponible sur Biz-transPay.")
-
     # -------- BIZ TO CRYPTO --------
     if req.transfer_type == "biz_to_crypto":
         import re

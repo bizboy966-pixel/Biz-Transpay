@@ -1,5 +1,21 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Bug fix + 3 features (iter15)
+- ✅ **BUG — Recherche transactions corrigée** (utilisateur + admin) : recherche en temps réel avec **debounce 250ms**, sans bouton. Multi-champs (15 fields) : id, référence, counterparty, description, currency, type, metadata.tx_hash, wallet_address, deposit_address, customer_email, izipay_intent_id, coin, recipient, recipient_name + (admin) email/username/full_name/phone via jointure users. Insensible à la casse via `$options:'i'`, input regex-échappé. Empty state clair : "Aucune transaction trouvée."
+- ✅ **Suppression complète Biz Transfer Bank** — plus dans le menu Transfer (3 options restantes : Biz-trans, Mobile Money, Crypto), section Bank retirée du panneau admin, backend renvoie `410 Gone` sur `biz_to_bank`, composant BizToBankForm supprimé, code mort de bank config nettoyé.
+- ✅ **Admin change account_type** — nouvelle action "Convertir en Marchand/Personnel" dans le menu par ligne `/admin/users`. Modal de confirmation détaillant les privilèges gagnés/perdus. PATCH auto-provisionne les clés API si conversion vers merchant (via `_ensure_api_keys` idempotent). Application immédiate.
+- ✅ **Admin gestion Liens** (`/admin/links`) — nouvelle page listant TOUS les liens de paiement avec `owner` enrichi (username, full_name, email, account_type). Search debounced multi-champs + filtre statut. Actions par ligne : Voir · Suspendre (`active=false`) · Réactiver · Supprimer (cascade sur link_payments) + modal de confirmation. Suspension immédiate : `POST /links/pay` renvoie 404.
+- ✅ **Admin gestion API** (`/admin/api`) — nouvelle page listant TOUS les marchands avec clés API. Search par email/username/user_id/clé publique. Actions : Suspendre (bloque `_authenticate_merchant` → 403), Réactiver, Régénérer (rotation test + live), Supprimer. **Aucune information sensible exposée** (jamais de hash ni de ciphertext dans la réponse admin).
+- ✅ **API key `suspended` enforcement** — `_authenticate_merchant` retourne 403 "Clés API suspendues par l'administrateur" avant même de charger le compte marchand.
+
+**Testing** : iter15 — **23/23 pytest backend + 7/7 flows Playwright** (search debounced empty, no-bank tab, admin search by email, admin/links + /admin/api render, convert-to-personal modal, admin transfer config no-bank). Zero critical/minor issue.
+
+**Cosmétique restant (backlog P2 — non-bloquant)** :
+- **Refactor `server.py` urgent** (2867 lignes → routes/ modules) — signalé dans plusieurs iters, dette de plus en plus lourde
+- Extraire helper `_tx_search_query(q)` (les 14 champs `$or` sont dupliqués entre `/transactions` et `/admin/transactions`)
+- Documenter dans l'UI admin que la régénération de clés API n'expose pas le plaintext au marchand (destructive-only)
+- Message "essayer de vider les filtres" quand la recherche renvoie 0 mais qu'il y a des filtres actifs
+
 ## Implémenté (2026-02-XX) — Domaine officiel (remplacement Emergent → biz-transppayy.com)
 - ✅ **Nouvelle variable env** `OFFICIAL_DOMAIN=https://biz-transppayy.com` (backend `.env`) + `REACT_APP_PUBLIC_DOMAIN=https://biz-transppayy.com` (frontend `.env`).
 - ✅ **URL webhook par défaut** — `_default_webhook_url(uid)` retourne désormais `https://biz-transppayy.com/api/v1/webhooks/{uid}` (au lieu de la preview URL Emergent). Migration DB automatique pour tous les comptes existants dont le webhook pointait vers emergent.
