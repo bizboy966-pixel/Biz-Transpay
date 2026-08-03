@@ -1,0 +1,60 @@
+{
+  "summary": "Iter18 — Biz-Transpay public API v1/payouts (crypto withdrawals). Backend 12/12 pytest pass. Frontend /dashboard/api shows 3 quick-start cards (Encaisser/Retirer/Suivi). /dashboard/api/docs contains new 'Retraits' sidebar group with all 5 sections, 8 payout-related error codes (PAYOUT_NOT_FOUND, INSUFFICIENT_BALANCE, WITHDRAWALS_BLOCKED, INVALID_ASSET, INVALID_DESTINATION_ADDRESS, AMOUNT_TOO_LARGE, GATEWAY_INSUFFICIENT_FUNDS, GATEWAY_UNREACHABLE), all 6 statuses (pending/processing/sent/completed/failed/canceled), 7 language code samples per section (cURL, JavaScript, Node.js, PHP, Python, Java, C#), and ZERO webhook nav/headings. Refund flow verified: after IziChange sandbox rejects (no USDT.TRC20 funds), merchant balance is restored (stayed at 50 USDT across 4+ rejected payouts, `refunded_at` timestamp set on doc).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/v1/payouts", "issue": "Idempotency store only writes on successful path — a failing payout replayed with the same Idempotency-Key creates a brand-new attempt (still refunded correctly, but not a true idempotent replay). Not spec-blocking since merchant sees consistent error response, but worth documenting."},
+      {"endpoint": "POST /api/v1/payouts (error classification)", "issue": "IziChange rejection message 'PAYOUT_INSUFFICIENT_BALANCE: solde…' contains both 'balance' and 'insufficient' so it maps to GATEWAY_INSUFFICIENT_FUNDS as expected. However `error_code` stored in DB is 'unknown' (not extracted from IziChange). Cosmetic — user-facing code is correct."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/dashboard/api/docs FAQ", "issues": ["Spec asked for '3 nouvelles questions sur retraits' — only 2 questions explicitly say 'retrait' ('Quels réseaux/cryptos sont supportés pour les retraits ?' and 'Que se passe-t-il si la passerelle refuse mon retrait ?'). The 3rd expected one ('Pourquoi pas de webhooks ?') exists but is generic. Not blocking."}]
+    }
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter18_payouts_api.py",
+    "/app/test_reports/pytest/iter18.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: consider adding a 3rd retrait-focused FAQ (e.g. 'Combien de temps pour un retrait ?' or 'Puis-je annuler un retrait en cours ?') to fully match the spec wording.",
+    "OPTIONAL: cache failed-idempotency responses too (or at least dedupe by Idempotency-Key so a replayed failing key returns the identical error body without hitting IziChange twice)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 5420 lines — still well over the 700-line threshold. Splitting v1/payments and v1/payouts into /app/backend/routes/*.py modules would materially improve maintainability.",
+    "_reconcile_payout() refunds the merchant on newly-discovered terminal failure — the check `if not po.get('refunded_at')` prevents double-refund, good. But there is a race: if the create endpoint already refunded and set refunded_at, and _reconcile_payout runs concurrently before the DB write settles, a second refund could occur. Wrap the refund in a `find_one_and_update` with `refunded_at: {$exists: false}` filter for atomicity.",
+    "list endpoint fires up to 10 upstream reconcile tasks per request without dedup — same concern as v1/payments list. A merchant paginating heavily will hammer IziChange."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter18_payouts_api.py"],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% (all spec items validated except minor FAQ count)"},
+  "test_credentials": "bizboy966@gmail.com / Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Seeded merchant balance_usdt=50 (idempotent — pre-existing account). Created ~5 sk_test_ keys named TEST_iter18_* via /api/merchant/keys. Created ~4 failed merchant_payouts docs (all refunded).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Payload for POST /api/v1/payouts uses field `network` (string, not `accepted_networks` — that is only for v1/payments PAY-IN). Valid test TRC20 address: TJRabPrwbZy45sbavfcjinPJC18kjpRTv8. IziChange sandbox has no USDT.TRC20 liquidity, so every real payout attempt returns GATEWAY_INSUFFICIENT_FUNDS via error message classification — expected behavior. Idempotency store is only populated on success responses in current implementation. To seed merchant balance: `python3 -c \"import asyncio,os; from motor.motor_asyncio import AsyncIOMotorClient; asyncio.run(AsyncIOMotorClient(os.environ['MONGO_URL'])['<DB>'].users.update_one({'email':'bizboy966@gmail.com'},{'\\$set':{'balance_usdt':50}}))\"` — after sourcing /app/backend/.env.",
+  "verified_features": [
+    "POST /api/v1/payouts without Authorization → 401 code:MISSING_AUTH_HEADER, statusCode:401",
+    "POST /api/v1/payouts with USDT/DOGENET (invalid pair) → 400 code:INVALID_ASSET",
+    "POST /api/v1/payouts with 0x… address on TRC20 → 400 code:INVALID_DESTINATION_ADDRESS",
+    "POST /api/v1/payouts with amount=999999999 → 400 code:AMOUNT_TOO_LARGE (asset max ~10000 USDT.TRC20) with details.min/max",
+    "POST /api/v1/payouts refused by IziChange sandbox → 400 code:GATEWAY_INSUFFICIENT_FUNDS AND balance refunded (verified: balance stayed at 50 across 4 failed payouts, refunded_at set on all)",
+    "POST /api/v1/payouts idempotent for identical Idempotency-Key (same status code returned)",
+    "GET /api/v1/payouts/{id} returns full details (id, status, amount, coin, network, asset_code, destination_address, reference, created_at, etc.)",
+    "GET /api/v1/payouts/{id}/status returns exactly {id, status, updated_at}",
+    "GET /api/v1/payouts/{id}/completed returns {id, completed:bool, status} — completed correctly reflects status==completed",
+    "GET /api/v1/payouts/search?reference=… finds payout; 404 code:PAYOUT_NOT_FOUND for unknown ref",
+    "GET /api/v1/payouts?limit=10&offset=0&status=failed returns proper pagination {data,count,total,offset,limit,has_more} with all items filtered to status=failed",
+    "GET /api/v1/payouts/does-not-exist-id → 404 code:PAYOUT_NOT_FOUND",
+    "GET /api/v1/payments still works (regression check pass — full pagination envelope)",
+    "Frontend /dashboard/api: 3 quick-start cards (Encaisser, Retirer, Suivi) present",
+    "Frontend /dashboard/api/docs: 4 sidebar groups visible (GETTING STARTED, PAIEMENTS, RETRAITS, RÉFÉRENCES)",
+    "Frontend RETRAITS group has exactly 5 sections: Créer un retrait, Vérifier le statut, Rechercher un retrait, Liste des retraits, Détails d'un retrait",
+    "Frontend 'Créer un retrait' shows POST /v1/payouts, parameter table (amount, coin, network, destination_address, reference, beneficiary_name, beneficiary_email, fee_bearer, metadata), and 7 language tabs (cURL, JavaScript, Node.js, PHP, Python, Java, C#)",
+    "Frontend 'Vérifier le statut' section shows all 6 statuses (pending, processing, sent, completed, failed, canceled)",
+    "Frontend error-codes table contains: PAYOUT_NOT_FOUND, INSUFFICIENT_BALANCE, WITHDRAWALS_BLOCKED, INVALID_ASSET, INVALID_DESTINATION_ADDRESS, AMOUNT_TOO_LARGE, GATEWAY_INSUFFICIENT_FUNDS, GATEWAY_UNREACHABLE",
+    "Frontend: ZERO webhook navigation entries and ZERO webhook headings anywhere on /dashboard/api/docs (mentions only occur inside prose as 'zéro webhook' style marketing copy)"
+  ],
+  "rca of the issue": "N/A — no critical issues found. Refund flow verified working correctly; the observed IziChange rejection ('PAYOUT_INSUFFICIENT_BALANCE') is expected sandbox behavior and correctly maps to GATEWAY_INSUFFICIENT_FUNDS with automatic merchant refund."
+}

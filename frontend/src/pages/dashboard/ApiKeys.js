@@ -210,7 +210,8 @@ export default function ApiKeys() {
             </div>
             <h1 className="mt-3 font-cabinet text-2xl md:text-3xl font-extrabold">Vos clés API</h1>
             <p className="mt-2 text-sm md:text-base text-slate-300 leading-relaxed">
-              Encaissez des paiements crypto (USDT et 40+ actifs) via une API REST simple.
+              Encaissez des paiements crypto <strong>et</strong> envoyez des retraits (USDT et 40+ actifs)
+              via une API REST simple.
               Utilisez vos clés <span className="text-blue-300 font-semibold">sk_test_…</span> en sandbox, puis passez en
               <span className="text-emerald-300 font-semibold"> sk_live_…</span> le jour de la mise en production.
               Aucun webhook, aucune configuration — il vous suffit d'appeler nos endpoints.
@@ -315,29 +316,32 @@ export default function ApiKeys() {
       </div>
 
       {/* Quick start */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Premier appel</div>
-          <div className="mt-2 font-cabinet font-bold text-slate-900">Créez un paiement en 1 requête</div>
+          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Encaisser</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Créer un paiement</div>
           <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
 {`curl -X POST ${API_BASE}/payments \\
   -H "Authorization: Bearer sk_test_..." \\
-  -H "Content-Type: application/json" \\
-  -d '{
-    "amount": 25,
-    "coin": "USDT",
-    "reference": "ORDER-42"
-  }'`}
+  -d '{ "amount": 25, "coin": "USDT" }'`}
+          </pre>
+        </div>
+        <div className="p-5 rounded-2xl bg-white border border-slate-200">
+          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Retirer</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Envoyer un retrait</div>
+          <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
+{`curl -X POST ${API_BASE}/payouts \\
+  -H "Authorization: Bearer sk_test_..." \\
+  -d '{ "amount": 25, "network": "TRC20",
+        "destination_address": "T..." }'`}
           </pre>
         </div>
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
           <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Suivi</div>
-          <div className="mt-2 font-cabinet font-bold text-slate-900">Vérifiez le statut à tout moment</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Vérifier un statut</div>
           <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
-{`curl ${API_BASE}/payments/{id}/status \\
-  -H "Authorization: Bearer sk_test_..."
-
-# → { "id": "...", "status": "paid", "updated_at": "..." }`}
+{`curl ${API_BASE}/payments/{id}/status
+# ou /payouts/{id}/status`}
           </pre>
           <Link to="/dashboard/api/docs" data-testid="link-see-docs" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-700">
             Voir la documentation complète →

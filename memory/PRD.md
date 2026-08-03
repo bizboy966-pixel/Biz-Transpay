@@ -536,3 +536,39 @@ Le design doit dépasser Stripe/Flutterwave/Paystack/CinetPay/Moneroo/Lemon Sque
 - (P1) Dépôt USDT via passerelle crypto (avec choix réseau).
 - (P1) Ajouter charts d'activité dans le dashboard home avec recharts.
 - (P2) Refactorer server.py.
+
+
+## 2026-08-03 — API publique Biz-Transpay v1 (Crypto Pay-In)
+Rewrite complet du module API public, remplaçant l'ancien bloqué (410 Gone).
+
+### Fonctionnement
+- Merchant → **API Biz-Transpay** (clés `sk_test_` / `sk_live_`) → Backend → IziChange (interne).
+- Aucun webhook — les marchands **pollent** `/status`. Le backend synchronise en background avec IziChange pour garantir la fraîcheur.
+- L'intégration existante `izipay.py` reste inchangée (réutilisation only).
+
+### Endpoints (base : `${REACT_APP_BACKEND_URL}/api/v1`)
+- `POST /payments` — Créer un paiement crypto (retourne `id`, `status`, `payment_url`, `expires_at`)
+- `GET /payments/{id}` — Détails complets + sync auto
+- `GET /payments/{id}/status` — Statut léger `{id, status, updated_at}`
+- `GET /payments/{id}/completed` — Booléen `{completed, status}`
+- `POST /payments/{id}/cancel` — Annuler (409 si déjà `paid`, idempotent)
+- `GET /payments/search?reference=…` — Recherche par référence marchand
+- `GET /payments?limit&offset&status&reference` — Liste paginée
+- `GET /health` — Public health check
+
+### Sécurité & fiabilité
+- Auth Bearer `sk_test_` / `sk_live_` (SHA-256 hash côté serveur)
+- Idempotency-Key (fenêtre 24 h, replay = même réponse)
+- Rate limit 100 req/min/clé (`X-RateLimit-*` headers)
+- Format d'erreur normalisé `{statusCode, message, code, details?}`
+
+### CRUD Clés (dashboard, JWT) — `/api/merchant/keys`
+- Créer, lister, régénérer, désactiver, supprimer.
+- **Reveal one-time** : la clé secrète pleine n'est affichée qu'à la création. Le back n'en garde qu'un hash.
+
+### Frontend
+- `/dashboard/api` — page de gestion des clés (hero, table, modal reveal ack-gated, quick start).
+- `/dashboard/api/docs` — documentation style Stripe/Paystack : sidebar sticky 3 groupes / 17 sections, LangTabs 7 langages (cURL, JS, Node, PHP, Python, Java, C#), tableau des statuts/erreurs, FAQ, ZÉRO section webhooks.
+
+### Testing
+- 20/20 backend + frontend E2E (iteration_17.json), aucun bug identifié.

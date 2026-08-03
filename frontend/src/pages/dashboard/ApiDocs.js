@@ -63,6 +63,11 @@ const SECTIONS = [
   { id: 'list-payments', label: 'Liste des transactions', group: 'Paiements' },
   { id: 'cancel-payment', label: 'Annuler une transaction', group: 'Paiements' },
   { id: 'pagination', label: 'Pagination', group: 'Paiements' },
+  { id: 'create-payout', label: 'Créer un retrait', group: 'Retraits' },
+  { id: 'get-payout', label: 'Vérifier le statut', group: 'Retraits' },
+  { id: 'search-payout', label: 'Rechercher un retrait', group: 'Retraits' },
+  { id: 'list-payouts', label: 'Liste des retraits', group: 'Retraits' },
+  { id: 'payout-details', label: 'Détails d\'un retrait', group: 'Retraits' },
   { id: 'errors', label: 'Gestion des erreurs', group: 'Références' },
   { id: 'http-codes', label: 'Codes HTTP', group: 'Références' },
   { id: 'idempotency', label: 'Idempotence', group: 'Références' },
@@ -272,6 +277,189 @@ const cancelExamples = () => [
 `await axios.post('${API}/payments/PAYMENT_ID/cancel', null, {
   headers: { Authorization: 'Bearer sk_test_YOUR_KEY' },
 });` },
+];
+
+/* ------------------------- Payout examples ------------------------- */
+const createPayoutExamples = () => {
+  const body = {
+    amount: 25,
+    coin: 'USDT',
+    network: 'TRC20',
+    destination_address: 'TJRabPrwbZy45sbavfcjinPJC18kjpRTv8',
+    reference: 'WD-42',
+    beneficiary_name: 'John Doe',
+  };
+  const bodyStr = JSON.stringify(body, null, 2);
+  const url = `${API}/payouts`;
+  return [
+    { lang: 'curl', label: 'cURL', code:
+`curl -X POST ${url} \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY" \\
+  -H "Idempotency-Key: wd-42-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '${JSON.stringify(body)}'` },
+    { lang: 'js', label: 'JavaScript', code:
+`const res = await fetch('${url}', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer sk_test_YOUR_KEY',
+    'Idempotency-Key': 'wd-42-attempt-1',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(${bodyStr}),
+});
+const payout = await res.json();
+console.log(payout.id, payout.status);` },
+    { lang: 'node', label: 'Node.js', code:
+`import axios from 'axios';
+
+const { data: payout } = await axios.post(
+  '${url}',
+  ${bodyStr},
+  {
+    headers: {
+      Authorization: 'Bearer sk_test_YOUR_KEY',
+      'Idempotency-Key': 'wd-42-attempt-1',
+    },
+  },
+);
+console.log('Payout id:', payout.id, 'status:', payout.status);` },
+    { lang: 'php', label: 'PHP', code:
+`<?php
+$ch = curl_init('${url}');
+curl_setopt_array($ch, [
+  CURLOPT_POST => true,
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => [
+    'Authorization: Bearer sk_test_YOUR_KEY',
+    'Idempotency-Key: wd-42-attempt-1',
+    'Content-Type: application/json',
+  ],
+  CURLOPT_POSTFIELDS => json_encode(${JSON.stringify(body)}),
+]);
+$payout = json_decode(curl_exec($ch), true);
+curl_close($ch);
+echo $payout['id'];` },
+    { lang: 'python', label: 'Python', code:
+`import requests
+
+payout = requests.post(
+    '${url}',
+    json=${bodyStr.replace(/"/g, "'")},
+    headers={
+        'Authorization': 'Bearer sk_test_YOUR_KEY',
+        'Idempotency-Key': 'wd-42-attempt-1',
+    },
+).json()
+
+print('Payout:', payout['id'], payout['status'])` },
+    { lang: 'java', label: 'Java', code:
+`import java.net.http.*;
+import java.net.URI;
+
+var body = """
+${bodyStr}
+""";
+var request = HttpRequest.newBuilder()
+    .uri(URI.create("${url}"))
+    .header("Authorization", "Bearer sk_test_YOUR_KEY")
+    .header("Idempotency-Key", "wd-42-attempt-1")
+    .header("Content-Type", "application/json")
+    .POST(HttpRequest.BodyPublishers.ofString(body))
+    .build();
+
+var response = HttpClient.newHttpClient()
+    .send(request, HttpResponse.BodyHandlers.ofString());
+System.out.println(response.body());` },
+    { lang: 'csharp', label: 'C#', code:
+`using System.Net.Http.Json;
+
+var http = new HttpClient();
+http.DefaultRequestHeaders.Add("Authorization", "Bearer sk_test_YOUR_KEY");
+http.DefaultRequestHeaders.Add("Idempotency-Key", "wd-42-attempt-1");
+
+var response = await http.PostAsJsonAsync(
+    "${url}",
+    new {
+        amount = 25,
+        coin = "USDT",
+        network = "TRC20",
+        destination_address = "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+        reference = "WD-42",
+    }
+);
+var payout = await response.Content.ReadFromJsonAsync<Dictionary<string, object>>();
+Console.WriteLine(payout["id"]);` },
+  ];
+};
+
+const getPayoutStatusExamples = () => {
+  const url = `${API}/payouts/{id}/status`;
+  return [
+    { lang: 'curl', label: 'cURL', code:
+`curl ${url} \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY"` },
+    { lang: 'node', label: 'Node.js', code:
+`const { data } = await axios.get('${url.replace('{id}', 'PAYOUT_ID')}', {
+  headers: { Authorization: 'Bearer sk_test_YOUR_KEY' },
+});
+if (data.status === 'completed') { /* credit the beneficiary */ }` },
+    { lang: 'python', label: 'Python', code:
+`status = requests.get(
+    '${url.replace('{id}', 'PAYOUT_ID')}',
+    headers={'Authorization': 'Bearer sk_test_YOUR_KEY'},
+).json()
+
+if status['status'] == 'completed':
+    mark_withdrawal_complete()` },
+    { lang: 'php', label: 'PHP', code:
+`<?php
+$ch = curl_init('${url.replace('{id}', 'PAYOUT_ID')}');
+curl_setopt_array($ch, [
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => ['Authorization: Bearer sk_test_YOUR_KEY'],
+]);
+$status = json_decode(curl_exec($ch), true);
+curl_close($ch);` },
+  ];
+};
+
+const searchPayoutExamples = () => [
+  { lang: 'curl', label: 'cURL', code:
+`curl "${API}/payouts/search?reference=WD-42" \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY"` },
+  { lang: 'node', label: 'Node.js', code:
+`const { data } = await axios.get('${API}/payouts/search', {
+  params: { reference: 'WD-42' },
+  headers: { Authorization: 'Bearer sk_test_YOUR_KEY' },
+});` },
+  { lang: 'python', label: 'Python', code:
+`payout = requests.get(
+    '${API}/payouts/search',
+    params={'reference': 'WD-42'},
+    headers={'Authorization': 'Bearer sk_test_YOUR_KEY'},
+).json()` },
+];
+
+const listPayoutsExamples = () => [
+  { lang: 'curl', label: 'cURL', code:
+`curl "${API}/payouts?limit=20&offset=0&status=completed" \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY"` },
+  { lang: 'node', label: 'Node.js', code:
+`const { data } = await axios.get('${API}/payouts', {
+  params: { limit: 20, offset: 0, status: 'completed' },
+  headers: { Authorization: 'Bearer sk_test_YOUR_KEY' },
+});
+console.log(\`\${data.data.length} / \${data.total}\`);` },
+  { lang: 'python', label: 'Python', code:
+`page = requests.get(
+    '${API}/payouts',
+    params={'limit': 20, 'offset': 0, 'status': 'completed'},
+    headers={'Authorization': 'Bearer sk_test_YOUR_KEY'},
+).json()
+
+for p in page['data']:
+    print(p['id'], p['status'], p['amount'])` },
 ];
 
 /* ------------------------------ Content ------------------------------- */
@@ -627,6 +815,179 @@ export default function ApiDocs() {
 GET /v1/payments?limit=20&offset=20   # deuxième page
 GET /v1/payments?limit=100            # max 200 par page`} />
 
+          {/* =============================== PAYOUTS =============================== */}
+          <div className="mt-16 mb-2 pt-8 border-t-2 border-slate-200">
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold">
+              <KeyRound className="w-3 h-3" /> Retraits · Payouts
+            </div>
+            <h1 className="mt-3 font-cabinet text-3xl md:text-4xl font-extrabold text-slate-900">Envoyez des crypto à vos utilisateurs</h1>
+            <P>
+              L'API Retraits vous permet d'envoyer automatiquement des cryptomonnaies vers n'importe quelle
+              adresse externe (portefeuille utilisateur, exchange, wallet froid…) directement depuis votre
+              solde marchand Biz-transPay. Chaque appel débite votre solde <code>balance_usdt</code> puis
+              relaie la demande à notre passerelle IziChange en interne — vos clients ne voient jamais nos
+              clés amont.
+            </P>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+              <div className="p-4 rounded-xl bg-white border border-slate-200">
+                <ShieldCheck className="w-5 h-5 text-emerald-600 mb-2" />
+                <div className="font-semibold text-slate-900 text-sm">Débit atomique</div>
+                <div className="text-[12px] text-slate-500 mt-1">Votre solde n'est débité qu'après contrôle des limites, et automatiquement remboursé si la passerelle refuse.</div>
+              </div>
+              <div className="p-4 rounded-xl bg-white border border-slate-200">
+                <Zap className="w-5 h-5 text-blue-600 mb-2" />
+                <div className="font-semibold text-slate-900 text-sm">Validation forte</div>
+                <div className="text-[12px] text-slate-500 mt-1">Regex par réseau, min/max IziChange, idempotence 24 h, rate-limit 100 req/min.</div>
+              </div>
+              <div className="p-4 rounded-xl bg-white border border-slate-200">
+                <AlertTriangle className="w-5 h-5 text-amber-600 mb-2" />
+                <div className="font-semibold text-slate-900 text-sm">Zéro webhook</div>
+                <div className="text-[12px] text-slate-500 mt-1">Interrogez <code>/status</code> à votre rythme — la synchronisation upstream est automatique.</div>
+              </div>
+            </div>
+          </div>
+
+          {/* ---- Create payout ---- */}
+          <H2 id="create-payout">Créer un retrait</H2>
+          <div className="flex items-center gap-2 text-[12px] font-semibold my-2">
+            <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">POST</span>
+            <code className="font-mono text-slate-700">/v1/payouts</code>
+          </div>
+          <P>Débite votre solde et envoie des crypto à l'adresse fournie. Retourne un <code>id</code>, un <code>status</code> initial et l'ID upstream après validation.</P>
+
+          <H3>Paramètres</H3>
+          <div className="overflow-x-auto my-3">
+            <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+              <thead className="bg-slate-100 text-left text-[12px] font-semibold text-slate-700">
+                <tr>
+                  <th className="px-4 py-2">Champ</th>
+                  <th className="px-4 py-2">Type</th>
+                  <th className="px-4 py-2">Description</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-[13px]">
+                <tr><td className="px-4 py-2 font-mono">amount <span className="text-red-500">*</span></td><td className="px-4 py-2">number</td><td className="px-4 py-2">Montant à envoyer (min/max selon couple coin/network)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">coin</td><td className="px-4 py-2">string</td><td className="px-4 py-2">Actif crypto — défaut <code>USDT</code></td></tr>
+                <tr><td className="px-4 py-2 font-mono">network <span className="text-red-500">*</span></td><td className="px-4 py-2">string</td><td className="px-4 py-2">Réseau on-chain (<code>TRC20</code>, <code>BEP20</code>, <code>ERC20</code>, <code>POLYGON</code>, <code>SOLANA</code>…)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">destination_address <span className="text-red-500">*</span></td><td className="px-4 py-2">string</td><td className="px-4 py-2">Adresse du bénéficiaire — validée par regex selon le réseau</td></tr>
+                <tr><td className="px-4 py-2 font-mono">reference</td><td className="px-4 py-2">string</td><td className="px-4 py-2">Votre référence interne (max 128 caractères)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">beneficiary_name</td><td className="px-4 py-2">string</td><td className="px-4 py-2">Nom du bénéficiaire (traçabilité KYC/AML)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">beneficiary_email</td><td className="px-4 py-2">string</td><td className="px-4 py-2">Email du bénéficiaire</td></tr>
+                <tr><td className="px-4 py-2 font-mono">fee_bearer</td><td className="px-4 py-2">string</td><td className="px-4 py-2"><code>sender</code> (défaut, vous payez les frais) ou <code>recipient</code> (déduit du montant envoyé)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">metadata</td><td className="px-4 py-2">object</td><td className="px-4 py-2">Métadonnées libres</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <H3>Exemples de requête</H3>
+          <LangTabs items={createPayoutExamples()} />
+
+          <H3>Réponse (200)</H3>
+          <ResponseBlock status={200} body={{
+            id: 'po_1a2b3c4d',
+            object: 'payout',
+            status: 'processing',
+            amount: '25.00',
+            amount_net: '25.00',
+            fee: '1.00',
+            fee_pct: 4.0,
+            total_debit: '26.00',
+            coin: 'USDT',
+            network: 'TRC20',
+            asset_code: 'USDT.TRC20',
+            destination_address: 'TJRabPrwbZy45sbavfcjinPJC18kjpRTv8',
+            reference: 'WD-42',
+            beneficiary_name: 'John Doe',
+            provider_id: 'ext_9f8a2c7b',
+            created_at: '2026-08-03T18:15:40Z',
+          }} />
+
+          <InfoCard tone="amber" icon={AlertTriangle} title="Validations effectuées">
+            <ul className="list-disc pl-4 space-y-1">
+              <li>Solde marchand disponible (frais inclus si <code>fee_bearer=sender</code>)</li>
+              <li>Montant dans les bornes min/max du couple <code>coin/network</code></li>
+              <li>Adresse compatible avec le réseau (regex Tron, EVM, Solana, Bitcoin, etc.)</li>
+              <li>Statut du compte (compte non suspendu, retraits non bloqués)</li>
+              <li>Idempotence : rejouer avec la même <code>Idempotency-Key</code> retourne la réponse originale sans doublon</li>
+            </ul>
+          </InfoCard>
+
+          {/* ---- Get payout status ---- */}
+          <H2 id="get-payout">Vérifier le statut d'un retrait</H2>
+          <div className="flex items-center gap-2 text-[12px] font-semibold my-2">
+            <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700">GET</span>
+            <code className="font-mono text-slate-700">/v1/payouts/{'{id}'}/status</code>
+          </div>
+          <P>Endpoint léger pour un polling régulier. Auto-sync upstream.</P>
+          <LangTabs items={getPayoutStatusExamples()} />
+          <ResponseBlock status={200} body={{
+            id: 'po_1a2b3c4d',
+            status: 'completed',
+            updated_at: '2026-08-03T18:18:12Z',
+          }} />
+          <H3>Endpoint alternatif — booléen</H3>
+          <CodeBlock code={`GET ${API}/payouts/{id}/completed
+→ { "id": "…", "completed": true, "status": "completed" }`} />
+
+          <div className="overflow-x-auto my-3">
+            <table className="w-full text-sm border border-slate-200 rounded-lg overflow-hidden">
+              <thead className="bg-slate-100 text-left text-[12px] font-semibold text-slate-700">
+                <tr><th className="px-4 py-2">Status</th><th className="px-4 py-2">Signification</th></tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-[13px]">
+                <tr><td className="px-4 py-2 font-mono text-slate-700">pending</td><td className="px-4 py-2">Débit effectué, en attente d'être envoyé à la passerelle</td></tr>
+                <tr><td className="px-4 py-2 font-mono text-blue-700">processing</td><td className="px-4 py-2">Envoyé à la passerelle, en cours de traitement</td></tr>
+                <tr><td className="px-4 py-2 font-mono text-blue-700">sent</td><td className="px-4 py-2">Broadcast on-chain, en attente de confirmation</td></tr>
+                <tr><td className="px-4 py-2 font-mono text-emerald-700">completed</td><td className="px-4 py-2">Retrait confirmé ✅</td></tr>
+                <tr><td className="px-4 py-2 font-mono text-red-700">failed</td><td className="px-4 py-2">Rejeté par la passerelle — solde marchand remboursé automatiquement</td></tr>
+                <tr><td className="px-4 py-2 font-mono text-slate-500">canceled</td><td className="px-4 py-2">Annulé côté passerelle — solde marchand remboursé</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* ---- Search payout ---- */}
+          <H2 id="search-payout">Rechercher un retrait</H2>
+          <div className="flex items-center gap-2 text-[12px] font-semibold my-2">
+            <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700">GET</span>
+            <code className="font-mono text-slate-700">/v1/payouts/search?reference=…</code>
+          </div>
+          <P>Retrouvez un retrait par la <code>reference</code> passée à la création.</P>
+          <LangTabs items={searchPayoutExamples()} />
+
+          {/* ---- List payouts ---- */}
+          <H2 id="list-payouts">Lister les retraits</H2>
+          <div className="flex items-center gap-2 text-[12px] font-semibold my-2">
+            <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700">GET</span>
+            <code className="font-mono text-slate-700">/v1/payouts</code>
+          </div>
+          <P>Liste paginée. Filtres <code>status</code>, <code>reference</code>. Sync auto en background pour les retraits non-terminaux.</P>
+          <LangTabs items={listPayoutsExamples()} />
+          <ResponseBlock status={200} body={{
+            data: [
+              { id: 'po_1a2b3c4d', status: 'completed', amount: '25.00', coin: 'USDT', network: 'TRC20', reference: 'WD-42', created_at: '…' },
+              { id: 'po_5e6f7g8h', status: 'processing', amount: '100.00', coin: 'USDT', network: 'BEP20', reference: 'WD-41', created_at: '…' },
+            ],
+            count: 2,
+            total: 47,
+            offset: 0,
+            limit: 20,
+            has_more: true,
+          }} />
+
+          {/* ---- Payout details ---- */}
+          <H2 id="payout-details">Détails d'un retrait</H2>
+          <div className="flex items-center gap-2 text-[12px] font-semibold my-2">
+            <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700">GET</span>
+            <code className="font-mono text-slate-700">/v1/payouts/{'{id}'}</code>
+          </div>
+          <P>Retourne l'objet Payout complet, incluant les frais, montants net, statut passerelle, timestamps, métadonnées et éventuels codes d'erreur. Déclenche une re-synchronisation upstream si le retrait n'est pas terminal.</P>
+          <CodeBlock code={`curl ${API}/payouts/po_1a2b3c4d \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY"`} />
+
+          <div className="mt-12 pt-8 border-t-2 border-slate-200" />
+
+          {/* =============================== END PAYOUTS =============================== */}
+
           {/* ---- Errors ---- */}
           <H2 id="errors">Gestion des erreurs</H2>
           <P>Toutes les erreurs suivent un format uniforme :</P>
@@ -655,6 +1016,14 @@ GET /v1/payments?limit=100            # max 200 par page`} />
                 <tr><td className="px-4 py-2 font-mono">GATEWAY_REJECTED</td><td className="px-4 py-2">La passerelle amont a refusé la requête (<code>details</code> pour le pourquoi)</td></tr>
                 <tr><td className="px-4 py-2 font-mono">PAYMENT_NOT_FOUND</td><td className="px-4 py-2">Aucun paiement pour cet id/référence</td></tr>
                 <tr><td className="px-4 py-2 font-mono">PAYMENT_ALREADY_PAID</td><td className="px-4 py-2">Impossible d'annuler un paiement déjà encaissé</td></tr>
+                <tr><td className="px-4 py-2 font-mono">PAYOUT_NOT_FOUND</td><td className="px-4 py-2">Aucun retrait pour cet id/référence</td></tr>
+                <tr><td className="px-4 py-2 font-mono">INSUFFICIENT_BALANCE</td><td className="px-4 py-2">Solde marchand insuffisant (frais inclus)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">WITHDRAWALS_BLOCKED</td><td className="px-4 py-2">Les retraits sont désactivés sur votre compte</td></tr>
+                <tr><td className="px-4 py-2 font-mono">INVALID_ASSET</td><td className="px-4 py-2">Le couple <code>coin/network</code> n'est pas supporté</td></tr>
+                <tr><td className="px-4 py-2 font-mono">INVALID_DESTINATION_ADDRESS</td><td className="px-4 py-2">Adresse incompatible avec le réseau ciblé</td></tr>
+                <tr><td className="px-4 py-2 font-mono">AMOUNT_TOO_LARGE</td><td className="px-4 py-2">Montant supérieur au maximum du couple coin/network</td></tr>
+                <tr><td className="px-4 py-2 font-mono">GATEWAY_INSUFFICIENT_FUNDS</td><td className="px-4 py-2">Fonds insuffisants côté passerelle (rare — contactez le support)</td></tr>
+                <tr><td className="px-4 py-2 font-mono">GATEWAY_UNREACHABLE</td><td className="px-4 py-2">Passerelle amont temporairement injoignable — retentez</td></tr>
                 <tr><td className="px-4 py-2 font-mono">VALIDATION_ERROR</td><td className="px-4 py-2">Payload invalide (champ manquant, mauvais type)</td></tr>
                 <tr><td className="px-4 py-2 font-mono">RATE_LIMITED</td><td className="px-4 py-2">Vous dépassez 100 requêtes/minute</td></tr>
                 <tr><td className="px-4 py-2 font-mono">INTERNAL_ERROR</td><td className="px-4 py-2">Erreur inattendue — contactez le support</td></tr>
@@ -734,6 +1103,8 @@ Idempotency-Key: order-42-attempt-1
           <div className="space-y-3 my-4">
             {[
               { q: 'Pourquoi pas de webhooks ?', a: 'Simplicité. Vous n\'avez rien à configurer côté serveur — pas de HTTPS obligatoire, pas de vérification de signature. Un simple polling sur `/status` toutes les 5–10s suffit largement pour la majorité des cas.' },
+              { q: 'Quels réseaux/cryptos sont supportés pour les retraits ?', a: 'USDT, USDC, BTC, ETH, BNB, TRX, LTC, SOL, TON, XRP, DOGE, MATIC et 30+ actifs sur TRC20, BEP20, ERC20, POLYGON, SOLANA, BTC, LTC, DOGE, TON. Chaque couple `coin/network` doit être actif chez la passerelle amont.' },
+              { q: 'Que se passe-t-il si la passerelle refuse mon retrait ?', a: 'Votre solde est intégralement remboursé (montant + frais) et le retrait passe en `status=failed` avec un `error_code` explicite. Aucune action manuelle requise.' },
               { q: 'Puis-je encaisser en Bitcoin, ETH, etc. ?', a: 'Oui. Le champ `coin` accepte USDT, USDC, BTC, ETH, BNB, TRX, LTC, SOL, TON, XRP, DOGE, MATIC et 30+ autres actifs. Voir la liste complète via la passerelle.' },
               { q: 'Quelle est la durée de vie d\'un paiement ?', a: '10 minutes à partir de sa création. Passé ce délai, il passe automatiquement en `expired`.' },
               { q: 'Comment tester sans dépenser ?', a: 'Créez une clé `sk_test_…` — l\'environnement Sandbox ne charge aucun client réel.' },

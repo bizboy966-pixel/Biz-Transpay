@@ -2443,6 +2443,465 @@ async def _safe_reconcile(intent_id: str) -> None:
         logger.warning("background reconcile failed for %s: %s", intent_id, e)
 
 
+# =====================================================================
+# V1 PAYOUTS API — Public merchant crypto withdrawals via IziChange
+# =====================================================================
+# Merchants call our /v1/payouts endpoints with their Biz-transPay API keys.
+# We validate, deduct their balance (pessimistic debit + refund on failure),
+# and forward the request to IziChange internally. Merchants never see the
+# IziChange credentials. No webhooks — merchants poll /status.
+
+
+class PayoutCreate(BaseModel):
+    amount: float = Field(..., gt=0, description="Amount of crypto to send")
+    coin: str = Field("USDT", min_length=2, max_length=10)
+    network: str = Field(..., min_length=2, max_length=16,
+                          description="On-chain network — e.g. TRC20, BEP20, ERC20")
+    destination_address: str = Field(..., min_length=6)
+    reference: Optional[str] = Field(None, max_length=128,
+                                       description="Your internal reference for this payout")
+    beneficiary_name: Optional[str] = Field(None, max_length=128)
+    beneficiary_email: Optional[str] = None
+    fee_bearer: Optional[str] = Field(
+        "sender", description="'sender' (merchant covers fee, default) or 'recipient'")
+    metadata: Optional[dict] = None
+
+
+def _serialize_payout(po: dict) -> dict:
+    if not po:
+        return {}
+    return {
+        "id": po.get("id"),
+        "object": "payout",
+        "status": po.get("status"),
+        "amount": _format_amount(po.get("amount", 0)),
+        "amount_net": _format_amount(po.get("amount_net", 0))
+            if po.get("amount_net") is not None else None,
+        "fee": _format_amount(po.get("fee", 0))
+            if po.get("fee") is not None else None,
+        "fee_pct": po.get("fee_pct"),
+        "total_debit": _format_amount(po.get("total_debit", 0))
+            if po.get("total_debit") is not None else None,
+        "coin": po.get("coin"),
+        "network": po.get("network"),
+        "asset_code": po.get("asset_code"),
+        "destination_address": po.get("destination_address"),
+        "reference": po.get("reference"),
+        "beneficiary_name": po.get("beneficiary_name"),
+        "beneficiary_email": po.get("beneficiary_email"),
+        "provider_id": po.get("izipay_payout_id"),
+        "provider_status": po.get("izipay_status"),
+        "metadata": po.get("metadata") or {},
+        "created_at": _format_iso(po.get("created_at", "")) if po.get("created_at") else None,
+        "sent_at": _format_iso(po.get("sent_at", "")) if po.get("sent_at") else None,
+        "completed_at": _format_iso(po.get("completed_at", "")) if po.get("completed_at") else None,
+        "failed_at": _format_iso(po.get("failed_at", "")) if po.get("failed_at") else None,
+        "error_code": po.get("error_code"),
+    }
+
+
+_TERMINAL_PAYOUT_STATUSES = ("completed", "confirmed", "failed", "canceled")
+
+
+def _map_izipay_payout_status(izi_status: str, current: Optional[str] = None) -> str:
+    """Map upstream IziChange payout statuses to our public API taxonomy."""
+    if not izi_status:
+        return current or "pending"
+    s = str(izi_status).lower()
+    if s in ("completed", "confirmed", "success", "successful", "sent_success"):
+        return "completed"
+    if s in ("failed", "rejected", "error"):
+        return "failed"
+    if s in ("canceled", "cancelled"):
+        return "canceled"
+    if s in ("sent", "sending", "broadcasted"):
+        return "sent"
+    if s in ("processing", "pending", "waiting", "queued"):
+        return "processing"
+    return current or "processing"
+
+
+async def _reconcile_payout(izipay_payout_id: str) -> None:
+    """Pull the latest state from IziChange for a payout and update our doc."""
+    if not izipay_payout_id or not izipay.is_configured():
+        return
+    try:
+        data = await izipay.get_payout(izipay_payout_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("izipay.get_payout failed for %s: %s", izipay_payout_id, e)
+        return
+    upstream_status = (data.get("status") or "").lower()
+    po = await db.merchant_payouts.find_one({"izipay_payout_id": izipay_payout_id})
+    if not po:
+        return
+    new_status = _map_izipay_payout_status(upstream_status, po.get("status"))
+    updates: dict = {"izipay_status": upstream_status}
+    if new_status != po.get("status"):
+        updates["status"] = new_status
+        if new_status == "sent" and not po.get("sent_at"):
+            updates["sent_at"] = now_iso()
+        if new_status == "completed" and not po.get("completed_at"):
+            updates["completed_at"] = now_iso()
+        if new_status == "failed" and not po.get("failed_at"):
+            updates["failed_at"] = now_iso()
+            updates["error_code"] = data.get("errorCode") or data.get("code")
+            updates["error_message"] = data.get("errorMessage") or data.get("message")
+            # Refund on newly discovered terminal failure.
+            if not po.get("refunded_at"):
+                await db.users.update_one(
+                    {"id": po["merchant_id"]},
+                    {"$inc": {"balance_usdt": float(po.get("total_debit") or 0)}},
+                )
+                updates["refunded_at"] = now_iso()
+    await db.merchant_payouts.update_one({"id": po["id"]}, {"$set": updates})
+
+
+async def _safe_reconcile_payout(izipay_payout_id: str) -> None:
+    try:
+        await _reconcile_payout(izipay_payout_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("background payout reconcile failed for %s: %s",
+                       izipay_payout_id, e)
+
+
+@api.post("/v1/payouts")
+async def merchant_create_payout(payload: PayoutCreate, request: Request):
+    """Create a crypto payout on behalf of the merchant. Deducts balance
+    pessimistically then forwards to IziChange. If IziChange refuses,
+    the balance is refunded and 502/400 is returned.
+    """
+    merchant = await _authenticate_merchant(request)
+    uid = merchant["id"]
+
+    # ---------- Idempotency ----------
+    idem_key = request.headers.get("Idempotency-Key")
+    if idem_key and len(idem_key) > 255:
+        raise BizAPIError(400, "Idempotency-Key too long (max 255 chars).",
+                          "IDEMPOTENCY_KEY_TOO_LONG")
+    cached = await _idempotency_lookup(uid, idem_key) if idem_key else None
+    if cached is not None:
+        return cached.get("body") if isinstance(cached, dict) else cached
+
+    # ---------- Validate coin/network via IziChange assets ----------
+    coin_upper = payload.coin.upper().strip()
+    net_upper = payload.network.upper().strip()
+    asset_code = f"{coin_upper}.{net_upper}"
+    if not izipay.is_configured():
+        raise BizAPIError(503, "Crypto gateway not configured.", "GATEWAY_UNAVAILABLE")
+    try:
+        assets = await izipay.list_assets()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("izipay.list_assets failed: %s", e)
+        raise BizAPIError(502, "Upstream gateway is unreachable.", "GATEWAY_UNREACHABLE")
+    asset = next((a for a in assets
+                   if (a.get("assetCode") or "").upper() == asset_code
+                   and a.get("isActive")), None)
+    if not asset:
+        raise BizAPIError(400,
+                          f"The pair {coin_upper}/{net_upper} is not available for payouts.",
+                          "INVALID_ASSET",
+                          details={"coin": coin_upper, "network": net_upper})
+
+    min_amt = float(asset.get("minimum") or 0)
+    max_amt = float(asset.get("maximum") or 10 ** 12)
+    if payload.amount < min_amt:
+        raise BizAPIError(400,
+                          f"Amount below minimum for {coin_upper}/{net_upper} ({min_amt}).",
+                          "AMOUNT_TOO_SMALL",
+                          details={"min": min_amt, "max": max_amt})
+    if payload.amount > max_amt:
+        raise BizAPIError(400,
+                          f"Amount above maximum for {coin_upper}/{net_upper} ({max_amt}).",
+                          "AMOUNT_TOO_LARGE",
+                          details={"min": min_amt, "max": max_amt})
+
+    # ---------- Validate destination address ----------
+    import re as _re
+    regex = _NETWORK_REGEX.get(net_upper)
+    dest = payload.destination_address.strip()
+    if regex and not _re.match(regex, dest):
+        raise BizAPIError(400,
+                          f"Invalid destination address for network {net_upper}.",
+                          "INVALID_DESTINATION_ADDRESS",
+                          details={"network": net_upper})
+
+    # ---------- Compute fee ----------
+    cfg = await get_transfer_config()
+    fees_map = ((cfg.get("crypto") or {}).get("fees") or {})
+    fee_pct = float(fees_map.get(coin_upper, 4.0))
+    fee = round(payload.amount * (fee_pct / 100.0), 6)
+    fee_bearer = (payload.fee_bearer or "sender").lower()
+    if fee_bearer not in ("sender", "recipient"):
+        raise BizAPIError(400, "fee_bearer must be 'sender' or 'recipient'.",
+                          "INVALID_FEE_BEARER")
+    total_debit = round(payload.amount + fee, 6) if fee_bearer == "sender" else float(payload.amount)
+    recipient_gets = float(payload.amount) if fee_bearer == "sender" \
+        else round(payload.amount - fee, 6)
+
+    # ---------- Balance check ----------
+    merchant_doc = await db.users.find_one({"id": uid}, {"_id": 0})
+    if not merchant_doc:
+        raise BizAPIError(401, "Merchant not found.", "MERCHANT_NOT_FOUND")
+    if merchant_doc.get("withdrawals_blocked"):
+        raise BizAPIError(403, "Withdrawals are disabled on this account.",
+                          "WITHDRAWALS_BLOCKED")
+    if float(merchant_doc.get("balance_usdt", 0)) < total_debit:
+        raise BizAPIError(400, "Insufficient balance (fees included).",
+                          "INSUFFICIENT_BALANCE",
+                          details={"required": total_debit,
+                                   "available": float(merchant_doc.get("balance_usdt", 0))})
+
+    # ---------- Persist doc & debit balance ----------
+    po_id = new_id()
+    now = now_iso()
+    doc = {
+        "id": po_id,
+        "merchant_id": uid,
+        "api_key_id": merchant.get("api_key_id"),
+        "api_key_env": merchant.get("env"),
+        "coin": coin_upper,
+        "network": net_upper,
+        "asset_code": asset_code,
+        "destination_address": dest,
+        "amount": float(payload.amount),
+        "amount_net": recipient_gets,
+        "fee": fee,
+        "fee_pct": fee_pct,
+        "fee_bearer": fee_bearer,
+        "total_debit": total_debit,
+        "reference": payload.reference,
+        "beneficiary_name": payload.beneficiary_name,
+        "beneficiary_email": payload.beneficiary_email,
+        "metadata": payload.metadata or {},
+        "status": "pending",
+        "izipay_payout_id": None,
+        "izipay_status": None,
+        "created_at": now,
+    }
+    # Debit balance atomically (only if funds still available).
+    upd = await db.users.update_one(
+        {"id": uid, "balance_usdt": {"$gte": total_debit}},
+        {"$inc": {"balance_usdt": -total_debit}},
+    )
+    if upd.modified_count == 0:
+        raise BizAPIError(400, "Insufficient balance (concurrent debit).",
+                          "INSUFFICIENT_BALANCE")
+
+    await db.merchant_payouts.insert_one(doc)
+
+    # ---------- Forward to IziChange ----------
+    try:
+        upstream = await izipay.create_payout(
+            asset_code=asset_code,
+            amount=f"{recipient_gets:.6f}",
+            destination_address=dest,
+            merchant_reference=po_id,
+            metadata={"merchant_id": uid, "payout_id": po_id,
+                      "merchant_ref": payload.reference or ""},
+            idempotency_key=f"mpo-{po_id}",
+        )
+    except izipay.IziPayError as e:
+        # Refund merchant balance on gateway rejection.
+        await db.users.update_one({"id": uid}, {"$inc": {"balance_usdt": total_debit}})
+        await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
+            "status": "failed",
+            "failed_at": now_iso(),
+            "refunded_at": now_iso(),
+            "error_code": e.code,
+            "error_message": e.message,
+        }})
+        # Classify error for the merchant.
+        msg = (e.message or "").lower()
+        if "address" in msg or "adresse" in msg:
+            code = "INVALID_DESTINATION_ADDRESS"
+            user_msg = f"Invalid destination address for {coin_upper}/{net_upper}."
+        elif "balance" in msg or "insufficient" in msg:
+            code = "GATEWAY_INSUFFICIENT_FUNDS"
+            user_msg = "Upstream gateway rejected the payout (funds)."
+        else:
+            code = "GATEWAY_REJECTED"
+            user_msg = "The crypto gateway refused the payout. Please try again."
+        raise BizAPIError(400 if e.status < 500 else 502,
+                          user_msg, code,
+                          details={"gateway_code": e.code, "gateway_message": e.message})
+    except Exception as e:  # noqa: BLE001
+        # Network / unknown error — refund and 502.
+        await db.users.update_one({"id": uid}, {"$inc": {"balance_usdt": total_debit}})
+        await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
+            "status": "failed",
+            "failed_at": now_iso(),
+            "refunded_at": now_iso(),
+            "error_message": str(e),
+        }})
+        raise BizAPIError(502, "The crypto gateway is temporarily unreachable.",
+                          "GATEWAY_UNREACHABLE")
+
+    upstream_id = upstream.get("id") or upstream.get("payoutId")
+    upstream_status = (upstream.get("status") or "pending").lower()
+    mapped_status = _map_izipay_payout_status(upstream_status, "pending")
+    upd_fields: dict = {
+        "izipay_payout_id": upstream_id,
+        "izipay_status": upstream_status,
+        "status": mapped_status,
+    }
+    if mapped_status == "sent":
+        upd_fields["sent_at"] = now_iso()
+    await db.merchant_payouts.update_one({"id": po_id}, {"$set": upd_fields})
+
+    # Log an internal transaction record too for admin visibility.
+    await db.transactions.insert_one({
+        "id": new_id(),
+        "user_id": uid,
+        "type": "transfer",
+        "direction": "out",
+        "amount": float(payload.amount),
+        "currency": "USDT",
+        "status": "pending",
+        "reference": po_id,
+        "counterparty": dest,
+        "description": f"Payout API — {coin_upper}/{net_upper}",
+        "metadata": {
+            "transfer_type": "biz_to_crypto",
+            "source": "public_api",
+            "merchant_payout_id": po_id,
+            "izipay_payout_id": upstream_id,
+            "crypto": coin_upper, "network": net_upper,
+            "asset_code": asset_code, "wallet_address": dest,
+            "amount_gross": float(payload.amount),
+            "fee": fee, "fee_pct": fee_pct,
+            "amount_net": recipient_gets,
+            "fee_bearer": fee_bearer,
+            "total_debit": total_debit,
+        },
+        "created_at": now_iso(),
+    })
+
+    final = await db.merchant_payouts.find_one({"id": po_id}, {"_id": 0}) or doc
+    body = _serialize_payout(final)
+    if idem_key:
+        try:
+            await _idempotency_store(uid, idem_key, "POST",
+                                     "/api/v1/payouts", 200, body)
+        except Exception:
+            pass
+    return body
+
+
+@api.get("/v1/payouts")
+async def merchant_list_payouts(request: Request,
+                                  limit: int = Query(50, ge=1, le=200),
+                                  offset: int = Query(0, ge=0),
+                                  status: Optional[str] = None,
+                                  reference: Optional[str] = None):
+    """Paginated list of the merchant's payouts."""
+    merchant = await _authenticate_merchant(request)
+    q: dict = {"merchant_id": merchant["id"]}
+    if status:
+        q["status"] = status
+    if reference:
+        q["reference"] = reference
+    total = await db.merchant_payouts.count_documents(q)
+    docs = await db.merchant_payouts.find(q, {"_id": 0}) \
+        .sort("created_at", -1).skip(offset).limit(limit + 1).to_list(limit + 1)
+    has_more = len(docs) > limit
+    docs = docs[:limit]
+    pending = [d["izipay_payout_id"] for d in docs
+                if d.get("status") not in _TERMINAL_PAYOUT_STATUSES
+                and d.get("izipay_payout_id")]
+    for pid in pending[:10]:
+        asyncio.create_task(_safe_reconcile_payout(pid))
+    return {
+        "data": [_serialize_payout(d) for d in docs],
+        "count": len(docs),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+    }
+
+
+@api.get("/v1/payouts/search")
+async def merchant_search_payout(request: Request,
+                                    reference: str = Query(..., min_length=1)):
+    """Search the most recent payout carrying this merchant reference."""
+    merchant = await _authenticate_merchant(request)
+    po = await db.merchant_payouts.find_one(
+        {"merchant_id": merchant["id"], "reference": reference},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not po:
+        raise BizAPIError(404, "No payout found for this reference.",
+                          "PAYOUT_NOT_FOUND")
+    if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
+            and po.get("izipay_payout_id"):
+        await _reconcile_payout(po["izipay_payout_id"])
+        po = await db.merchant_payouts.find_one(
+            {"merchant_id": merchant["id"], "reference": reference},
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        ) or po
+    return _serialize_payout(po)
+
+
+@api.get("/v1/payouts/{payout_id}")
+async def merchant_get_payout(payout_id: str, request: Request):
+    """Full details for a single payout. Auto-syncs upstream when pending."""
+    merchant = await _authenticate_merchant(request)
+    po = await db.merchant_payouts.find_one(
+        {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not po:
+        raise BizAPIError(404, "Payout not found.", "PAYOUT_NOT_FOUND")
+    if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
+            and po.get("izipay_payout_id"):
+        await _reconcile_payout(po["izipay_payout_id"])
+        po = await db.merchant_payouts.find_one(
+            {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0}) or po
+    return _serialize_payout(po)
+
+
+@api.get("/v1/payouts/{payout_id}/status")
+async def merchant_get_payout_status(payout_id: str, request: Request):
+    """Lightweight status. Auto-syncs upstream."""
+    merchant = await _authenticate_merchant(request)
+    po = await db.merchant_payouts.find_one(
+        {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not po:
+        raise BizAPIError(404, "Payout not found.", "PAYOUT_NOT_FOUND")
+    if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
+            and po.get("izipay_payout_id"):
+        await _reconcile_payout(po["izipay_payout_id"])
+        po = await db.merchant_payouts.find_one(
+            {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0}) or po
+    return {
+        "id": po["id"],
+        "status": po.get("status"),
+        "updated_at": _format_iso(po.get("completed_at") or po.get("sent_at")
+                                    or po.get("failed_at") or po.get("created_at", "")),
+    }
+
+
+@api.get("/v1/payouts/{payout_id}/completed")
+async def merchant_check_payout_completed(payout_id: str, request: Request):
+    """Returns `{completed, status}`. `completed` is true only for status='completed'."""
+    merchant = await _authenticate_merchant(request)
+    po = await db.merchant_payouts.find_one(
+        {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not po:
+        raise BizAPIError(404, "Payout not found.", "PAYOUT_NOT_FOUND")
+    if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
+            and po.get("izipay_payout_id"):
+        await _reconcile_payout(po["izipay_payout_id"])
+        po = await db.merchant_payouts.find_one(
+            {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0}) or po
+    return {
+        "id": po["id"],
+        "completed": po.get("status") == "completed",
+        "status": po.get("status"),
+    }
+
+
+
 # ==================== EXCHANGE ====================
 DEFAULT_PLATFORM_CONFIG = {
     "id": "platform_config",
