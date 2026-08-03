@@ -572,3 +572,36 @@ Rewrite complet du module API public, remplaçant l'ancien bloqué (410 Gone).
 
 ### Testing
 - 20/20 backend + frontend E2E (iteration_17.json), aucun bug identifié.
+
+## 2026-08-03 — API publique Biz-Transpay v1 — Retraits (Payouts)
+Extension du module API public avec les retraits crypto, en réutilisant `izipay.create_payout()` et `izipay.get_payout()` existants (intégration IziChange non modifiée).
+
+### Fonctionnement
+- Merchant → **API Biz-Transpay** → Backend → IziChange (interne).
+- Débit atomique du solde `balance_usdt`, forwardé à IziChange, remboursé si refus.
+- Sync auto en background via `_reconcile_payout` (fetch + update + refund sur nouveau `failed`).
+- Aucun webhook — polling only.
+
+### Nouveaux endpoints (`${REACT_APP_BACKEND_URL}/api/v1/payouts`)
+- `POST /payouts` — Créer un retrait (validations : solde, min/max, regex adresse, doublon)
+- `GET /payouts` — Liste paginée + filtres `status`, `reference`
+- `GET /payouts/search?reference=…` — Recherche par référence marchand
+- `GET /payouts/{id}` — Détails complets + sync auto
+- `GET /payouts/{id}/status` — Statut léger `{id, status, updated_at}`
+- `GET /payouts/{id}/completed` — Booléen `{completed, status}`
+
+### Statuts payout
+`pending` → `processing` → `sent` → `completed` (terminal ✅) / `failed` (remboursé) / `canceled` (remboursé)
+
+### Nouveaux codes d'erreur
+`INSUFFICIENT_BALANCE`, `WITHDRAWALS_BLOCKED`, `INVALID_ASSET`, `INVALID_DESTINATION_ADDRESS`, `AMOUNT_TOO_LARGE`, `GATEWAY_INSUFFICIENT_FUNDS`, `GATEWAY_UNREACHABLE`, `PAYOUT_NOT_FOUND`, `INVALID_FEE_BEARER`.
+
+### Frontend
+- `/dashboard/api` — Quick-start passe à 3 cards (Encaisser / Retirer / Suivi).
+- `/dashboard/api/docs` — Nouveau groupe sidebar "RETRAITS" (5 sections), 7 langages, tableau params, tableau statuts, FAQ enrichie (3 questions retraits).
+
+### Testing
+- 12/12 backend pytest pass (iteration_18.json)
+- Frontend complet vérifié : sidebar RETRAITS, 8 codes erreur, 6 statuts, 7 langages, ZÉRO webhook.
+- Refund flow validé : solde marchand restauré après refus IziChange (sandbox pas de fonds).
+
