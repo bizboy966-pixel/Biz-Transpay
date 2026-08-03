@@ -78,9 +78,9 @@ export default function Links() {
                   <div className="font-cabinet font-bold text-sm text-slate-900 truncate">{l.title}</div>
                   <div className="mt-0.5 font-cabinet font-extrabold text-lg text-[#2563EB]">
                     {l.amount_type === 'free' ? (
-                      <>{(l.min_amount || 0).toLocaleString()} – {(l.max_amount || 0).toLocaleString()} <span className="text-xs text-slate-500">{l.currency}</span></>
+                      <>{(l.min_amount || 0).toLocaleString()} – {(l.max_amount || 0).toLocaleString()} <span className="text-xs text-slate-500">{l.currency === 'UNIVERSAL' ? '(devise au choix)' : l.currency}</span></>
                     ) : (
-                      <>{l.amount.toLocaleString()} <span className="text-xs text-slate-500">{l.currency}</span></>
+                      <>{l.amount.toLocaleString()} <span className="text-xs text-slate-500">{l.currency === 'UNIVERSAL' ? '(devise au choix)' : l.currency}</span></>
                     )}
                   </div>
                 </div>
@@ -132,7 +132,7 @@ function LinkForm({ initial, onClose, onSaved }) {
     amount: initial?.amount || '',
     min_amount: initial?.min_amount || '',
     max_amount: initial?.max_amount || '',
-    currency: initial?.currency || 'XOF',
+    currency: initial?.currency || 'UNIVERSAL',
     fee_bearer: initial?.fee_bearer || 'customer',
     expires_at: initial?.expires_at?.slice(0, 16) || '',
     single_use: initial?.single_use || false,
@@ -242,41 +242,26 @@ function LinkForm({ initial, onClose, onSaved }) {
           </div>
 
           {form.amount_type === 'fixed' ? (
-            <div className="grid grid-cols-[1fr_auto] gap-2">
-              <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant</label>
-                <input data-testid="link-amount" type="number" required min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder={form.currency === 'USDT' ? '10' : '5000'} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Devise</label>
-                <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
-                  <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USDT (Crypto)</option>
-                </select>
-              </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant</label>
+              <input data-testid="link-amount" type="number" required min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="5000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant minimum</label>
-                <input data-testid="link-min" type="number" required min="0.01" step="0.01" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder={form.currency === 'USDT' ? '1' : '500'} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                <input data-testid="link-min" type="number" required min="0.01" step="0.01" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder="500" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div>
                 <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant maximum</label>
-                <input data-testid="link-max" type="number" required min="0.01" step="0.01" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder={form.currency === 'USDT' ? '100' : '50000'} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
-              </div>
-              <div className="col-span-2">
-                <select data-testid="link-currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-semibold">
-                  <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USDT (Crypto)</option>
-                </select>
+                <input data-testid="link-max" type="number" required min="0.01" step="0.01" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder="50000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
             </div>
           )}
-          {form.currency === 'USDT' && (
-            <div className="mt-2 p-2.5 bg-orange-50 border border-orange-100 rounded-lg text-[10px] sm:text-[11px] text-orange-800 flex items-start gap-1.5">
-              <Info className="w-3 h-3 mt-0.5 shrink-0" />
-              <span>Ce lien acceptera uniquement les paiements crypto. Le montant est exprimé directement en USDT.</span>
-            </div>
-          )}
+          <div className="mt-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg text-[10px] sm:text-[11px] text-blue-800 flex items-start gap-1.5">
+            <Info className="w-3 h-3 mt-0.5 shrink-0" />
+            <span>Le lien est <b>universel</b> : votre client choisira lui-même sa devise (XOF, XAF ou USDT) et son moyen de paiement (Mobile Money ou Crypto) au moment de payer.</span>
+          </div>
         </Section>
 
         {/* Fees */}
@@ -295,11 +280,11 @@ function LinkForm({ initial, onClose, onSaved }) {
           {previewAmount > 0 && (
             <div className="mt-3 p-3 bg-slate-50 rounded-xl text-xs text-slate-600 flex items-center gap-2" data-testid="fee-preview">
               <Info className="w-3.5 h-3.5 text-[#2563EB]" />
-              Aperçu (1.5% de frais) : <b className="text-slate-900">{previewFee.toLocaleString(undefined, { maximumFractionDigits: 0 })} {form.currency}</b>
+              Aperçu (1.5% de frais) : <b className="text-slate-900">{previewFee.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b>
               {form.fee_bearer === 'customer' ? (
-                <span>· Le client paiera <b>{(previewAmount + previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })} {form.currency}</b></span>
+                <span>· Le client paiera <b>{(previewAmount + previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })}</b> dans la devise qu'il aura choisie</span>
               ) : (
-                <span>· Vous recevrez <b>{(previewAmount - previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })} {form.currency}</b></span>
+                <span>· Vous recevrez <b>{(previewAmount - previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })}</b> dans la devise du paiement</span>
               )}
             </div>
           )}

@@ -12,7 +12,6 @@ const NAV = [
   { to: '/admin/users', i: Users, l: 'Utilisateurs' },
   { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC' },
   { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
-  { to: '/admin/api', i: Code2, l: 'API de paiement' },
   { section: 'Transactions' },
   { to: '/admin/transactions', i: ArrowLeftRight, l: 'Toutes' },
   { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts' },

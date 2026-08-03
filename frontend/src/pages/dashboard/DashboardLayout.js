@@ -19,7 +19,6 @@ export default function DashboardLayout() {
     { to: '/dashboard', end: true, i: Home, l: t('dashboard.title') },
     { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions'), sub: t('dashboard.history') },
     { to: '/dashboard/links', i: Link2, l: t('dashboard.payment_link') },
-    { to: '/dashboard/api', i: Code2, l: t('dashboard.api') },
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
   ];
   const nav2 = [

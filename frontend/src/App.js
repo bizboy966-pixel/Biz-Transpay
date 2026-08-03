@@ -11,8 +11,6 @@ import DashboardLayout from '@/pages/dashboard/DashboardLayout';
 import DashboardHome from '@/pages/dashboard/Home';
 import Transactions from '@/pages/dashboard/Transactions';
 import Links from '@/pages/dashboard/Links';
-import ApiKeys from '@/pages/dashboard/ApiKeys';
-import ApiDocs from '@/pages/dashboard/ApiDocs';
 import Kyc from '@/pages/dashboard/Kyc';
 import Settings from '@/pages/dashboard/Settings';
 import Support from '@/pages/dashboard/Support';
@@ -28,7 +26,6 @@ import AdminTransactions from '@/pages/admin/AdminTransactions';
 import AdminLogs from '@/pages/admin/AdminLogs';
 import AdminAdmins from '@/pages/admin/AdminAdmins';
 import AdminLinks from '@/pages/admin/AdminLinks';
-import AdminApi from '@/pages/admin/AdminApi';
 import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
 import AdminDepositConfig from '@/pages/admin/AdminDepositConfig';
 import AdminSupport from '@/pages/admin/AdminSupport';
@@ -66,8 +63,6 @@ function App() {
             <Route index element={<DashboardHome />} />
             <Route path="transactions" element={<Transactions />} />
             <Route path="links" element={<Links />} />
-            <Route path="api" element={<ApiKeys />} />
-            <Route path="api/docs" element={<ApiDocs />} />
             <Route path="kyc" element={<Kyc />} />
             <Route path="settings" element={<Settings />} />
             <Route path="support" element={<Support />} />
@@ -81,7 +76,6 @@ function App() {
             <Route path="users/:id" element={<AdminUserDetail />} />
             <Route path="kyc" element={<AdminKyc />} />
             <Route path="links" element={<AdminLinks />} />
-            <Route path="api" element={<AdminApi />} />
             <Route path="transactions" element={<AdminTransactions />} />
             <Route path="deposits" element={<AdminTransactions filterType="deposit" />} />
             <Route path="withdrawals" element={<AdminTransactions filterType="withdrawal" />} />

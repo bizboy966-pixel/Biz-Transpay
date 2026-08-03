@@ -4995,7 +4995,19 @@ async def _unhandled_exc_handler(request: Request, exc: Exception):
 # using their API keys, so they can audit calls from their dashboard.
 @app.middleware("http")
 async def api_log_middleware(request: Request, call_next):
-    is_v1 = request.url.path.startswith("/api/v1/")
+    # Block the legacy /api/v1/*, /api/merchant/*, /api/api-keys/* module —
+    # the Merchant API is being reimplemented from scratch. All routes under
+    # these prefixes return 410 Gone until the new module ships.
+    p = request.url.path
+    if (p.startswith("/api/v1/") or p == "/api/v1"
+        or p.startswith("/api/merchant/")
+        or p.startswith("/api/api-keys/") or p == "/api/api-keys"):
+        return JSONResponse(status_code=410, content={
+            "statusCode": 410,
+            "message": "The Merchant API module has been retired and is being rebuilt. Deposit, withdrawal and payment link flows remain unaffected.",
+            "code": "MODULE_RETIRED",
+        })
+    is_v1 = False  # legacy flag no longer used
     start = datetime.now(timezone.utc)
     response = await call_next(request)
     if is_v1:
