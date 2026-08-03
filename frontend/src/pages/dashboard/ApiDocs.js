@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, Book, Copy, Check, ChevronRight, Search, Menu, X, Code2, Zap, ShieldCheck, KeyRound, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api/v1`;
+const API = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
 
 /* --------------------------- CodeBlock w/ Copy --------------------------- */
 const CodeBlock = ({ code, lang = 'bash' }) => {

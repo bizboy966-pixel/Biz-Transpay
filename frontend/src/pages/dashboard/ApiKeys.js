@@ -4,7 +4,7 @@ import { Plus, Copy, Trash2, RefreshCw, Power, Key, BookOpen, X, AlertTriangle, 
 import { toast } from 'sonner';
 import api from '@/api';
 
-const API_BASE = `${process.env.REACT_APP_BACKEND_URL}/api/v1`;
+const API_BASE = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
 
 /* ----------------------------- shared UI bits ---------------------------- */
 const Badge = ({ tone = 'slate', children }) => {
