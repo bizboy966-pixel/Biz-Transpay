@@ -2172,6 +2172,7 @@ def _serialize_payment(mp: dict) -> dict:
         "expires_at": _format_iso(mp.get("expires_at", "")) if mp.get("expires_at") else None,
         "created_at": _format_iso(mp.get("created_at", "")) if mp.get("created_at") else None,
         "paid_at": _format_iso(mp.get("paid_at", "")) if mp.get("paid_at") else None,
+        "canceled_at": _format_iso(mp.get("canceled_at", "")) if mp.get("canceled_at") else None,
     }
 
 
@@ -2266,14 +2267,6 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
     }
     await db.merchant_payments.insert_one(doc)
 
-    # Deliver payment.created webhook (best-effort).
-    await _deliver_webhook(merchant["id"], "payment.created", {
-        "payment_id": mp_id, "reference": payload.reference,
-        "amount": _format_amount(payload.amount), "coin": payload.coin.upper(),
-        "customer_email": payload.customer_email,
-        "created_at": _format_iso(datetime.now(timezone.utc)),
-    })
-
     body = _serialize_payment(doc)
     if idem_key:
         try:
@@ -2284,271 +2277,170 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
     return body
 
 
+@api.get("/v1/payments")
+async def merchant_list_payments(request: Request,
+                                  limit: int = Query(50, ge=1, le=200),
+                                  offset: int = Query(0, ge=0),
+                                  status: Optional[str] = None,
+                                  reference: Optional[str] = None):
+    """Paginated list of the merchant's payments. Filter by `status` or
+    `reference` if provided. `offset` allows page-based pagination."""
+    merchant = await _authenticate_merchant(request)
+    q: dict = {"merchant_id": merchant["id"]}
+    if status:
+        q["status"] = status
+    if reference:
+        q["reference"] = reference
+    total = await db.merchant_payments.count_documents(q)
+    docs = await db.merchant_payments.find(q, {"_id": 0}) \
+        .sort("created_at", -1).skip(offset).limit(limit + 1).to_list(limit + 1)
+    has_more = len(docs) > limit
+    docs = docs[:limit]
+
+    # Best-effort background reconcile for pending payments in the page —
+    # fire-and-forget so the response stays snappy.
+    pending_ids = [d["izipay_intent_id"] for d in docs
+                   if d.get("status") not in ("paid", "expired", "failed", "canceled")
+                   and d.get("izipay_intent_id")]
+    for intent_id in pending_ids[:10]:  # cap to avoid spamming upstream
+        asyncio.create_task(_safe_reconcile(intent_id))
+
+    return {
+        "data": [_serialize_payment(d) for d in docs],
+        "count": len(docs),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+    }
+
+
+@api.get("/v1/payments/search")
+async def merchant_search_payment(request: Request,
+                                    reference: str = Query(..., min_length=1)):
+    """Search the most recent payment carrying this merchant `reference`.
+    Returns 404 if no payment matches. Sync with upstream before returning."""
+    merchant = await _authenticate_merchant(request)
+    mp = await db.merchant_payments.find_one(
+        {"merchant_id": merchant["id"], "reference": reference},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if not mp:
+        raise BizAPIError(404, "No payment found for this reference",
+                          "PAYMENT_NOT_FOUND")
+    if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
+            and mp.get("izipay_intent_id"):
+        await _reconcile_intent(mp["izipay_intent_id"])
+        mp = await db.merchant_payments.find_one(
+            {"merchant_id": merchant["id"], "reference": reference},
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        ) or mp
+    return _serialize_payment(mp)
+
+
 @api.get("/v1/payments/{payment_id}")
 async def merchant_get_payment(payment_id: str, request: Request):
+    """Full details for a single payment. Triggers an upstream sync when the
+    payment is still pending so the returned data is always fresh."""
     merchant = await _authenticate_merchant(request)
     mp = await db.merchant_payments.find_one(
         {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
     if not mp:
         raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
-    # Fallback reconcile — same pattern as user-side polling.
-    if mp.get("status") not in ("paid", "expired", "failed") and mp.get("izipay_intent_id"):
+    if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
+            and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
         mp = await db.merchant_payments.find_one(
             {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
     return _serialize_payment(mp)
 
 
-@api.get("/v1/payments")
-async def merchant_list_payments(request: Request,
-                                  limit: int = Query(50, ge=1, le=200),
-                                  status: Optional[str] = None):
-    """Paginated list of the merchant's payments. Filter by `status` if provided."""
+@api.get("/v1/payments/{payment_id}/status")
+async def merchant_get_payment_status(payment_id: str, request: Request):
+    """Lightweight status endpoint. Returns `{id, status, updated_at}` — cheaper
+    than the full resource, ideal for repeated polling. Auto-syncs upstream."""
     merchant = await _authenticate_merchant(request)
-    q: dict = {"merchant_id": merchant["id"]}
-    if status:
-        q["status"] = status
-    docs = await db.merchant_payments.find(q, {"_id": 0}) \
-        .sort("created_at", -1).limit(limit + 1).to_list(limit + 1)
-    has_more = len(docs) > limit
-    docs = docs[:limit]
-    return {
-        "data": [_serialize_payment(d) for d in docs],
-        "count": len(docs),
-        "has_more": has_more,
-    }
-
-
-# ==================== V1 MOBILE MONEY API (FedaPay-powered) ====================
-class MerchantMoMoRequest(BaseModel):
-    amount: int = Field(..., ge=100)
-    currency: str = "XOF"
-    country: str = Field(..., min_length=2, max_length=2)  # ISO-2
-    operator: str  # eg mtn_bj, moov_tg, orange_ci
-    customer_email: str
-    customer_full_name: str
-    customer_phone: str
-    reference: Optional[str] = None
-    return_url: Optional[str] = None
-    description: Optional[str] = None
-    metadata: Optional[dict] = None
-
-
-def _serialize_momo_payment(mp: dict) -> dict:
-    return {
-        "id": mp.get("id"),
-        "type": "mobile_money",
-        "status": mp.get("status"),
-        "amount": _format_amount(mp.get("amount", 0)),
-        "amount_gross": _format_amount(mp.get("amount_gross", 0)) if mp.get("amount_gross") is not None else None,
-        "amount_net": _format_amount(mp.get("amount_net", 0)) if mp.get("amount_net") is not None else None,
-        "fee": _format_amount(mp.get("fee", 0)) if mp.get("fee") is not None else None,
-        "currency": mp.get("currency"),
-        "country": mp.get("country"),
-        "operator": mp.get("operator"),
-        "reference": mp.get("reference"),
-        "customer_email": mp.get("customer_email"),
-        "customer_phone": mp.get("phone_number"),
-        "payment_url": mp.get("checkout_url"),
-        "provider_reference": mp.get("fedapay_reference"),
-        "created_at": _format_iso(mp.get("created_at", "")) if mp.get("created_at") else None,
-        "approved_at": _format_iso(mp.get("approved_at", "")) if mp.get("approved_at") else None,
-    }
-
-
-@api.post("/v1/mobile-money/payments")
-async def merchant_create_momo_payment(payload: MerchantMoMoRequest,
-                                        request: Request):
-    """Create a Mobile Money payment intent using FedaPay upstream.
-
-    Auth: `Authorization: Bearer sk_(test|live)_…`. Optional `Idempotency-Key`.
-    Returns `{id, status, payment_url}` — the checkout URL can be shown to the
-    end customer if the USSD prompt fails (both are triggered).
-    """
-    merchant = await _authenticate_merchant(request)
-
-    idem_key = (request.headers.get("Idempotency-Key")
-                or request.headers.get("idempotency-key") or "").strip()
-    if idem_key:
-        if len(idem_key) > 255:
-            raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
-                              "IDEMPOTENCY_KEY_TOO_LONG")
-        cached = await _idempotency_lookup(merchant["id"], idem_key)
-        if cached and cached.get("body") is not None:
-            return JSONResponse(status_code=cached.get("status_code", 200),
-                                content=cached["body"])
-
-    if not fedapay.is_configured():
-        raise BizAPIError(503, "Mobile Money gateway not configured", "GATEWAY_UNAVAILABLE")
-
-    op = fedapay.operator_for(payload.country, payload.operator)
-    if not op or op["kind"] not in ("collect", "both"):
-        raise BizAPIError(400, "Operator not available for deposits in this country",
-                          "OPERATOR_UNAVAILABLE")
-    # Enforce admin-configured limits + activation state
-    dep_cfg = await get_deposit_config()
-    admin_op = _find_deposit_operator(dep_cfg, payload.country, payload.operator)
-    if not admin_op:
-        raise BizAPIError(400, "This Mobile Money operator is disabled",
-                          "OPERATOR_DISABLED")
-    currency = (admin_op.get("currency") or payload.currency or "XOF").upper()
-    min_amt = float(admin_op.get("min", 100))
-    max_amt = float(admin_op.get("max", 0)) or None
-    if payload.amount < min_amt:
-        raise BizAPIError(400, f"Amount below minimum: {int(min_amt)} {currency}",
-                          "AMOUNT_TOO_SMALL",
-                          details={"min": min_amt, "currency": currency})
-    if max_amt and payload.amount > max_amt:
-        raise BizAPIError(400, f"Amount above maximum: {int(max_amt)} {currency}",
-                          "AMOUNT_TOO_LARGE",
-                          details={"max": max_amt, "currency": currency})
-
-    mp_id = new_id()
-    parts = (payload.customer_full_name or "").strip().split(" ", 1)
-    first = parts[0] or "Customer"
-    last = parts[1] if len(parts) > 1 else first
-    callback = payload.return_url or f"{os.environ.get('OFFICIAL_DOMAIN', '')}/pay/checkout/{mp_id}"
-
-    try:
-        tx = await fedapay.create_transaction(
-            amount=int(payload.amount),
-            currency=currency,
-            description=payload.description or f"Merchant payment {payload.reference or mp_id}",
-            customer_email=payload.customer_email,
-            customer_firstname=first,
-            customer_lastname=last,
-            customer_phone=payload.customer_phone,
-            customer_country=payload.country,
-            callback_url=callback,
-            metadata={
-                "kind": "merchant_momo_payment",
-                "merchant_id": merchant["id"],
-                "merchant_reference": payload.reference or "",
-                "biztranspay_payment_id": mp_id,
-                **(payload.metadata or {}),
-            },
-        )
-    except fedapay.FedaPayError as e:
-        logger.warning("v1/mm gateway rejected [%s] %s", e.status, e.message)
-        raise BizAPIError(
-            400 if e.status < 500 else 502,
-            f"Mobile Money gateway rejected the request: {e.message}",
-            "GATEWAY_ERROR" if e.status >= 500 else "GATEWAY_REJECTED",
-            details={"upstream_status": e.status, "upstream_message": e.message},
-        )
-
-    tx_id = tx.get("id")
-    ref = tx.get("reference") or f"BTP-{mp_id[:8]}"
-    try:
-        token_resp = await fedapay.generate_token(tx_id)
-    except fedapay.FedaPayError as e:
-        raise BizAPIError(400, f"Mobile Money gateway: {e.message}", "GATEWAY_REJECTED")
-    token = token_resp.get("token") or ""
-    checkout_url = token_resp.get("url")
-
-    prompt_sent = False
-    try:
-        await fedapay.send_mobile_money(op["mode"], token)
-        prompt_sent = True
-    except fedapay.FedaPayError:
-        pass  # customer will use checkout_url
-
-    doc = {
-        "id": mp_id,
-        "merchant_id": merchant["id"],
-        "user_id": merchant["id"],  # for _credit_momo_deposit compat
-        "amount": payload.amount,
-        "currency": currency,
-        "email": payload.customer_email,
-        "full_name": payload.customer_full_name,
-        "country": payload.country,
-        "operator": payload.operator,
-        "operator_name": admin_op.get("name"),
-        "fee_pct_applied": float(admin_op.get("fee_pct", 1.0)),
-        "mode": op["mode"],
-        "phone_number": payload.customer_phone,
-        "reference": payload.reference,
-        "fedapay_id": tx_id,
-        "fedapay_reference": ref,
-        "checkout_url": checkout_url,
-        "status": "pending",
-        "prompt_sent": prompt_sent,
-        "created_at": now_iso(),
-        "source": "merchant_api",
-    }
-    await db.momo_deposits.insert_one(doc)
-    await _deliver_webhook(merchant["id"], "mobile_money.payment.created", {
-        "payment_id": mp_id, "reference": payload.reference,
-        "amount": _format_amount(payload.amount), "currency": currency,
-        "country": payload.country, "operator": payload.operator,
-    })
-
-    body = _serialize_momo_payment(doc)
-    if idem_key:
-        try:
-            await _idempotency_store(merchant["id"], idem_key, "POST",
-                                     "/api/v1/mobile-money/payments", 200, body)
-        except Exception:
-            pass
-    return body
-
-
-@api.get("/v1/mobile-money/payments/{payment_id}")
-async def merchant_get_momo_payment(payment_id: str, request: Request):
-    merchant = await _authenticate_merchant(request)
-    mp = await db.momo_deposits.find_one(
+    mp = await db.merchant_payments.find_one(
         {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
     if not mp:
         raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
-    if mp.get("status") == "pending" and mp.get("fedapay_id"):
-        await _reconcile_momo_deposit(payment_id)
-        mp = await db.momo_deposits.find_one(
+    if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
+            and mp.get("izipay_intent_id"):
+        await _reconcile_intent(mp["izipay_intent_id"])
+        mp = await db.merchant_payments.find_one(
             {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
-    return _serialize_momo_payment(mp)
+    return {
+        "id": mp["id"],
+        "status": mp.get("status"),
+        "updated_at": _format_iso(mp.get("paid_at") or mp.get("canceled_at")
+                                   or mp.get("created_at", "")),
+    }
 
 
-@api.get("/v1/mobile-money/payments")
-async def merchant_list_momo_payments(request: Request,
-                                        limit: int = Query(50, ge=1, le=200),
-                                        status: Optional[str] = None):
+@api.get("/v1/payments/{payment_id}/completed")
+async def merchant_check_completed(payment_id: str, request: Request):
+    """Returns `{completed, status}`. `completed` is `true` only when the
+    payment status is `paid`. Auto-syncs with upstream."""
     merchant = await _authenticate_merchant(request)
-    q: dict = {"merchant_id": merchant["id"]}
-    if status:
-        q["status"] = status
-    docs = await db.momo_deposits.find(q, {"_id": 0}) \
-        .sort("created_at", -1).limit(limit + 1).to_list(limit + 1)
-    has_more = len(docs) > limit
-    docs = docs[:limit]
+    mp = await db.merchant_payments.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not mp:
+        raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
+    if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
+            and mp.get("izipay_intent_id"):
+        await _reconcile_intent(mp["izipay_intent_id"])
+        mp = await db.merchant_payments.find_one(
+            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
     return {
-        "data": [_serialize_momo_payment(d) for d in docs],
-        "count": len(docs),
-        "has_more": has_more,
+        "id": mp["id"],
+        "completed": mp.get("status") == "paid",
+        "status": mp.get("status"),
     }
 
 
-@api.get("/v1/mobile-money/operators")
-async def v1_momo_operators(request: Request):
-    """Returns the merchant-facing catalog of available Mobile Money operators
-    (filtered by admin deposit config — disabled operators are hidden).
-    """
-    await _authenticate_merchant(request)
-    cfg = await get_deposit_config()
-    mm = cfg.get("mobile_money") or {}
-    return {
-        "enabled": bool(mm.get("enabled", True)),
-        "operators": [
-            {
-                "country": op["country"],
-                "code": op["code"],
-                "name": op.get("name"),
-                "currency": op.get("currency", "XOF"),
-                "min": float(op.get("min", 100)),
-                "max": float(op.get("max", 0)) or None,
-            }
-            for op in mm.get("operators", []) if op.get("active", True)
-        ],
-    }
+@api.post("/v1/payments/{payment_id}/cancel")
+async def merchant_cancel_payment(payment_id: str, request: Request):
+    """Cancel a pending payment. Only payments in `initiated` or `confirming`
+    state can be canceled — if the customer has already paid, `409` is
+    returned. Always re-syncs with upstream first."""
+    merchant = await _authenticate_merchant(request)
+    mp = await db.merchant_payments.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+    if not mp:
+        raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
+    # Force a fresh sync so we do not cancel something that just got paid.
+    if mp.get("izipay_intent_id") and mp.get("status") not in (
+            "paid", "expired", "failed", "canceled"):
+        await _reconcile_intent(mp["izipay_intent_id"])
+        mp = await db.merchant_payments.find_one(
+            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
 
+    status = mp.get("status")
+    if status == "paid":
+        raise BizAPIError(409, "Cannot cancel a payment that has been paid.",
+                          "PAYMENT_ALREADY_PAID")
+    if status in ("canceled", "expired", "failed"):
+        # Already terminal — return current state (idempotent cancel).
+        return _serialize_payment(mp)
+
+    await db.merchant_payments.update_one(
+        {"id": payment_id, "merchant_id": merchant["id"]},
+        {"$set": {"status": "canceled", "canceled_at": now_iso()}},
+    )
+    mp = await db.merchant_payments.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+    return _serialize_payment(mp)
+
+
+async def _safe_reconcile(intent_id: str) -> None:
+    """Wrap _reconcile_intent so a stray exception in a background task
+    never propagates and crashes the caller."""
+    try:
+        await _reconcile_intent(intent_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("background reconcile failed for %s: %s", intent_id, e)
 
 
 # ==================== EXCHANGE ====================
@@ -4995,19 +4887,19 @@ async def _unhandled_exc_handler(request: Request, exc: Exception):
 # using their API keys, so they can audit calls from their dashboard.
 @app.middleware("http")
 async def api_log_middleware(request: Request, call_next):
-    # Block the legacy /api/v1/*, /api/merchant/*, /api/api-keys/* module —
-    # the Merchant API is being reimplemented from scratch. All routes under
-    # these prefixes return 410 Gone until the new module ships.
+    # Legacy /api/api-keys/* and /api/merchant/webhooks/* remain retired
+    # (webhooks are no longer part of the Merchant API). The rewritten
+    # Merchant API lives at /api/v1/* (crypto pay-in only) and merchant key
+    # CRUD at /api/merchant/keys/*.
     p = request.url.path
-    if (p.startswith("/api/v1/") or p == "/api/v1"
-        or p.startswith("/api/merchant/")
-        or p.startswith("/api/api-keys/") or p == "/api/api-keys"):
+    if (p.startswith("/api/api-keys/") or p == "/api/api-keys"
+        or p.startswith("/api/merchant/webhooks")):
         return JSONResponse(status_code=410, content={
             "statusCode": 410,
-            "message": "The Merchant API module has been retired and is being rebuilt. Deposit, withdrawal and payment link flows remain unaffected.",
+            "message": "Webhooks are no longer part of the Biz-transPay API. Poll GET /v1/payments/{id} to fetch the current status.",
             "code": "MODULE_RETIRED",
         })
-    is_v1 = False  # legacy flag no longer used
+    is_v1 = _is_v1_path(p)
     start = datetime.now(timezone.utc)
     response = await call_next(request)
     if is_v1:

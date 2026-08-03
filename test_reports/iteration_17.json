@@ -1,0 +1,60 @@
+{
+  "summary": "Iter17 — Biz-Transpay public API v1 rewrite + merchant keys CRUD + Stripe-style docs. Backend 20/20 tests pass (one Cloudflare 502 flake on IziChange upstream, passed on retry). Frontend: /dashboard/api hero+table+Nouvelle clé, create+reveal-one-time modal, ack-guarded close button, copy toast, /dashboard/api/docs with 17 sidebar sections across 3 groups (Getting Started, Paiements, Références), 22 LangTabs, 6 FAQ items, ZERO Webhooks references (as required). Sidebar 'API' entry visible for merchant account.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/v1/payments", "issue": "Cloudflare 502 seen once during a spike (IziChange upstream); recovered on immediate retry. Flake rate ~5%. Not a code bug — external gateway."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/dashboard/api/docs", "issues": ["Original spec asked for '4 groupes' but only 3 group names were listed (Getting Started, Paiements, Références). Current implementation has exactly those 3 groups — consistent with the enumeration, treat spec count as typo. If a 4th group is desired (e.g. SDKs/Guides), add it."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter17_biz_transpay_api.py",
+    "/app/test_reports/pytest/iter17.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py at 4961 lines is well beyond the 700-line threshold — urgent refactor recommended. Split v1 payments router, merchant keys router, legacy retirement middleware, and PDF/docs endpoints into dedicated modules under /app/backend/routes/.",
+    "_authenticate_merchant() still falls back to a legacy api_keys collection with a plaintext secret_key match (line ~2067). Once the legacy rows are migrated, drop that fallback — right now a stolen plaintext from an old DB dump could still be used.",
+    "api_log_middleware (line 4915) queries db.api_keys for user_id resolution but the new keys live in db.merchant_keys — so api_logs rows created via the new keys will have user_id=null. Should query merchant_keys as primary source.",
+    "Rate limiting is 'best-effort informative headers' only — there is no enforcement (no 429 returned) despite the docs advertising '100 req/min'. Either enforce it or remove from public docs to avoid setting false expectations.",
+    "GET /v1/payments background reconcile fires up to 10 IziChange calls per list request without deduplication across requests — a merchant hammering the list endpoint will fan out unbounded upstream calls. Consider a debounce or per-intent cooldown.",
+    "Payment /cancel does not call the upstream IziChange cancel API — it just flips the local status. If the customer still pays afterwards, we'll have a paid+canceled inconsistency once the next reconcile runs."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter17_biz_transpay_api.py"],
+  "success_rate": {"backend": "100% (20/20 after retry, 19/20 first run)", "frontend": "100%"},
+  "test_credentials": "bizboy966@gmail.com / Password123! (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Created ~6 TEST_iter17_* + E2E_* merchant API keys via /api/merchant/keys during tests. Not cleaned up — cosmetic clutter only.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend runs pytest via -n 2 --dist loadscope (see /app/backend/pytest.ini). Use `-n 0` to force serial. Login endpoint returns {token, user}, NOT {access_token}. To exercise POST /api/v1/payments end-to-end you MUST create a fresh sk_test_ via POST /api/merchant/keys (JWT-auth) — the plaintext is only shown once and is stored as sha-256 hash. The IziChange upstream is live so intents get a real payment_url; keep amounts >=1 USDT. Reveal modal test tip: use `locator.check(force=True)` on [data-testid=chk-ack], NOT `page.click()` — clicking the input inside a <label> double-toggles due to label default action.",
+  "verified_features": [
+    "GET /api/v1/health → 200 {status:'ok', version, uptime_seconds:int}",
+    "POST /api/v1/payments without Authorization → 401 {statusCode:401, code:'MISSING_AUTH_HEADER', message}",
+    "POST /api/v1/payments with bad key → 401 code:'INVALID_API_KEY_FORMAT'",
+    "POST /api/v1/payments with sk_test_ + amount=5 USDT/TRC20 → 200 {id, status:'initiated', payment_url, expires_at}",
+    "Idempotency-Key repeated → same id returned",
+    "GET /api/v1/payments/{id} returns full doc, auto-reconciles pending",
+    "GET /api/v1/payments/{id}/status returns {id, status, updated_at}",
+    "GET /api/v1/payments/{id}/completed returns {id, completed:false, status:'initiated'}",
+    "GET /api/v1/payments/search?reference=... returns matching payment; 404 code:'PAYMENT_NOT_FOUND' for unknown",
+    "GET /api/v1/payments returns {data, count, total, offset, limit, has_more}",
+    "POST /api/v1/payments/{id}/cancel → status='canceled'; idempotent on second call",
+    "GET /api/api-keys (legacy) → 410 MODULE_RETIRED",
+    "GET /api/merchant/webhooks (legacy) → 410 MODULE_RETIRED",
+    "POST /api/v1/mobile-money returns 404 (v1 namespace does not host mobile-money)",
+    "POST /api/merchant/keys → 200 with secret plaintext; subsequent GET does not expose secret",
+    "GET /api/merchant/keys lists keys for merchant",
+    "POST /api/merchant/keys/{id}/regenerate rotates secret + returns new plaintext",
+    "PATCH /api/merchant/keys/{id} {active:false} disables key; subsequent v1 call → 403 code:'API_KEY_DISABLED'",
+    "DELETE /api/merchant/keys/{id} → 200; second delete → 404",
+    "Frontend: /dashboard/api page loads, sidebar 'API' link present, hero + keys table + Nouvelle clé button visible",
+    "Frontend: Create key modal (name + env=test) → Reveal modal appears with secret; close/done buttons disabled until ack checkbox checked; Copy button shows 'Copié' toast",
+    "Frontend: /dashboard/api/docs renders 17 sidebar sections in 3 groups (Getting Started/Paiements/Références), 22 LangTab buttons, 6 FAQ <details>, ZERO Webhooks nav entries or headings"
+  ]
+}

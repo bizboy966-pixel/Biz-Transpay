@@ -14,11 +14,13 @@ export default function DashboardLayout() {
   const loc = useLocation();
 
   const initials = (user?.full_name || 'U').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
+  const isMerchant = user?.account_type === 'merchant' || user?.role === 'admin' || user?.role === 'super_admin';
 
   const nav = [
     { to: '/dashboard', end: true, i: Home, l: t('dashboard.title') },
     { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions'), sub: t('dashboard.history') },
     { to: '/dashboard/links', i: Link2, l: t('dashboard.payment_link') },
+    ...(isMerchant ? [{ to: '/dashboard/api', i: Code2, l: 'API' }] : []),
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
   ];
   const nav2 = [
