@@ -1,12 +1,12 @@
 import { Link } from 'react-router-dom';
 
-const LOGO_URL = '/logo.jpg';
+const LOGO_URL = '/logo-mark.png';
 
 export function Logo({ compact = false, dark = false }) {
   return (
     <Link to="/" className="flex items-center gap-2.5 group" data-testid="brand-logo">
       <div className="relative w-11 h-11 rounded-2xl overflow-hidden bg-white shadow-[0_6px_16px_-6px_rgba(37,99,235,0.35)] ring-1 ring-blue-100 group-hover:scale-105 transition-transform">
-        <img src={LOGO_URL} alt="Biz-trans" className="w-full h-full object-cover" />
+        <img src={LOGO_URL} alt="Biz-transPay" className="w-full h-full object-contain p-0.5" />
       </div>
       {!compact && (
         <div className="leading-tight">
