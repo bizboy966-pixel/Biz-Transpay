@@ -1,0 +1,31 @@
+{
+  "summary": "Iteration 19 — full test of the enriched Admin Panel (crypto sub-buckets, manual approve/reject flow with balance side-effects, notifications), the /api/documentation.pdf endpoint, and the corresponding UI changes on /admin, /admin/transactions and /dashboard/api/docs. 12/12 backend pytest cases pass. Frontend E2E via Playwright validates the AdminHome layout (all required data-testid present with correct counts), the crypto pending sub-line drill-down (?type=deposit&status=pending&channel=crypto), the AdminTxDetailModal with full user/tx info and end-to-end reject flow, and the PDF download button (valid application/pdf, 13.5 KB, correct filename biz-transpay-api-docs.pdf). No regressions on GET /api/v1/health.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter19_admin_panel.py",
+    "/app/test_reports/pytest/iter19_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 5702 lines — heavy monolith. Suggest splitting admin_* endpoints into a dedicated router module (admin_routes.py) to improve maintainability.",
+    "_tx_is_crypto and is_crypto detection blocks are duplicated between admin_stats and admin_approve/reject. Extract into a single helper (currently _tx_is_crypto exists but admin_stats does its own inline check).",
+    "In admin_stats, biz-to-biz `transfer_type` branch uses `continue` inside an `async for` — correct but the earlier increment of failed/pending/succeeded counters happens BEFORE the `continue`, so biz-to-biz outbound transfers still contribute to global succeeded/pending/failed totals. Acceptable but worth documenting.",
+    "documentation.pdf reads OFFICIAL_DOMAIN env at request time with a default containing a typo 'biz-transppayy.com' (double p/y). Kept intentionally per current .env, but flag for owner."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter19_admin_panel.py (new)",
+    "/app/test_reports/pytest/iter19_results.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12)", "frontend": "100% (all data-testids present, modal + PDF flows end-to-end)"},
+  "test_credentials": "bizboy966@gmail.com / Password123! (super_admin) — balances restored to 55.2 USDT & 7920 XOF after tests.",
+  "seed_data_creation": "During tests I created ~14 TEST_ITER19_* pending transactions and 1 TEST_UI_MODAL — all deleted at teardown. Related notifications were also cleaned up.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend endpoints validated: GET/POST admin/transactions/{id}[/approve|/reject], GET admin/stats (deposits_by_channel & withdrawals_by_channel each with mobile_money+crypto ⇒ pending/valid/rejected), GET /api/documentation.pdf. Balance side-effects verified: deposit-approve credits amount_net; withdrawal-reject refunds total_debit; withdrawal-approve & deposit-reject are no-op on balance. Double-action guard returns 400. Notifications persisted in db.notifications with metadata.tx_id. Frontend flows validated on /admin (crypto-card-in/out with 3 sub-lines), /admin/transactions (channel filter + row modal), /dashboard/api/docs (btn-download-pdf). Watch out: modal buttons btn-approve/btn-reject only render AFTER detail fetch completes (~500ms) — first frame shows 'Chargement…'. Add a short wait_for_selector on btn-approve rather than checking immediately.",
+  "rca of the issue": "N/A — no functional bugs detected in this iteration."
+}

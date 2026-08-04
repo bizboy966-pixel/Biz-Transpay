@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Book, Copy, Check, ChevronRight, Search, Menu, X, Code2, Zap, ShieldCheck, KeyRound, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Book, Copy, Check, ChevronRight, Search, Menu, X, Code2, Zap, ShieldCheck, KeyRound, AlertTriangle, FileDown } from 'lucide-react';
 import { toast } from 'sonner';
+import api from '@/api';
 
 const API = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
 
@@ -504,7 +505,26 @@ export default function ApiDocs() {
   const [active, setActive] = useState('intro');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [q, setQ] = useState('');
+  const [dlPending, setDlPending] = useState(false);
   const refs = useRef({});
+
+  const downloadPdf = async () => {
+    setDlPending(true);
+    try {
+      const { data } = await api.get('/documentation.pdf', { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'biz-transpay-api-docs.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      toast.success('Documentation PDF téléchargée');
+    } catch (e) {
+      toast.error('Erreur lors du téléchargement');
+    } finally { setDlPending(false); }
+  };
 
   useEffect(() => {
     const obs = new IntersectionObserver((entries) => {
@@ -549,6 +569,15 @@ export default function ApiDocs() {
               <Search className="w-4 h-4 text-slate-400" />
               <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher…" className="bg-transparent focus:outline-none text-sm w-52" data-testid="input-search" />
             </div>
+            <button
+              onClick={downloadPdf}
+              disabled={dlPending}
+              data-testid="btn-download-pdf"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[12px] font-semibold disabled:opacity-40 whitespace-nowrap">
+              <FileDown className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{dlPending ? 'Génération…' : 'Télécharger PDF'}</span>
+              <span className="sm:hidden">PDF</span>
+            </button>
           </div>
         </div>
       </header>

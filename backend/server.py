@@ -3738,9 +3738,11 @@ async def playground_execute(req: PlaygroundRequest,
     }
 
 
-@api.get("/api-keys/documentation.pdf")
+@api.get("/documentation.pdf")
 async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
-    """Generate a professional PDF of the Biz-transPay API documentation."""
+    """Generate a professional PDF of the Biz-transPay API documentation.
+    Reflects the current architecture: crypto Pay-In + Payouts, polling only
+    (no webhooks). Kept in sync with the online /dashboard/api/docs page."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
@@ -3758,7 +3760,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     doc = SimpleDocTemplate(buf, pagesize=A4,
                             leftMargin=1.8 * cm, rightMargin=1.8 * cm,
                             topMargin=1.8 * cm, bottomMargin=1.8 * cm,
-                            title="Biz-transPay API — Documentation")
+                            title="Biz-transPay API - Documentation")
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="H1btp", fontSize=22, textColor=HexColor("#0F172A"),
                               spaceAfter=8, fontName="Helvetica-Bold"))
@@ -3773,149 +3775,226 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
                               leftIndent=6, rightIndent=6, spaceBefore=4, spaceAfter=6,
                               borderPadding=6))
 
-    def code(text: str):
-        return Preformatted(text, styles["Codebtp"])
-
+    def code(text: str): return Preformatted(text, styles["Codebtp"])
     def h1(t): return Paragraph(t, styles["H1btp"])
     def h2(t): return Paragraph(t, styles["H2btp"])
     def h3(t): return Paragraph(t, styles["H3btp"])
     def p(t): return Paragraph(t, styles["Bodybtp"])
 
+    def _table(rows, col_widths):
+        t = Table(rows, colWidths=col_widths)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E2E8F0")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        return t
+
     story = []
-    # Cover
+    # ---------------- Cover ----------------
     story.append(h1("Biz-transPay"))
-    story.append(Paragraph("<b>Documentation officielle de l'API de paiement</b>",
-                           styles["Bodybtp"]))
+    story.append(Paragraph("<b>Documentation officielle de l\'API</b>", styles["Bodybtp"]))
     story.append(Spacer(1, 6))
-    story.append(p(f"Version : 1.0 · Domaine : <b>{OFFICIAL}</b>"))
-    story.append(p("Cette documentation couvre l'intégration de l'API REST Biz-transPay pour "
-                   "les marchands. Elle inclut l'authentification, la création et la vérification "
-                   "de paiements, la gestion des webhooks HMAC-signés, ainsi que des exemples "
-                   "d'intégration en 5 langages (PHP, Laravel, Node.js, JavaScript, Python)."))
-    story.append(Spacer(1, 6))
-    story.append(p("<b>Support</b> : contactez-nous depuis votre tableau de bord "
-                   "(&#8250; Support) ou par email."))
+    story.append(p(f"Version 1.0 . Domaine : <b>{OFFICIAL}</b> . Base URL : <b>{API_BASE}/v1</b>"))
+    story.append(p("Encaissez des paiements crypto (Pay-In) et envoyez des retraits (Payouts) via "
+                   "une API REST simple. Aucune configuration de webhooks n\'est requise : "
+                   "vous interrogez nos endpoints /status pour connaitre l\'etat de chaque operation."))
+    story.append(p("<b>Support</b> : depuis votre tableau de bord (> Support) ou par email."))
 
-    # Auth
+    # ---------------- Auth ----------------
     story.append(h2("1. Authentification"))
-    story.append(p("Chaque requête doit inclure une clé secrète dans l'en-tête "
-                   "<b>Authorization: Bearer sk_test_...</b>. Les clés préfixées "
-                   "<b>sk_test_</b> sont pour l'environnement de test, celles préfixées "
-                   "<b>sk_live_</b> pour la production."))
-    story.append(p("<b>Sécurité</b> : la clé secrète ne doit JAMAIS être exposée côté "
-                   "navigateur ni committée dans un dépôt Git."))
-    story.append(code(f'curl {API_BASE}/v1/payments \\\n  -H "Authorization: Bearer sk_test_XXXXX"'))
+    story.append(p("Chaque requete doit inclure une cle secrete dans l\'entete "
+                   "<b>Authorization: Bearer sk_test_...</b> ou <b>sk_live_...</b>."))
+    story.append(code(f"curl {API_BASE}/v1/payments -H \"Authorization: Bearer sk_test_XXXXX\""))
+    story.append(p("<b>Securite</b> : la cle secrete ne doit JAMAIS etre exposee cote navigateur "
+                   "ni versionnee dans un depot Git."))
 
-    # Keys
-    story.append(h2("2. Clés API"))
-    story.append(p("Deux paires de clés séparées : test et live."))
-    story.append(p("<b>Clé publique</b> (pk_test_/pk_live_) : identifiant public, "
-                   "peut être exposé côté client."))
-    story.append(p("<b>Clé secrète</b> (sk_test_/sk_live_) : usage serveur uniquement. "
-                   "Elle est affichée UNE SEULE FOIS à la génération. Copiez-la immédiatement."))
-    story.append(p("Régénération : dans le tableau de bord &#8250; API de paiement &#8250; onglet Clés API."))
+    # ---------------- Keys ----------------
+    story.append(h2("2. Cles API"))
+    story.append(p("Deux types de cles :"))
+    story.append(_table([
+        ["Prefixe", "Environnement", "Utilisation"],
+        ["sk_test_", "Sandbox", "Developpement / tests, aucune charge reelle"],
+        ["sk_live_", "Production", "Encaisse de vrais paiements clients"],
+    ], [3.5 * cm, 3.5 * cm, 9.5 * cm]))
+    story.append(p("La cle secrete est affichee UNE SEULE FOIS a la creation. Copiez-la immediatement. "
+                   "Si vous la perdez, regenerez-la (l\'ancienne cesse alors de fonctionner)."))
 
-    # Webhook
-    story.append(h2("3. Webhook & signature HMAC"))
-    story.append(p(f"URL par défaut : <b>{OFFICIAL}/api/v1/webhooks/{{merchant_id}}</b>. "
-                   "Vous pouvez la remplacer par n'importe quelle URL HTTPS accessible depuis Internet."))
-    story.append(p("Chaque événement est envoyé en POST JSON avec les en-têtes :"))
-    tbl = Table([
-        ["En-tête", "Description"],
-        ["X-BizTransPay-Signature", "HMAC-SHA256 hex, préfixé sha256="],
-        ["X-BizTransPay-Timestamp", "Timestamp Unix utilisé pour signer"],
-        ["X-BizTransPay-Event-Id", "ID unique — utilisez-le pour l'idempotence"],
-        ["X-BizTransPay-Event-Type", "Ex. payment.completed"],
-    ], colWidths=[5.5 * cm, 11 * cm])
-    tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#0F172A")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E2E8F0")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(tbl)
-    story.append(Spacer(1, 6))
-    story.append(p("Le signature est calculée ainsi (en Python) :"))
-    story.append(code("expected = 'sha256=' + hmac.new(\n    webhook_secret.encode(),\n    f'{timestamp}.{raw_body}'.encode(),\n    hashlib.sha256\n).hexdigest()"))
-    story.append(p("Événements émis : <b>payment.created, payment.confirming, "
-                   "payment.completed, payment.failed, payment.expired, "
-                   "mobile_money.payment.approved, mobile_money.payment.declined, "
-                   "mobile_money.payment.canceled, "
-                   "refund.created, refund.completed</b>."))
-
-    # Create payment
+    # ---------------- Payments (Pay-In) ----------------
     story.append(PageBreak())
-    story.append(h2("4. Créer un paiement"))
-    story.append(p(f"<b>POST</b> <font face='Courier'>{API_BASE}/v1/payments</font>"))
-    story.append(h3("Body JSON"))
-    story.append(code('{\n  "amount": 10.00,\n  "coin": "USDT",\n  "reference": "order_123",\n  "customer_email": "buyer@shop.com",\n  "accepted_networks": ["TRC20","BEP20","ERC20"]\n}'))
-    story.append(h3("Réponse 200"))
-    story.append(code('{\n  "id": "3a7b4b73-...",\n  "payment_url": "https://checkout.pay.izichange.com/...",\n  "deposit_address": "TXYZabc...",\n  "amount_to_send": "10.000000",\n  "amount": 10.00,\n  "coin": "USDT",\n  "expires_at": "2026-02-08T15:32:44Z",\n  "status": "initiated"\n}'))
+    story.append(h2("3. Paiements (Pay-In)"))
+    story.append(p("Encaissez des paiements crypto de vos clients. Notre systeme genere un lien de "
+                   "checkout hoste, vous redirigez le client, puis vous verifiez le statut."))
 
-    # Get / List
-    story.append(h2("5. Récupérer / lister"))
-    story.append(p(f"<b>GET</b> <font face='Courier'>{API_BASE}/v1/payments/{{id}}</font>"))
-    story.append(p(f"<b>GET</b> <font face='Courier'>{API_BASE}/v1/payments?limit=50&status=paid</font>"))
+    story.append(h3("Creer un paiement"))
+    story.append(p(f"<b>POST</b> <font face=\"Courier\">{API_BASE}/v1/payments</font>"))
+    story.append(code("""{
+  "amount": 25.00,
+  "coin": "USDT",
+  "reference": "ORDER-42",
+  "customer_email": "buyer@shop.com",
+  "accepted_networks": ["TRC20", "BEP20", "ERC20"]
+}"""))
+    story.append(p("Reponse 200 : <font face=\"Courier\">id, status=initiated, payment_url, expires_at</font>. "
+                   "Redirigez le client vers <font face=\"Courier\">payment_url</font>."))
 
-    # Errors
-    story.append(h2("6. Codes de réponse HTTP"))
-    err_tbl = Table([
+    story.append(h3("Verifier le statut"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payments/{{id}}/status</font> - reponse legere "
+                   "<font face=\"Courier\">{{id, status, updated_at}}</font>. Ideal pour du polling toutes les 5-10s."))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payments/{{id}}/completed</font> - booleen "
+                   "<font face=\"Courier\">{{completed, status}}</font>."))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payments/{{id}}</font> - details complets. Auto-sync amont."))
+
+    story.append(h3("Rechercher, lister, annuler"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payments/search?reference=ORDER-42</font>"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payments?limit=20&offset=0&status=paid</font>"))
+    story.append(p(f"<b>POST</b> <font face=\"Courier\">{API_BASE}/v1/payments/{{id}}/cancel</font> - annule un paiement en attente "
+                   "(409 si deja paye)."))
+
+    story.append(h3("Statuts possibles"))
+    story.append(_table([
+        ["Status", "Signification"],
+        ["initiated", "Cree, en attente que le client envoie les crypto"],
+        ["confirming", "Transaction on-chain detectee, en attente de confirmations"],
+        ["paid", "Paiement encaisse et credite"],
+        ["expired", "Delai depasse (10 min par defaut)"],
+        ["failed", "Rejete par la passerelle"],
+        ["canceled", "Annule via /cancel"],
+    ], [3 * cm, 13.5 * cm]))
+
+    # ---------------- Payouts ----------------
+    story.append(PageBreak())
+    story.append(h2("4. Retraits (Payouts)"))
+    story.append(p("Envoyez des crypto vers n\'importe quelle adresse externe. Le montant + frais est "
+                   "debite du solde marchand puis relaye a la passerelle amont. Rembourse automatiquement "
+                   "en cas de refus."))
+
+    story.append(h3("Creer un retrait"))
+    story.append(p(f"<b>POST</b> <font face=\"Courier\">{API_BASE}/v1/payouts</font>"))
+    story.append(code("""{
+  "amount": 25.00,
+  "coin": "USDT",
+  "network": "TRC20",
+  "destination_address": "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+  "reference": "WD-42",
+  "beneficiary_name": "John Doe",
+  "fee_bearer": "sender"
+}"""))
+    story.append(p("Reponse 200 : <font face=\"Courier\">id, status=processing, amount, fee, total_debit, "
+                   "provider_id, created_at</font>."))
+
+    story.append(h3("Suivre / rechercher / lister"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}/status</font>"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}/completed</font>"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}</font> - details complets"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/search?reference=WD-42</font>"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts?limit=20&status=completed</font>"))
+
+    story.append(h3("Statuts possibles"))
+    story.append(_table([
+        ["Status", "Signification"],
+        ["pending", "Debit effectue, en attente d\'envoi passerelle"],
+        ["processing", "Envoye a la passerelle, en cours"],
+        ["sent", "Broadcast on-chain, en attente de confirmation"],
+        ["completed", "Retrait confirme"],
+        ["failed", "Rejete par la passerelle - solde marchand rembourse"],
+        ["canceled", "Annule cote passerelle - solde marchand rembourse"],
+    ], [3 * cm, 13.5 * cm]))
+
+    # ---------------- Errors ----------------
+    story.append(PageBreak())
+    story.append(h2("5. Gestion des erreurs"))
+    story.append(p("Toutes les erreurs suivent un format uniforme :"))
+    story.append(code("""{
+  "statusCode": 400,
+  "message": "Description lisible",
+  "code": "MACHINE_CODE",
+  "details": { /* contexte optionnel */ }
+}"""))
+
+    story.append(h3("Codes machine principaux"))
+    story.append(_table([
         ["Code", "Signification"],
-        ["200", "Succès"],
-        ["400", "Requête invalide (paramètre manquant, montant hors limites)"],
-        ["401", "Clé API invalide ou manquante"],
-        ["403", "Compte marchand suspendu ou clés suspendues"],
-        ["404", "Paiement introuvable"],
-        ["410", "Endpoint retiré (ex. transferts bancaires)"],
-        ["429", "Trop de requêtes"],
+        ["MISSING_AUTH_HEADER", "Header Authorization absent"],
+        ["INVALID_API_KEY", "Cle inconnue ou revoquee"],
+        ["INSUFFICIENT_BALANCE", "Solde marchand insuffisant (retrait)"],
+        ["INVALID_ASSET", "Couple coin/network non supporte"],
+        ["INVALID_DESTINATION_ADDRESS", "Adresse incompatible avec le reseau"],
+        ["AMOUNT_TOO_SMALL / TOO_LARGE", "Montant hors bornes"],
+        ["PAYMENT_ALREADY_PAID", "Impossible d\'annuler un paiement encaisse"],
+        ["GATEWAY_INSUFFICIENT_FUNDS", "Fonds insuffisants passerelle amont"],
+        ["GATEWAY_UNREACHABLE", "Passerelle temporairement injoignable"],
+        ["RATE_LIMITED", "Depassement de 100 requetes/minute/cle"],
+        ["IDEMPOTENCY_KEY_TOO_LONG", "Idempotency-Key superieur a 255 caracteres"],
+    ], [6 * cm, 10.5 * cm]))
+
+    story.append(h3("Codes HTTP"))
+    story.append(_table([
+        ["Code", "Signification"],
+        ["200", "Succes"],
+        ["400", "Requete invalide"],
+        ["401", "Cle API manquante ou invalide"],
+        ["403", "Cle desactivee ou compte suspendu"],
+        ["404", "Ressource introuvable"],
+        ["409", "Conflit (ex : annuler un paiement paye)"],
+        ["429", "Rate limit atteint"],
         ["500", "Erreur serveur"],
-        ["503", "Passerelle indisponible"],
-    ], colWidths=[2 * cm, 14.5 * cm])
-    err_tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#E2E8F0")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-    ]))
-    story.append(err_tbl)
+        ["502", "Passerelle amont injoignable"],
+        ["503", "Service temporairement indisponible"],
+    ], [2 * cm, 14.5 * cm]))
 
-    # SDK examples
+    # ---------------- Idempotency + Rate limits ----------------
+    story.append(h2("6. Idempotence & Rate limits"))
+    story.append(p("Ajoutez un header <b>Idempotency-Key</b> (max 255 caracteres) a toute requete POST. "
+                   "En cas de retry (timeout reseau, doublon), la meme cle retourne la reponse originale - "
+                   "aucun doublon cote serveur. Fenetre : 24 heures."))
+    story.append(p("Chaque cle API a une limite de <b>100 requetes / minute</b>. Les reponses "
+                   "incluent : <font face=\"Courier\">X-RateLimit-Limit</font>, <font face=\"Courier\">X-RateLimit-Remaining</font>, "
+                   "<font face=\"Courier\">X-RateLimit-Reset</font>."))
+
+    # ---------------- SDK Examples ----------------
     story.append(PageBreak())
-    story.append(h2("7. Exemples d'intégration SDK"))
+    story.append(h2("7. Exemples d\'integration"))
 
-    story.append(h3("Node.js"))
+    story.append(h3("cURL"))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/payments \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: order-42-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount": 25, "coin": "USDT", "reference": "ORDER-42"}}'"""))
+
+    story.append(h3("JavaScript"))
     story.append(code(f"""const res = await fetch('{API_BASE}/v1/payments', {{
   method: 'POST',
   headers: {{
     Authorization: 'Bearer sk_test_XXXXX',
+    'Idempotency-Key': 'order-42-attempt-1',
     'Content-Type': 'application/json',
   }},
   body: JSON.stringify({{
-    amount: 10, coin: 'USDT', reference: 'order_123',
+    amount: 25, coin: 'USDT', reference: 'ORDER-42',
     customer_email: 'buyer@shop.com',
   }}),
 }});
 const payment = await res.json();
 window.location.href = payment.payment_url;"""))
 
-    story.append(h3("Python"))
-    story.append(code(f"""import requests
+    story.append(h3("Node.js"))
+    story.append(code(f"""import axios from 'axios';
 
-r = requests.post(
-    '{API_BASE}/v1/payments',
-    json={{'amount': 10, 'coin': 'USDT', 'reference': 'order_123',
-          'customer_email': 'buyer@shop.com'}},
-    headers={{'Authorization': 'Bearer sk_test_XXXXX'}},
-)
-payment = r.json()
-print(payment['payment_url'])"""))
+const {{ data }} = await axios.post(
+  '{API_BASE}/v1/payments',
+  {{ amount: 25, coin: 'USDT', reference: 'ORDER-42' }},
+  {{ headers: {{
+    Authorization: 'Bearer sk_test_XXXXX',
+    'Idempotency-Key': 'order-42-attempt-1',
+  }} }}
+);
+console.log('Redirect to:', data.payment_url);"""))
 
     story.append(h3("PHP"))
     story.append(code(f"""<?php
@@ -3925,52 +4004,72 @@ curl_setopt_array($ch, [
   CURLOPT_RETURNTRANSFER => true,
   CURLOPT_HTTPHEADER => [
     'Authorization: Bearer sk_test_XXXXX',
+    'Idempotency-Key: order-42-attempt-1',
     'Content-Type: application/json',
   ],
   CURLOPT_POSTFIELDS => json_encode([
-    'amount' => 10, 'coin' => 'USDT',
-    'reference' => 'order_123',
-    'customer_email' => 'buyer@shop.com',
+    'amount' => 25, 'coin' => 'USDT', 'reference' => 'ORDER-42',
   ]),
 ]);
 $response = json_decode(curl_exec($ch), true);
+curl_close($ch);
 header('Location: ' . $response['payment_url']);"""))
 
-    story.append(h3("Laravel"))
-    story.append(code(f"""use Illuminate\\Support\\Facades\\Http;
+    story.append(h3("Python"))
+    story.append(code(f"""import requests
 
-$payment = Http::withToken(config('services.biztranspay.secret'))
-    ->post('{API_BASE}/v1/payments', [
-        'amount' => 10,
-        'coin' => 'USDT',
-        'reference' => 'order_' . $order->id,
-        'customer_email' => auth()->user()->email,
-    ])->json();
+payment = requests.post(
+    '{API_BASE}/v1/payments',
+    json={{'amount': 25, 'coin': 'USDT', 'reference': 'ORDER-42'}},
+    headers={{
+        'Authorization': 'Bearer sk_test_XXXXX',
+        'Idempotency-Key': 'order-42-attempt-1',
+    }},
+).json()
 
-return redirect($payment['payment_url']);"""))
+print('Redirect to:', payment['payment_url'])"""))
 
-    story.append(h3("JavaScript (navigateur — via votre backend)"))
-    story.append(code("""// Ne JAMAIS exposer sk_test_/sk_live_ côté navigateur.
-// Créez le paiement depuis votre serveur, puis :
-window.location.href = paymentUrlFromServer;"""))
+    story.append(h3("Java"))
+    story.append(code(f"""import java.net.http.*;
+import java.net.URI;
 
-    story.append(h3("Vérification de signature (Node.js)"))
-    story.append(code("""const crypto = require('crypto');
-const raw = req.rawBody;   // Buffer
-const ts = req.headers['x-biztranspay-timestamp'];
-const sig = req.headers['x-biztranspay-signature'];
+var request = HttpRequest.newBuilder()
+    .uri(URI.create("{API_BASE}/v1/payments"))
+    .header("Authorization", "Bearer sk_test_XXXXX")
+    .header("Idempotency-Key", "order-42-attempt-1")
+    .header("Content-Type", "application/json")
+    .POST(HttpRequest.BodyPublishers.ofString(
+      "{{\"amount\":25,\"coin\":\"USDT\",\"reference\":\"ORDER-42\"}}"))
+    .build();
 
-const expected = 'sha256=' + crypto
-  .createHmac('sha256', process.env.BIZTRANSPAY_WEBHOOK_SECRET)
-  .update(`${ts}.${raw}`)
-  .digest('hex');
+var response = HttpClient.newHttpClient()
+    .send(request, HttpResponse.BodyHandlers.ofString());
+System.out.println(response.body());"""))
 
-if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(sig))) {
-  return res.status(401).send('Invalid signature');
-}"""))
+    story.append(h3("C#"))
+    story.append(code(f"""using System.Net.Http.Json;
 
-    story.append(Spacer(1, 12))
-    story.append(p(f"<i>Biz-transPay · {OFFICIAL} · Documentation générée automatiquement</i>"))
+var http = new HttpClient();
+http.DefaultRequestHeaders.Add("Authorization", "Bearer sk_test_XXXXX");
+http.DefaultRequestHeaders.Add("Idempotency-Key", "order-42-attempt-1");
+
+var response = await http.PostAsJsonAsync(
+    "{API_BASE}/v1/payments",
+    new {{ amount = 25, coin = "USDT", reference = "ORDER-42" }}
+);
+var payment = await response.Content.ReadFromJsonAsync<Dictionary<string, object>>();
+Console.WriteLine(payment["payment_url"]);"""))
+
+    # ---------------- Footer ----------------
+    story.append(PageBreak())
+    story.append(h2("8. Bonnes pratiques & FAQ"))
+    story.append(p("- Toujours envoyer <b>Idempotency-Key</b> sur les POST pour eviter les doublons."))
+    story.append(p("- Poller /status cote serveur, jamais depuis le navigateur (fuite de cle)."))
+    story.append(p("- Stocker le champ <b>reference</b> pour rechercher plus tard via /search."))
+    story.append(p("- Rotation immediate d\'une cle compromise depuis le tableau de bord."))
+    story.append(p("- Utiliser <b>sk_test_</b> en developpement ; passer en <b>sk_live_</b> uniquement en production."))
+    story.append(Spacer(1, 10))
+    story.append(p(f"<i>Biz-transPay . {OFFICIAL} . Documentation generee automatiquement</i>"))
 
     doc.build(story)
     pdf_bytes = buf.getvalue()
@@ -4410,11 +4509,18 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
     wd_pending = {"count": 0, "amount": 0.0}
     wd_valid = {"count": 0, "amount": 0.0}
     wd_rejected = {"count": 0, "amount": 0.0}
-    # Per-channel breakdown for the summary cards
-    dep_mm = {"count": 0, "amount_xof": 0.0}
-    dep_crypto = {"count": 0, "amount_usdt": 0.0}
-    wd_mm = {"count": 0, "amount_xof": 0.0}
-    wd_crypto = {"count": 0, "amount_usdt": 0.0}
+    # Per-channel breakdown with status buckets (pending / valid / rejected).
+    def _empty_ch():
+        return {
+            "count": 0, "amount_xof": 0.0, "amount_usdt": 0.0,
+            "pending": {"count": 0, "amount": 0.0},
+            "valid": {"count": 0, "amount": 0.0},
+            "rejected": {"count": 0, "amount": 0.0},
+        }
+    dep_mm = _empty_ch()
+    dep_crypto = _empty_ch()
+    wd_mm = _empty_ch()
+    wd_crypto = _empty_ch()
     # Other operations (link payments, API merchant payments, biz-to-biz, exchange)
     link_payments = {"count": 0, "amount_usdt": 0.0}
     api_payments = {"count": 0, "amount_usdt": 0.0}
@@ -4454,13 +4560,19 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
                 or bool(meta.get("izipay_intent_id"))
                 or bool(meta.get("coin"))
             )
+            ch = dep_crypto if is_crypto else dep_mm
             if st == "completed":
-                if is_crypto:
-                    dep_crypto["count"] += 1
-                    dep_crypto["amount_usdt"] += amt
-                else:
-                    dep_mm["count"] += 1
-                    dep_mm["amount_xof"] += amt
+                ch["count"] += 1
+                if is_crypto: ch["amount_usdt"] += amt
+                else: ch["amount_xof"] += amt
+                ch["valid"]["count"] += 1
+                ch["valid"]["amount"] += amt
+            elif st == "pending":
+                ch["pending"]["count"] += 1
+                ch["pending"]["amount"] += amt
+            elif st in ("failed", "cancelled"):
+                ch["rejected"]["count"] += 1
+                ch["rejected"]["amount"] += amt
         elif typ in ("withdrawal", "transfer") and direction == "out":
             # Exclude biz-to-biz internal transfers from the "withdrawals"
             # cards (they don't leave the platform).
@@ -4484,13 +4596,19 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
                 or currency == "USDT"
                 or bool(meta.get("crypto"))
             )
+            ch = wd_crypto if is_crypto else wd_mm
             if st == "completed":
-                if is_crypto:
-                    wd_crypto["count"] += 1
-                    wd_crypto["amount_usdt"] += amt
-                else:
-                    wd_mm["count"] += 1
-                    wd_mm["amount_xof"] += amt
+                ch["count"] += 1
+                if is_crypto: ch["amount_usdt"] += amt
+                else: ch["amount_xof"] += amt
+                ch["valid"]["count"] += 1
+                ch["valid"]["amount"] += amt
+            elif st == "pending":
+                ch["pending"]["count"] += 1
+                ch["pending"]["amount"] += amt
+            elif st in ("failed", "cancelled"):
+                ch["rejected"]["count"] += 1
+                ch["rejected"]["amount"] += amt
         elif typ == "transfer" and direction == "in":
             # Received leg of a biz-to-biz transfer — count for volume view.
             if (meta.get("transfer_type") or "biz_to_biz") == "biz_to_biz":
@@ -4943,6 +5061,169 @@ async def admin_transactions(admin=Depends(get_admin), q: Optional[str] = None,
         u = await db.users.find_one({"id": d["user_id"]}, {"_id": 0, "username": 1, "full_name": 1, "email": 1})
         d["user"] = u
     return docs
+
+
+@api.get("/admin/transactions/{tx_id}")
+async def admin_transaction_detail(tx_id: str, admin=Depends(get_admin)):
+    """Full details for a single transaction, enriched with the user's
+    identity and country. Used by the manual-validation modal."""
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction introuvable")
+    u = await db.users.find_one({"id": tx["user_id"]},
+        {"_id": 0, "id": 1, "username": 1, "full_name": 1, "email": 1,
+         "phone": 1, "country": 1, "balance_usdt": 1, "balance_xof": 1})
+    tx["user"] = u or {}
+    return tx
+
+
+async def _notify_user(uid: str, title: str, message: str,
+                        kind: str = "info", metadata: Optional[dict] = None):
+    """Push an SSE + persisted notification to a user. Silent on error."""
+    try:
+        doc = {
+            "id": new_id(), "user_id": uid,
+            "title": title, "message": message,
+            "kind": kind, "read": False,
+            "metadata": metadata or {},
+            "created_at": now_iso(),
+        }
+        await db.notifications.insert_one(doc)
+        # SSE broadcast to any live listener of this user.
+        for q in list(_sse_subscribers.get(uid, [])):
+            try:
+                q.put_nowait({k: v for k, v in doc.items() if k != "_id"})
+            except Exception:
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("_notify_user failed for %s: %s", uid, e)
+
+
+def _tx_is_crypto(tx: dict) -> bool:
+    meta = tx.get("metadata") or {}
+    cur = (tx.get("currency") or "").upper()
+    return (
+        cur == "USDT"
+        or (meta.get("transfer_type") in ("biz_to_crypto",))
+        or bool(meta.get("crypto") or meta.get("coin") or meta.get("izipay_intent_id"))
+    )
+
+
+@api.post("/admin/transactions/{tx_id}/approve")
+async def admin_approve_transaction(tx_id: str, admin=Depends(get_admin)):
+    """Manually validate a pending transaction.
+
+    - Deposit → credits the user's balance (crypto → balance_usdt, MoMo → balance_xof)
+      then marks the transaction 'completed'.
+    - Withdrawal → simply marks 'completed' (balance was already debited on request).
+    - Any other pending transaction → marks 'completed' without balance side-effects.
+    """
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction introuvable")
+    if tx.get("status") != "pending":
+        raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
+
+    typ = tx.get("type")
+    direction = tx.get("direction")
+    meta = tx.get("metadata") or {}
+    uid = tx["user_id"]
+    amt = float(tx.get("amount", 0) or 0)
+    is_crypto = _tx_is_crypto(tx)
+
+    # Amount actually credited/debited (already net of fees on our side).
+    credit_amount = float(meta.get("amount_net", amt) or amt)
+
+    if typ == "deposit":
+        # Credit user's balance now.
+        field = "balance_usdt" if is_crypto else "balance_xof"
+        await db.users.update_one({"id": uid}, {"$inc": {field: credit_amount}})
+
+    await db.transactions.update_one({"id": tx_id}, {"$set": {
+        "status": "completed",
+        "approved_at": now_iso(),
+        "approved_by": admin["username"],
+        "manual_action": "approved",
+    }})
+
+    await audit(admin["id"], admin["username"], "tx_approve",
+                target_user_id=uid, details={"type": typ, "amount": amt, "tx_id": tx_id})
+
+    label = "dépôt" if typ == "deposit" else ("retrait" if direction == "out" else "transaction")
+    unit = "USDT" if is_crypto else "XOF"
+    await _notify_user(uid,
+        f"Votre {label} a été validé",
+        f"L'administrateur a validé votre {label} de {amt:.2f} {unit}.",
+        kind="success",
+        metadata={"tx_id": tx_id, "type": typ})
+
+    return {"ok": True, "tx": await db.transactions.find_one({"id": tx_id}, {"_id": 0})}
+
+
+class AdminRejectRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+@api.post("/admin/transactions/{tx_id}/reject")
+async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
+                                     admin=Depends(get_admin)):
+    """Manually reject a pending transaction.
+
+    - Deposit → marks 'failed' (no balance side-effect; nothing was credited yet).
+    - Withdrawal → refunds the user's balance with `total_debit` (falls back to
+      amount + fee, then just amount).
+    """
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction introuvable")
+    if tx.get("status") != "pending":
+        raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
+
+    typ = tx.get("type")
+    direction = tx.get("direction")
+    meta = tx.get("metadata") or {}
+    uid = tx["user_id"]
+    amt = float(tx.get("amount", 0) or 0)
+    is_crypto = _tx_is_crypto(tx)
+
+    refund_amount = 0.0
+    if typ in ("withdrawal", "transfer") and direction == "out":
+        refund_amount = float(
+            meta.get("total_debit")
+            or (amt + float(meta.get("fee", 0) or 0))
+            or amt
+        )
+        field = "balance_usdt" if is_crypto else "balance_xof"
+        await db.users.update_one({"id": uid}, {"$inc": {field: refund_amount}})
+
+    await db.transactions.update_one({"id": tx_id}, {"$set": {
+        "status": "failed",
+        "rejected_at": now_iso(),
+        "rejected_by": admin["username"],
+        "manual_action": "rejected",
+        "rejection_reason": body.reason,
+        "refunded_amount": refund_amount if refund_amount > 0 else None,
+    }})
+
+    await audit(admin["id"], admin["username"], "tx_reject",
+                target_user_id=uid, details={"type": typ, "reason": body.reason,
+                                              "refunded": refund_amount, "tx_id": tx_id})
+
+    label = "dépôt" if typ == "deposit" else ("retrait" if direction == "out" else "transaction")
+    unit = "USDT" if is_crypto else "XOF"
+    msg = f"L'administrateur a rejeté votre {label} de {amt:.2f} {unit}."
+    if refund_amount > 0:
+        msg += f" Votre solde a été recrédité de {refund_amount:.2f} {unit}."
+    if body.reason:
+        msg += f" Motif : {body.reason}"
+    await _notify_user(uid,
+        f"Votre {label} a été rejeté",
+        msg,
+        kind="warning",
+        metadata={"tx_id": tx_id, "type": typ, "reason": body.reason})
+
+    return {"ok": True, "refunded": refund_amount,
+            "tx": await db.transactions.find_one({"id": tx_id}, {"_id": 0})}
 
 
 # ==================== ADMIN — Payment Links & API Keys management ====================
