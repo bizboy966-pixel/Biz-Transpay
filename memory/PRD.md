@@ -605,3 +605,22 @@ Extension du module API public avec les retraits crypto, en réutilisant `izipay
 - Frontend complet vérifié : sidebar RETRAITS, 8 codes erreur, 6 statuts, 7 langages, ZÉRO webhook.
 - Refund flow validé : solde marchand restauré après refus IziChange (sandbox pas de fonds).
 
+
+
+## 2026-08-04 — Admin Panel : traitement manuel + PDF doc
+### Tableau de bord
+- **Cartes Crypto Dépôts/Retraits** : réécrites avec 3 sous-lignes cliquables (🟡 En attente / 🟢 Validés / 🔴 Rejetés) alimentées auto depuis `admin_stats.*_by_channel.crypto.{pending,valid,rejected}`.
+- **Cartes FCFA** : filtrées uniquement Mobile Money via `*_by_channel.mobile_money`.
+- Chaque sous-ligne "en attente" a un bouton **Traiter** qui redirige vers `/admin/transactions` pré-filtré.
+
+### Traitement manuel des transactions
+- Nouveau **`AdminTxDetailModal`** : nom, ID, email, téléphone, pays, coin, réseau, adresse, montant, frais, net, ref, hash tx, date, heure, statut + boutons **Valider** ✅ / **Rejeter** ❌ avec motif.
+- Endpoints : `GET /admin/transactions/{id}`, `POST .../approve`, `POST .../reject` — crédit auto si deposit approve, refund `total_debit` si withdrawal reject, notification SSE + persistée.
+
+### PDF Documentation
+- `GET /api/documentation.pdf` (JWT) — reportlab, 13.5 KB, Payments + Payouts, **zéro webhook**, 7 langages.
+- Bouton **📄 Télécharger PDF** en haut à droite de `/dashboard/api/docs`.
+
+### Testing
+- 12/12 pytest backend + E2E Playwright (iteration_19.json) ✅
+- Régression `/api/v1/*` validée.
