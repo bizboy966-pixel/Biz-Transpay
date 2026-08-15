@@ -624,3 +624,24 @@ Extension du module API public avec les retraits crypto, en réutilisant `izipay
 ### Testing
 - 12/12 pytest backend + E2E Playwright (iteration_19.json) ✅
 - Régression `/api/v1/*` validée.
+
+## 2026-08-15 — Community, Support flottant, Feature toggles, Login smart-redirect
+### Backend
+- `support_config` étendu : `community_url`, `community_enabled`, `community_label`.
+- Nouveau doc `app_features` (mobile_money_enabled, crypto_enabled + messages "Bientôt disponible" configurables).
+- Endpoints : `GET /api/settings/features` (public), `PATCH /api/admin/settings/features` (admin).
+
+### Frontend Admin
+- `AdminSupport.js` → nouvelle section **Community** (toggle, URL WhatsApp/Discord, libellé tooltip).
+- `AdminPlatform.js` → nouvelle section **Portefeuilles disponibles** avec 2 toggles Mobile Money / Crypto et messages personnalisables.
+
+### Frontend User
+- `FloatingSupportButtons.js` : deux boutons flottants sur toutes les pages authentifiées :
+  - 🟢 **Community** (bas gauche, vert, icône Users) — visible si `community_enabled`.
+  - 🔵 **Support** (bas droit, bleu, icône MessageCircle) — lien vers `/dashboard/support`.
+- `ComingSoon.js` + hook `useFeatures.js`.
+- `Deposit.js`, `Transfer.js`, `PublicLink.js` : filtrent automatiquement les méthodes selon `features` et affichent un banner "Bientôt disponible" si tout est off.
+
+### Login smart-redirect
+- `Login.js` → admin/super_admin → `/admin`, autres → `/dashboard`.
+

@@ -5,12 +5,14 @@ import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCh
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/hooks/useFeatures';
 import { COUNTRIES } from '@/constants/countries';
 
 export default function Transfer() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { refresh, user } = useAuth();
+  const features = useFeatures();
   const [step, setStep] = useState(1);
   const [type, setType] = useState(null);
   const [config, setConfig] = useState(null);
@@ -20,11 +22,11 @@ export default function Transfer() {
     api.get('/transfer/config').then(({ data }) => setConfig(data)).catch(() => {});
   }, []);
 
-  const opts = [
-    { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais' },
-    { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money' },
-    { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux' },
-  ];
+  const opts = useMemo(() => [
+    { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais', enabled: true },
+    { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money', enabled: features?.mobile_money_enabled !== false },
+    { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux', enabled: features?.crypto_enabled !== false },
+  ].filter((o) => o.enabled), [features]);
 
   const onDone = (data, meta) => {
     setDone({ ...data, meta });

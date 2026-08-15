@@ -383,7 +383,30 @@ DEFAULT_SUPPORT_CONFIG = {
     "telegram_url": "https://t.me/biztranspay",
     "whatsapp_url": "https://wa.me/22890000000",
     "email": "support@biz-transpay.com",
+    "community_enabled": False,
+    "community_url": "",
+    "community_label": "Rejoindre la communauté",
 }
+
+
+DEFAULT_APP_FEATURES = {
+    "id": "app_features",
+    "mobile_money_enabled": True,
+    "crypto_enabled": True,
+    "mobile_money_coming_soon_message": "Bientôt disponible — cette fonctionnalité est en cours de finalisation.",
+    "crypto_coming_soon_message": "Bientôt disponible — cette fonctionnalité est en cours de finalisation.",
+}
+
+
+async def get_app_features() -> dict:
+    doc = await db.settings.find_one({"id": "app_features"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(DEFAULT_APP_FEATURES.copy())
+        doc = await db.settings.find_one({"id": "app_features"}, {"_id": 0})
+    # Ensure keys exist (backwards compat).
+    for k, v in DEFAULT_APP_FEATURES.items():
+        doc.setdefault(k, v)
+    return doc
 
 
 async def get_support_config() -> dict:
@@ -5402,6 +5425,9 @@ class AdminSupportConfigReq(BaseModel):
     telegram_url: Optional[str] = None
     whatsapp_url: Optional[str] = None
     email: Optional[str] = None
+    community_enabled: Optional[bool] = None
+    community_url: Optional[str] = None
+    community_label: Optional[str] = None
 
 
 @api.get("/admin/support/config")
@@ -5417,6 +5443,43 @@ async def admin_update_support_config(req: AdminSupportConfigReq, admin=Depends(
     await db.settings.update_one({"id": "support_config"}, {"$set": updates}, upsert=True)
     await audit(admin["id"], admin["username"], "update_support_config", details=updates)
     return await get_support_config()
+
+
+# ===== App feature toggles (Mobile Money / Crypto on-off) =====
+
+@api.get("/settings/features")
+async def public_get_features():
+    """Public endpoint — used by the frontend to know which wallets to render
+    and which ones to gate behind a 'Bientôt disponible' banner."""
+    f = await get_app_features()
+    return {
+        "mobile_money_enabled": bool(f.get("mobile_money_enabled", True)),
+        "crypto_enabled": bool(f.get("crypto_enabled", True)),
+        "mobile_money_coming_soon_message": f.get("mobile_money_coming_soon_message") or "",
+        "crypto_coming_soon_message": f.get("crypto_coming_soon_message") or "",
+    }
+
+
+class AdminFeaturesReq(BaseModel):
+    mobile_money_enabled: Optional[bool] = None
+    crypto_enabled: Optional[bool] = None
+    mobile_money_coming_soon_message: Optional[str] = None
+    crypto_coming_soon_message: Optional[str] = None
+
+
+@api.get("/admin/settings/features")
+async def admin_get_features(admin=Depends(get_admin)):
+    return await get_app_features()
+
+
+@api.patch("/admin/settings/features")
+async def admin_update_features(req: AdminFeaturesReq, admin=Depends(get_admin)):
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    await db.settings.update_one({"id": "app_features"}, {"$set": updates}, upsert=True)
+    await audit(admin["id"], admin["username"], "update_app_features", details=updates)
+    return await get_app_features()
 
 
 @api.get("/admin/support/conversations")

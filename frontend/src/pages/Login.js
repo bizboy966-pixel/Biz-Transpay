@@ -19,9 +19,11 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     try {
-      await login(email, password);
+      const u = await login(email, password);
       toast.success('Connexion réussie');
-      nav('/dashboard');
+      const role = u?.role || u?.user?.role;
+      // Admins land directly on the admin panel; merchants on their dashboard.
+      nav(role === 'admin' || role === 'super_admin' ? '/admin' : '/dashboard');
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Identifiants invalides');
     } finally {

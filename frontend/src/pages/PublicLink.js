@@ -13,9 +13,12 @@ export default function PublicLink() {
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState(null);
   const [payment, setPayment] = useState(null);
+  const [features, setFeatures] = useState(null);
 
   useEffect(() => {
     api.get(`/links/public/${slug}`).then(({ data }) => setLink(data)).catch(() => setErr('Lien introuvable ou expiré'));
+    api.get('/settings/features').then(({ data }) => setFeatures(data))
+      .catch(() => setFeatures({ mobile_money_enabled: true, crypto_enabled: true }));
   }, [slug]);
 
   if (err) return <div className="min-h-screen flex items-center justify-center text-slate-600">{err}</div>;
@@ -57,9 +60,23 @@ export default function PublicLink() {
 
             {step === 1 && (
               <div className="mt-4 space-y-2">
-                <div className="text-xs sm:text-sm font-semibold text-slate-700 mb-2">Choisissez le moyen de paiement</div>
-                <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={link.currency === 'USDT' ? 'USDT · USDC · BTC · ETH' : "Ce lien n'accepte pas les paiements crypto"} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT'} />
-                <MethodBtn testId="pay-method-mm" I={Smartphone} c="bg-emerald-50 text-emerald-500" title="Mobile Money" sub="MTN · Moov · Orange · Wave · T-Money" onClick={() => { setMethod('mm'); setStep(2); }} />
+                {features && !features.crypto_enabled && !features.mobile_money_enabled ? (
+                  <div className="mt-4 p-6 rounded-2xl bg-amber-50 border border-amber-200 text-center">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-100 text-amber-700 text-[11px] font-bold uppercase tracking-widest mb-3">Bientôt disponible</div>
+                    <div className="font-cabinet font-bold text-slate-900">Les paiements sont temporairement suspendus</div>
+                    <div className="text-xs text-slate-600 mt-1">{features.crypto_coming_soon_message || features.mobile_money_coming_soon_message || 'Merci de revenir plus tard.'}</div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-xs sm:text-sm font-semibold text-slate-700 mb-2">Choisissez le moyen de paiement</div>
+                    {features?.crypto_enabled !== false && (
+                      <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={link.currency === 'USDT' ? 'USDT · USDC · BTC · ETH' : "Ce lien n'accepte pas les paiements crypto"} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT'} />
+                    )}
+                    {features?.mobile_money_enabled !== false && (
+                      <MethodBtn testId="pay-method-mm" I={Smartphone} c="bg-emerald-50 text-emerald-500" title="Mobile Money" sub="MTN · Moov · Orange · Wave · T-Money" onClick={() => { setMethod('mm'); setStep(2); }} />
+                    )}
+                  </>
+                )}
               </div>
             )}
 

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Home, Receipt, Link2, Code2, IdCard, Settings as SettingsIcon, Headphones, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
+import FloatingSupportButtons from '@/components/FloatingSupportButtons';
 import { useAuth } from '@/context/AuthContext';
 
 export default function DashboardLayout() {
@@ -126,6 +127,7 @@ export default function DashboardLayout() {
           <Outlet />
         </main>
       </div>
+      <FloatingSupportButtons />
     </div>
   );
 }

@@ -1,16 +1,27 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, ExternalLink, Rocket } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/hooks/useFeatures';
+import ComingSoon from '@/components/ComingSoon';
 
 export default function Deposit() {
   const nav = useNavigate();
+  const features = useFeatures();
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState(null);
   const [deposit, setDeposit] = useState(null);
+
+  // Guard: if the customer somehow lands on a step for a disabled wallet
+  // (e.g. via browser back button), send them back to picker.
+  useEffect(() => {
+    if (!features) return;
+    if (method === 'crypto' && !features.crypto_enabled) { setMethod(null); setStep(1); }
+    if (method === 'mobile_money' && !features.mobile_money_enabled) { setMethod(null); setStep(1); }
+  }, [features, method]);
 
   return (
     <div className="max-w-2xl mx-auto space-y-4 sm:space-y-5" data-testid="page-deposit">
@@ -29,11 +40,18 @@ export default function Deposit() {
         ))}
       </div>
 
-      {step === 1 && (
-        <MethodPicker onPick={(m) => { setMethod(m); setStep(2); }} />
+      {step === 1 && features && !features.crypto_enabled && !features.mobile_money_enabled && (
+        <ComingSoon
+          title="Dépôts temporairement indisponibles"
+          message={features.mobile_money_coming_soon_message || features.crypto_coming_soon_message}
+          icon={Rocket}
+        />
       )}
-      {step === 2 && method === 'crypto' && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
-      {step === 2 && method === 'mobile_money' && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
+      {step === 1 && features && (features.crypto_enabled || features.mobile_money_enabled) && (
+        <MethodPicker features={features} onPick={(m) => { setMethod(m); setStep(2); }} />
+      )}
+      {step === 2 && method === 'crypto' && features?.crypto_enabled && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
+      {step === 2 && method === 'mobile_money' && features?.mobile_money_enabled && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
       {step === 3 && deposit?.__momo && <MobileMoneyTracker deposit={deposit} />}
       {step === 3 && deposit && !deposit.__momo && <CryptoDepositTracker deposit={deposit} />}
       {step === 3 && !deposit && (
@@ -50,14 +68,15 @@ export default function Deposit() {
   );
 }
 
-function MethodPicker({ onPick }) {
+function MethodPicker({ features, onPick }) {
   const methods = [
-    { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux' },
-    { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…' },
+    { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux', enabled: features?.crypto_enabled !== false },
+    { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…', enabled: features?.mobile_money_enabled !== false },
   ];
+  const available = methods.filter((m) => m.enabled);
   return (
     <div className="space-y-2.5 sm:space-y-3">
-      {methods.map((m) => (
+      {available.map((m) => (
         <button key={m.key} onClick={() => onPick(m.key)} data-testid={`method-${m.key}`}
           className="w-full bg-white border border-slate-100 rounded-2xl p-3 sm:p-4 flex items-center gap-2.5 sm:gap-3 hover:border-[#2563EB] hover:-translate-y-0.5 transition-all text-left">
           <div className={`w-9 h-9 sm:w-11 sm:h-11 rounded-xl ${m.c} flex items-center justify-center shrink-0`}><m.I className="w-4 h-4 sm:w-5 sm:h-5" strokeWidth={1.75} /></div>

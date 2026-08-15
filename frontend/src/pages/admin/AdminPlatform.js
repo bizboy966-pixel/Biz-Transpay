@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Repeat, PauseCircle, PlayCircle, AlertTriangle, Trash2, X } from 'lucide-react';
+import { Save, Repeat, PauseCircle, PlayCircle, AlertTriangle, Trash2, X, Smartphone, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -10,9 +10,29 @@ export default function AdminPlatform() {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetInput, setResetInput] = useState('');
   const [resetting, setResetting] = useState(false);
+  const [features, setFeatures] = useState(null);
+  const [savingFeature, setSavingFeature] = useState(null);
 
   const load = () => api.get('/admin/platform/config').then(({ data }) => setCfg(data));
-  useEffect(() => { load(); }, []);
+  const loadFeatures = () => api.get('/admin/settings/features').then(({ data }) => setFeatures(data));
+  useEffect(() => { load(); loadFeatures(); }, []);
+
+  const toggleFeature = async (key, value) => {
+    setSavingFeature(key);
+    try {
+      const { data } = await api.patch('/admin/settings/features', { [key]: value });
+      setFeatures(data);
+      toast.success(value ? 'Fonctionnalité activée' : 'Fonctionnalité désactivée');
+    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+    finally { setSavingFeature(null); }
+  };
+
+  const saveFeatureMessage = async (key, value) => {
+    try {
+      await api.patch('/admin/settings/features', { [key]: value });
+      toast.success('Message enregistré');
+    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+  };
 
   const save = async () => {
     try {
@@ -140,6 +160,105 @@ export default function AdminPlatform() {
           </label>
         </div>
       </div>
+
+      {/* Feature toggles — Mobile Money / Crypto wallets */}
+      {features && (
+        <div className="bg-white border border-slate-100 rounded-2xl p-5" data-testid="feature-toggles">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center"><PauseCircle className="w-5 h-5" /></div>
+            <div className="flex-1">
+              <h2 className="font-cabinet font-bold text-slate-900">Portefeuilles disponibles</h2>
+              <p className="text-[11px] text-slate-500">
+                Désactivez un portefeuille pour masquer toutes ses fonctionnalités
+                côté utilisateur (dépôt, retrait, échange, liens de paiement, API).
+                Un écran <em>« Bientôt disponible »</em> s&apos;affiche à la place.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            {/* Mobile Money */}
+            <div className={`p-4 rounded-2xl border-2 transition-colors ${features.mobile_money_enabled ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200 bg-slate-50/60'}`}>
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white text-blue-600 flex items-center justify-center shadow-sm shrink-0">
+                  <Smartphone className="w-5 h-5" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-cabinet font-bold text-sm text-slate-900">Mobile Money</div>
+                      <div className="text-[11px] text-slate-500">FedaPay · 8 pays · 21 opérateurs · XOF / XAF</div>
+                    </div>
+                    <label className="inline-flex items-center cursor-pointer shrink-0">
+                      <input type="checkbox"
+                        checked={!!features.mobile_money_enabled}
+                        onChange={(e) => toggleFeature('mobile_money_enabled', e.target.checked)}
+                        disabled={savingFeature === 'mobile_money_enabled'}
+                        data-testid="toggle-mobile-money"
+                        className="sr-only peer" />
+                      <div className="relative w-11 h-6 bg-slate-300 peer-checked:bg-emerald-500 rounded-full transition-colors">
+                        <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${features.mobile_money_enabled ? 'translate-x-5' : ''}`} />
+                      </div>
+                    </label>
+                  </div>
+                  {!features.mobile_money_enabled && (
+                    <div className="mt-3">
+                      <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Message affiché aux utilisateurs</label>
+                      <input
+                        type="text"
+                        defaultValue={features.mobile_money_coming_soon_message}
+                        onBlur={(e) => e.target.value !== features.mobile_money_coming_soon_message && saveFeatureMessage('mobile_money_coming_soon_message', e.target.value)}
+                        data-testid="msg-mobile-money"
+                        placeholder="Bientôt disponible…"
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-blue-400 focus:outline-none text-xs bg-white" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Crypto */}
+            <div className={`p-4 rounded-2xl border-2 transition-colors ${features.crypto_enabled ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200 bg-slate-50/60'}`}>
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white text-amber-600 flex items-center justify-center shadow-sm shrink-0">
+                  <Bitcoin className="w-5 h-5" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-cabinet font-bold text-sm text-slate-900">Crypto</div>
+                      <div className="text-[11px] text-slate-500">IziChange · USDT · USDC · BTC · ETH · 40+ actifs</div>
+                    </div>
+                    <label className="inline-flex items-center cursor-pointer shrink-0">
+                      <input type="checkbox"
+                        checked={!!features.crypto_enabled}
+                        onChange={(e) => toggleFeature('crypto_enabled', e.target.checked)}
+                        disabled={savingFeature === 'crypto_enabled'}
+                        data-testid="toggle-crypto"
+                        className="sr-only peer" />
+                      <div className="relative w-11 h-6 bg-slate-300 peer-checked:bg-emerald-500 rounded-full transition-colors">
+                        <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${features.crypto_enabled ? 'translate-x-5' : ''}`} />
+                      </div>
+                    </label>
+                  </div>
+                  {!features.crypto_enabled && (
+                    <div className="mt-3">
+                      <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Message affiché aux utilisateurs</label>
+                      <input
+                        type="text"
+                        defaultValue={features.crypto_coming_soon_message}
+                        onBlur={(e) => e.target.value !== features.crypto_coming_soon_message && saveFeatureMessage('crypto_coming_soon_message', e.target.value)}
+                        data-testid="msg-crypto"
+                        placeholder="Bientôt disponible…"
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 focus:border-blue-400 focus:outline-none text-xs bg-white" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Danger zone — full platform reset */}
       <div className="rounded-2xl border-2 border-red-200 bg-red-50/60 p-5" data-testid="danger-zone">
