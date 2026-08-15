@@ -645,3 +645,30 @@ Extension du module API public avec les retraits crypto, en réutilisant `izipay
 ### Login smart-redirect
 - `Login.js` → admin/super_admin → `/admin`, autres → `/dashboard`.
 
+
+## 2026-08-15 (2) — Rubrique Fonctionnalités par devise
+### Backend
+- `app_features` étendu à 9 nouveaux toggles granulaires :
+  - `wallet_xof_enabled`, `wallet_xaf_enabled`, `wallet_crypto_enabled` (visibilité portefeuille)
+  - `deposit_xof_enabled`, `deposit_xaf_enabled`, `deposit_crypto_enabled`
+  - `withdrawal_xof_enabled`, `withdrawal_xaf_enabled`, `withdrawal_crypto_enabled`
+- Publiés dans `GET /settings/features` et modifiables via `PATCH /admin/settings/features`.
+- Legacy `mobile_money_enabled/crypto_enabled` conservés pour compat descendante.
+
+### Frontend Admin
+- Nouvelle page **`/admin/features`** (`AdminFeatures.js`) avec entrée sidebar dédiée.
+- 3 cartes devises (XOF / XAF / Crypto), chacune avec :
+  - Toggle maître Portefeuille (masque le solde + toutes les opérations)
+  - Sous-toggles Dépôts / Retraits indépendants
+  - Résumé d'état + bandeau global en bas.
+
+### Frontend User
+- `Home.js` : masque automatiquement les cartes de solde des portefeuilles désactivés.
+- `Deposit.js` : filtre les méthodes selon `wallet_*` + `deposit_*` par devise, affiche « Bientôt disponible » si tout est off.
+- `Transfer.js` : filtre les options retrait selon `wallet_*` + `withdrawal_*` par devise.
+- `PublicLink.js` : filtre les méthodes de paiement checkout selon les 6 toggles pertinents.
+
+### Testing
+- Backend `PATCH /admin/settings/features` avec chaque clé validé via curl.
+- Screenshot page admin — 3 cartes, toggles maître + sous-toggles, bandeau état global visibles.
+

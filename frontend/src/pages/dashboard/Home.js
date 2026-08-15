@@ -4,11 +4,13 @@ import { useTranslation } from 'react-i18next';
 import { Wallet, ArrowUpRight, ArrowDownLeft, Link2, Repeat, Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/hooks/useFeatures';
 
 export default function DashboardHome() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { user, refresh } = useAuth();
+  const features = useFeatures();
   const [txs, setTxs] = useState([]);
   const [query, setQuery] = useState('');
   const [showKycBanner, setShowKycBanner] = useState(true);
@@ -36,10 +38,10 @@ export default function DashboardHome() {
   const needsKyc = user?.kyc_status !== 'verified' && showKycBanner;
 
   const wallets = [
-    { curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
-    { curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
-    { curr: 'USDT', bal: user?.balance_usdt ?? 0, gradient: 'from-emerald-500 via-emerald-600 to-teal-700', shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]' },
-  ];
+    { key: 'xof', curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
+    { key: 'xaf', curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
+    { key: 'crypto', curr: 'USDT', bal: user?.balance_usdt ?? 0, gradient: 'from-emerald-500 via-emerald-600 to-teal-700', shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]' },
+  ].filter((w) => !features || features[`wallet_${w.key}_enabled`] !== false);
 
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 

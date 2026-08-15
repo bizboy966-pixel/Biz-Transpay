@@ -32,6 +32,7 @@ import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
 import AdminDepositConfig from '@/pages/admin/AdminDepositConfig';
 import AdminSupport from '@/pages/admin/AdminSupport';
 import AdminPlatform from '@/pages/admin/AdminPlatform';
+import AdminFeatures from '@/pages/admin/AdminFeatures';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -89,6 +90,7 @@ function App() {
             <Route path="deposit-config" element={<AdminDepositConfig />} />
             <Route path="support" element={<AdminSupport />} />
             <Route path="platform" element={<AdminPlatform />} />
+            <Route path="features" element={<AdminFeatures />} />
           </Route>
         </Routes>
       </BrowserRouter>

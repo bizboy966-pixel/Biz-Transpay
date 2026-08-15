@@ -40,18 +40,26 @@ export default function Deposit() {
         ))}
       </div>
 
-      {step === 1 && features && !features.crypto_enabled && !features.mobile_money_enabled && (
-        <ComingSoon
-          title="Dépôts temporairement indisponibles"
-          message={features.mobile_money_coming_soon_message || features.crypto_coming_soon_message}
-          icon={Rocket}
-        />
-      )}
-      {step === 1 && features && (features.crypto_enabled || features.mobile_money_enabled) && (
-        <MethodPicker features={features} onPick={(m) => { setMethod(m); setStep(2); }} />
-      )}
-      {step === 2 && method === 'crypto' && features?.crypto_enabled && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
-      {step === 2 && method === 'mobile_money' && features?.mobile_money_enabled && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
+      {step === 1 && features && (() => {
+        const cryptoOn = features.wallet_crypto_enabled !== false && features.deposit_crypto_enabled !== false;
+        const mmOn = (features.wallet_xof_enabled !== false && features.deposit_xof_enabled !== false)
+                    || (features.wallet_xaf_enabled !== false && features.deposit_xaf_enabled !== false);
+        if (!cryptoOn && !mmOn) {
+          return (
+            <ComingSoon
+              title="Dépôts temporairement indisponibles"
+              message={features.mobile_money_coming_soon_message || features.crypto_coming_soon_message}
+              icon={Rocket}
+            />
+          );
+        }
+        return <MethodPicker features={features} onPick={(m) => { setMethod(m); setStep(2); }} />;
+      })()}
+      {step === 2 && method === 'crypto' && features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
+      {step === 2 && method === 'mobile_money' && (
+        (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
+        || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
+      ) && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
       {step === 3 && deposit?.__momo && <MobileMoneyTracker deposit={deposit} />}
       {step === 3 && deposit && !deposit.__momo && <CryptoDepositTracker deposit={deposit} />}
       {step === 3 && !deposit && (
@@ -69,9 +77,17 @@ export default function Deposit() {
 }
 
 function MethodPicker({ features, onPick }) {
+  // A wallet method is offered only when BOTH the parent wallet AND the
+  // deposit toggle for its underlying currency are enabled. For Mobile Money
+  // we need at least one of XOF/XAF to be depositable.
+  const cryptoOn = features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false;
+  const mmOn = (
+    (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
+    || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
+  );
   const methods = [
-    { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux', enabled: features?.crypto_enabled !== false },
-    { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…', enabled: features?.mobile_money_enabled !== false },
+    { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux', enabled: cryptoOn },
+    { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…', enabled: mmOn },
   ];
   const available = methods.filter((m) => m.enabled);
   return (

@@ -22,11 +22,20 @@ export default function Transfer() {
     api.get('/transfer/config').then(({ data }) => setConfig(data)).catch(() => {});
   }, []);
 
-  const opts = useMemo(() => [
-    { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais', enabled: true },
-    { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money', enabled: features?.mobile_money_enabled !== false },
-    { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux', enabled: features?.crypto_enabled !== false },
-  ].filter((o) => o.enabled), [features]);
+  const opts = useMemo(() => {
+    // Mobile Money withdrawal requires at least one FCFA wallet + its
+    // withdrawal toggle to be on.
+    const mmOn = (
+      (features?.wallet_xof_enabled !== false && features?.withdrawal_xof_enabled !== false)
+      || (features?.wallet_xaf_enabled !== false && features?.withdrawal_xaf_enabled !== false)
+    );
+    const cryptoOn = features?.wallet_crypto_enabled !== false && features?.withdrawal_crypto_enabled !== false;
+    return [
+      { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais', enabled: true },
+      { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money', enabled: mmOn },
+      { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux', enabled: cryptoOn },
+    ].filter((o) => o.enabled);
+  }, [features]);
 
   const onDone = (data, meta) => {
     setDone({ ...data, meta });

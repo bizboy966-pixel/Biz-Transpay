@@ -391,10 +391,24 @@ DEFAULT_SUPPORT_CONFIG = {
 
 DEFAULT_APP_FEATURES = {
     "id": "app_features",
+    # Legacy top-level toggles kept for backwards compat with the old
+    # "Mobile Money vs Crypto" UI. New granular per-currency toggles below
+    # take precedence when set.
     "mobile_money_enabled": True,
     "crypto_enabled": True,
     "mobile_money_coming_soon_message": "Bientôt disponible — cette fonctionnalité est en cours de finalisation.",
     "crypto_coming_soon_message": "Bientôt disponible — cette fonctionnalité est en cours de finalisation.",
+    # Per-currency wallet visibility.
+    "wallet_xof_enabled": True,
+    "wallet_xaf_enabled": True,
+    "wallet_crypto_enabled": True,
+    # Per-currency deposit / withdrawal switches.
+    "deposit_xof_enabled": True,
+    "deposit_xaf_enabled": True,
+    "deposit_crypto_enabled": True,
+    "withdrawal_xof_enabled": True,
+    "withdrawal_xaf_enabled": True,
+    "withdrawal_crypto_enabled": True,
 }
 
 
@@ -5449,14 +5463,26 @@ async def admin_update_support_config(req: AdminSupportConfigReq, admin=Depends(
 
 @api.get("/settings/features")
 async def public_get_features():
-    """Public endpoint — used by the frontend to know which wallets to render
-    and which ones to gate behind a 'Bientôt disponible' banner."""
+    """Public endpoint — used by the frontend to know which wallets and
+    operations (deposit/withdrawal) are currently active."""
     f = await get_app_features()
     return {
+        # Legacy fields kept for backwards compat.
         "mobile_money_enabled": bool(f.get("mobile_money_enabled", True)),
         "crypto_enabled": bool(f.get("crypto_enabled", True)),
         "mobile_money_coming_soon_message": f.get("mobile_money_coming_soon_message") or "",
         "crypto_coming_soon_message": f.get("crypto_coming_soon_message") or "",
+        # Per-currency wallet visibility.
+        "wallet_xof_enabled": bool(f.get("wallet_xof_enabled", True)),
+        "wallet_xaf_enabled": bool(f.get("wallet_xaf_enabled", True)),
+        "wallet_crypto_enabled": bool(f.get("wallet_crypto_enabled", True)),
+        # Per-currency deposit / withdrawal switches.
+        "deposit_xof_enabled": bool(f.get("deposit_xof_enabled", True)),
+        "deposit_xaf_enabled": bool(f.get("deposit_xaf_enabled", True)),
+        "deposit_crypto_enabled": bool(f.get("deposit_crypto_enabled", True)),
+        "withdrawal_xof_enabled": bool(f.get("withdrawal_xof_enabled", True)),
+        "withdrawal_xaf_enabled": bool(f.get("withdrawal_xaf_enabled", True)),
+        "withdrawal_crypto_enabled": bool(f.get("withdrawal_crypto_enabled", True)),
     }
 
 
@@ -5465,6 +5491,15 @@ class AdminFeaturesReq(BaseModel):
     crypto_enabled: Optional[bool] = None
     mobile_money_coming_soon_message: Optional[str] = None
     crypto_coming_soon_message: Optional[str] = None
+    wallet_xof_enabled: Optional[bool] = None
+    wallet_xaf_enabled: Optional[bool] = None
+    wallet_crypto_enabled: Optional[bool] = None
+    deposit_xof_enabled: Optional[bool] = None
+    deposit_xaf_enabled: Optional[bool] = None
+    deposit_crypto_enabled: Optional[bool] = None
+    withdrawal_xof_enabled: Optional[bool] = None
+    withdrawal_xaf_enabled: Optional[bool] = None
+    withdrawal_crypto_enabled: Optional[bool] = None
 
 
 @api.get("/admin/settings/features")

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2 } from 'lucide-react';
+import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import NotificationBell from '@/components/NotificationBell';
 import { Link } from 'react-router-dom';
@@ -17,6 +17,7 @@ const NAV = [
   { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts' },
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
   { section: 'Réglages' },
+  { to: '/admin/features', i: Wallet, l: 'Fonctionnalités' },
   { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
   { to: '/admin/deposit-config', i: ArrowDownToLine, l: 'Config. dépôts' },
   { to: '/admin/platform', i: SettingsIcon, l: 'Frais & Retraits' },
