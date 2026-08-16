@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { TrendingUp, Wallet, Bitcoin, RefreshCw } from 'lucide-react';
+import { TrendingUp, Wallet, Bitcoin, RefreshCw, ListChecks, Search, X, ArrowDownToLine, ArrowUpFromLine, Repeat, Link2, Code2 } from 'lucide-react';
 import api from '@/api';
 
 const PERIODS = [
@@ -18,6 +18,7 @@ export default function AdminBenefits() {
   const [data, setData] = useState(null);
   const [period, setPeriod] = useState('all');
   const [loading, setLoading] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -92,8 +93,14 @@ export default function AdminBenefits() {
       </div>
 
       <div className="rounded-2xl border border-slate-100 bg-white p-4 sm:p-5">
-        <div className="text-[12px] font-bold text-slate-900 mb-2 flex items-center gap-1.5">
-          <TrendingUp className="w-3.5 h-3.5 text-emerald-600" /> Comment ce chiffre est-il calculé ?
+        <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+          <div className="text-[12px] font-bold text-slate-900 flex items-center gap-1.5">
+            <TrendingUp className="w-3.5 h-3.5 text-emerald-600" /> Comment ce chiffre est-il calculé ?
+          </div>
+          <button onClick={() => setDetailsOpen(true)} data-testid="btn-benefits-details"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold">
+            <ListChecks className="w-3.5 h-3.5" /> Voir les détails des bénéfices
+          </button>
         </div>
         <ul className="text-[11px] sm:text-xs text-slate-600 space-y-1 list-disc list-inside leading-relaxed">
           <li>À chaque transaction (dépôt ou retrait, MoMo ou crypto), les frais sont ventilés en deux parts : <b>Passerelle</b> (reversée au fournisseur : FedaPay, IziChange…) et <b>Plateforme</b> (votre marge nette).</li>
@@ -101,6 +108,154 @@ export default function AdminBenefits() {
           <li>Les 3 portefeuilles restent séparés — aucune conversion USDT↔XOF n&apos;est appliquée pour préserver la lisibilité par devise.</li>
           <li>Seules les transactions <b>confirmées</b> (statut <span className="font-mono">completed</span> / <span className="font-mono">paid</span>) sont comptées.</li>
         </ul>
+      </div>
+
+      {detailsOpen && <BenefitsDetailsDrawer onClose={() => setDetailsOpen(false)} period={period} />}
+    </div>
+  );
+}
+
+function BenefitsDetailsDrawer({ onClose, period }) {
+  const [items, setItems] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState('');
+  const [currency, setCurrency] = useState('');
+  const [type, setType] = useState('');
+
+  const load = () => {
+    setLoading(true);
+    setItems([]);
+    const params = { period, limit: 200 };
+    if (q) params.q = q;
+    if (currency) params.currency = currency;
+    if (type) params.type = type;
+    api.get('/admin/benefits/details', { params })
+      .then(({ data }) => { setItems(data.items || []); setTotal(data.total || 0); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [currency, type, period]);
+  useEffect(() => {
+    const id = setTimeout(() => load(), 250);
+    return () => clearTimeout(id);
+    /* eslint-disable-next-line */
+  }, [q]);
+
+  const typeIcon = {
+    deposit: <ArrowDownToLine className="w-3 h-3 text-emerald-600" />,
+    withdrawal: <ArrowUpFromLine className="w-3 h-3 text-red-500" />,
+    transfer: <ArrowUpFromLine className="w-3 h-3 text-red-500" />,
+    link_payment: <Link2 className="w-3 h-3 text-violet-600" />,
+    payment: <Code2 className="w-3 h-3 text-blue-600" />,
+    exchange: <Repeat className="w-3 h-3 text-orange-600" />,
+  };
+
+  const fmtDate = (iso) => {
+    if (!iso) return '—';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString('fr-FR') + ' ' + d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    } catch { return iso; }
+  };
+  const fmtAmt = (n, cur) => {
+    const num = Number(n || 0);
+    if (cur === 'USDT') return num.toFixed(4);
+    return Math.round(num).toLocaleString('fr-FR');
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3" data-testid="benefits-details-modal">
+      <div className="w-full max-w-5xl max-h-[92vh] bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <div className="font-cabinet font-extrabold text-slate-900 text-base sm:text-lg flex items-center gap-2">
+              <ListChecks className="w-4 h-4 text-emerald-600" /> Détails des bénéfices
+            </div>
+            <div className="text-[11px] text-slate-500">Toutes les transactions ayant généré une marge plateforme · {total} entrée{total > 1 ? 's' : ''}</div>
+          </div>
+          <button onClick={onClose} data-testid="btn-close-benefits-details" className="w-8 h-8 rounded-lg hover:bg-slate-100 text-slate-500">
+            <X className="w-4 h-4 mx-auto" />
+          </button>
+        </div>
+
+        <div className="p-3 sm:p-4 bg-slate-50 border-b border-slate-100 flex flex-wrap gap-2 items-center">
+          <div className="flex-1 min-w-[220px] flex items-center gap-2 px-3 border border-slate-200 rounded-xl bg-white">
+            <Search className="w-4 h-4 text-slate-400" />
+            <input value={q} onChange={(e) => setQ(e.target.value)}
+              data-testid="benefits-search"
+              placeholder="Référence, utilisateur, description…"
+              className="flex-1 py-2 outline-none text-xs sm:text-sm bg-transparent" />
+          </div>
+          <select value={currency} onChange={(e) => setCurrency(e.target.value)}
+            data-testid="benefits-currency"
+            className="px-3 py-2 border border-slate-200 rounded-xl text-[11px] sm:text-xs font-semibold bg-white">
+            <option value="">Toutes devises</option>
+            <option value="XOF">XOF</option>
+            <option value="XAF">XAF</option>
+            <option value="USDT">USDT</option>
+          </select>
+          <select value={type} onChange={(e) => setType(e.target.value)}
+            data-testid="benefits-type"
+            className="px-3 py-2 border border-slate-200 rounded-xl text-[11px] sm:text-xs font-semibold bg-white">
+            <option value="">Tous types</option>
+            <option value="deposit">Frais dépôt</option>
+            <option value="withdrawal">Frais retrait</option>
+            <option value="transfer">Frais retrait (transfer)</option>
+            <option value="link_payment">Frais lien</option>
+            <option value="payment">Frais API</option>
+            <option value="exchange">Frais conversion</option>
+          </select>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          <table className="w-full text-xs">
+            <thead className="bg-white sticky top-0 border-b border-slate-100 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              <tr>
+                <th className="text-left px-3 py-2">Date</th>
+                <th className="text-left px-3 py-2">Type</th>
+                <th className="text-left px-3 py-2">Référence</th>
+                <th className="text-left px-3 py-2">Utilisateur</th>
+                <th className="text-right px-3 py-2">Montant tx</th>
+                <th className="text-right px-3 py-2">Bénéfice</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading && (
+                <tr><td colSpan={6} className="p-10 text-center text-slate-500">
+                  <span className="inline-flex items-center gap-2"><RefreshCw className="w-4 h-4 animate-spin" /> Chargement…</span>
+                </td></tr>
+              )}
+              {!loading && items.length === 0 && (
+                <tr><td colSpan={6} className="p-10 text-center text-slate-400">Aucun bénéfice sur cette période / filtre.</td></tr>
+              )}
+              {!loading && items.map((it) => (
+                <tr key={it.tx_id} className="border-t border-slate-50 hover:bg-slate-50/50" data-testid={`benefit-row-${it.tx_id}`}>
+                  <td className="px-3 py-2 font-mono text-[11px] text-slate-600">{fmtDate(it.date)}</td>
+                  <td className="px-3 py-2">
+                    <div className="inline-flex items-center gap-1.5">
+                      {typeIcon[it.type] || <Wallet className="w-3 h-3 text-slate-500" />}
+                      <span className="font-semibold text-slate-800 text-[11px]">{it.type_label}</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[11px] text-slate-700">{it.reference || '—'}</td>
+                  <td className="px-3 py-2">
+                    <div className="text-[11px] font-semibold text-slate-900 truncate max-w-[180px]">{it.user?.name || it.user?.email || it.user?.id || '—'}</div>
+                    {it.user?.email && <div className="text-[10px] text-slate-500 truncate max-w-[180px]">{it.user.email}</div>}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono text-[11px] text-slate-700">
+                    {fmtAmt(it.amount, it.currency)} <span className="text-[9px] text-slate-400">{it.currency}</span>
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-mono font-bold">
+                      +{fmtAmt(it.platform_fee, it.currency)} {it.currency}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

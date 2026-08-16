@@ -1,5 +1,42 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — 4 correctifs : Continuer + Bénéfice complet + Filtres tx + Détails
+### 1. Fix bouton "Continuer" (Transfer crypto)
+- ✅ `Transfer.js` — `canSubmit` relaxé : accepte l'adresse quand aucun regex client-side n'est configuré pour le réseau (le backend fait la validation stricte). Ainsi les réseaux non-mainstream (ADA, ATOM…) ne bloquent plus.
+- ✅ Le bouton reste TOUJOURS visible ; quand désactivé, il affiche `Renseigner : <liste des champs manquants>` (crypto, réseau, adresse, montant, solde, nom, email). Fini le bouton fantôme.
+
+### 2. Bénéfices — tous les frais comptabilisés
+- ✅ **API Payouts** (`/v1/payouts`) : ajoute désormais `gateway_fee`, `platform_fee`, `gateway_fee_fixed` dans metadata + status auto-completed si upstream terminal (comme les retraits users)
+- ✅ Fee calcul unifié : inclut le `fees_gateway_fixed` (montant fixe) comme sur `biz_to_crypto`
+- ✅ Récap `platform_fee` déjà stocké sur tous les autres flux : deposit MoMo/Crypto, link payment MoMo/Crypto, merchant API payment, transfer MoMo/Crypto, exchange (conversion)
+
+### 3. Nouvel endpoint `/admin/benefits/details` + Drawer UI
+- ✅ **Backend** : `GET /admin/benefits/details?period=&q=&currency=&type=&limit=&offset=`
+  - Filtre par période (all/7d/30d), devise (XOF/XAF/USDT), type (deposit/withdrawal/transfer/link_payment/payment/exchange)
+  - Recherche full-text : référence, description, `id`, nom/email/phone utilisateur
+  - Retourne items enrichis : `{date, type_label, reference, user, amount, currency, platform_fee, gateway_fee}`
+- ✅ **Frontend** : bouton **"Voir les détails des bénéfices"** (bg-slate-900, icône ListChecks) dans la card "Comment ce chiffre est-il calculé ?". Ouvre un drawer plein écran avec :
+  - Barre de recherche debouncée (250ms)
+  - 2 dropdowns : Devise · Type de commission
+  - Table : Date · Type (icône contextuelle) · Référence · Utilisateur · Montant tx · Bénéfice (badge vert)
+  - Labels FR : "Frais dépôt", "Frais retrait", "Frais lien", "Frais API", "Frais conversion"
+
+### 4. Fix filtres transactions Admin
+- ✅ `AdminTransactions.js` — au click sur un filtre (Tous/Dépôts/Retraits/…) :
+  - `setTxs([])` immédiat → la table se vide directement, l'admin voit l'action prise en compte
+  - Nouveau state `loading` → indicateur `<RefreshCw animate-spin />` "Chargement…" pendant la requête
+- ✅ Ajout des types manquants dans le dropdown : **"Conversions"** (label FR pour `exchange`), **"Paiements API"** (`payment`)
+- ✅ Aucun rechargement manuel de page nécessaire
+
+**Testing** :
+- `/admin/benefits/details` → 2 fake tx (link_payment USDT + exchange XOF) remontent correctement avec les labels FR ✅
+- Filtre type=exchange → 1 résultat filtré correctement ✅
+- Recherche q=F-LINK-1 → 1 résultat exact ✅
+- Screenshot modal "Détails des bénéfices" → tableau + filtres + recherche parfaitement rendus ✅
+- Backend + frontend lint 0 erreur ✅
+
+**Data-testids** : `btn-benefits-details`, `benefits-details-modal`, `benefits-search`, `benefits-currency`, `benefits-type`, `benefit-row-{tx_id}`, `btn-close-benefits-details`, `admin-tx-loading`.
+
 ## Implémenté (2026-02-XX) — 5 correctifs : Affichage frais + Auto-validation + Bénéfice conversions
 ### 1. Affichage frais côté utilisateur (Transfer crypto)
 - ✅ `Transfer.js` — `feeLabel` combine désormais fixe + pct : `"1 USDT + 2,5%"` quand un fixe est configuré, sinon `"2,5%"`. Le fixe est lu depuis `crypto.gateway_fee_fixed` (nouveau champ exposé par `/crypto/coins`).

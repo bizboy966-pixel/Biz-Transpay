@@ -2773,8 +2773,12 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     # ---------- Compute fee ----------
     cfg = await get_transfer_config()
     fees_map = ((cfg.get("crypto") or {}).get("fees") or {})
+    fees_gw_fixed = ((cfg.get("crypto") or {}).get("fees_gateway_fixed") or {})
     fee_pct = float(fees_map.get(coin_upper, 4.0))
-    fee = round(payload.amount * (fee_pct / 100.0), 6)
+    gw_fixed = float(fees_gw_fixed.get(coin_upper, 0) or 0)
+    fee = round(payload.amount * (fee_pct / 100.0) + gw_fixed, 6)
+    gateway_fee, platform_fee = await _crypto_platform_fee(coin_upper, "withdrawal", payload.amount)
+    gateway_fee = round(gateway_fee + gw_fixed, 6)
     fee_bearer = (payload.fee_bearer or "sender").lower()
     if fee_bearer not in ("sender", "recipient"):
         raise BizAPIError(400, "fee_bearer must be 'sender' or 'recipient'.",
@@ -2894,6 +2898,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     await db.merchant_payouts.update_one({"id": po_id}, {"$set": upd_fields})
 
     # Log an internal transaction record too for admin visibility.
+    tx_status = "completed" if mapped_status == "completed" else ("failed" if mapped_status == "failed" else "pending")
     await db.transactions.insert_one({
         "id": new_id(),
         "user_id": uid,
@@ -2901,7 +2906,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         "direction": "out",
         "amount": float(payload.amount),
         "currency": "USDT",
-        "status": "pending",
+        "status": tx_status,
         "reference": po_id,
         "counterparty": dest,
         "description": f"Payout API — {coin_upper}/{net_upper}",
@@ -2914,6 +2919,8 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "asset_code": asset_code, "wallet_address": dest,
             "amount_gross": float(payload.amount),
             "fee": fee, "fee_pct": fee_pct,
+            "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+            "gateway_fee_fixed": gw_fixed,
             "amount_net": recipient_gets,
             "fee_bearer": fee_bearer,
             "total_debit": total_debit,
@@ -4863,6 +4870,99 @@ class AdminKycDecision(BaseModel):
 
 class AdminResetPwd(BaseModel):
     new_password: str
+
+
+@api.get("/admin/benefits/details")
+async def admin_benefits_details(period: str = "all",
+                                  q: Optional[str] = None,
+                                  currency: Optional[str] = None,
+                                  type: Optional[str] = None,
+                                  limit: int = 100, offset: int = 0,
+                                  admin=Depends(get_admin)):
+    """Detailed history of platform-fee-generating transactions.
+    Powers /admin/benefits detail drawer.
+    - period : all | 7d | 30d
+    - q      : text search (matches reference, user name/email, description)
+    - currency : XOF | XAF | USDT (single filter)
+    - type   : deposit | withdrawal | transfer | link_payment | payment | exchange
+    - limit/offset : pagination
+    Returns : { total, items: [{tx_id, date, type, reference, user, currency, amount, platform_fee, gateway_fee, description}] }
+    """
+    match: dict = {"metadata.platform_fee": {"$exists": True, "$ne": None},
+                   "status": {"$in": ["completed", "paid"]}}
+    if period in ("7d", "30d"):
+        days = 7 if period == "7d" else 30
+        since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        match["created_at"] = {"$gte": since_iso}
+    if currency:
+        match["currency"] = currency.upper()
+    if type:
+        match["type"] = type
+
+    # Text search
+    user_ids: Optional[list[str]] = None
+    if q:
+        needle = q.strip()
+        # Search users first (name/email)
+        udocs = await db.users.find(
+            {"$or": [
+                {"full_name": {"$regex": needle, "$options": "i"}},
+                {"email": {"$regex": needle, "$options": "i"}},
+                {"phone": {"$regex": needle, "$options": "i"}},
+            ]},
+            {"id": 1}
+        ).to_list(200)
+        user_ids = [u["id"] for u in udocs]
+        match["$or"] = [
+            {"reference": {"$regex": needle, "$options": "i"}},
+            {"description": {"$regex": needle, "$options": "i"}},
+            {"id": needle},
+        ]
+        if user_ids:
+            match["$or"].append({"user_id": {"$in": user_ids}})
+
+    total = await db.transactions.count_documents(match)
+    docs = await db.transactions.find(match, {"_id": 0}) \
+        .sort("created_at", -1) \
+        .skip(int(offset)).limit(min(int(limit), 500)) \
+        .to_list(500)
+
+    # Enrich with user info
+    tx_user_ids = list({d.get("user_id") for d in docs if d.get("user_id")})
+    users = {}
+    if tx_user_ids:
+        async for u in db.users.find({"id": {"$in": tx_user_ids}},
+                                       {"id": 1, "full_name": 1, "email": 1, "_id": 0}):
+            users[u["id"]] = {"name": u.get("full_name"), "email": u.get("email")}
+
+    type_labels_fr = {
+        "deposit": "Frais dépôt",
+        "withdrawal": "Frais retrait",
+        "transfer": "Frais retrait",
+        "link_payment": "Frais lien",
+        "payment": "Frais API",
+        "exchange": "Frais conversion",
+    }
+
+    items = []
+    for d in docs:
+        meta = d.get("metadata") or {}
+        u = users.get(d.get("user_id")) or {}
+        items.append({
+            "tx_id": d.get("id"),
+            "date": d.get("created_at"),
+            "type": d.get("type"),
+            "type_label": type_labels_fr.get(d.get("type"), d.get("type")),
+            "reference": d.get("reference"),
+            "user": {"id": d.get("user_id"), **u},
+            "currency": d.get("currency"),
+            "amount": float(d.get("amount") or 0),
+            "platform_fee": float(meta.get("platform_fee") or 0),
+            "gateway_fee": float(meta.get("gateway_fee") or 0),
+            "fee_total": float(meta.get("fee") or 0),
+            "description": d.get("description"),
+        })
+    return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 
 @api.get("/admin/benefits")

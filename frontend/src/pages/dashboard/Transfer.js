@@ -384,7 +384,23 @@ function BizToCryptoForm({ config, onDone, balance }) {
   const currency = cryptoCode || 'USDT';
   const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
   const min = network?.min || 0, max = network?.max || 10 ** 12;
-  const canSubmit = crypto && network && walletAddress && addressValidation.ok && amt >= min && amt <= max && totalDebit <= bal && fullName && email;
+  // Address is valid when either (a) a regex matched OR (b) no regex is
+  // configured for this network → we cannot validate client-side, so accept
+  // any non-empty value (backend does the definitive check).
+  const addressOk = !!walletAddress && (addressValidation.ok !== false);
+  const canSubmit = crypto && network && addressOk && amt >= min && amt <= max && totalDebit <= bal && fullName && email;
+
+  // Human-readable list of what's still missing, shown when the button is disabled.
+  const missing = [];
+  if (!crypto) missing.push('cryptomonnaie');
+  if (!network) missing.push('réseau');
+  if (!walletAddress) missing.push('adresse du portefeuille');
+  else if (addressValidation.ok === false) missing.push('adresse valide');
+  if (!(amt >= min)) missing.push(`montant ≥ ${min}`);
+  if (amt > max) missing.push(`montant ≤ ${max}`);
+  if (amt > 0 && totalDebit > bal) missing.push('solde suffisant');
+  if (!fullName) missing.push('nom complet');
+  if (!email) missing.push('email');
 
   const submit = async () => {
     setPending(true);
@@ -479,8 +495,8 @@ function BizToCryptoForm({ config, onDone, balance }) {
         </div>
       )}
 
-      <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-crypto-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
-        Continuer
+      <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-crypto-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+        {canSubmit ? 'Continuer' : (missing.length ? `Renseigner : ${missing.join(', ')}` : 'Continuer')}
       </button>
 
       {confirmOpen && (

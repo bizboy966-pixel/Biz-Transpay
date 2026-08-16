@@ -16,6 +16,7 @@ function txChannel(tx) {
 
 export default function AdminTransactions({ filterType }) {
   const [txs, setTxs] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [q, setQ] = useState('');
   const [searchParams, setSearchParams] = useSearchParams();
   const [type, setType] = useState(filterType || searchParams.get('type') || '');
@@ -26,9 +27,14 @@ export default function AdminTransactions({ filterType }) {
   const load = () => {
     const p = {};
     if (q) p.q = q; if (type) p.type = type; if (status) p.status = status;
+    setLoading(true);
+    // Clear the table right away so the admin sees the filter took effect,
+    // rather than staring at stale rows while the request is in flight.
+    setTxs([]);
     api.get('/admin/transactions', { params: p })
       .then(({ data }) => setTxs(data))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoading(false));
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [type, status]);
   useEffect(() => {
@@ -90,8 +96,9 @@ export default function AdminTransactions({ filterType }) {
             <option value="deposit">Dépôts</option>
             <option value="withdrawal">Retraits</option>
             <option value="transfer">Transferts</option>
-            <option value="exchange">Échanges</option>
+            <option value="exchange">Conversions</option>
             <option value="link_payment">Paiements lien</option>
+            <option value="payment">Paiements API</option>
           </select>
         )}
         <select value={channel} onChange={(e) => setChannel(e.target.value)} data-testid="admin-tx-channel"
@@ -142,12 +149,19 @@ export default function AdminTransactions({ filterType }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 && (
+              {loading && (
+                <tr><td colSpan={7} className="p-10 text-center text-slate-500 text-sm" data-testid="admin-tx-loading">
+                  <div className="inline-flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4 animate-spin" /> Chargement…
+                  </div>
+                </td></tr>
+              )}
+              {!loading && filtered.length === 0 && (
                 <tr><td colSpan={7} className="p-10 text-center text-slate-400 text-sm" data-testid="admin-tx-empty">
                   {q ? 'Aucune transaction trouvée.' : 'Aucune transaction'}
                 </td></tr>
               )}
-              {filtered.map((tx) => {
+              {!loading && filtered.map((tx) => {
                 const meta = tx.metadata || {};
                 const coin = meta.coin;
                 const network = meta.network;
