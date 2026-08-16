@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Wallet, Coins, Bitcoin, ArrowDownToLine, ArrowUpFromLine, Eye, EyeOff, Check, X, AlertTriangle, Info } from 'lucide-react';
+import { Wallet, Coins, Bitcoin, ArrowDownToLine, ArrowUpFromLine, Eye, EyeOff, Check, X, AlertTriangle, Info, Code2, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -207,6 +207,51 @@ export default function AdminFeatures() {
             </div>
           );
         })}
+      </div>
+
+      {/* Advanced modules — global toggles */}
+      <div className="rounded-2xl bg-white border border-slate-100 p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)]">
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+            <Wallet className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="font-cabinet font-extrabold text-base text-slate-900">Modules avancés</div>
+            <div className="text-[11px] text-slate-500">Activez ou désactivez complètement des sections chez tous les utilisateurs. Désactivés = l'entrée n'apparaît plus dans le menu et la page renvoie « Bientôt disponible ».</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className={`p-4 rounded-xl flex items-center gap-3 ${features.api_enabled ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-100 border border-slate-200'}`}>
+            <Code2 className="w-5 h-5 text-slate-500 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="font-cabinet font-bold text-sm text-slate-900">Module API</div>
+              <div className="text-[11px] text-slate-500">Clés API marchand, webhooks, documentation développeur</div>
+            </div>
+            <Toggle
+              checked={!!features.api_enabled}
+              onChange={(v) => patch('api_enabled', v)}
+              disabled={saving === 'api_enabled'}
+              size="lg"
+              tid="toggle-api-enabled"
+            />
+          </div>
+
+          <div className={`p-4 rounded-xl flex items-center gap-3 ${features.links_enabled ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-100 border border-slate-200'}`}>
+            <Link2 className="w-5 h-5 text-slate-500 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="font-cabinet font-bold text-sm text-slate-900">Liens de paiement</div>
+              <div className="text-[11px] text-slate-500">Création et gestion des liens de paiement partageables</div>
+            </div>
+            <Toggle
+              checked={!!features.links_enabled}
+              onChange={(v) => patch('links_enabled', v)}
+              disabled={saving === 'links_enabled'}
+              size="lg"
+              tid="toggle-links-enabled"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Global summary */}

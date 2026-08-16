@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, ScrollText, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet, TrendingUp } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -30,9 +30,22 @@ const NAV = [
 
 export default function AdminLayout() {
   const { user, logout } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Sidebar closed by default on mobile so the admin content is visible
+  // immediately after login. Open on desktop for productivity.
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return window.innerWidth >= 1024;
+  });
   const [profileOpen, setProfileOpen] = useState(false);
   const loc = useLocation();
+
+  // Auto-close on route change on mobile so a nav click doesn't leave the
+  // drawer covering the destination page.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setSidebarOpen(false);
+    }
+  }, [loc.pathname]);
 
   const initials = (user?.full_name || 'A').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
   const roleLabel = user?.role === 'super_admin' ? 'Super Administrateur' : 'Administrateur';

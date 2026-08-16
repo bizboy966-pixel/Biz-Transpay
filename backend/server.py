@@ -409,6 +409,9 @@ DEFAULT_APP_FEATURES = {
     "withdrawal_xof_enabled": True,
     "withdrawal_xaf_enabled": True,
     "withdrawal_crypto_enabled": True,
+    # Advanced modules — hide entire sections when off (sidebar entry + page).
+    "api_enabled": True,
+    "links_enabled": True,
 }
 
 
@@ -5855,6 +5858,9 @@ async def public_get_features():
         "withdrawal_xof_enabled": bool(f.get("withdrawal_xof_enabled", True)),
         "withdrawal_xaf_enabled": bool(f.get("withdrawal_xaf_enabled", True)),
         "withdrawal_crypto_enabled": bool(f.get("withdrawal_crypto_enabled", True)),
+        # Advanced modules.
+        "api_enabled": bool(f.get("api_enabled", True)),
+        "links_enabled": bool(f.get("links_enabled", True)),
     }
 
 
@@ -5872,6 +5878,8 @@ class AdminFeaturesReq(BaseModel):
     withdrawal_xof_enabled: Optional[bool] = None
     withdrawal_xaf_enabled: Optional[bool] = None
     withdrawal_crypto_enabled: Optional[bool] = None
+    api_enabled: Optional[bool] = None
+    links_enabled: Optional[bool] = None
 
 
 @api.get("/admin/settings/features")

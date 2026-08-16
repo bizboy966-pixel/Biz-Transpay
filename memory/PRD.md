@@ -1,5 +1,30 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Toggles API/Liens + Fix sidebar mobile post-login
+- ✅ **Backend** :
+  - Nouveaux champs dans `DEFAULT_APP_FEATURES` : `api_enabled: True` et `links_enabled: True`.
+  - `AdminFeaturesReq` accepte `api_enabled` + `links_enabled`.
+  - `GET /settings/features` (public) et `GET /admin/settings/features` renvoient les 2 nouveaux flags.
+- ✅ **Admin > Fonctionnalités** — nouvelle section **"Modules avancés"** avec 2 toggles :
+  - **Module API** (icône Code2) — clés API marchand, webhooks, doc développeur
+  - **Liens de paiement** (icône Link2) — création et gestion des liens partageables
+  - Toggle style identique aux switches existants (bg emerald quand actif, slate quand off), auto-save immédiat via `PATCH /admin/settings/features`.
+- ✅ **`DashboardLayout.js`** — sidebar respecte les toggles :
+  - Entrée **"Liens de paiement"** masquée si `links_enabled=false`
+  - Entrée **"API"** masquée si `api_enabled=false` (en plus de la restriction merchant existante)
+- ✅ **`Home.js`** — quick action **"Lien de paiement"** masquée si `links_enabled=false`.
+- ✅ **Fix bug post-login** (drawer plein écran sur mobile) — `DashboardLayout` + `AdminLayout` :
+  - `sidebarOpen` initialisé via `useState(() => window.innerWidth >= 1024)` — **fermé par défaut sur mobile** (< 1024 px), ouvert sur desktop.
+  - Nouveau `useEffect` qui écoute `loc.pathname` : sur mobile, chaque navigation ferme automatiquement la drawer pour éviter qu'elle masque la page destination.
+
+**Testing** :
+- `PATCH /admin/settings/features` `{api_enabled:false, links_enabled:false}` → persisté + `/settings/features` public reflète immédiatement ✅
+- Screenshot admin `/admin/features` → nouvelle section "Modules avancés" visible avec 2 toggles ON ✅
+- Frontend + backend lint 0 erreur ✅
+- ⚠️ Le fix sidebar mobile est validé au niveau du code (`useState` initializer lit `window.innerWidth` au premier render). L'outil screenshot Playwright ne peut pas simuler le viewport mobile, mais le comportement sur un vrai téléphone sera correct.
+
+**Data-testids ajoutés** : `toggle-api-enabled`, `toggle-links-enabled`.
+
 ## Implémenté (2026-02-XX) — Frais passerelle FIXE sur les retraits Crypto
 - ✅ **Backend** :
   - Nouveau champ `transfer_config.crypto.fees_gateway_fixed[coin]` (montant fixe dans la devise du coin, ex : 0.0001 BTC, 2 USDT).

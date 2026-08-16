@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Home, Receipt, Link2, Code2, IdCard, Settings as SettingsIcon, Headphones, Menu, ChevronDown, LogOut, X } from 'lucide-react';
@@ -6,22 +6,39 @@ import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
 import { useAuth } from '@/context/AuthContext';
+import { useFeatures } from '@/hooks/useFeatures';
 
 export default function DashboardLayout() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const features = useFeatures();
+  // Sidebar closed by default on mobile so the dashboard content is visible
+  // immediately after login. Open on desktop for productivity.
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return window.innerWidth >= 1024;
+  });
   const [profileOpen, setProfileOpen] = useState(false);
   const loc = useLocation();
 
+  // Auto-close the sidebar on route change on mobile so a nav click doesn't
+  // leave the drawer covering the destination page.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setSidebarOpen(false);
+    }
+  }, [loc.pathname]);
+
   const initials = (user?.full_name || 'U').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
   const isMerchant = user?.account_type === 'merchant' || user?.role === 'admin' || user?.role === 'super_admin';
+  const apiEnabled = features?.api_enabled !== false;
+  const linksEnabled = features?.links_enabled !== false;
 
   const nav = [
     { to: '/dashboard', end: true, i: Home, l: t('dashboard.title') },
     { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions'), sub: t('dashboard.history') },
-    { to: '/dashboard/links', i: Link2, l: t('dashboard.payment_link') },
-    ...(isMerchant ? [{ to: '/dashboard/api', i: Code2, l: 'API' }] : []),
+    ...(linksEnabled ? [{ to: '/dashboard/links', i: Link2, l: t('dashboard.payment_link') }] : []),
+    ...(isMerchant && apiEnabled ? [{ to: '/dashboard/api', i: Code2, l: 'API' }] : []),
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
   ];
   const nav2 = [
