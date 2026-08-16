@@ -182,9 +182,11 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
   const getSplit = (coin, legacyTotal) => {
     const feesG = crypto.fees_gateway || {};
     const feesP = crypto.fees_platform || {};
+    const feesGFixed = crypto.fees_gateway_fixed || {};
     const gateway = feesG[coin] !== undefined ? feesG[coin] : (legacyTotal ?? 4);
     const platform = feesP[coin] !== undefined ? feesP[coin] : 0;
-    return { gateway: +gateway, platform: +platform };
+    const gatewayFixed = feesGFixed[coin] !== undefined ? feesGFixed[coin] : 0;
+    return { gateway: +gateway, platform: +platform, gatewayFixed: +gatewayFixed };
   };
 
   const setPart = (coin, part, val) => {
@@ -192,15 +194,18 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
     const safe = isNaN(num) ? 0 : num;
     const feesG = { ...(crypto.fees_gateway || {}) };
     const feesP = { ...(crypto.fees_platform || {}) };
+    const feesGFixed = { ...(crypto.fees_gateway_fixed || {}) };
     const fees = { ...(crypto.fees || {}) };
     // Seed both maps from legacy if missing
     if (feesG[coin] === undefined) feesG[coin] = fees[coin] !== undefined ? fees[coin] : 4;
     if (feesP[coin] === undefined) feesP[coin] = 0;
+    if (feesGFixed[coin] === undefined) feesGFixed[coin] = 0;
     if (part === 'gateway') feesG[coin] = safe;
-    else feesP[coin] = safe;
+    else if (part === 'platform') feesP[coin] = safe;
+    else if (part === 'gateway_fixed') feesGFixed[coin] = safe;
     const total = +((feesG[coin] || 0) + (feesP[coin] || 0)).toFixed(4);
     fees[coin] = total;
-    updCrypto({ fees, fees_gateway: feesG, fees_platform: feesP });
+    updCrypto({ fees, fees_gateway: feesG, fees_platform: feesP, fees_gateway_fixed: feesGFixed });
     setCoins((cs) => cs.map((c) => c.coin === coin ? { ...c, fee_pct: total } : c));
   };
 
@@ -248,15 +253,16 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
               <th className="text-left px-2 sm:px-3 py-2">Code</th>
               <th className="text-left px-2 sm:px-3 py-2">Cryptomonnaie</th>
               <th className="text-right px-2 sm:px-3 py-2">Frais passerelle %</th>
+              <th className="text-right px-2 sm:px-3 py-2">Frais passerelle fixe</th>
               <th className="text-right px-2 sm:px-3 py-2">Frais plateforme %</th>
-              <th className="text-right px-2 sm:px-3 py-2">Total %</th>
+              <th className="text-right px-2 sm:px-3 py-2">Total</th>
               <th className="text-center px-2 sm:px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
             {filtered.map((c) => {
-              const { gateway, platform } = getSplit(c.coin, c.fee_pct);
-              const total = +(gateway + platform).toFixed(4);
+              const { gateway, platform, gatewayFixed } = getSplit(c.coin, c.fee_pct);
+              const totalPct = +(gateway + platform).toFixed(4);
               const isHidden = hidden.has(c.coin);
               return (
               <tr key={c.coin} className={`border-t border-slate-50 ${isHidden ? 'opacity-50 bg-slate-50/50' : ''}`} data-testid={`crypto-fee-row-${c.coin}`}>
@@ -276,6 +282,15 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
                 </td>
                 <td className="px-2 sm:px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1">
+                    <input type="number" step="0.0001" min="0" value={gatewayFixed} disabled={isHidden}
+                      onChange={(e) => setPart(c.coin, 'gateway_fixed', e.target.value)}
+                      data-testid={`crypto-fee-gateway-fixed-${c.coin}`}
+                      className="w-20 sm:w-24 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono disabled:bg-slate-100" />
+                    <span className="text-slate-400 text-[10px]">{c.coin}</span>
+                  </div>
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <div className="inline-flex items-center gap-1">
                     <input type="number" step="0.1" min="0" max="100" value={platform} disabled={isHidden}
                       onChange={(e) => setPart(c.coin, 'platform', e.target.value)}
                       data-testid={`crypto-fee-platform-${c.coin}`}
@@ -284,9 +299,16 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
                   </div>
                 </td>
                 <td className="px-2 sm:px-3 py-2 text-right">
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`crypto-fee-total-${c.coin}`}>
-                    {total.toFixed(2)} %
-                  </span>
+                  <div className="inline-flex flex-col items-end gap-0.5">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`crypto-fee-total-${c.coin}`}>
+                      {totalPct.toFixed(2)} %
+                    </span>
+                    {gatewayFixed > 0 && (
+                      <span className="text-[9px] font-mono font-bold text-orange-600" data-testid={`crypto-fee-total-fixed-${c.coin}`}>
+                        + {gatewayFixed} {c.coin}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-2 sm:px-3 py-2 text-center">
                   {isHidden ? (

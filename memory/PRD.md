@@ -1,5 +1,29 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Frais passerelle FIXE sur les retraits Crypto
+- ✅ **Backend** :
+  - Nouveau champ `transfer_config.crypto.fees_gateway_fixed[coin]` (montant fixe dans la devise du coin, ex : 0.0001 BTC, 2 USDT).
+  - `biz_to_crypto` calcule désormais : `fee_total = amount * (fee_pct/100) + gw_fixed`. Le `gateway_fee` stocké dans `metadata` inclut le fixe (le `platform_fee` reste 100 % en pourcentage).
+  - Nouveau champ `metadata.gateway_fee_fixed` stocké par transaction pour audit.
+  - `GET /admin/crypto/coins?direction=withdrawal` retourne aussi `gateway_fee_fixed` (0 par défaut).
+- ✅ **Frontend `AdminTransferConfig.js` → CryptoFeesTable** :
+  - Nouvelle colonne **"Frais passerelle fixe"** (input number en step 0.0001) entre "Frais passerelle %" et "Frais plateforme %".
+  - Chaque input affiche l'unité du coin à droite (ADA, BTC, USDT…).
+  - **Colonne "Total"** enrichie : badge noir avec le % total en haut, ligne orange en dessous "+ X {COIN}" quand un fixe est configuré (masquée quand fixe = 0).
+- ✅ **Règles d'application** (comme demandé par l'utilisateur) :
+  - Si `fee_pct > 0` et `gw_fixed = 0` → seul le % s'applique
+  - Si `fee_pct = 0` et `gw_fixed > 0` → seul le fixe s'applique
+  - Si les 2 > 0 → les 2 s'additionnent
+  - Scope : **retraits crypto uniquement** (dépôts crypto + retraits/dépôts MoMo ne sont pas concernés)
+
+**Testing** (curl + screenshot) :
+- `PATCH /admin/transfer/config` avec `fees_gateway_fixed.BTC=0.0001` + `fees.BTC=1.0` → persisté ✅
+- `GET /admin/crypto/coins?direction=withdrawal` retourne `gateway_fee_fixed: 0.0001` ✅
+- Screenshot admin transfer-config → nouvelle colonne visible, ligne BTC affiche 0% + 0.0001 BTC + 1% → badge total "1.00 %" + "+ 0.0001 BTC" en orange ✅
+- Backend lint 0 erreur, frontend lint 0 erreur ✅
+
+**Data-testid ajouté** : `crypto-fee-gateway-fixed-{coin}`, `crypto-fee-total-fixed-{coin}`.
+
 ## Implémenté (2026-02-XX) — Nouvelle page Admin "Bénéfice" (marge Plateforme)
 - ✅ **Helpers backend** :
   - `_crypto_platform_fee(coin, direction, gross)` — retourne `(gateway_fee, platform_fee)` en montant, lit `deposit_config.crypto` ou `transfer_config.crypto` selon la direction

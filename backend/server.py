@@ -840,9 +840,14 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             raise HTTPException(400, f"Montant hors des limites autorisées ({min_amt} - {max_amt} {req.crypto})")
         # Per-coin fee from admin config (defaults to 4% if not configured)
         fees_map = (ccfg.get("fees") or {})
+        fees_gw_fixed = (ccfg.get("fees_gateway_fixed") or {})
         fee_pct = float(fees_map.get(coin_upper, 4.0))  # stored as percent (e.g. 4.0 = 4%)
-        fee = req.amount * (fee_pct / 100.0)
+        gw_fixed = float(fees_gw_fixed.get(coin_upper, 0) or 0)
+        # Gateway split: percent share + optional fixed amount (in the coin's native unit)
         gateway_fee, platform_fee = await _crypto_platform_fee(coin_upper, "withdrawal", req.amount)
+        gateway_fee = round(gateway_fee + gw_fixed, 6)
+        # Total fee applied on the transaction = pct part + fixed gateway
+        fee = round(req.amount * (fee_pct / 100.0) + gw_fixed, 6)
         total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
         recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
         if u.get(field, 0) < total_debit:
@@ -858,6 +863,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "asset_code": asset_code,
                                            "wallet_address": req.wallet_address,
                                            "amount_gross": req.amount,
+                                           "gateway_fee_fixed": gw_fixed,
                                            "fee": fee, "fee_pct": fee_pct,
                                            "gateway_fee": gateway_fee,
                                            "platform_fee": platform_fee,
@@ -4769,6 +4775,7 @@ async def admin_crypto_coins(direction: str = "withdrawal", admin=Depends(get_ad
     fees = section.get("fees") or {}
     fees_g = section.get("fees_gateway") or {}
     fees_p = section.get("fees_platform") or {}
+    fees_g_fixed = section.get("fees_gateway_fixed") or {}
     hidden = set(section.get("hidden_coins") or [])
     # Always include configured coins even if not returned by API (e.g. temporarily disabled)
     for c in fees:
@@ -4780,12 +4787,14 @@ async def admin_crypto_coins(direction: str = "withdrawal", admin=Depends(get_ad
         total = float(fees.get(c, 4.0))
         gw = float(fees_g[c]) if c in fees_g else total
         pf = float(fees_p[c]) if c in fees_p else 0.0
+        gw_fixed = float(fees_g_fixed[c]) if c in fees_g_fixed else 0.0
         result.append({
             "coin": c,
             "name": coins[c],
             "fee_pct": total,
             "gateway_fee_pct": gw,
             "platform_fee_pct": pf,
+            "gateway_fee_fixed": gw_fixed,
             "hidden": c in hidden,
         })
     return result
