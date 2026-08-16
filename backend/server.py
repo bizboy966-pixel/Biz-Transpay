@@ -718,6 +718,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
 
         fee_pct = op.get("fee_pct", 0) / 100.0
         fee = req.amount * fee_pct
+        gateway_fee, platform_fee = _momo_platform_fee(op, req.amount)
         if req.fee_bearer == "sender":
             total_debit = req.amount + fee
             recipient_gets = req.amount
@@ -735,6 +736,8 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                  counterparty=req.recipient, description=req.description,
                                  metadata={"transfer_type": "biz_to_mobile", "operator": op["name"],
                                            "country": req.country, "fee": fee, "fee_bearer": req.fee_bearer,
+                                           "gateway_fee": gateway_fee,
+                                           "platform_fee": platform_fee,
                                            "recipient_gets": recipient_gets, "recipient_name": req.recipient_name,
                                            "total_debit": total_debit})
 
@@ -839,6 +842,7 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
         fees_map = (ccfg.get("fees") or {})
         fee_pct = float(fees_map.get(coin_upper, 4.0))  # stored as percent (e.g. 4.0 = 4%)
         fee = req.amount * (fee_pct / 100.0)
+        gateway_fee, platform_fee = await _crypto_platform_fee(coin_upper, "withdrawal", req.amount)
         total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
         recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
         if u.get(field, 0) < total_debit:
@@ -855,6 +859,8 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
                                            "wallet_address": req.wallet_address,
                                            "amount_gross": req.amount,
                                            "fee": fee, "fee_pct": fee_pct,
+                                           "gateway_fee": gateway_fee,
+                                           "platform_fee": platform_fee,
                                            "amount_net": recipient_gets,
                                            "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "total_debit": total_debit,
@@ -1348,8 +1354,10 @@ async def _credit_momo_deposit(d: dict) -> None:
     admin_op = _find_deposit_operator(dep_cfg, d.get("country", ""), d.get("operator", ""))
     if admin_op:
         momo_fee_pct = float(admin_op.get("fee_pct", 1.0))
+        gateway_fee, platform_fee = _momo_platform_fee(admin_op, gross)
     else:
         momo_fee_pct = float(d.get("fee_pct_applied") or 1.0)
+        gateway_fee, platform_fee = round(gross * (momo_fee_pct / 100.0), 2), 0.0
     fee = round(gross * (momo_fee_pct / 100.0), 2)
     net = round(gross - fee, 2)
     r = await db.momo_deposits.update_one(
@@ -1374,6 +1382,8 @@ async def _credit_momo_deposit(d: dict) -> None:
                               "phone_number": d.get("phone_number"),
                               "amount_gross": gross,
                               "fee": fee, "fee_pct": momo_fee_pct,
+                              "gateway_fee": gateway_fee,
+                              "platform_fee": platform_fee,
                               "amount_net": net,
                               "method": "mobile_money"})
     await notify(uid, "deposit_success",
@@ -1416,6 +1426,8 @@ async def _credit_momo_deposit(d: dict) -> None:
                             description=f"Paiement lien {lp.get('slug')}",
                             metadata={"link_id": lp["link_id"], "link_payment_id": lp["id"],
                                       "amount_gross": gross, "fee": fee, "fee_pct": momo_fee_pct,
+                                      "gateway_fee": gateway_fee,
+                                      "platform_fee": platform_fee,
                                       "method": "mobile_money", "operator": d.get("operator")})
 
 
@@ -1551,6 +1563,40 @@ def _apply_fee(amount: float, fee_pct: float) -> tuple[float, float]:
     return fee, net
 
 
+async def _crypto_platform_fee(coin: str, direction: str, gross: float) -> tuple[float, float]:
+    """Return (gateway_fee, platform_fee) in amount for a crypto tx.
+    direction = "deposit" reads deposit_config.crypto, "withdrawal" reads
+    transfer_config.crypto. Falls back to 0 platform if not configured.
+    """
+    coin_up = (coin or "").upper()
+    if direction == "deposit":
+        cfg = await get_deposit_config()
+    else:
+        cfg = await get_transfer_config()
+    section = (cfg.get("crypto") or {})
+    fees = section.get("fees") or {}
+    fees_g = section.get("fees_gateway") or {}
+    fees_p = section.get("fees_platform") or {}
+    total = float(fees.get(coin_up, 4.0))
+    gw_pct = float(fees_g[coin_up]) if coin_up in fees_g else total
+    pf_pct = float(fees_p[coin_up]) if coin_up in fees_p else 0.0
+    gateway_fee = round(float(gross) * (gw_pct / 100.0), 6)
+    platform_fee = round(float(gross) * (pf_pct / 100.0), 6)
+    return gateway_fee, platform_fee
+
+
+def _momo_platform_fee(op_cfg: dict, gross: float) -> tuple[float, float]:
+    """Return (gateway_fee, platform_fee) in amount for a MoMo tx from the
+    operator config entry (deposit_config or transfer_config operators list).
+    """
+    total = float(op_cfg.get("fee_pct", 0) or 0)
+    gw_pct = float(op_cfg.get("gateway_fee_pct", total)) if op_cfg.get("gateway_fee_pct") is not None else total
+    pf_pct = float(op_cfg.get("platform_fee_pct", 0)) if op_cfg.get("platform_fee_pct") is not None else 0.0
+    gateway_fee = round(float(gross) * (gw_pct / 100.0), 2)
+    platform_fee = round(float(gross) * (pf_pct / 100.0), 2)
+    return gateway_fee, platform_fee
+
+
 async def _reconcile_intent(intent_id: str) -> None:
     """Fallback: query IziPay for the intent's current status. If it's
     completed but our webhook hasn't fired yet, finalize the deposit or link
@@ -1577,6 +1623,7 @@ async def _reconcile_intent(intent_id: str) -> None:
         gross = float(d["amount"])
         fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
         fee, net = _apply_fee(gross, fee_pct)
+        gateway_fee, platform_fee = await _crypto_platform_fee(d.get("coin", "USDT"), "deposit", gross)
         r = await db.crypto_deposits.update_one(
             {"id": merchant_ref, "status": {"$ne": "confirmed"}},
             {"$set": {"status": "confirmed", "updated_at": now_iso(),
@@ -1594,6 +1641,7 @@ async def _reconcile_intent(intent_id: str) -> None:
                                       "asset_code": d.get("asset_code"), "tx_hash": tx_hash,
                                       "deposit_address": d.get("deposit_address"),
                                       "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                                      "gateway_fee": gateway_fee, "platform_fee": platform_fee,
                                       "amount_net": net,
                                       "source": "reconcile"})
         return
@@ -1604,6 +1652,7 @@ async def _reconcile_intent(intent_id: str) -> None:
         gross = float(lp["amount"])
         fee_pct = await _crypto_fee_pct(lp.get("coin", "USDT"))
         fee, net = _apply_fee(gross, fee_pct)
+        gateway_fee, platform_fee = await _crypto_platform_fee(lp.get("coin", "USDT"), "deposit", gross)
         r = await db.link_payments.update_one(
             {"id": merchant_ref, "status": {"$ne": "paid"}},
             {"$set": {"status": "paid", "paid_at": now_iso(),
@@ -1683,6 +1732,7 @@ async def izipay_webhook(request: Request):
                     gross = float(d["amount"])
                     fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
                     fee, net = _apply_fee(gross, fee_pct)
+                    gateway_fee, platform_fee = await _crypto_platform_fee(d.get("coin", "USDT"), "deposit", gross)
                     await db.crypto_deposits.update_one(
                         {"id": merchant_ref, "status": {"$ne": "confirmed"}},
                         {"$set": {"status": "confirmed", "updated_at": now_iso(),
@@ -1704,6 +1754,7 @@ async def izipay_webhook(request: Request):
                                               "deposit_address": d.get("deposit_address"),
                                               "amount_gross": gross,
                                               "fee": fee, "fee_pct": fee_pct,
+                                              "gateway_fee": gateway_fee, "platform_fee": platform_fee,
                                               "amount_net": net})
                 # 2) Payment link payment?
                 link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
@@ -1712,6 +1763,7 @@ async def izipay_webhook(request: Request):
                     gross = float(link_pay["amount"])
                     fee_pct = await _crypto_fee_pct(link_pay.get("coin", "USDT"))
                     fee, net = _apply_fee(gross, fee_pct)
+                    gateway_fee, platform_fee = await _crypto_platform_fee(link_pay.get("coin", "USDT"), "deposit", gross)
                     await db.link_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
                         {"$set": {"status": "paid", "paid_at": now_iso(),
@@ -1739,6 +1791,8 @@ async def izipay_webhook(request: Request):
                                                   "network": link_pay.get("network"),
                                                   "asset_code": link_pay.get("asset_code"),
                                                   "tx_hash": tx_hash,
+                                                  "gateway_fee": gateway_fee,
+                                                  "platform_fee": platform_fee,
                                                   "deposit_address": link_pay.get("deposit_address"),
                                                   "amount_gross": gross,
                                                   "fee": fee, "fee_pct": fee_pct,
@@ -1749,6 +1803,7 @@ async def izipay_webhook(request: Request):
                     gross = float(mp["amount"])
                     fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
                     fee, net = _apply_fee(gross, fee_pct)
+                    gateway_fee, platform_fee = await _crypto_platform_fee(mp.get("coin", "USDT"), "deposit", gross)
                     tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
                     await db.merchant_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
@@ -1766,6 +1821,7 @@ async def izipay_webhook(request: Request):
                                               "izipay_intent_id": intent_id,
                                               "coin": mp.get("coin"), "tx_hash": tx_hash,
                                               "amount_gross": gross, "fee": fee,
+                                              "gateway_fee": gateway_fee, "platform_fee": platform_fee,
                                               "fee_pct": fee_pct, "amount_net": net})
                     # Deliver HMAC-signed webhook to merchant
                     await _deliver_webhook(mp["merchant_id"], "payment.completed", {
@@ -4778,6 +4834,43 @@ class AdminKycDecision(BaseModel):
 
 class AdminResetPwd(BaseModel):
     new_password: str
+
+
+@api.get("/admin/benefits")
+async def admin_benefits(period: str = "all", admin=Depends(get_admin)):
+    """Return the accumulated PLATFORM fees (i.e. Biz-transPay's own margin,
+    excluding the gateway share) grouped by currency (XOF, XAF, USDT).
+    Reads `metadata.platform_fee` on completed transactions.
+    period = "7d" | "30d" | "all"
+    """
+    match: dict = {"metadata.platform_fee": {"$exists": True, "$ne": None},
+                   "status": {"$in": ["completed", "paid"]}}
+    if period in ("7d", "30d"):
+        days = 7 if period == "7d" else 30
+        since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        match["created_at"] = {"$gte": since_iso}
+    pipeline = [
+        {"$match": match},
+        {"$group": {
+            "_id": "$currency",
+            "total": {"$sum": "$metadata.platform_fee"},
+            "count": {"$sum": 1},
+        }},
+    ]
+    buckets = {"XOF": {"total": 0.0, "count": 0},
+               "XAF": {"total": 0.0, "count": 0},
+               "USDT": {"total": 0.0, "count": 0}}
+    async for row in db.transactions.aggregate(pipeline):
+        cur = (row.get("_id") or "").upper()
+        if cur in buckets:
+            buckets[cur] = {"total": float(row.get("total") or 0),
+                            "count": int(row.get("count") or 0)}
+    return {
+        "period": period,
+        "xof": buckets["XOF"],
+        "xaf": buckets["XAF"],
+        "usdt": buckets["USDT"],
+    }
 
 
 @api.get("/admin/stats")

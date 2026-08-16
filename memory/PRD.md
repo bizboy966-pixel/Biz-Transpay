@@ -1,5 +1,30 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Nouvelle page Admin "Bénéfice" (marge Plateforme)
+- ✅ **Helpers backend** :
+  - `_crypto_platform_fee(coin, direction, gross)` — retourne `(gateway_fee, platform_fee)` en montant, lit `deposit_config.crypto` ou `transfer_config.crypto` selon la direction
+  - `_momo_platform_fee(op_cfg, gross)` — même chose pour les opérateurs Mobile Money
+- ✅ **`metadata.platform_fee` + `metadata.gateway_fee` stockés** au moment de chaque transaction (immuable, non affecté par les changements de config ultérieurs) :
+  - **Retraits Crypto** (`biz_to_crypto`)
+  - **Retraits Mobile Money** (`biz_to_mobile`)
+  - **Dépôts Mobile Money** (`_credit_momo_deposit` + link_payment MoMo)
+  - **Dépôts Crypto** — 5 endroits (reconcile + webhook izipay pour crypto_deposits, link_payments, merchant_payments)
+- ✅ **`GET /admin/benefits?period=all|7d|30d`** — nouvel endpoint (super_admin). Aggregate MongoDB sur `metadata.platform_fee` groupé par currency, filtre statut `completed`/`paid`. Retourne `{period, xof: {total, count}, xaf: {total, count}, usdt: {total, count}}`.
+- ✅ **Nouvelle page** `/admin/benefits` (`AdminBenefits.js`) :
+  - Header : titre "Bénéfice" + explication + dropdown période + bouton Actualiser
+  - **3 grandes cartes gradient** : XOF (bleu), XAF (violet), USDT/Crypto (orange). Chaque carte affiche le total en devise native + nombre de transactions comptées + icône contextuelle (Wallet / Bitcoin) + badges décoratifs (bulles blanches en overlay)
+  - Encart pédagogique "Comment ce chiffre est-il calculé ?" (4 bullets)
+- ✅ **Sidebar admin** — nouvelle entrée **"Bénéfice"** (icône `TrendingUp`, sous-titre "Marge plateforme") sous "Frais" et avant "Conversions".
+- ✅ **Route** `/admin/benefits` ajoutée à `App.js`.
+- ✅ **Comportement rétroactif** : les transactions historiques sans `metadata.platform_fee` comptent 0 (rétro-compat sans risque). Les compteurs augmentent à partir des transactions faites après ce déploiement.
+
+**Testing** (curl + screenshot) :
+- Endpoint `/admin/benefits` avec 4 fake tx injectées → XOF 400 (2 tx), XAF 75 (1 tx), USDT 12.50 (1 tx) ✅
+- Screenshot page rendue → 3 cartes gradient avec les bons totaux, sidebar mise à jour, dropdown période OK ✅
+- Backend lint 0 erreur, frontend lint 0 erreur ✅
+
+**Data-testids** : `admin-benefits`, `benefits-period`, `benefits-refresh`, `benefit-card-xof`, `benefit-card-xaf`, `benefit-card-usdt`, `{testid}-total`, `{testid}-count`.
+
 ## Implémenté (2026-02-XX) — Frais crypto DÉPÔTS + Suppression d'actifs (dépôts + retraits)
 - ✅ **Nouvelle section `deposit_config.crypto`** dans le backend (`enabled`, `fees`, `fees_gateway`, `fees_platform`, `hidden_coins[]`). Indépendante de `transfer_config.crypto` : un admin peut appliquer 3% en dépôt et 5% en retrait pour la même crypto.
 - ✅ **`_crypto_fee_pct()` refactoré** — lit désormais `deposit_config.crypto.fees` en priorité pour tous les flux entrants (crypto_deposits, link_payments, merchant API pay-in, reconcile), fallback sur `transfer_config.crypto.fees` si le nouveau champ est vide (rétro-compat 100%). Les retraits `biz_to_crypto` continuent de lire `transfer_config.crypto.fees` directement.
