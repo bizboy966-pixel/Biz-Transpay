@@ -909,10 +909,22 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
             raise HTTPException(400 if e.status < 500 else 502, user_msg)
         # Persist payout id for webhook correlation
         payout_id = payout.get("id") or payout.get("payoutId")
-        await db.transactions.update_one({"id": tx_out.id}, {"$set": {
+        upstream_status = (payout.get("status") or "").lower()
+        # If IziChange returned a terminal status synchronously (fast stablecoin
+        # payouts often confirm within the same request), mark the transaction
+        # completed immediately — no need to wait for the webhook to fire.
+        tx_update = {
             "metadata.izipay_payout_id": payout_id,
             "metadata.izipay_status": payout.get("status", "pending"),
-        }})
+        }
+        if upstream_status in ("completed", "confirmed", "success", "successful", "sent_success"):
+            tx_update["status"] = "completed"
+            tx_update["metadata.tx_hash"] = payout.get("txHash") or payout.get("txhash") or payout.get("transactionHash")
+        elif upstream_status in ("failed", "rejected", "error"):
+            # Refund immediately on sync failure.
+            await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+            tx_update["status"] = "failed"
+        await db.transactions.update_one({"id": tx_out.id}, {"$set": tx_update})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "crypto": req.crypto.upper(),
                 "network": req.network.upper(), "payout_id": payout_id,
@@ -3229,6 +3241,9 @@ async def do_exchange(req: ExchangeRequest, uid: str = Depends(get_current_user_
             "rate": rate, "fee": fee, "received": received,
             "from_currency": fc, "to_currency": tc,
             "pair": key,
+            # Conversion fees are pure platform revenue (no external gateway).
+            "gateway_fee": 0.0,
+            "platform_fee": float(fee),
         },
     )
     return {
@@ -4718,6 +4733,7 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
     cfg = await get_transfer_config()
     crypto_section = (cfg.get("crypto") or {})
     fees = (crypto_section.get("fees") or {})
+    fees_gw_fixed = (crypto_section.get("fees_gateway_fixed") or {})
     hidden = set(crypto_section.get("hidden_coins") or [])
     result = []
     for c in sorted(coins.keys()):
@@ -4725,6 +4741,7 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
             continue
         entry = coins[c]
         entry["fee_pct"] = float(fees.get(c, 4.0))
+        entry["gateway_fee_fixed"] = float(fees_gw_fixed.get(c, 0) or 0)
         result.append(entry)
     return result
 
@@ -5529,6 +5546,51 @@ def _tx_is_crypto(tx: dict) -> bool:
         or (meta.get("transfer_type") in ("biz_to_crypto",))
         or bool(meta.get("crypto") or meta.get("coin") or meta.get("izipay_intent_id"))
     )
+
+
+@api.post("/admin/transactions/{tx_id}/refresh")
+async def admin_refresh_transaction(tx_id: str, admin=Depends(get_admin)):
+    """Re-check the upstream gateway (IziChange) for a pending crypto payout
+    and update our transaction status accordingly. Useful when the webhook
+    was missed but the payout was actually executed.
+    """
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Transaction introuvable")
+    if tx.get("status") not in ("pending",):
+        return {"ok": True, "unchanged": True, "reason": f"status={tx.get('status')}", "tx": tx}
+    meta = tx.get("metadata") or {}
+    payout_id = meta.get("izipay_payout_id")
+    if not payout_id:
+        raise HTTPException(400, "Cette transaction n'a pas d'identifiant de payout à rafraîchir.")
+    if not izipay.is_configured():
+        raise HTTPException(503, "Passerelle crypto non configurée")
+    try:
+        data = await izipay.get_payout(payout_id)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"Impossible d'interroger la passerelle : {e}")
+    upstream_status = (data.get("status") or "").lower()
+    mapped = _map_izipay_payout_status(upstream_status, tx.get("status"))
+    updates: dict = {"metadata.izipay_status": upstream_status}
+    if mapped == "completed":
+        updates["status"] = "completed"
+        updates["metadata.tx_hash"] = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
+        await audit(admin["id"], admin["username"], "tx_refresh_completed",
+                    target_user_id=tx["user_id"],
+                    details={"tx_id": tx_id, "payout_id": payout_id, "upstream": upstream_status})
+    elif mapped == "failed":
+        updates["status"] = "failed"
+        # Refund if not already refunded
+        total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
+        currency = tx.get("currency", "USDT")
+        field = f"balance_{currency.lower()}"
+        await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: total_debit}})
+        await audit(admin["id"], admin["username"], "tx_refresh_failed",
+                    target_user_id=tx["user_id"],
+                    details={"tx_id": tx_id, "payout_id": payout_id, "upstream": upstream_status})
+    await db.transactions.update_one({"id": tx_id}, {"$set": updates})
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    return {"ok": True, "tx": tx, "upstream_status": upstream_status, "mapped_status": mapped}
 
 
 @api.post("/admin/transactions/{tx_id}/approve")

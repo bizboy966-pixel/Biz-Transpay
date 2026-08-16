@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import {
   X, CheckCircle2, XCircle, User as UserIcon, Mail, MapPin, Phone,
   Wallet, Hash, Calendar, Clock, DollarSign, Percent, Copy,
-  ExternalLink, ShieldAlert,
+  ExternalLink, ShieldAlert, RefreshCw,
 } from 'lucide-react';
 import api from '@/api';
 
@@ -86,6 +86,24 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
       onClose();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Erreur lors de la validation');
+    } finally { setBusy(null); }
+  };
+
+  const refresh = async () => {
+    setBusy('refresh');
+    try {
+      const { data } = await api.post(`/admin/transactions/${tx.id}/refresh`);
+      if (data?.tx?.status === 'completed') {
+        toast.success('Transaction validée automatiquement (déjà exécutée côté passerelle)');
+      } else if (data?.tx?.status === 'failed') {
+        toast.warning('Retrait échoué côté passerelle — solde recrédité');
+      } else {
+        toast.info(`Statut passerelle : ${data?.upstream_status || 'inchangé'}`);
+      }
+      onUpdated?.();
+      onClose();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Erreur lors du rafraîchissement');
     } finally { setBusy(null); }
   };
 
@@ -232,6 +250,16 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
         {/* Footer with actions */}
         {tx && tx.status === 'pending' && !showReject && (
           <div className="p-4 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:justify-end">
+            {isWithdrawal && isCrypto && meta?.izipay_payout_id && (
+              <button
+                onClick={refresh}
+                disabled={busy === 'refresh'}
+                data-testid="btn-refresh-tx"
+                className="px-4 py-2 rounded-lg border border-blue-200 bg-white text-blue-700 font-semibold text-sm hover:bg-blue-50 inline-flex items-center justify-center gap-1.5">
+                <RefreshCw className={`w-4 h-4 ${busy === 'refresh' ? 'animate-spin' : ''}`} />
+                {busy === 'refresh' ? 'Vérification…' : 'Rafraîchir statut passerelle'}
+              </button>
+            )}
             <button
               onClick={() => setShowReject(true)}
               data-testid="btn-reject"

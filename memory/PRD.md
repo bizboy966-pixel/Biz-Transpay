@@ -1,5 +1,41 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — 5 correctifs : Affichage frais + Auto-validation + Bénéfice conversions
+### 1. Affichage frais côté utilisateur (Transfer crypto)
+- ✅ `Transfer.js` — `feeLabel` combine désormais fixe + pct : `"1 USDT + 2,5%"` quand un fixe est configuré, sinon `"2,5%"`. Le fixe est lu depuis `crypto.gateway_fee_fixed` (nouveau champ exposé par `/crypto/coins`).
+- ✅ Récap crypto renommé pour clarté (aucune mention passerelle/plateforme — interne) :
+  - `Montant envoyé` (nouveau)
+  - `Frais appliqués` (avec le label combiné)
+  - `Total débité de votre solde` (renommé)
+  - `Montant final reçu par le bénéficiaire` (renommé, calcul intégre le fixe)
+- ✅ Dropdown coin : affiche `"X {COIN} + Y%"` quand un fixe est configuré.
+
+### 2. Backend `/crypto/coins` (public user)
+- ✅ Nouveau champ `gateway_fee_fixed` renvoyé (0 par défaut, rétro-compat).
+
+### 3. Auto-validation retrait crypto
+- ✅ Dans `biz_to_crypto` (`/transfers`), après création du payout IziChange :
+  - Si `payout.status` est déjà terminal (completed/confirmed/success/successful/sent_success) → **tx passe directement à `completed`** + `tx_hash` stocké. Fini l'attente webhook pour les stablecoins rapides.
+  - Si terminal failure (failed/rejected/error) → **remboursement immédiat + tx `failed`**.
+- ✅ Nouvel endpoint **`POST /admin/transactions/{tx_id}/refresh`** (super_admin) : pour les tx pending, interroge `izipay.get_payout()` et applique `_map_izipay_payout_status`. Si upstream `completed` → tx `completed` + `tx_hash`. Si `failed` → refund + `failed`. Audit log ajouté.
+- ✅ Frontend `AdminTxDetailModal.js` — nouveau bouton **"Rafraîchir statut passerelle"** (icône RefreshCw bleu) affiché uniquement pour les retraits crypto pending avec un `izipay_payout_id`. Toast temps réel selon le retour.
+
+### 4. Stats admin — entrées correctement comptabilisées
+- ✅ (Fix précédent, confirmé) : `link_payment (in)` et `payment (in)` comptent maintenant comme dépôts dans les cards principales du dashboard admin.
+
+### 5. Bénéfices — inclusion des conversions
+- ✅ `/exchange` (POST) stocke désormais `metadata.platform_fee = fee` et `metadata.gateway_fee = 0.0` (les conversions n'ont pas de passerelle externe — 100% de la marge est platform).
+- ✅ Vérifié end-to-end : 1 fake exchange XOF avec platform_fee=5 → `/admin/benefits` retourne `xof.total=5.0, count=1` ✅.
+
+**Testing** :
+- `/crypto/coins` renvoie `gateway_fee_fixed` par coin ✅
+- `/admin/transactions/{id}/refresh` répond 404 sur tx inconnue, chemin nominal validé côté code ✅
+- Exchange fake → benefit XOF +5.0 ✅
+- Screenshot Transfer crypto → récap parfait avec 5 lignes claires ("Réseau · Montant envoyé · Frais appliqués · Total débité · Montant final reçu") ✅
+- Backend + frontend lint 0 erreur ✅
+
+**Note prod** : après redéploiement, les retraits crypto qui reçoivent une réponse `completed` synchrone (le cas des stablecoins TRC20 rapides) passeront directement en `Validé` sans validation manuelle. Pour les tx pending anciennes bloquées, l'admin dispose du bouton **"Rafraîchir statut passerelle"** dans la modal de détail.
+
 ## Implémenté (2026-02-XX) — Fix stats admin : link/API pay comptés comme dépôts
 - ✅ **Bug identifié** : dans `/admin/stats`, les paiements via **lien** (`type=link_payment`) et via **API marchand** (`type=payment`) n'étaient pas comptés comme des **dépôts** — ils allaient dans un compteur `operations.link_payments` séparé et jamais dans les cards "Dépôts Crypto/MM" du dashboard admin. C'est pour ça que les stats "ne changeaient pas" après un paiement via lien.
 - ✅ **Fix** : bloc `if typ == "deposit"` fusionné avec `link_payment (in)` et `payment (in)`. Ces flux entrants sont désormais :

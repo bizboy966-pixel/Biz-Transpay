@@ -369,9 +369,16 @@ function BizToCryptoForm({ config, onDone, balance }) {
 
   const amt = parseFloat(amount) || 0;
   const feePct = crypto?.fee_pct || 4;
-  const fee = amt * feePct / 100;
+  const feeFixed = parseFloat(crypto?.gateway_fee_fixed) || 0;
+  const fee = amt * feePct / 100 + feeFixed;
   const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
   const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
+
+  // Human-readable fee label. Hides internal gateway/platform split; only
+  // shows "1 USDT + 2.5%" style breakdown when a fixed fee is configured.
+  const feeLabel = feeFixed > 0
+    ? `${feeFixed} ${cryptoCode} + ${feePct}%`
+    : `${feePct}%`;
 
   // For crypto, currency = crypto code (e.g. USDT). Balance is looked up on user object.
   const currency = cryptoCode || 'USDT';
@@ -420,11 +427,15 @@ function BizToCryptoForm({ config, onDone, balance }) {
           onChange={(e) => setCryptoCode(e.target.value)}
           className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm bg-white"
         >
-          {coins.map((c) => (
-            <option key={c.coin} value={c.coin} data-testid={`crypto-opt-${c.coin}`}>
-              {c.coin} — {c.name} · frais {c.fee_pct}%
-            </option>
-          ))}
+          {coins.map((c) => {
+            const fx = parseFloat(c.gateway_fee_fixed) || 0;
+            const feeStr = fx > 0 ? `${fx} ${c.coin} + ${c.fee_pct}%` : `${c.fee_pct}%`;
+            return (
+              <option key={c.coin} value={c.coin} data-testid={`crypto-opt-${c.coin}`}>
+                {c.coin} — {c.name} · frais {feeStr}
+              </option>
+            );
+          })}
         </select>
       </Field>
 
@@ -461,9 +472,10 @@ function BizToCryptoForm({ config, onDone, balance }) {
       {amt > 0 && crypto && (
         <div className="p-3 sm:p-4 bg-slate-50 rounded-xl space-y-1 sm:space-y-1.5 text-xs sm:text-sm" data-testid="crypto-summary">
           <Row l="Réseau" v={network?.name || networkCode} />
-          <Row l="Frais" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feePct}%)`} />
-          <Row l="Total débité" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} strong />
-          <Row l="Le bénéficiaire reçoit" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} green />
+          <Row l="Montant envoyé" v={`${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} />
+          <Row l="Frais appliqués" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feeLabel})`} />
+          <Row l="Total débité de votre solde" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} strong />
+          <Row l="Montant final reçu par le bénéficiaire" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} green />
         </div>
       )}
 
