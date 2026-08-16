@@ -35,6 +35,7 @@ import AdminPlatform from '@/pages/admin/AdminPlatform';
 import AdminFeatures from '@/pages/admin/AdminFeatures';
 import AdminRates from '@/pages/admin/AdminRates';
 import AdminConversions from '@/pages/admin/AdminConversions';
+import AdminFees from '@/pages/admin/AdminFees';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -95,6 +96,7 @@ function App() {
             <Route path="features" element={<AdminFeatures />} />
             <Route path="rates" element={<AdminRates />} />
             <Route path="conversions" element={<AdminConversions />} />
+            <Route path="fees" element={<AdminFees />} />
           </Route>
         </Routes>
       </BrowserRouter>
