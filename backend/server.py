@@ -511,6 +511,20 @@ DEFAULT_DEPOSIT_CONFIG = {
             {"country": "GN", "code": "orange_gn", "name": "Orange Guinée", "currency": "GNF", "fee_pct": 1.5, "min": 1000, "max": 5000000, "active": True},
         ],
     },
+    "crypto": {
+        "enabled": True,
+        # Deposit-side crypto fees. Same structure as transfer_config.crypto.fees
+        # (map coin → total percent) plus optional split into gateway + platform.
+        # Falls back to transfer_config.crypto.fees when a coin is missing here
+        # (retro-compat with pre-split installs).
+        "fees": {},
+        "fees_gateway": {},
+        "fees_platform": {},
+        # Coins hidden from the deposit surface (Deposit form, /crypto/assets,
+        # merchant API create-payment path). Managed via the trash icon in
+        # /admin/deposit-config.
+        "hidden_coins": [],
+    },
 }
 
 
@@ -1004,7 +1018,8 @@ async def stripe_webhook(request: Request):
 async def crypto_assets():
     """Public list of active crypto assets available on IzichangePay.
     Used by /dashboard/deposit and public payment link pages to show a list of
-    supported cryptocurrencies. No auth: this is a catalog, contains no secrets.
+    supported cryptocurrencies. Filters out coins hidden by the admin in the
+    deposit-side hidden_coins list.
     """
     if not izipay.is_configured():
         return []
@@ -1012,17 +1027,24 @@ async def crypto_assets():
         assets = await izipay.list_assets()
     except Exception:
         return []
-    return [
-        {
+    dep_cfg = await get_deposit_config()
+    hidden = set((((dep_cfg.get("crypto") or {}).get("hidden_coins")) or []))
+    result = []
+    for a in assets:
+        if not a.get("isActive"):
+            continue
+        code = (a.get("assetCode") or "").split(".")[0]
+        if code in hidden:
+            continue
+        result.append({
             "asset_code": a.get("assetCode"),
             "coin": a.get("coin"),
             "network": a.get("network"),
             "blockchain_name": a.get("blockchainName"),
             "memo_required": a.get("memoRequired", False),
             "memo_type": a.get("memoType"),
-        }
-        for a in assets if a.get("isActive")
-    ]
+        })
+    return result
 
 
 # ==================== DEPOSIT (Crypto via IzichangePay) ====================
@@ -1503,12 +1525,21 @@ async def fedapay_webhook(request: Request):
 
 # ==================== IZICHANGEPAY WEBHOOK ====================
 async def _crypto_fee_pct(coin: str) -> float:
-    """Return the deposit/withdrawal fee percentage (as a float, e.g. 4.0)
-    configured in the Admin Panel for a given coin. Falls back to 4.0.
+    """Return the DEPOSIT fee percentage (as a float, e.g. 4.0) configured
+    in the Admin Panel for a given coin. Falls back to transfer_config
+    (retro-compat for pre-split installs) then to 4.0.
+    Used only for incoming crypto (deposits, link payments, merchant API pay-in).
+    Outgoing crypto (biz_to_crypto payouts) reads transfer_config.crypto.fees
+    directly.
     """
+    coin_up = (coin or "").upper()
+    dep_cfg = await get_deposit_config()
+    dep_fees = (((dep_cfg.get("crypto") or {}).get("fees")) or {})
+    if coin_up in dep_fees:
+        return float(dep_fees[coin_up])
     cfg = await get_transfer_config()
     fees = ((cfg.get("crypto") or {}).get("fees") or {})
-    return float(fees.get((coin or "").upper(), 4.0))
+    return float(fees.get(coin_up, 4.0))
 
 
 def _apply_fee(amount: float, fee_pct: float) -> tuple[float, float]:
@@ -4620,9 +4651,13 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
         except Exception:
             pass
     cfg = await get_transfer_config()
-    fees = ((cfg.get("crypto") or {}).get("fees") or {})
+    crypto_section = (cfg.get("crypto") or {})
+    fees = (crypto_section.get("fees") or {})
+    hidden = set(crypto_section.get("hidden_coins") or [])
     result = []
     for c in sorted(coins.keys()):
+        if c in hidden:
+            continue
         entry = coins[c]
         entry["fee_pct"] = float(fees.get(c, 4.0))
         result.append(entry)
@@ -4648,7 +4683,13 @@ _NETWORK_REGEX: dict[str, str] = {
 
 
 @api.get("/admin/crypto/coins")
-async def admin_crypto_coins(admin=Depends(get_admin)):
+async def admin_crypto_coins(direction: str = "withdrawal", admin=Depends(get_admin)):
+    """List all coins available on IziChange, grouped by ticker, with the
+    per-coin fee split (gateway/platform) and hidden flag for the requested
+    direction. `direction` = "withdrawal" (default, reads transfer_config)
+    or "deposit" (reads deposit_config).
+    Returns: [{coin, name, fee_pct, gateway_fee_pct, platform_fee_pct, hidden}]
+    """
     coins: dict[str, str] = {}
     if izipay.is_configured():
         try:
@@ -4663,15 +4704,35 @@ async def admin_crypto_coins(admin=Depends(get_admin)):
                     coins[code] = a.get("coin") or code
         except Exception:
             pass
-    cfg = await get_transfer_config()
-    fees = ((cfg.get("crypto") or {}).get("fees") or {})
+    if direction == "deposit":
+        cfg = await get_deposit_config()
+        section = cfg.get("crypto") or {}
+    else:
+        cfg = await get_transfer_config()
+        section = cfg.get("crypto") or {}
+    fees = section.get("fees") or {}
+    fees_g = section.get("fees_gateway") or {}
+    fees_p = section.get("fees_platform") or {}
+    hidden = set(section.get("hidden_coins") or [])
     # Always include configured coins even if not returned by API (e.g. temporarily disabled)
     for c in fees:
         coins.setdefault(c, c)
-    return [
-        {"coin": c, "name": coins[c], "fee_pct": float(fees.get(c, 4.0))}
-        for c in sorted(coins.keys())
-    ]
+    for c in hidden:
+        coins.setdefault(c, c)
+    result = []
+    for c in sorted(coins.keys()):
+        total = float(fees.get(c, 4.0))
+        gw = float(fees_g[c]) if c in fees_g else total
+        pf = float(fees_p[c]) if c in fees_p else 0.0
+        result.append({
+            "coin": c,
+            "name": coins[c],
+            "fee_pct": total,
+            "gateway_fee_pct": gw,
+            "platform_fee_pct": pf,
+            "hidden": c in hidden,
+        })
+    return result
 
 
 async def audit(admin_id: str, admin_username: str, action: str,
@@ -5802,6 +5863,7 @@ async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depend
 # ---------- Admin: deposit fee/limit config (Mobile Money) ----------
 class AdminDepositConfigReq(BaseModel):
     mobile_money: Optional[dict] = None
+    crypto: Optional[dict] = None
 
 
 @api.get("/admin/deposit/config")

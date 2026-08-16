@@ -1,5 +1,26 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Frais crypto DÉPÔTS + Suppression d'actifs (dépôts + retraits)
+- ✅ **Nouvelle section `deposit_config.crypto`** dans le backend (`enabled`, `fees`, `fees_gateway`, `fees_platform`, `hidden_coins[]`). Indépendante de `transfer_config.crypto` : un admin peut appliquer 3% en dépôt et 5% en retrait pour la même crypto.
+- ✅ **`_crypto_fee_pct()` refactoré** — lit désormais `deposit_config.crypto.fees` en priorité pour tous les flux entrants (crypto_deposits, link_payments, merchant API pay-in, reconcile), fallback sur `transfer_config.crypto.fees` si le nouveau champ est vide (rétro-compat 100%). Les retraits `biz_to_crypto` continuent de lire `transfer_config.crypto.fees` directement.
+- ✅ **`AdminDepositConfig.js`** — nouvelle section **"Dépôts → Crypto"** (icône Bitcoin orange, toggle Activé/Désactivé, ~22 coins IziChange, colonnes : Code · Nom · Passerelle % · Plateforme % · Total % + bouton Supprimer). Bouton "Enregistrer les frais" dédié.
+- ✅ **Bouton "Supprimer" (icône 🗑️) sur chaque coin** — dépôts + retraits. Ajoute le coin dans `hidden_coins[]` de la config concernée. Le coin apparaît en gris avec badge "SUPPRIMÉ" et un bouton "Restaurer" pour annuler.
+- ✅ **Lien "Afficher les actifs supprimés (N)"** en haut de la table (visible seulement si au moins un actif est supprimé). Toast Sonner à chaque action.
+- ✅ **Filtrage user-facing** :
+  - `GET /crypto/assets` (formulaire dépôt utilisateur, page `/pay/{slug}`) filtre selon `deposit_config.crypto.hidden_coins`.
+  - `GET /crypto/coins` (formulaire retrait utilisateur, Transfer → Crypto) filtre selon `transfer_config.crypto.hidden_coins`.
+- ✅ **`GET /admin/crypto/coins?direction=deposit|withdrawal`** — nouveau query param. Retourne le split complet `{coin, name, fee_pct, gateway_fee_pct, platform_fee_pct, hidden}` pour la direction demandée. Rétro-compat : sans param, `direction=withdrawal` (comportement historique).
+- ✅ **`AdminDepositConfigReq`** accepte désormais `crypto: Optional[dict]`.
+
+**Testing** (curl + screenshot) :
+- `PATCH /admin/deposit/config` avec split BTC (3% Passerelle + 2% Plateforme = 5% Total) + `hidden_coins=["USDC"]` → persisté correctement ✅
+- `GET /admin/crypto/coins?direction=deposit` → USDC marqué `hidden=true`, BTC montre gw=3.0/pf=2.0 ✅
+- `GET /crypto/assets` public → USDC absent de la liste ✅
+- Screenshot admin transfer-config → clic sur BTC delete → toast "BTC supprimé de la liste des retraits", ligne grisée avec badge SUPPRIMÉ + bouton Restaurer ✅
+- Frontend lint 0 erreur, backend lint 0 erreur ✅
+
+**Data-testids** ajoutés : `crypto-fee-gateway-{coin}`, `crypto-fee-platform-{coin}`, `crypto-fee-total-{coin}`, `btn-hide-{coin}`, `btn-restore-{coin}`, `btn-toggle-hidden-withdraw`, `crypto-dep-fee-gateway-{coin}`, `crypto-dep-fee-platform-{coin}`, `crypto-dep-fee-total-{coin}`, `btn-dep-hide-{coin}`, `btn-dep-restore-{coin}`, `btn-toggle-hidden-deposit`, `btn-save-crypto-dep-fees`.
+
 ## Implémenté (2026-02-XX) — Split "Frais Passerelle / Plateforme" sur les retraits
 - ✅ **`AdminTransferConfig.js`** — 2 sections mises à jour avec la même UX que les dépôts :
   - **Retraits Mobile Money** (table opérateurs) : nouvelles colonnes **Frais passerelle %**, **Frais plateforme %**, **Total %** (badge noir en lecture seule). Le total est envoyé au backend dans `fee_pct` (aucun changement DB requis). Rétro-compatible : si un opérateur n'a que l'ancien `fee_pct`, il s'affiche comme Passerelle=fee_pct / Plateforme=0.

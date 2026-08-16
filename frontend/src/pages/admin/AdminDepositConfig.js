@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, ArrowDownToLine } from 'lucide-react';
+import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, ArrowDownToLine, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -27,7 +27,10 @@ export default function AdminDepositConfig() {
 
   const save = async () => {
     try {
-      await api.patch('/admin/deposit/config', { mobile_money: cfg.mobile_money });
+      await api.patch('/admin/deposit/config', {
+        mobile_money: cfg.mobile_money,
+        crypto: cfg.crypto,
+      });
       toast.success('Configuration enregistrée');
       setDirty(false);
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
@@ -47,8 +50,12 @@ export default function AdminDepositConfig() {
 
   if (!cfg) return <div className="text-slate-500 text-sm">Chargement…</div>;
   const mm = cfg.mobile_money || { enabled: true, operators: [] };
+  const crypto = cfg.crypto || { enabled: true, fees: {}, fees_gateway: {}, fees_platform: {}, hidden_coins: [] };
   const setMM = (v) => { setCfg({ ...cfg, mobile_money: v }); setDirty(true); };
+  const setCrypto = (v) => { setCfg({ ...cfg, crypto: v }); setDirty(true); };
+  const updCrypto = (patch) => setCrypto({ ...crypto, ...patch });
   const setEnabled = (enabled) => patchSection('mobile_money', { enabled });
+  const setCryptoEnabled = (enabled) => patchSection('crypto', { enabled });
 
   const updateOp = (idx, key, val) => {
     const ops = [...mm.operators];
@@ -213,6 +220,179 @@ export default function AdminDepositConfig() {
           Toute modification est prise en compte <b>immédiatement</b>, sans redémarrage.
         </div>
       </Section>
+
+      {/* Crypto deposit fees */}
+      <Section
+        title="Dépôts → Crypto"
+        subtitle="Cryptomonnaies, frais Passerelle + Plateforme"
+        Icon={Bitcoin}
+        iconBg="bg-orange-50 text-orange-600"
+        enabled={crypto.enabled !== false}
+        saving={savingSection === 'crypto'}
+        onEnabledChange={setCryptoEnabled}
+        testId="crypto-deposit"
+      >
+        <CryptoDepositFeesTable crypto={crypto} updCrypto={updCrypto} onSaveAll={save} dirty={dirty} savingAll={savingSection === 'save-all'} />
+      </Section>
+    </div>
+  );
+}
+
+
+function CryptoDepositFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
+  const [coins, setCoins] = useState([]);
+  const [filter, setFilter] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get('/admin/crypto/coins', { params: { direction: 'deposit' } })
+      .then(({ data }) => setCoins(data)).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  const hidden = new Set(crypto.hidden_coins || []);
+
+  const getSplit = (coin, legacyTotal) => {
+    const feesG = crypto.fees_gateway || {};
+    const feesP = crypto.fees_platform || {};
+    const gateway = feesG[coin] !== undefined ? feesG[coin] : (legacyTotal ?? 4);
+    const platform = feesP[coin] !== undefined ? feesP[coin] : 0;
+    return { gateway: +gateway, platform: +platform };
+  };
+
+  const setPart = (coin, part, val) => {
+    const num = parseFloat(val);
+    const safe = isNaN(num) ? 0 : num;
+    const feesG = { ...(crypto.fees_gateway || {}) };
+    const feesP = { ...(crypto.fees_platform || {}) };
+    const fees = { ...(crypto.fees || {}) };
+    if (feesG[coin] === undefined) feesG[coin] = fees[coin] !== undefined ? fees[coin] : 4;
+    if (feesP[coin] === undefined) feesP[coin] = 0;
+    if (part === 'gateway') feesG[coin] = safe;
+    else feesP[coin] = safe;
+    const total = +((feesG[coin] || 0) + (feesP[coin] || 0)).toFixed(4);
+    fees[coin] = total;
+    updCrypto({ fees, fees_gateway: feesG, fees_platform: feesP });
+    setCoins((cs) => cs.map((c) => c.coin === coin ? { ...c, fee_pct: total } : c));
+  };
+
+  const hideCoin = (coin) => {
+    const set = new Set(crypto.hidden_coins || []);
+    set.add(coin);
+    updCrypto({ hidden_coins: Array.from(set) });
+    toast.success(`${coin} supprimé de la liste des dépôts`);
+  };
+  const restoreCoin = (coin) => {
+    const arr = (crypto.hidden_coins || []).filter((c) => c !== coin);
+    updCrypto({ hidden_coins: arr });
+    toast.success(`${coin} restauré`);
+  };
+
+  const visible = coins.filter((c) => showHidden ? true : !hidden.has(c.coin));
+  const filtered = visible.filter((c) => !filter || c.coin.includes(filter.toUpperCase()) || (c.name || '').toLowerCase().includes(filter.toLowerCase()));
+  const hiddenCount = coins.filter((c) => hidden.has(c.coin)).length;
+
+  return (
+    <div className="mt-1">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div>
+          <div className="font-cabinet font-bold text-[12px] sm:text-sm text-slate-900 flex items-center gap-1.5"><Bitcoin className="w-3.5 h-3.5" /> Frais de dépôt par cryptomonnaie</div>
+          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">Défaut : 4 %. Passerelle + Plateforme = frais total appliqué. Les cryptos sont chargées automatiquement depuis IzichangePay.</div>
+        </div>
+        <div className="flex items-center gap-2">
+          {hiddenCount > 0 && (
+            <button type="button" onClick={() => setShowHidden((v) => !v)} data-testid="btn-toggle-hidden-deposit"
+              className="text-[10px] sm:text-[11px] font-semibold text-[#2563EB] hover:text-[#1D4ED8] underline underline-offset-2">
+              {showHidden ? 'Masquer les actifs supprimés' : `Afficher les actifs supprimés (${hiddenCount})`}
+            </button>
+          )}
+          <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Rechercher (BTC, USDT…)" className="px-3 py-1.5 border border-slate-200 rounded-lg text-[11px] sm:text-xs w-40 sm:w-48" data-testid="crypto-dep-fee-filter" />
+        </div>
+      </div>
+      {loading && <div className="text-center py-4 text-[11px] sm:text-xs text-slate-500">Chargement des cryptos…</div>}
+      {!loading && filtered.length === 0 && (
+        <div className="text-center py-4 text-[11px] sm:text-xs text-slate-500">Aucune cryptomonnaie disponible.</div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px] sm:text-xs">
+          <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
+            <tr>
+              <th className="text-left px-2 sm:px-3 py-2">Code</th>
+              <th className="text-left px-2 sm:px-3 py-2">Cryptomonnaie</th>
+              <th className="text-right px-2 sm:px-3 py-2">Frais passerelle %</th>
+              <th className="text-right px-2 sm:px-3 py-2">Frais plateforme %</th>
+              <th className="text-right px-2 sm:px-3 py-2">Total %</th>
+              <th className="text-center px-2 sm:px-3 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((c) => {
+              const { gateway, platform } = getSplit(c.coin, c.fee_pct);
+              const total = +(gateway + platform).toFixed(4);
+              const isHidden = hidden.has(c.coin);
+              return (
+              <tr key={c.coin} className={`border-t border-slate-50 ${isHidden ? 'opacity-50 bg-slate-50/50' : ''}`} data-testid={`crypto-dep-fee-row-${c.coin}`}>
+                <td className="px-2 sm:px-3 py-2 font-mono font-bold text-slate-900">{c.coin}</td>
+                <td className="px-2 sm:px-3 py-2 text-slate-600">
+                  {c.name}
+                  {isHidden && <span className="ml-1 text-[9px] font-bold text-red-500 uppercase">Supprimé</span>}
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <div className="inline-flex items-center gap-1">
+                    <input type="number" step="0.1" min="0" max="100" value={gateway} disabled={isHidden}
+                      onChange={(e) => setPart(c.coin, 'gateway', e.target.value)}
+                      data-testid={`crypto-dep-fee-gateway-${c.coin}`}
+                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono disabled:bg-slate-100" />
+                    <span className="text-slate-400 text-[10px]">%</span>
+                  </div>
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <div className="inline-flex items-center gap-1">
+                    <input type="number" step="0.1" min="0" max="100" value={platform} disabled={isHidden}
+                      onChange={(e) => setPart(c.coin, 'platform', e.target.value)}
+                      data-testid={`crypto-dep-fee-platform-${c.coin}`}
+                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono disabled:bg-slate-100" />
+                    <span className="text-slate-400 text-[10px]">%</span>
+                  </div>
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`crypto-dep-fee-total-${c.coin}`}>
+                    {total.toFixed(2)} %
+                  </span>
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-center">
+                  {isHidden ? (
+                    <button onClick={() => restoreCoin(c.coin)} data-testid={`btn-dep-restore-${c.coin}`}
+                      className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded-lg hover:bg-emerald-50">
+                      Restaurer
+                    </button>
+                  ) : (
+                    <button onClick={() => hideCoin(c.coin)} data-testid={`btn-dep-hide-${c.coin}`}
+                      className="w-7 h-7 rounded-lg hover:bg-red-50 text-red-500 flex items-center justify-center mx-auto" title="Supprimer cet actif">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );})}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3 flex-wrap p-3 bg-orange-50/50 border border-orange-100 rounded-xl">
+        <div className="text-[10px] sm:text-[11px] text-slate-600 flex items-start gap-2 flex-1 min-w-0">
+          <Bitcoin className="w-3 h-3 text-orange-500 mt-0.5 shrink-0" />
+          <span>Ces frais s&apos;appliquent à <b>tous les dépôts crypto</b> : dépôts directs, liens de paiement, API marchand. Une modification prend effet immédiatement après l&apos;enregistrement.</span>
+        </div>
+        <button
+          onClick={onSaveAll}
+          disabled={!dirty || savingAll}
+          data-testid="btn-save-crypto-dep-fees"
+          className="inline-flex items-center gap-1.5 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2 rounded-full text-[11px] sm:text-xs disabled:opacity-40 disabled:cursor-not-allowed shrink-0 shadow-sm"
+        >
+          <Save className="w-3.5 h-3.5" /> {savingAll ? 'Enregistrement…' : dirty ? 'Enregistrer les frais' : 'Enregistré'}
+        </button>
+      </div>
     </div>
   );
 }

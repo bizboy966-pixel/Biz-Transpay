@@ -167,11 +167,15 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
   const [coins, setCoins] = useState([]);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
 
   useEffect(() => {
     setLoading(true);
-    api.get('/admin/crypto/coins').then(({ data }) => setCoins(data)).catch(() => {}).finally(() => setLoading(false));
+    api.get('/admin/crypto/coins', { params: { direction: 'withdrawal' } })
+      .then(({ data }) => setCoins(data)).catch(() => {}).finally(() => setLoading(false));
   }, []);
+
+  const hidden = new Set(crypto.hidden_coins || []);
 
   // Reads (gateway, platform) split for a given coin. Falls back to the legacy
   // single `fees[coin]` value stored as the gateway share for retro-compatibility.
@@ -200,7 +204,21 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
     setCoins((cs) => cs.map((c) => c.coin === coin ? { ...c, fee_pct: total } : c));
   };
 
-  const filtered = coins.filter((c) => !filter || c.coin.includes(filter.toUpperCase()) || (c.name || '').toLowerCase().includes(filter.toLowerCase()));
+  const hideCoin = (coin) => {
+    const set = new Set(crypto.hidden_coins || []);
+    set.add(coin);
+    updCrypto({ hidden_coins: Array.from(set) });
+    toast.success(`${coin} supprimé de la liste des retraits`);
+  };
+  const restoreCoin = (coin) => {
+    const arr = (crypto.hidden_coins || []).filter((c) => c !== coin);
+    updCrypto({ hidden_coins: arr });
+    toast.success(`${coin} restauré`);
+  };
+
+  const visible = coins.filter((c) => showHidden ? true : !hidden.has(c.coin));
+  const filtered = visible.filter((c) => !filter || c.coin.includes(filter.toUpperCase()) || (c.name || '').toLowerCase().includes(filter.toLowerCase()));
+  const hiddenCount = coins.filter((c) => hidden.has(c.coin)).length;
 
   return (
     <div className="mt-1">
@@ -209,7 +227,15 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
           <div className="font-cabinet font-bold text-[12px] sm:text-sm text-slate-900 flex items-center gap-1.5"><Bitcoin className="w-3.5 h-3.5" /> Frais de retrait par cryptomonnaie</div>
           <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">Défaut : 4 %. Passerelle + Plateforme = frais total appliqué. Les cryptos sont chargées automatiquement depuis IzichangePay.</div>
         </div>
-        <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Rechercher (BTC, USDT…)" className="px-3 py-1.5 border border-slate-200 rounded-lg text-[11px] sm:text-xs w-40 sm:w-48" data-testid="crypto-fee-filter" />
+        <div className="flex items-center gap-2">
+          {hiddenCount > 0 && (
+            <button type="button" onClick={() => setShowHidden((v) => !v)} data-testid="btn-toggle-hidden-withdraw"
+              className="text-[10px] sm:text-[11px] font-semibold text-[#2563EB] hover:text-[#1D4ED8] underline underline-offset-2">
+              {showHidden ? 'Masquer les actifs supprimés' : `Afficher les actifs supprimés (${hiddenCount})`}
+            </button>
+          )}
+          <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Rechercher (BTC, USDT…)" className="px-3 py-1.5 border border-slate-200 rounded-lg text-[11px] sm:text-xs w-40 sm:w-48" data-testid="crypto-fee-filter" />
+        </div>
       </div>
       {loading && <div className="text-center py-4 text-[11px] sm:text-xs text-slate-500">Chargement des cryptos…</div>}
       {!loading && filtered.length === 0 && (
@@ -224,31 +250,36 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
               <th className="text-right px-2 sm:px-3 py-2">Frais passerelle %</th>
               <th className="text-right px-2 sm:px-3 py-2">Frais plateforme %</th>
               <th className="text-right px-2 sm:px-3 py-2">Total %</th>
+              <th className="text-center px-2 sm:px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
             {filtered.map((c) => {
               const { gateway, platform } = getSplit(c.coin, c.fee_pct);
               const total = +(gateway + platform).toFixed(4);
+              const isHidden = hidden.has(c.coin);
               return (
-              <tr key={c.coin} className="border-t border-slate-50" data-testid={`crypto-fee-row-${c.coin}`}>
+              <tr key={c.coin} className={`border-t border-slate-50 ${isHidden ? 'opacity-50 bg-slate-50/50' : ''}`} data-testid={`crypto-fee-row-${c.coin}`}>
                 <td className="px-2 sm:px-3 py-2 font-mono font-bold text-slate-900">{c.coin}</td>
-                <td className="px-2 sm:px-3 py-2 text-slate-600">{c.name}</td>
+                <td className="px-2 sm:px-3 py-2 text-slate-600">
+                  {c.name}
+                  {isHidden && <span className="ml-1 text-[9px] font-bold text-red-500 uppercase">Supprimé</span>}
+                </td>
                 <td className="px-2 sm:px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1">
-                    <input type="number" step="0.1" min="0" max="100" value={gateway}
+                    <input type="number" step="0.1" min="0" max="100" value={gateway} disabled={isHidden}
                       onChange={(e) => setPart(c.coin, 'gateway', e.target.value)}
                       data-testid={`crypto-fee-gateway-${c.coin}`}
-                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
+                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono disabled:bg-slate-100" />
                     <span className="text-slate-400 text-[10px]">%</span>
                   </div>
                 </td>
                 <td className="px-2 sm:px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1">
-                    <input type="number" step="0.1" min="0" max="100" value={platform}
+                    <input type="number" step="0.1" min="0" max="100" value={platform} disabled={isHidden}
                       onChange={(e) => setPart(c.coin, 'platform', e.target.value)}
                       data-testid={`crypto-fee-platform-${c.coin}`}
-                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
+                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono disabled:bg-slate-100" />
                     <span className="text-slate-400 text-[10px]">%</span>
                   </div>
                 </td>
@@ -256,6 +287,19 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
                   <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`crypto-fee-total-${c.coin}`}>
                     {total.toFixed(2)} %
                   </span>
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-center">
+                  {isHidden ? (
+                    <button onClick={() => restoreCoin(c.coin)} data-testid={`btn-restore-${c.coin}`}
+                      className="text-[10px] font-bold text-emerald-600 hover:text-emerald-700 px-2 py-1 rounded-lg hover:bg-emerald-50">
+                      Restaurer
+                    </button>
+                  ) : (
+                    <button onClick={() => hideCoin(c.coin)} data-testid={`btn-hide-${c.coin}`}
+                      className="w-7 h-7 rounded-lg hover:bg-red-50 text-red-500 flex items-center justify-center mx-auto" title="Supprimer cet actif">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </td>
               </tr>
             );})}
