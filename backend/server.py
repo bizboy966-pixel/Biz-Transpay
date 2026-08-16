@@ -1957,8 +1957,8 @@ async def start_link_payment(req: LinkPayRequest):
     link = await db.payment_links.find_one({"slug": req.slug, "active": True})
     if not link:
         raise HTTPException(404, "Lien introuvable ou inactif")
-    if link.get("currency") != "USDT":
-        raise HTTPException(400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT)")
+    if link.get("currency") not in ("USDT", "UNIVERSAL"):
+        raise HTTPException(400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT/UNIVERSAL)")
 
     if link.get("amount_type") == "fixed":
         amount = float(link.get("amount") or 0)

@@ -150,9 +150,7 @@ function LinkForm({ initial, onClose, onSaved }) {
     reader.readAsDataURL(file);
   };
 
-  const FEE_PCT = 0.015; // 1.5% preview
   const previewAmount = form.amount_type === 'fixed' ? parseFloat(form.amount) || 0 : parseFloat(form.max_amount) || 0;
-  const previewFee = previewAmount * FEE_PCT;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -278,14 +276,14 @@ function LinkForm({ initial, onClose, onSaved }) {
             ))}
           </div>
           {previewAmount > 0 && (
-            <div className="mt-3 p-3 bg-slate-50 rounded-xl text-xs text-slate-600 flex items-center gap-2" data-testid="fee-preview">
-              <Info className="w-3.5 h-3.5 text-[#2563EB]" />
-              Aperçu (1.5% de frais) : <b className="text-slate-900">{previewFee.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b>
-              {form.fee_bearer === 'customer' ? (
-                <span>· Le client paiera <b>{(previewAmount + previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })}</b> dans la devise qu'il aura choisie</span>
-              ) : (
-                <span>· Vous recevrez <b>{(previewAmount - previewFee).toLocaleString(undefined, { maximumFractionDigits: 0 })}</b> dans la devise du paiement</span>
-              )}
+            <div className="mt-3 p-3 bg-slate-50 rounded-xl text-xs text-slate-600 flex items-start gap-2" data-testid="fee-preview">
+              <Info className="w-3.5 h-3.5 text-[#2563EB] mt-0.5 shrink-0" />
+              <span>
+                Les frais sont <b>calculés automatiquement</b> selon le moyen de paiement que votre client choisira (Mobile Money ou Crypto), en fonction des taux configurés dans l&apos;Admin Panel.
+                {form.fee_bearer === 'customer'
+                  ? <> Le client paiera <b>le montant + les frais</b> dans la devise qu&apos;il aura choisie.</>
+                  : <> Les frais seront <b>déduits du montant</b> que vous recevrez.</>}
+              </span>
             </div>
           )}
         </Section>

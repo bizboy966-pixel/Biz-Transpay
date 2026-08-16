@@ -1,5 +1,25 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Liens universels : Crypto débloqué + preview frais corrigé
+- ✅ **Backend** — `POST /links/pay` accepte désormais les liens `currency=USDT` **ET** `currency=UNIVERSAL` (au lieu de USDT seulement). Message d'erreur clarifié.
+- ✅ **Frontend `Links.js`** (formulaire création) :
+  - Supprimé le hardcode `FEE_PCT = 0.015` et la ligne "Aperçu (1.5% de frais)" qui affichait un taux figé bidon.
+  - Remplacé par un message honnête : *"Les frais sont **calculés automatiquement** selon le moyen de paiement que votre client choisira (Mobile Money ou Crypto), en fonction des taux configurés dans l'Admin Panel. [+ précision selon fee_bearer]"*.
+  - Le créateur du lien **ne choisit plus la devise ni le moyen de paiement** — le lien reste `UNIVERSAL` par défaut, le client choisit XOF/XAF/USDT + Mobile Money/Crypto au moment de payer.
+- ✅ **Frontend `PublicLink.js`** :
+  - Bouton **"Crypto"** désormais actif pour les liens `UNIVERSAL` (avant : seulement `USDT`).
+  - `CryptoLinkForm` affiche automatiquement **"USDT"** dans la carte d'aperçu quand le lien est `UNIVERSAL` (au lieu du texte laid "UNIVERSAL").
+
+**Testing** :
+- Création lien UNIVERSAL → `POST /links/pay` retourne validation OK (plus de rejet "devise différente de USDT") ✅
+- Screenshot formulaire `/dashboard/links` → nouvelle section Gestion des frais avec message dynamique, plus de 1.5% figé ✅
+- Backend + frontend lint 0 erreur ✅
+
+**Impact utilisateur** :
+1. Le marchand crée un lien sans se soucier du moyen de paiement.
+2. Le client, en scannant le lien, voit les 2 méthodes disponibles (si activées côté admin) et choisit.
+3. Les frais appliqués sont ceux configurés dans `/admin/deposit-config` (MoMo par pays/opérateur) ou `/admin/transfer-config` (fees_gateway/fees_platform par coin) — plus jamais un 1.5% figé.
+
 ## Implémenté (2026-02-XX) — Toggles API/Liens + Fix sidebar mobile post-login
 - ✅ **Backend** :
   - Nouveaux champs dans `DEFAULT_APP_FEATURES` : `api_enabled: True` et `links_enabled: True`.

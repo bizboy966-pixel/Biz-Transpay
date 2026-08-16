@@ -76,7 +76,7 @@ export default function PublicLink() {
                 <div className="mt-4 space-y-2">
                   <div className="text-xs sm:text-sm font-semibold text-slate-700 mb-2">Choisissez le moyen de paiement</div>
                   {cryptoOn && (
-                    <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={link.currency === 'USDT' ? 'USDT · USDC · BTC · ETH' : "Ce lien n'accepte pas les paiements crypto"} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT'} />
+                    <MethodBtn testId="pay-method-crypto" I={Bitcoin} c="bg-orange-50 text-orange-600" title="Crypto" sub={(link.currency === 'USDT' || link.currency === 'UNIVERSAL') ? 'USDT · USDC · BTC · ETH' : "Ce lien n'accepte pas les paiements crypto"} onClick={() => { setMethod('crypto'); setStep(2); }} disabled={link.currency !== 'USDT' && link.currency !== 'UNIVERSAL'} />
                   )}
                   {mmOn && (
                     <MethodBtn testId="pay-method-mm" I={Smartphone} c="bg-emerald-50 text-emerald-500" title="Mobile Money" sub="MTN · Moov · Orange · Wave · T-Money" onClick={() => { setMethod('mm'); setStep(2); }} />
@@ -125,6 +125,8 @@ function MethodBtn({ I, c, title, sub, onClick, testId, disabled }) {
 
 function CryptoLinkForm({ link, onSuccess }) {
   const isFree = link.amount_type === 'free';
+  // Universal links let the customer pay in USDT via crypto — always show USDT here.
+  const displayCurrency = link.currency === 'UNIVERSAL' ? 'USDT' : link.currency;
   const [assets, setAssets] = useState([]);
   const [assetCode, setAssetCode] = useState('USDT.TRC20');
   const [fullName, setFullName] = useState('');
@@ -170,10 +172,10 @@ function CryptoLinkForm({ link, onSuccess }) {
         {isFree ? (
           <>
             <input data-testid="pay-amount" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} min={link.min_amount} max={link.max_amount} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold outline-none placeholder:text-white/50" />
-            <div className="mt-1 text-[9px] sm:text-[10px] opacity-80">{link.min_amount} – {link.max_amount} {link.currency}</div>
+            <div className="mt-1 text-[9px] sm:text-[10px] opacity-80">{link.min_amount} – {link.max_amount} {displayCurrency}</div>
           </>
         ) : (
-          <div className="font-cabinet text-xl sm:text-2xl font-extrabold mt-1">{Number(link.amount).toLocaleString(undefined, { maximumFractionDigits: link.currency === 'USDT' ? 6 : 0 })} <span className="text-xs sm:text-sm opacity-80">{link.currency}</span></div>
+          <div className="font-cabinet text-xl sm:text-2xl font-extrabold mt-1">{Number(link.amount).toLocaleString(undefined, { maximumFractionDigits: displayCurrency === 'USDT' ? 6 : 0 })} <span className="text-xs sm:text-sm opacity-80">{displayCurrency}</span></div>
         )}
         {link.description && <div className="mt-1 text-[10px] sm:text-[11px] opacity-80">{link.description}</div>}
       </div>
