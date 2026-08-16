@@ -4,12 +4,12 @@ import { toast } from 'sonner';
 import api from '@/api';
 
 const PAIRS = [
-  { key: 'USDT_XOF', from: 'USDT', to: 'XOF', group: 'USDT → FCFA' },
-  { key: 'USDT_XAF', from: 'USDT', to: 'XAF', group: 'USDT → FCFA' },
-  { key: 'XOF_USDT', from: 'XOF', to: 'USDT', group: 'FCFA → USDT' },
-  { key: 'XAF_USDT', from: 'XAF', to: 'USDT', group: 'FCFA → USDT' },
-  { key: 'XOF_XAF', from: 'XOF', to: 'XAF', group: 'FCFA ↔ FCFA' },
-  { key: 'XAF_XOF', from: 'XAF', to: 'XOF', group: 'FCFA ↔ FCFA' },
+  { key: 'USDT_XOF', from: 'USDT', to: 'XOF', group: 'USDT → FCFA', inverse: false },
+  { key: 'USDT_XAF', from: 'USDT', to: 'XAF', group: 'USDT → FCFA', inverse: false },
+  { key: 'XOF_USDT', from: 'XOF', to: 'USDT', group: 'FCFA → USDT', inverse: true },
+  { key: 'XAF_USDT', from: 'XAF', to: 'USDT', group: 'FCFA → USDT', inverse: true },
+  { key: 'XOF_XAF', from: 'XOF', to: 'XAF', group: 'FCFA ↔ FCFA', inverse: true },
+  { key: 'XAF_XOF', from: 'XAF', to: 'XOF', group: 'FCFA ↔ FCFA', inverse: true },
 ];
 
 const GROUPS = ['USDT → FCFA', 'FCFA → USDT', 'FCFA ↔ FCFA'];
@@ -112,10 +112,21 @@ export default function AdminRates() {
           </div>
           <div className="grid md:grid-cols-2 gap-4">
             {grouped[group].map((p) => {
-              const rate = cfg.rates[p.key] ?? 0;
+              const rateStored = cfg.rates[p.key] ?? 0;
+              // For inverse-quotation pairs (FCFA→USDT, XOF↔XAF), the admin
+              // types "how many FROM units = 1 TO unit". We store the maths-
+              // friendly rate (1 FROM = ? TO) which is the reciprocal.
+              const displayRate = p.inverse
+                ? (rateStored > 0 ? 1 / rateStored : 0)
+                : rateStored;
               const min = cfg.limits[p.key]?.min ?? 0;
               const max = cfg.limits[p.key]?.max ?? 0;
               const on = cfg.pairs_enabled[p.key] !== false;
+              const setRate = (raw) => {
+                const num = parseFloat(raw);
+                if (isNaN(num) || num <= 0) { patch(`rates.${p.key}`, 0); return; }
+                patch(`rates.${p.key}`, p.inverse ? (1 / num) : num);
+              };
               return (
                 <div key={p.key} data-testid={`pair-${p.key}`} className={`p-4 rounded-xl border-2 ${on ? 'border-emerald-200 bg-emerald-50/30' : 'border-slate-200 bg-slate-50'}`}>
                   <div className="flex items-center justify-between mb-3">
@@ -133,9 +144,11 @@ export default function AdminRates() {
                   </div>
                   <div className="grid grid-cols-3 gap-2">
                     <div>
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Taux</label>
-                      <input type="number" step="0.000001" value={rate}
-                        onChange={(e) => patch(`rates.${p.key}`, parseFloat(e.target.value) || 0)}
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Taux · {p.inverse ? `${p.from} pour 1 ${p.to}` : `${p.to} pour 1 ${p.from}`}
+                      </label>
+                      <input type="number" step={p.inverse ? '1' : '0.000001'} value={displayRate}
+                        onChange={(e) => setRate(e.target.value)}
                         data-testid={`rate-${p.key}`}
                         className="mt-1 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm font-mono" />
                     </div>
@@ -153,7 +166,10 @@ export default function AdminRates() {
                     </div>
                   </div>
                   <div className="mt-2 text-[10px] text-slate-500">
-                    1 {p.from} = <span className="font-semibold text-slate-800">{rate.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span> {p.to}
+                    {p.inverse
+                      ? <>{displayRate.toLocaleString(undefined, { maximumFractionDigits: 6 })} {p.from} = <span className="font-semibold text-slate-800">1 {p.to}</span></>
+                      : <>1 {p.from} = <span className="font-semibold text-slate-800">{rateStored.toLocaleString(undefined, { maximumFractionDigits: 6 })}</span> {p.to}</>
+                    }
                   </div>
                 </div>
               );
