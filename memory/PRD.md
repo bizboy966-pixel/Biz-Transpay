@@ -1,5 +1,19 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Split "Frais Passerelle / Plateforme" sur les retraits
+- ✅ **`AdminTransferConfig.js`** — 2 sections mises à jour avec la même UX que les dépôts :
+  - **Retraits Mobile Money** (table opérateurs) : nouvelles colonnes **Frais passerelle %**, **Frais plateforme %**, **Total %** (badge noir en lecture seule). Le total est envoyé au backend dans `fee_pct` (aucun changement DB requis). Rétro-compatible : si un opérateur n'a que l'ancien `fee_pct`, il s'affiche comme Passerelle=fee_pct / Plateforme=0.
+  - **Retraits Crypto** (`CryptoFeesTable`, ~30 coins IziChange) : mêmes 3 colonnes. Les deux parts sont stockées dans `crypto.fees_gateway[coin]` et `crypto.fees_platform[coin]`. Le total continue d'être écrit dans `crypto.fees[coin]` pour que `_crypto_fee_pct()` fonctionne sans changement backend.
+- ✅ **Rétro-compat totale** : `_apply_fee()`, `_crypto_fee_pct()`, `POST /deposits/mobile-money`, `_credit_momo_deposit()`, `biz_to_crypto` continuent tous de lire `fee_pct` (le total).
+- ✅ **Data-testids** ajoutés : `op-gateway-fee-{idx}`, `op-platform-fee-{idx}`, `op-total-fee-{idx}`, `crypto-fee-gateway-{coin}`, `crypto-fee-platform-{coin}`, `crypto-fee-total-{coin}`.
+
+**Testing** :
+- Screenshot admin `/admin/transfer-config` — les 2 tables affichent correctement les 3 colonnes (gateway/platform/total) ✅
+- `PATCH /admin/transfer/config` — payload split accepté, retour DB confirme la persistance (crypto.fees=6.5, fees_gateway.BTC=4.5, fees_platform.BTC=2.0 ; MoMo tmoney gw=3.5, pf=2.0, total=5.5) ✅
+- Frontend lint 0 erreur ✅
+
+**Objectif atteint** : l'admin peut désormais **visualiser et ajuster séparément** la marge de la passerelle vs la marge Biz-transPay sur TOUS les points de frais (dépôts MoMo + retraits MoMo + retraits Crypto).
+
 ## Implémenté (2026-02-XX) — Lien de paiement Mobile Money + suppression Carte bancaire
 - ✅ **Nouveau endpoint public** `POST /api/links/pay/mobile-money` — accepte `{slug, amount?, full_name, email, country, operator, phone_number, fee_bearer}`. Valide via `deposit_config` (opérateur activé + min/max + devise), crée un `momo_deposit` avec `source="link_payment"` + un `link_payment` `method="mobile_money"`. Déclenche le prompt USSD via FedaPay.
 - ✅ **`GET /api/links/payments/{id}`** enrichi — poll FedaPay pour les MoMo pending, met à jour `status` (paid/failed) en fonction du `momo_deposit`.

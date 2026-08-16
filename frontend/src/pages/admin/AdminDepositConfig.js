@@ -110,7 +110,9 @@ export default function AdminDepositConfig() {
                 <th className="text-left px-2 sm:px-3 py-2">Code</th>
                 <th className="text-left px-2 sm:px-3 py-2">Nom affiché</th>
                 <th className="text-left px-2 sm:px-3 py-2">Devise</th>
-                <th className="text-right px-2 sm:px-3 py-2">Frais %</th>
+                <th className="text-right px-2 sm:px-3 py-2">Frais passerelle %</th>
+                <th className="text-right px-2 sm:px-3 py-2">Frais plateforme %</th>
+                <th className="text-right px-2 sm:px-3 py-2">Total %</th>
                 <th className="text-right px-2 sm:px-3 py-2">Min</th>
                 <th className="text-right px-2 sm:px-3 py-2">Max</th>
                 <th className="text-center px-2 sm:px-3 py-2">Actif</th>
@@ -141,8 +143,33 @@ export default function AdminDepositConfig() {
                     </select>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
-                    <input type="number" step="0.1" value={o.fee_pct} onChange={(e) => updateOp(idx, 'fee_pct', parseFloat(e.target.value) || 0)} data-testid={`dep-op-fee-${idx}`}
+                    <input type="number" step="0.1" min="0"
+                      value={o.gateway_fee_pct ?? o.fee_pct ?? 0}
+                      onChange={(e) => {
+                        const g = parseFloat(e.target.value) || 0;
+                        const p = parseFloat(o.platform_fee_pct) || 0;
+                        updateOp(idx, 'gateway_fee_pct', g);
+                        updateOp(idx, 'fee_pct', +(g + p).toFixed(4));
+                      }}
+                      data-testid={`dep-op-gateway-fee-${idx}`}
                       className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
+                  </td>
+                  <td className="px-2 sm:px-3 py-2">
+                    <input type="number" step="0.1" min="0"
+                      value={o.platform_fee_pct ?? 0}
+                      onChange={(e) => {
+                        const p = parseFloat(e.target.value) || 0;
+                        const g = parseFloat(o.gateway_fee_pct ?? o.fee_pct) || 0;
+                        updateOp(idx, 'platform_fee_pct', p);
+                        updateOp(idx, 'fee_pct', +(g + p).toFixed(4));
+                      }}
+                      data-testid={`dep-op-platform-fee-${idx}`}
+                      className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
+                  </td>
+                  <td className="px-2 sm:px-3 py-2 text-right">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`dep-op-total-fee-${idx}`}>
+                      {((o.gateway_fee_pct ?? o.fee_pct ?? 0) + (o.platform_fee_pct ?? 0)).toFixed(2)} %
+                    </span>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
                     <input type="number" value={o.min} onChange={(e) => updateOp(idx, 'min', parseInt(e.target.value) || 0)} data-testid={`dep-op-min-${idx}`}
@@ -165,7 +192,7 @@ export default function AdminDepositConfig() {
                 </tr>
               ))}
               {mm.operators.length === 0 && (
-                <tr><td colSpan={9} className="text-center py-6 text-[11px] text-slate-400">Aucun opérateur configuré. Cliquez sur « Ajouter un opérateur ».</td></tr>
+                <tr><td colSpan={11} className="text-center py-6 text-[11px] text-slate-400">Aucun opérateur configuré. Cliquez sur « Ajouter un opérateur ».</td></tr>
               )}
             </tbody>
           </table>

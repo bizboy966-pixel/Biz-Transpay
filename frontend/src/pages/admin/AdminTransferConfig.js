@@ -50,7 +50,7 @@ export default function AdminTransferConfig() {
     ops[idx] = { ...ops[idx], [key]: val };
     setSection('mobile_money', { ...mm, operators: ops });
   };
-  const addOp = () => setSection('mobile_money', { ...mm, operators: [...mm.operators, { country: 'TG', code: '', name: '', fee_pct: 1.5, min: 100, max: 500000, active: true }] });
+  const addOp = () => setSection('mobile_money', { ...mm, operators: [...mm.operators, { country: 'TG', code: '', name: '', gateway_fee_pct: 1.5, platform_fee_pct: 0, fee_pct: 1.5, min: 100, max: 500000, active: true }] });
   const removeOp = (idx) => setSection('mobile_money', { ...mm, operators: mm.operators.filter((_, i) => i !== idx) });
 
   // CRYPTO handlers
@@ -88,21 +88,66 @@ export default function AdminTransferConfig() {
         <div className="overflow-x-auto">
           <table className="w-full text-[11px] sm:text-xs">
             <thead className="bg-slate-50 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-slate-500">
-              <tr><th className="text-left px-2 sm:px-3 py-2">Pays</th><th className="text-left px-2 sm:px-3 py-2">Code</th><th className="text-left px-2 sm:px-3 py-2">Nom</th><th className="text-right px-2 sm:px-3 py-2">Frais %</th><th className="text-right px-2 sm:px-3 py-2">Min</th><th className="text-right px-2 sm:px-3 py-2">Max</th><th className="text-center px-2 sm:px-3 py-2">Actif</th><th className="text-center px-2 sm:px-3 py-2"></th></tr>
+              <tr>
+                <th className="text-left px-2 sm:px-3 py-2">Pays</th>
+                <th className="text-left px-2 sm:px-3 py-2">Code</th>
+                <th className="text-left px-2 sm:px-3 py-2">Nom</th>
+                <th className="text-right px-2 sm:px-3 py-2">Frais passerelle %</th>
+                <th className="text-right px-2 sm:px-3 py-2">Frais plateforme %</th>
+                <th className="text-right px-2 sm:px-3 py-2">Total %</th>
+                <th className="text-right px-2 sm:px-3 py-2">Min</th>
+                <th className="text-right px-2 sm:px-3 py-2">Max</th>
+                <th className="text-center px-2 sm:px-3 py-2">Actif</th>
+                <th className="text-center px-2 sm:px-3 py-2"></th>
+              </tr>
             </thead>
             <tbody>
-              {mm.operators.map((o, idx) => (
+              {mm.operators.map((o, idx) => {
+                const gateway = o.gateway_fee_pct ?? o.fee_pct ?? 0;
+                const platform = o.platform_fee_pct ?? 0;
+                const total = +(gateway + platform).toFixed(4);
+                return (
                 <tr key={idx} data-testid={`op-row-${idx}`} className="border-t border-slate-50">
                   <td className="px-2 sm:px-3 py-2"><select value={o.country} onChange={(e) => updateOp(idx, 'country', e.target.value)} className="px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs">{COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}</select></td>
                   <td className="px-2 sm:px-3 py-2"><input value={o.code} onChange={(e) => updateOp(idx, 'code', e.target.value.toLowerCase())} className="w-20 sm:w-24 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs font-mono" /></td>
                   <td className="px-2 sm:px-3 py-2"><input value={o.name} onChange={(e) => updateOp(idx, 'name', e.target.value)} className="w-32 sm:w-40 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs" /></td>
-                  <td className="px-2 sm:px-3 py-2"><input type="number" step="0.1" value={o.fee_pct} onChange={(e) => updateOp(idx, 'fee_pct', parseFloat(e.target.value) || 0)} className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
+                  <td className="px-2 sm:px-3 py-2">
+                    <input type="number" step="0.1" min="0"
+                      value={gateway}
+                      onChange={(e) => {
+                        const g = parseFloat(e.target.value) || 0;
+                        const p = parseFloat(o.platform_fee_pct) || 0;
+                        const ops = [...mm.operators];
+                        ops[idx] = { ...ops[idx], gateway_fee_pct: g, fee_pct: +(g + p).toFixed(4) };
+                        setSection('mobile_money', { ...mm, operators: ops });
+                      }}
+                      data-testid={`op-gateway-fee-${idx}`}
+                      className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
+                  </td>
+                  <td className="px-2 sm:px-3 py-2">
+                    <input type="number" step="0.1" min="0"
+                      value={platform}
+                      onChange={(e) => {
+                        const p = parseFloat(e.target.value) || 0;
+                        const g = parseFloat(o.gateway_fee_pct ?? o.fee_pct) || 0;
+                        const ops = [...mm.operators];
+                        ops[idx] = { ...ops[idx], platform_fee_pct: p, fee_pct: +(g + p).toFixed(4) };
+                        setSection('mobile_money', { ...mm, operators: ops });
+                      }}
+                      data-testid={`op-platform-fee-${idx}`}
+                      className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
+                  </td>
+                  <td className="px-2 sm:px-3 py-2 text-right">
+                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`op-total-fee-${idx}`}>
+                      {total.toFixed(2)} %
+                    </span>
+                  </td>
                   <td className="px-2 sm:px-3 py-2"><input type="number" value={o.min} onChange={(e) => updateOp(idx, 'min', parseInt(e.target.value) || 0)} className="w-16 sm:w-20 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
                   <td className="px-2 sm:px-3 py-2"><input type="number" value={o.max} onChange={(e) => updateOp(idx, 'max', parseInt(e.target.value) || 0)} className="w-20 sm:w-24 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" /></td>
                   <td className="px-2 sm:px-3 py-2 text-center"><input type="checkbox" checked={o.active} onChange={(e) => updateOp(idx, 'active', e.target.checked)} className="w-4 h-4 accent-[#2563EB]" /></td>
                   <td className="px-2 sm:px-3 py-2 text-center"><button onClick={() => removeOp(idx)} data-testid={`btn-remove-op-${idx}`} className="w-7 h-7 rounded-lg hover:bg-red-50 text-red-500 flex items-center justify-center mx-auto"><Trash2 className="w-3.5 h-3.5" /></button></td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
@@ -128,13 +173,31 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
     api.get('/admin/crypto/coins').then(({ data }) => setCoins(data)).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
-  const setFee = (coin, val) => {
+  // Reads (gateway, platform) split for a given coin. Falls back to the legacy
+  // single `fees[coin]` value stored as the gateway share for retro-compatibility.
+  const getSplit = (coin, legacyTotal) => {
+    const feesG = crypto.fees_gateway || {};
+    const feesP = crypto.fees_platform || {};
+    const gateway = feesG[coin] !== undefined ? feesG[coin] : (legacyTotal ?? 4);
+    const platform = feesP[coin] !== undefined ? feesP[coin] : 0;
+    return { gateway: +gateway, platform: +platform };
+  };
+
+  const setPart = (coin, part, val) => {
+    const num = parseFloat(val);
+    const safe = isNaN(num) ? 0 : num;
+    const feesG = { ...(crypto.fees_gateway || {}) };
+    const feesP = { ...(crypto.fees_platform || {}) };
     const fees = { ...(crypto.fees || {}) };
-    fees[coin] = parseFloat(val);
-    if (isNaN(fees[coin])) fees[coin] = 4.0;
-    updCrypto({ fees });
-    // Also reflect in the local coins list for immediate UI feedback
-    setCoins((cs) => cs.map((c) => c.coin === coin ? { ...c, fee_pct: fees[coin] } : c));
+    // Seed both maps from legacy if missing
+    if (feesG[coin] === undefined) feesG[coin] = fees[coin] !== undefined ? fees[coin] : 4;
+    if (feesP[coin] === undefined) feesP[coin] = 0;
+    if (part === 'gateway') feesG[coin] = safe;
+    else feesP[coin] = safe;
+    const total = +((feesG[coin] || 0) + (feesP[coin] || 0)).toFixed(4);
+    fees[coin] = total;
+    updCrypto({ fees, fees_gateway: feesG, fees_platform: feesP });
+    setCoins((cs) => cs.map((c) => c.coin === coin ? { ...c, fee_pct: total } : c));
   };
 
   const filtered = coins.filter((c) => !filter || c.coin.includes(filter.toUpperCase()) || (c.name || '').toLowerCase().includes(filter.toLowerCase()));
@@ -144,7 +207,7 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div>
           <div className="font-cabinet font-bold text-[12px] sm:text-sm text-slate-900 flex items-center gap-1.5"><Bitcoin className="w-3.5 h-3.5" /> Frais de retrait par cryptomonnaie</div>
-          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">Défaut : 4 %. Les cryptos sont chargées automatiquement depuis IzichangePay.</div>
+          <div className="text-[10px] sm:text-[11px] text-slate-500 mt-0.5">Défaut : 4 %. Passerelle + Plateforme = frais total appliqué. Les cryptos sont chargées automatiquement depuis IzichangePay.</div>
         </div>
         <input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Rechercher (BTC, USDT…)" className="px-3 py-1.5 border border-slate-200 rounded-lg text-[11px] sm:text-xs w-40 sm:w-48" data-testid="crypto-fee-filter" />
       </div>
@@ -158,22 +221,44 @@ function CryptoFeesTable({ crypto, updCrypto, onSaveAll, dirty, savingAll }) {
             <tr>
               <th className="text-left px-2 sm:px-3 py-2">Code</th>
               <th className="text-left px-2 sm:px-3 py-2">Cryptomonnaie</th>
-              <th className="text-right px-2 sm:px-3 py-2">Frais (%)</th>
+              <th className="text-right px-2 sm:px-3 py-2">Frais passerelle %</th>
+              <th className="text-right px-2 sm:px-3 py-2">Frais plateforme %</th>
+              <th className="text-right px-2 sm:px-3 py-2">Total %</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map((c) => (
+            {filtered.map((c) => {
+              const { gateway, platform } = getSplit(c.coin, c.fee_pct);
+              const total = +(gateway + platform).toFixed(4);
+              return (
               <tr key={c.coin} className="border-t border-slate-50" data-testid={`crypto-fee-row-${c.coin}`}>
                 <td className="px-2 sm:px-3 py-2 font-mono font-bold text-slate-900">{c.coin}</td>
                 <td className="px-2 sm:px-3 py-2 text-slate-600">{c.name}</td>
                 <td className="px-2 sm:px-3 py-2 text-right">
                   <div className="inline-flex items-center gap-1">
-                    <input type="number" step="0.1" min="0" max="100" value={c.fee_pct ?? 4} onChange={(e) => setFee(c.coin, e.target.value)} data-testid={`crypto-fee-${c.coin}`} className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
+                    <input type="number" step="0.1" min="0" max="100" value={gateway}
+                      onChange={(e) => setPart(c.coin, 'gateway', e.target.value)}
+                      data-testid={`crypto-fee-gateway-${c.coin}`}
+                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
                     <span className="text-slate-400 text-[10px]">%</span>
                   </div>
                 </td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <div className="inline-flex items-center gap-1">
+                    <input type="number" step="0.1" min="0" max="100" value={platform}
+                      onChange={(e) => setPart(c.coin, 'platform', e.target.value)}
+                      data-testid={`crypto-fee-platform-${c.coin}`}
+                      className="w-16 sm:w-20 px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right font-mono" />
+                    <span className="text-slate-400 text-[10px]">%</span>
+                  </div>
+                </td>
+                <td className="px-2 sm:px-3 py-2 text-right">
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-slate-900 text-white text-[10px] font-bold" data-testid={`crypto-fee-total-${c.coin}`}>
+                    {total.toFixed(2)} %
+                  </span>
+                </td>
               </tr>
-            ))}
+            );})}
           </tbody>
         </table>
       </div>
