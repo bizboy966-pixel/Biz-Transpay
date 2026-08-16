@@ -175,8 +175,8 @@ class LinkPayRequest(BaseModel):
 
 # ---------- Exchange ----------
 class ExchangeRequest(BaseModel):
-    from_currency: Literal["XOF", "XAF"]
-    to_currency: Literal["XOF", "XAF"]
+    from_currency: Literal["USDT", "XOF", "XAF"]
+    to_currency: Literal["USDT", "XOF", "XAF"]
     amount: float
 
 

@@ -33,6 +33,8 @@ import AdminDepositConfig from '@/pages/admin/AdminDepositConfig';
 import AdminSupport from '@/pages/admin/AdminSupport';
 import AdminPlatform from '@/pages/admin/AdminPlatform';
 import AdminFeatures from '@/pages/admin/AdminFeatures';
+import AdminRates from '@/pages/admin/AdminRates';
+import AdminConversions from '@/pages/admin/AdminConversions';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -91,6 +93,8 @@ function App() {
             <Route path="support" element={<AdminSupport />} />
             <Route path="platform" element={<AdminPlatform />} />
             <Route path="features" element={<AdminFeatures />} />
+            <Route path="rates" element={<AdminRates />} />
+            <Route path="conversions" element={<AdminConversions />} />
           </Route>
         </Routes>
       </BrowserRouter>

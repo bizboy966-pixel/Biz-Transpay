@@ -672,3 +672,36 @@ Extension du module API public avec les retraits crypto, en réutilisant `izipay
 - Backend `PATCH /admin/settings/features` avec chaque clé validé via curl.
 - Screenshot page admin — 3 cartes, toggles maître + sous-toggles, bandeau état global visibles.
 
+
+## 2026-08-16 — Module de Conversion Multi-Devises
+### Backend
+- **`platform_config`** étendu avec `conversion_rates`, `conversion_limits`, `conversion_pairs_enabled` (6 paires : USDT_XOF, USDT_XAF, XOF_USDT, XAF_USDT, XOF_XAF, XAF_XOF).
+- Aucune valeur en dur — tout piloté depuis l'admin.
+- **`ExchangeRequest`** étendu à `Literal["USDT", "XOF", "XAF"]`.
+- **`/exchange`** réécrit : validation paire+solde+limites+wallet features, débit atomique, crédit destination, fee configurable (fixe/pourcentage + min/max).
+- Nouveaux endpoints :
+  - `GET /api/conversion/config` (public) — rates, limits, pairs enabled, fee
+  - `GET /api/conversion/quote?from&to&amount` — devis en temps réel avec `fee`, `rate`, `received`
+  - `GET /api/admin/conversion/config` (admin) — vue complète + `supported_pairs`
+  - `PATCH /api/admin/conversion/config` — modification des rates/limits/pairs/fee
+  - `GET /api/admin/conversions?period=day|week|month` — suivi + totals + volume_by_currency + rows
+
+### Frontend Admin
+- **`/admin/rates`** (`AdminRates.js`) — Éditeur complet groupé par 3 catégories (USDT→FCFA, FCFA→USDT, FCFA↔FCFA), rate + min + max + toggle par paire, section frais globaux (fixe/percent + min/max).
+- **`/admin/conversions`** (`AdminConversions.js`) — Stats (all/today/validées/rejetées/en attente) + volume par devise + historique complet paginé.
+
+### Frontend User
+- **`/dashboard/exchange`** (`Exchange.js`) réécrit :
+  - 6 paires supportées, sélecteurs dynamiques filtrés par pairs_enabled + wallet features
+  - Devis live (`GET /conversion/quote`) avec debounce
+  - Récap avant validation : taux, montant envoyé, frais, montant reçu
+  - Bouton swap intelligent (bloque si paire inversée désactivée)
+  - État succès avec récap complet
+  - Fallback ComingSoon si aucune paire disponible
+
+### Validation
+- Testé : USDT→XOF 10 → +5886.5 XOF (rate 610, fee 0.35 USDT) ✅
+- Testé : XOF→USDT 1000 → +1.5826 USDT (fee 35 XOF) ✅
+- Admin tracking : 2 conversions détectées, volumes agrégés par devise ✅
+- Rate modifié depuis l'admin → immédiatement effectif ✅
+

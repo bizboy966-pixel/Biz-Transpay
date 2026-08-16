@@ -18,6 +18,8 @@ const NAV = [
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
   { section: 'Réglages' },
   { to: '/admin/features', i: Wallet, l: 'Fonctionnalités' },
+  { to: '/admin/rates', i: ArrowLeftRight, l: 'Taux & frais' },
+  { to: '/admin/conversions', i: ArrowLeftRight, l: 'Conversions', sub: 'Suivi' },
   { to: '/admin/transfer-config', i: SendIcon2, l: 'Config. transferts' },
   { to: '/admin/deposit-config', i: ArrowDownToLine, l: 'Config. dépôts' },
   { to: '/admin/platform', i: SettingsIcon, l: 'Frais & Retraits' },

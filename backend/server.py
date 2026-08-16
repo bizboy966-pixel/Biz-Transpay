@@ -2939,7 +2939,11 @@ async def merchant_check_payout_completed(payout_id: str, request: Request):
 
 
 
-# ==================== EXCHANGE ====================
+# ==================== EXCHANGE / CONVERSION ====================
+
+# All conversion rates and fees are admin-configurable — nothing hardcoded.
+# The `platform_config.conversion_rates` map holds `<FROM>_<TO>` keys with
+# the current rate: 1 unit of FROM produces `rate` units of TO.
 DEFAULT_PLATFORM_CONFIG = {
     "id": "platform_config",
     "conversion_fee": {
@@ -2949,8 +2953,41 @@ DEFAULT_PLATFORM_CONFIG = {
         "min_fee": 0,
         "max_fee": None,
     },
+    "conversion_rates": {
+        "USDT_XOF": 600.0,
+        "USDT_XAF": 600.0,
+        "XOF_USDT": 0.00165,
+        "XAF_USDT": 0.00165,
+        "XOF_XAF": 1.0,
+        "XAF_XOF": 1.0,
+    },
+    "conversion_limits": {
+        "USDT_XOF": {"min": 1, "max": 5000},
+        "USDT_XAF": {"min": 1, "max": 5000},
+        "XOF_USDT": {"min": 500, "max": 3000000},
+        "XAF_USDT": {"min": 500, "max": 3000000},
+        "XOF_XAF": {"min": 500, "max": 5000000},
+        "XAF_XOF": {"min": 500, "max": 5000000},
+    },
+    "conversion_pairs_enabled": {
+        "USDT_XOF": True, "USDT_XAF": True,
+        "XOF_USDT": True, "XAF_USDT": True,
+        "XOF_XAF": True, "XAF_XOF": True,
+    },
     "auto_withdrawals_disabled": False,
 }
+
+
+SUPPORTED_CONVERSION_PAIRS = [
+    ("USDT", "XOF"), ("USDT", "XAF"),
+    ("XOF", "USDT"), ("XAF", "USDT"),
+    ("XOF", "XAF"), ("XAF", "XOF"),
+]
+
+
+def _balance_field(currency: str) -> str:
+    c = (currency or "").upper()
+    return {"USDT": "balance_usdt", "XOF": "balance_xof", "XAF": "balance_xaf"}.get(c)
 
 
 async def get_platform_config() -> dict:
@@ -2958,63 +2995,151 @@ async def get_platform_config() -> dict:
     if not doc:
         await db.settings.insert_one(DEFAULT_PLATFORM_CONFIG.copy())
         doc = await db.settings.find_one({"id": "platform_config"}, {"_id": 0})
+    # Ensure every new sub-key exists (backwards compat).
+    for k, v in DEFAULT_PLATFORM_CONFIG.items():
+        if k not in doc:
+            doc[k] = v
+    for section in ("conversion_rates", "conversion_limits", "conversion_pairs_enabled"):
+        base = DEFAULT_PLATFORM_CONFIG[section]
+        for kk, vv in base.items():
+            doc.setdefault(section, {}).setdefault(kk, vv)
     return doc
+
+
+def _compute_fee(fcfg: dict, amount: float) -> float:
+    if not fcfg.get("enabled", True):
+        return 0.0
+    if fcfg.get("type") == "fixed":
+        fee = float(fcfg.get("value", 0) or 0)
+    else:
+        fee = amount * float(fcfg.get("value", 0) or 0) / 100.0
+    if fcfg.get("min_fee") is not None:
+        fee = max(fee, float(fcfg.get("min_fee") or 0))
+    if fcfg.get("max_fee") is not None:
+        fee = min(fee, float(fcfg.get("max_fee")))
+    return round(fee, 6)
+
+
+@api.get("/conversion/config")
+async def public_conversion_config():
+    """Public rates + fees. Consumed by the user-side conversion page."""
+    cfg = await get_platform_config()
+    return {
+        "rates": cfg.get("conversion_rates") or {},
+        "limits": cfg.get("conversion_limits") or {},
+        "pairs_enabled": cfg.get("conversion_pairs_enabled") or {},
+        "fee": cfg.get("conversion_fee") or {},
+    }
 
 
 @api.get("/exchange/rate")
 async def get_rate(from_currency: str = "XOF", to_currency: str = "XAF"):
+    """Legacy rate endpoint — now driven by admin-configurable rates."""
     cfg = await get_platform_config()
-    fee = cfg.get("conversion_fee", {})
-    rate = FX_RATE_XOF_TO_XAF if from_currency == "XOF" else FX_RATE_XAF_TO_XOF
+    fcfg = cfg.get("conversion_fee", {}) or {}
+    key = f"{from_currency.upper()}_{to_currency.upper()}"
+    rate = float((cfg.get("conversion_rates") or {}).get(key, 1.0))
     return {
         "from": from_currency, "to": to_currency, "rate": rate,
-        "fee_enabled": fee.get("enabled", True),
-        "fee_type": fee.get("type", "percent"),
-        "fee_value": fee.get("value", 0.5),
-        "fee_min": fee.get("min_fee", 0),
-        "fee_max": fee.get("max_fee"),
-        "fee_pct": (fee.get("value", 0.5) / 100.0) if fee.get("type") == "percent" else 0,
+        "fee_enabled": fcfg.get("enabled", True),
+        "fee_type": fcfg.get("type", "percent"),
+        "fee_value": fcfg.get("value", 0.5),
+        "fee_min": fcfg.get("min_fee", 0),
+        "fee_max": fcfg.get("max_fee"),
+        "fee_pct": (float(fcfg.get("value", 0.5)) / 100.0) if fcfg.get("type") == "percent" else 0,
+    }
+
+
+@api.get("/conversion/quote")
+async def conversion_quote(from_currency: str, to_currency: str, amount: float):
+    """Preview quote — returns the exact `received` amount and fee for the given input."""
+    fc, tc = from_currency.upper(), to_currency.upper()
+    if fc == tc:
+        raise HTTPException(400, "Devises identiques")
+    if (fc, tc) not in SUPPORTED_CONVERSION_PAIRS:
+        raise HTTPException(400, f"Paire {fc}→{tc} non supportée")
+    cfg = await get_platform_config()
+    key = f"{fc}_{tc}"
+    if not (cfg.get("conversion_pairs_enabled") or {}).get(key, True):
+        raise HTTPException(400, "Cette paire de conversion est désactivée")
+    rate = float((cfg.get("conversion_rates") or {}).get(key, 1.0))
+    limits = ((cfg.get("conversion_limits") or {}).get(key) or {})
+    if amount < float(limits.get("min", 0) or 0):
+        raise HTTPException(400, f"Montant inférieur au minimum ({limits.get('min')} {fc})")
+    if limits.get("max") and amount > float(limits["max"]):
+        raise HTTPException(400, f"Montant supérieur au maximum ({limits['max']} {fc})")
+    fee = _compute_fee(cfg.get("conversion_fee") or {}, amount)
+    received = round((amount - fee) * rate, 6)
+    return {
+        "from_currency": fc, "to_currency": tc,
+        "amount": amount, "fee": fee, "rate": rate,
+        "received": received,
+        "fee_currency": fc,
     }
 
 
 @api.post("/exchange")
 async def do_exchange(req: ExchangeRequest, uid: str = Depends(get_current_user_id)):
-    if req.from_currency == req.to_currency:
+    """Currency-agnostic conversion. Supports the 6 pairs across
+    USDT / XOF / XAF, rate-driven by admin config, fee-driven by admin config."""
+    fc = (req.from_currency or "").upper()
+    tc = (req.to_currency or "").upper()
+    if fc == tc:
         raise HTTPException(400, "Devises identiques")
-    u = await get_user(uid)
-    from_field = "balance_xof" if req.from_currency == "XOF" else "balance_xaf"
-    to_field = "balance_xof" if req.to_currency == "XOF" else "balance_xaf"
-    if u.get(from_field, 0) < req.amount:
-        raise HTTPException(400, "Solde insuffisant")
+    if (fc, tc) not in SUPPORTED_CONVERSION_PAIRS:
+        raise HTTPException(400, f"Paire {fc}→{tc} non supportée")
+
+    from_field, to_field = _balance_field(fc), _balance_field(tc)
+    if not from_field or not to_field:
+        raise HTTPException(400, "Devise invalide")
 
     cfg = await get_platform_config()
-    fcfg = cfg.get("conversion_fee", {})
-    rate = FX_RATE_XOF_TO_XAF if req.from_currency == "XOF" else FX_RATE_XAF_TO_XOF
+    key = f"{fc}_{tc}"
+    if not (cfg.get("conversion_pairs_enabled") or {}).get(key, True):
+        raise HTTPException(400, "Cette paire de conversion est désactivée")
 
-    fee = 0.0
-    if fcfg.get("enabled", True):
-        if fcfg.get("type") == "fixed":
-            fee = float(fcfg.get("value", 0))
-        else:
-            fee = req.amount * float(fcfg.get("value", 0.5)) / 100.0
-        if fcfg.get("min_fee") is not None:
-            fee = max(fee, float(fcfg.get("min_fee") or 0))
-        if fcfg.get("max_fee") is not None:
-            fee = min(fee, float(fcfg.get("max_fee")))
+    # Cross-check with the app_features flags so a disabled wallet also blocks conversion.
+    feats = await get_app_features()
+    if not feats.get(f"wallet_{('crypto' if fc == 'USDT' else fc.lower())}_enabled", True):
+        raise HTTPException(400, f"Le portefeuille {fc} est désactivé")
+    if not feats.get(f"wallet_{('crypto' if tc == 'USDT' else tc.lower())}_enabled", True):
+        raise HTTPException(400, f"Le portefeuille {tc} est désactivé")
 
-    if u.get(from_field, 0) < req.amount + 0:  # amount already includes fee separation
+    limits = ((cfg.get("conversion_limits") or {}).get(key) or {})
+    if req.amount < float(limits.get("min", 0) or 0):
+        raise HTTPException(400, f"Montant inférieur au minimum ({limits.get('min')} {fc})")
+    if limits.get("max") and req.amount > float(limits["max"]):
+        raise HTTPException(400, f"Montant supérieur au maximum ({limits['max']} {fc})")
+
+    rate = float((cfg.get("conversion_rates") or {}).get(key, 1.0))
+    fee = _compute_fee(cfg.get("conversion_fee") or {}, req.amount)
+
+    # Atomic pessimistic debit — refuses concurrent overdraft.
+    u = await db.users.find_one_and_update(
+        {"id": uid, from_field: {"$gte": req.amount}},
+        {"$inc": {from_field: -req.amount}},
+        return_document=False,
+    )
+    if not u:
         raise HTTPException(400, "Solde insuffisant")
 
-    converted = (req.amount - fee) * rate
+    received = round((req.amount - fee) * rate, 6)
+    await db.users.update_one({"id": uid}, {"$inc": {to_field: received}})
 
-    await db.users.update_one({"id": uid}, {
-        "$inc": {from_field: -req.amount, to_field: converted}
-    })
-    tx_out = await record_tx(uid, "exchange", "out", req.amount, req.from_currency,
-                             description=f"Échange vers {req.to_currency}",
-                             metadata={"rate": rate, "fee": fee, "received": converted,
-                                       "to_currency": req.to_currency})
-    return {"received": converted, "fee": fee, "rate": rate, "transaction": tx_out.model_dump()}
+    tx_out = await record_tx(
+        uid, "exchange", "out", req.amount, fc,
+        description=f"Conversion {fc} → {tc}",
+        metadata={
+            "rate": rate, "fee": fee, "received": received,
+            "from_currency": fc, "to_currency": tc,
+            "pair": key,
+        },
+    )
+    return {
+        "received": received, "fee": fee, "rate": rate,
+        "from_currency": fc, "to_currency": tc,
+        "transaction": tx_out.model_dump(),
+    }
 
 
 # ==================== PAYMENT LINKS ====================
@@ -4374,6 +4499,90 @@ async def get_admin(uid: str = Depends(get_current_user_id)) -> dict:
     if u.get("role") not in ("admin", "super_admin"):
         raise HTTPException(403, "Accès administrateur requis")
     return u
+
+
+
+class AdminConversionConfigReq(BaseModel):
+    conversion_rates: Optional[dict] = None
+    conversion_limits: Optional[dict] = None
+    conversion_pairs_enabled: Optional[dict] = None
+    conversion_fee: Optional[dict] = None
+
+
+@api.get("/admin/conversion/config")
+async def admin_get_conversion_config(admin=Depends(get_admin)):
+    cfg = await get_platform_config()
+    return {
+        "rates": cfg.get("conversion_rates") or {},
+        "limits": cfg.get("conversion_limits") or {},
+        "pairs_enabled": cfg.get("conversion_pairs_enabled") or {},
+        "fee": cfg.get("conversion_fee") or {},
+        "supported_pairs": [f"{a}_{b}" for a, b in SUPPORTED_CONVERSION_PAIRS],
+    }
+
+
+@api.patch("/admin/conversion/config")
+async def admin_update_conversion_config(req: AdminConversionConfigReq, admin=Depends(get_admin)):
+    updates: dict = {}
+    if req.conversion_rates is not None:
+        updates["conversion_rates"] = req.conversion_rates
+    if req.conversion_limits is not None:
+        updates["conversion_limits"] = req.conversion_limits
+    if req.conversion_pairs_enabled is not None:
+        updates["conversion_pairs_enabled"] = req.conversion_pairs_enabled
+    if req.conversion_fee is not None:
+        updates["conversion_fee"] = req.conversion_fee
+    if not updates:
+        raise HTTPException(400, "Aucune modification")
+    await db.settings.update_one({"id": "platform_config"}, {"$set": updates}, upsert=True)
+    await audit(admin["id"], admin["username"], "update_conversion_config", details=list(updates.keys()))
+    return await admin_get_conversion_config(admin=admin)
+
+
+@api.get("/admin/conversions")
+async def admin_list_conversions(admin=Depends(get_admin),
+                                   period: str = "month",
+                                   limit: int = 200):
+    """Aggregated view + list of every conversion. Powers the admin tracking page."""
+    since = None
+    now = datetime.now(timezone.utc)
+    if period == "day":
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif period == "week":
+        since = now - timedelta(days=7)
+    elif period == "month":
+        since = now - timedelta(days=30)
+    q: dict = {"type": "exchange"}
+    if since:
+        q["created_at"] = {"$gte": since.isoformat()}
+    docs = await db.transactions.find(q, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+    for d in docs:
+        u = await db.users.find_one({"id": d["user_id"]},
+            {"_id": 0, "username": 1, "full_name": 1, "email": 1})
+        d["user"] = u or {}
+    # Aggregate summary.
+    total_all = await db.transactions.count_documents({"type": "exchange"})
+    total_today = await db.transactions.count_documents({
+        "type": "exchange",
+        "created_at": {"$gte": now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()},
+    })
+    validated = await db.transactions.count_documents({"type": "exchange", "status": "completed"})
+    rejected = await db.transactions.count_documents({"type": "exchange", "status": "failed"})
+    # Volume by source currency.
+    vol_by_cur = {"USDT": 0.0, "XOF": 0.0, "XAF": 0.0}
+    async for tx in db.transactions.find({"type": "exchange", "status": "completed"}, {"_id": 0}):
+        cur = (tx.get("currency") or "").upper()
+        if cur in vol_by_cur:
+            vol_by_cur[cur] += float(tx.get("amount", 0) or 0)
+    return {
+        "data": docs,
+        "totals": {
+            "all": total_all, "today": total_today,
+            "validated": validated, "rejected": rejected,
+        },
+        "volume_by_currency": vol_by_cur,
+    }
+
 
 
 @api.get("/crypto/coins")
