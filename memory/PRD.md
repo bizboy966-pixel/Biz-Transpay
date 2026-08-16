@@ -1,5 +1,22 @@
 # Biz-transPay — PRD (Product Requirements Document)
 
+## Implémenté (2026-02-XX) — Fix stats admin : link/API pay comptés comme dépôts
+- ✅ **Bug identifié** : dans `/admin/stats`, les paiements via **lien** (`type=link_payment`) et via **API marchand** (`type=payment`) n'étaient pas comptés comme des **dépôts** — ils allaient dans un compteur `operations.link_payments` séparé et jamais dans les cards "Dépôts Crypto/MM" du dashboard admin. C'est pour ça que les stats "ne changeaient pas" après un paiement via lien.
+- ✅ **Fix** : bloc `if typ == "deposit"` fusionné avec `link_payment (in)` et `payment (in)`. Ces flux entrants sont désormais :
+  - Ajoutés à `total_deposits`, `dep_valid`/`pending`/`rejected`.
+  - Classés dans `deposits_by_channel.crypto` (currency=USDT ou izipay_intent_id présent) ou `deposits_by_channel.mobile_money`.
+  - **Aussi** conservés dans `operations.link_payments` / `operations.api_payments` pour l'affichage détaillé downstream (compte pas en double, juste un miroir).
+- ✅ **Bénéfice** : fonctionne correctement — le fix précédent stocke déjà `metadata.platform_fee` sur les 4 flux (dépôts MoMo, dépôts crypto, retraits MoMo, retraits crypto). Les nouvelles transactions apparaissent dans les cartes XOF/XAF/USDT.
+
+**⚠️ Note importante pour l'admin (production)** :
+Pour que le compteur **Bénéfice** affiche une marge > 0, il faut configurer `platform_fee_pct` > 0 dans **`/admin/deposit-config`** (MoMo et Crypto) et **`/admin/transfer-config`** (Crypto). Par défaut, tous les frais sont attribués à la passerelle (rétro-compat), donc `platform_fee = 0` → bénéfice = 0. C'est un choix de configuration, pas un bug.
+
+**Testing** :
+- 3 fake tx injectées (link_payment USDT, payment USDT, deposit XOF) → dashboard admin compte correctement 2 tx crypto + 1 MoMo dans les cards principales. Bénéfice remonte XOF 250, USDT 5.5 ✅
+- Backend lint 0 erreur ✅
+
+Note prod : après redéploiement, les stats du dashboard remonteront tous les paiements via lien/API comme des dépôts crypto (rétro-compat sur les tx historiques : elles seront aussi remontées puisque leur `type` matche déjà).
+
 ## Implémenté (2026-02-XX) — Liens universels : Crypto débloqué + preview frais corrigé
 - ✅ **Backend** — `POST /links/pay` accepte désormais les liens `currency=USDT` **ET** `currency=UNIVERSAL` (au lieu de USDT seulement). Message d'erreur clarifié.
 - ✅ **Frontend `Links.js`** (formulaire création) :

@@ -4954,7 +4954,7 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
         meta = tx.get("metadata") or {}
         amt = float(tx.get("amount", 0) or 0)
 
-        if typ == "deposit":
+        if typ == "deposit" or (typ in ("link_payment", "payment") and direction == "in"):
             if st == "completed":
                 dep_valid["count"] += 1
                 dep_valid["amount"] += amt
@@ -4985,6 +4985,17 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
             elif st in ("failed", "cancelled"):
                 ch["rejected"]["count"] += 1
                 ch["rejected"]["amount"] += amt
+            # Also keep the "operations" sub-counters populated so the merchant
+            # can still see the link vs API split further down.
+            if typ == "link_payment" and st == "completed":
+                link_payments["count"] += 1
+                link_payments["amount_usdt"] += amt
+            elif typ == "payment" and st == "completed":
+                api_payments["count"] += 1
+                api_payments["amount_usdt"] += amt
+        elif typ == "deposit":
+            # Never taken (kept for clarity, superseded by combined branch above)
+            pass
         elif typ in ("withdrawal", "transfer") and direction == "out":
             # Exclude biz-to-biz internal transfers from the "withdrawals"
             # cards (they don't leave the platform).
@@ -5026,13 +5037,12 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
             if (meta.get("transfer_type") or "biz_to_biz") == "biz_to_biz":
                 biz_to_biz["count"] += 1
         elif typ == "link_payment":
-            if st == "completed":
-                link_payments["count"] += 1
-                link_payments["amount_usdt"] += amt
+            # In-flight (pending/failed) link payments — the completed ones are
+            # already counted above as deposits + link_payments sub-counter.
+            pass
         elif typ == "payment":
-            if st == "completed":
-                api_payments["count"] += 1
-                api_payments["amount_usdt"] += amt
+            # Same as above for merchant API payments.
+            pass
         elif typ == "exchange":
             exchanges["count"] += 1
 
