@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
-from emergentintegrations.payments.stripe.checkout import (
+from stripe_checkout import (
     StripeCheckout, CheckoutSessionRequest, CheckoutSessionResponse,
 )
 

@@ -12,6 +12,10 @@ expertMode = true
 [userenv.shared]
 DB_NAME = "biz_transpay"
 
+[env]
+MONGO_URL = "mongodb://127.0.0.1:27017"
+DB_NAME = "biz_transpay"
+
 [workflows]
 runButton = "Project"
 
@@ -28,13 +32,13 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[workflows.workflow.metadata]
-outputType = "webview"
-
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "bash -lc 'mkdir -p .data/mongodb; if ! pgrep -x mongod >/dev/null; then mongod --dbpath .data/mongodb --bind_ip 127.0.0.1 --port 27017 --logpath .data/mongodb.log --logappend & fi; export MONGO_URL=mongodb://127.0.0.1:27017 DB_NAME=biz_transpay; (cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 8000) & cd frontend && BROWSER=none PORT=5000 yarn start'"
+args = "bash scripts/start-replit.sh"
 waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
 
 [[ports]]
 localPort = 5000
