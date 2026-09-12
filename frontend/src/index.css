@@ -1,6 +1,11 @@
 /* Biz-transPay – global styles */
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800&display=swap');
+@font-face {
+  font-family: 'Strigiform Knights';
+  src: url('/fonts/strigiform-knights-regular.woff') format('woff');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
 
 @tailwind base;
 @tailwind components;
@@ -14,7 +19,7 @@
 }
 
 html {
-  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-family: 'Strigiform Knights', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   scroll-behavior: smooth;
 }
@@ -23,15 +28,24 @@ body {
   margin: 0;
   color: #0F172A;
   background: #FFFFFF;
+  font-family: inherit;
 }
 
 .font-cabinet {
-  font-family: 'Cabinet Grotesk', 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-family: 'Strigiform Knights', system-ui, sans-serif;
   letter-spacing: -0.02em;
 }
 
 .font-jakarta {
-  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  font-family: 'Strigiform Knights', system-ui, sans-serif;
+}
+
+button,
+input,
+textarea,
+select,
+optgroup {
+  font: inherit;
 }
 
 @layer base {
