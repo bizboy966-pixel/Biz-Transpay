@@ -82,12 +82,44 @@ def test_togo_softpay_uses_documented_fields(monkeypatch):
 
     monkeypatch.setattr(paydunya, "_request", fake_request)
     asyncio.run(paydunya.softpay_payment(
-        {"mode": "test"}, invoice_token="tok",
+        {"mode": "live"}, invoice_token="tok",
         operator={"endpoint_slug": "t-money-togo"}, phone="90123456",
         amount=1000, currency="XOF", customer_name="A Test",
         customer_email="a@example.com"))
-    assert seen["path"] == "/sandbox-api/v1/softpay/checkout/make-payment"
+    assert seen["path"] == "/api/v1/softpay/t-money-togo"
     assert seen["body"] == {
         "name_t_money": "A Test", "email_t_money": "a@example.com",
         "phone_t_money": "90123456", "payment_token": "tok",
+    }
+
+
+def test_sandbox_softpay_uses_fictitious_customer(monkeypatch):
+    seen = {}
+
+    async def fake_request(method, path, config, body=None):
+        seen.update(method=method, path=path, body=body)
+        return {"success": True}
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    asyncio.run(paydunya.softpay_payment(
+        {
+            "mode": "test",
+            "_sandbox_customer": {
+                "phone": "90000000",
+                "email": "sandbox@example.com",
+                "password": "not-a-real-password",
+            },
+        },
+        invoice_token="tok",
+        operator={"endpoint_slug": "t-money-togo"},
+        phone="90123456",
+        amount=1000,
+        currency="XOF",
+    ))
+    assert seen["path"] == "/sandbox-api/v1/softpay/checkout/make-payment"
+    assert seen["body"] == {
+        "phone_phone": "90000000",
+        "customer_email": "sandbox@example.com",
+        "password": "not-a-real-password",
+        "invoice_token": "tok",
     }

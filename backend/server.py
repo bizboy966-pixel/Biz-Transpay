@@ -569,15 +569,33 @@ async def get_paydunya_config(decrypt: bool = False) -> dict:
         # Credential decryption is part of an actual provider operation.  Do
         # not turn a missing/rotated SESSION_SECRET into an empty credential
         # set and then accidentally issue a different, misleading error.
-        doc["_credentials"] = paydunya.credentials(
+        decrypted = paydunya.credentials(
             doc, os.environ.get("SESSION_SECRET", ""))
+        env_credentials = {
+            "master_key": os.environ.get("PAYDUNYA_MASTER_KEY"),
+            "public_key": os.environ.get("PAYDUNYA_PUBLIC_KEY"),
+            "private_key": os.environ.get("PAYDUNYA_PRIVATE_KEY"),
+            "token": os.environ.get("PAYDUNYA_TOKEN"),
+        }
+        doc["_credentials"] = {
+            key: decrypted.get(key) or env_credentials.get(key)
+            for key in env_credentials
+            if decrypted.get(key) or env_credentials.get(key)
+        }
+        doc["_sandbox_customer"] = {
+            "email": os.environ.get("PAYDUNYA_TEST_CUSTOMER_EMAIL"),
+            "phone": os.environ.get("PAYDUNYA_TEST_CUSTOMER_PHONE"),
+            "password": os.environ.get("PAYDUNYA_TEST_CUSTOMER_PASSWORD"),
+        }
     return doc
 
 
 def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
-    configured = bool(cfg.get("master_key_encrypted")
-                     and cfg.get("private_key_encrypted")
-                     and cfg.get("token_encrypted"))
+    configured = bool(
+        (cfg.get("master_key_encrypted") or os.environ.get("PAYDUNYA_MASTER_KEY"))
+        and (cfg.get("private_key_encrypted") or os.environ.get("PAYDUNYA_PRIVATE_KEY"))
+        and (cfg.get("token_encrypted") or os.environ.get("PAYDUNYA_TOKEN"))
+    )
     modes = cfg.get("modes")
     if not isinstance(modes, dict):
         # Legacy settings only implemented direct SoftPay.  Do not advertise
@@ -606,7 +624,8 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
     if admin:
         for key in ("master_key", "public_key", "private_key", "token"):
             encrypted = cfg.get(f"{key}_encrypted")
-            result[f"{key}_configured"] = bool(encrypted)
+            result[f"{key}_configured"] = bool(
+                encrypted or os.environ.get(f"PAYDUNYA_{key.upper()}"))
         result["catalog"] = [
             op for op in (cfg.get("catalog") or [])
             if str(op.get("currency") or "").upper() in PAYDUNYA_WALLET_CURRENCIES

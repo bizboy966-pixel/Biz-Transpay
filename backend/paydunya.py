@@ -289,6 +289,28 @@ async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
                           customer_name: str = "",
                           customer_email: str = "") -> dict:
     slug = (operator.get("endpoint_slug") or "").lower()
+    if config.get("mode") != "live":
+        test_customer = config.get("_sandbox_customer") or {}
+        missing = [
+            key for key in ("phone", "email", "password")
+            if not test_customer.get(key)
+        ]
+        if missing:
+            raise PayDunyaError(
+                503,
+                "PayDunya sandbox test customer is not configured",
+            )
+        return await _request(
+            "POST",
+            "/sandbox-api/v1/softpay/checkout/make-payment",
+            config,
+            {
+                "phone_phone": test_customer["phone"],
+                "customer_email": test_customer["email"],
+                "password": test_customer["password"],
+                "invoice_token": invoice_token,
+            },
+        )
     # These field names are the official PayDunya Togo examples and are not
     # interchangeable with FedaPay fields.
     if slug == "t-money-togo":
@@ -301,12 +323,7 @@ async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
                 "moov_togo_phone_number": phone, "payment_token": invoice_token}
     else:
         body = {"invoice_token": invoice_token, "phone_number": phone}
-    # Sandbox intentionally uses PayDunya's generic SoftPay route.  Production
-    # uses the documented operator-specific route.
-    path = ("/sandbox-api/v1/softpay/checkout/make-payment"
-            if config.get("mode") != "live"
-            else f"/api/v1/softpay/{slug}")
-    return await _request("POST", path, config, body)
+    return await _request("POST", f"/api/v1/softpay/{slug}", config, body)
 
 
 async def confirm_invoice(config: dict, token: str) -> dict:
