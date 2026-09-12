@@ -1,0 +1,94 @@
+PROMPT — CRÉATION D’UN COMPTE ADMINISTRATEUR DE TEST
+
+Je veux créer un utilisateur de test dédié afin de pouvoir me connecter à Biz-transPay et vérifier les modifications actuellement apportées à la plateforme.
+
+IMPORTANT :
+Fais uniquement cette configuration.
+Ne modifie aucune fonctionnalité existante.
+Ne supprime aucun utilisateur existant.
+Ne modifie pas les comptes réels.
+Ne modifie pas les paiements ni les transactions réelles.
+
+1. CRÉER UN UTILISATEUR DE TEST
+
+Créer un nouvel utilisateur avec :
+
+Nom complet :
+Administrateur Test
+
+Nom d’utilisateur :
+admin.test
+
+Email :
+admin.test@biz-transppayy.com
+
+Le compte doit être créé directement comme :
+
+Type de compte : Marchand
+Statut : Vérifié
+Statut KYC : Vérifié
+Statut du compte : Actif
+
+2. DROITS ADMINISTRATEUR
+
+Attribuer à cet utilisateur les droits administrateur complets afin qu'il puisse accéder au panneau d'administration de Biz-transPay.
+
+Le compte doit pouvoir accéder aux fonctionnalités actuellement disponibles dans l’Admin Panel, notamment :
+
+- Dashboard administrateur
+- Gestion des utilisateurs
+- Gestion des marchands
+- Vérifications/KYC
+- Transactions
+- Dépôts
+- Retraits
+- Configuration des frais
+- Configuration des paiements
+- Paramètres administrateur
+- Gestion des pays et opérateurs
+- Toutes les autres fonctionnalités administrateur déjà présentes.
+
+Utiliser le système de rôle administrateur déjà existant dans l'application.
+
+Ne pas créer un deuxième système de permissions.
+
+3. MOT DE PASSE
+
+Générer un mot de passe temporaire suffisamment sécurisé pour ce compte.
+
+IMPORTANT :
+Ne pas enregistrer le mot de passe en clair dans la base de données.
+
+Utiliser le même système de hashage/sécurité déjà utilisé par l'application.
+
+Après la création du compte, afficher dans la réponse finale :
+
+EMAIL :
+admin.test@biz-transppayy.com
+
+MOT DE PASSE TEMPORAIRE :
+[indiquer ici le mot de passe généré]
+
+RÔLE :
+Administrateur
+
+STATUT :
+Compte vérifié et actif
+
+4. VÉRIFICATIONS
+
+Après création, tester réellement la connexion avec ces identifiants.
+
+Vérifier que :
+
+- la connexion fonctionne ;
+- le compte est reconnu comme vérifié ;
+- le compte est reconnu comme administrateur ;
+- l'accès à l'Admin Panel fonctionne ;
+- les fonctionnalités administrateur sont accessibles ;
+- aucune fonctionnalité existante n'a été cassée.
+
+IMPORTANT :
+Ne crée pas de données financières fictives pouvant être confondues avec de vraies transactions.
+
+Une fois terminé, donne-moi uniquement les identifiants de connexion du compte de test et confirme que la connexion à l’Admin Panel a été vérifiée.
