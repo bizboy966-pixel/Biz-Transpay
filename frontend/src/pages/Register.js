@@ -101,13 +101,13 @@ export default function Register() {
              <Field label={t('register.full_name')} htmlFor="register-full-name" labelClassName="text-center" icon={User} error={errors.full_name}>
                <input id="register-full-name" data-testid="input-full-name" type="text" autoComplete="name" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
             </Field>
-            <Field label={t('register.username')} icon={AtSign} error={errors.username}>
+             <Field label={t('register.username')} labelClassName="text-center" icon={AtSign} error={errors.username}>
                <input data-testid="input-username" type="text" autoComplete="username" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
             </Field>
           </div>
 
           <div className="mt-5">
-            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('register.country')}</label>
+            <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('register.country')}</label>
             <div className="relative">
               <Globe className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
               <select data-testid="select-country" value={form.country} onChange={(e) => set('country', e.target.value)} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none bg-white appearance-none">
@@ -120,7 +120,7 @@ export default function Register() {
 
           <div className="grid sm:grid-cols-2 gap-4 mt-5">
             <div>
-              <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('register.phone')}</label>
+              <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('register.phone')}</label>
               <div className="relative">
                 <Phone className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <div className="absolute left-11 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pr-2 border-r border-slate-200 h-7">
@@ -131,19 +131,19 @@ export default function Register() {
               </div>
               {errors.phone && <p className="mt-1 text-xs text-red-500">{errors.phone}</p>}
             </div>
-            <Field label={t('register.email')} icon={Mail} error={errors.email}>
+             <Field label={t('register.email')} labelClassName="text-center" icon={Mail} error={errors.email}>
                <input data-testid="input-email" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={t('register.email_ph')} className="bt-field pl-11 pr-4" />
             </Field>
           </div>
 
-          <Field label={t('register.password')} icon={Lock} error={errors.password} extra="mt-5">
+           <Field label={t('register.password')} labelClassName="text-center" icon={Lock} error={errors.password} extra="mt-5">
              <input data-testid="input-password" type={showPwd ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-1">
               {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </Field>
 
-          <Field label={t('register.confirm')} icon={Lock} error={errors.confirm} extra="mt-5">
+           <Field label={t('register.confirm')} labelClassName="text-center" icon={Lock} error={errors.confirm} extra="mt-5">
              <input data-testid="input-confirm-password" type={showPwd2 ? 'text' : 'password'} autoComplete="new-password" value={form.confirm} onChange={(e) => set('confirm', e.target.value)} placeholder={t('register.confirm_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd2((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-2">
               {showPwd2 ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
