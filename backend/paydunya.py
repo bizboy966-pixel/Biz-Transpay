@@ -230,9 +230,14 @@ async def _request(method: str, path: str, config: dict, body: Optional[dict] = 
     except Exception:
         payload = {"response_text": response.text}
     if response.status_code >= 400:
+        raw_message = str(
+            payload.get("message") or payload.get("response_text")
+            or "PayDunya error"
+        )
+        if "<html" in raw_message.lower() or len(raw_message) > 300:
+            raw_message = f"PayDunya returned HTTP {response.status_code}"
         raise PayDunyaError(response.status_code,
-                            str(payload.get("message") or payload.get("response_text")
-                                or "PayDunya error"), payload)
+                            raw_message, payload)
     return payload if isinstance(payload, dict) else {"data": payload}
 
 

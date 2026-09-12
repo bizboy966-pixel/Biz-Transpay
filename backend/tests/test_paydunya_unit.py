@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import paydunya
@@ -123,3 +124,36 @@ def test_sandbox_softpay_uses_fictitious_customer(monkeypatch):
         "password": "not-a-real-password",
         "invoice_token": "tok",
     }
+
+
+def test_provider_html_error_is_not_exposed(monkeypatch):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, *args, **kwargs):
+            return httpx.Response(
+                404,
+                text="<html><body>large provider error page</body></html>",
+                request=httpx.Request("POST", "https://app.paydunya.com/test"),
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    with pytest.raises(paydunya.PayDunyaError) as exc:
+        asyncio.run(paydunya._request(
+            "POST",
+            "/test",
+            {
+                "mode": "test",
+                "_credentials": {
+                    "master_key": "m",
+                    "private_key": "p",
+                    "token": "t",
+                },
+            },
+            {},
+        ))
+    assert exc.value.message == "PayDunya returned HTTP 404"
