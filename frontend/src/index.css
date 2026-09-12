@@ -20,8 +20,9 @@
   --bt-muted: #64748B;
   --bt-line: #DCE5F2;
   --bt-surface: #F5F8FD;
-  --bt-radius: 18px;
-  --bt-shadow: 0 18px 50px -28px rgba(15, 23, 42, .28);
+  --bt-radius: 14px;
+  --bt-control-radius: 9px;
+  --bt-shadow: 0 18px 48px -30px rgba(15, 23, 42, .28);
 }
 
 html {
@@ -93,11 +94,12 @@ select {
 
 .bt-field {
   width: 100%;
-  min-height: 46px;
+  min-height: 44px;
   border: 1px solid var(--bt-line);
-  border-radius: 12px;
+  border-radius: var(--bt-control-radius);
   background: #fff;
   color: var(--bt-ink);
+  font-size: 14px;
   transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
 }
 
@@ -111,8 +113,8 @@ select {
 .bt-button-primary {
   background: var(--bt-blue);
   color: #fff;
-  border-radius: 12px;
-  box-shadow: 0 12px 24px -14px rgba(37,99,235,.85);
+  border-radius: var(--bt-control-radius);
+  box-shadow: 0 10px 22px -15px rgba(37,99,235,.82);
   transition: background-color .18s ease, transform .18s ease, box-shadow .18s ease;
 }
 .bt-button-primary:hover {
@@ -133,7 +135,7 @@ select {
 
 .bt-auth-shell {
   min-height: 100dvh;
-  background: #F5F8FD;
+  background: #EAF1F8;
   position: relative;
   overflow: hidden;
 }
@@ -153,8 +155,8 @@ select {
 .bt-auth-header {
   position: relative;
   z-index: 1;
-  height: 76px;
-  background: rgba(255,255,255,.82);
+  height: 72px;
+  background: rgba(255,255,255,.90);
   border-bottom: 1px solid var(--bt-line);
   backdrop-filter: blur(16px);
 }
@@ -162,11 +164,117 @@ select {
 .bt-auth-card {
   position: relative;
   z-index: 1;
-  width: min(100%, 520px);
+  width: min(100%, 500px);
   background: rgba(255,255,255,.96);
   border: 1px solid var(--bt-line);
-  border-radius: 22px;
-  box-shadow: 0 26px 70px -34px rgba(15,23,42,.30);
+  border-radius: 14px;
+  box-shadow: 0 24px 52px -34px rgba(15,23,42,.34);
+}
+
+.bt-auth-card--wide {
+  width: min(100%, 680px);
+}
+
+.bt-auth-main {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 1180px);
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+}
+
+.bt-auth-stage {
+  display: grid;
+  grid-template-columns: minmax(280px, .82fr) minmax(420px, 1fr);
+  align-items: stretch;
+  gap: 32px;
+  min-height: min(760px, calc(100dvh - 120px));
+}
+
+.bt-auth-visual {
+  position: relative;
+  overflow: hidden;
+  min-height: 560px;
+  padding: 40px;
+  border-radius: 18px;
+  background: linear-gradient(155deg, #0F3B5A 0%, #155A83 52%, #2563EB 100%);
+  color: #fff;
+  box-shadow: 0 24px 52px -34px rgba(15,23,42,.45);
+}
+
+.bt-auth-visual::before,
+.bt-auth-visual::after {
+  content: '';
+  position: absolute;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.bt-auth-visual::before {
+  width: 28rem;
+  height: 28rem;
+  right: -13rem;
+  top: -8rem;
+}
+
+.bt-auth-visual::after {
+  width: 20rem;
+  height: 20rem;
+  left: -11rem;
+  bottom: -9rem;
+}
+
+.bt-auth-visual-content {
+  position: relative;
+  z-index: 1;
+  max-width: 360px;
+  margin-top: clamp(7rem, 18vh, 13rem);
+}
+
+.bt-auth-visual-title {
+  margin-top: 18px;
+  color: #fff;
+  font-family: 'Kripa', system-ui, sans-serif;
+  font-size: clamp(2rem, 4vw, 3.25rem);
+  font-weight: 800;
+  letter-spacing: -.035em;
+  line-height: 1.04;
+}
+
+.bt-auth-visual-copy {
+  margin-top: 18px;
+  color: rgba(255,255,255,.76);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.bt-auth-visual-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 28px;
+}
+
+.bt-auth-visual-point {
+  padding: 8px 11px;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: 999px;
+  background: rgba(255,255,255,.08);
+  color: rgba(255,255,255,.88);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bt-auth-form-column {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bt-reference-card {
+  border-radius: 14px !important;
+  box-shadow: 0 14px 34px -26px rgba(15,23,42,.32);
 }
 
 .bt-shell {
@@ -253,10 +361,18 @@ select {
   to { transform: translateX(100%); }
 }
 
+@media (max-width: 900px) {
+  .bt-auth-main { padding: 32px 20px 48px; }
+  .bt-auth-stage { display: block; min-height: 0; }
+  .bt-auth-visual { display: none; }
+  .bt-auth-form-column { display: block; }
+}
+
 @media (max-width: 767px) {
   body { font-size: 14px; }
   .bt-auth-header { height: 68px; }
-  .bt-auth-card { border-radius: 18px; }
+  .bt-auth-card { border-radius: 14px; }
+  .bt-auth-main { padding: 28px 16px 40px; }
   .bt-content { width: 100%; }
 }
 

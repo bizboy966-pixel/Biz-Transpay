@@ -17,7 +17,7 @@ const METHODS = [
 function LogoChip({ m }) {
   return (
     <div
-      className="mx-2 flex items-center justify-center min-w-[140px] h-[56px] rounded-xl border border-slate-100 bg-white shadow-[0_2px_12px_rgba(15,23,42,0.04)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.12)] hover:-translate-y-0.5 transition-transform"
+      className="bt-reference-card mx-2 flex items-center justify-center min-w-[140px] h-[56px] rounded-xl border border-slate-100 bg-white shadow-[0_2px_12px_rgba(15,23,42,0.04)] hover:shadow-[0_6px_20px_rgba(37,99,235,0.12)] hover:-translate-y-0.5 transition-transform"
       data-testid={`method-${m.name.toLowerCase().replace(/\s+/g,'-')}`}
     >
       <div

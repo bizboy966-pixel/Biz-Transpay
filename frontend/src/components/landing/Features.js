@@ -29,7 +29,7 @@ export default function Features() {
               <div
                 key={f}
                 data-testid={`feature-card-${f}`}
-                className="group bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.03)] hover:shadow-[0_12px_32px_rgba(37,99,235,0.12)] hover:-translate-y-1 hover:border-blue-100 transition-transform duration-300"
+                className="bt-reference-card group bg-white p-6 rounded-2xl border border-slate-100 shadow-[0_4px_20px_rgb(0,0,0,0.03)] hover:shadow-[0_12px_32px_rgba(37,99,235,0.12)] hover:-translate-y-1 hover:border-blue-100 transition-transform duration-300"
               >
                 <div className={`w-11 h-11 ${bg} ${color} rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform`}>
                   <I className="w-5 h-5" strokeWidth={1.75} />

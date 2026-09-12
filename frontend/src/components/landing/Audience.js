@@ -29,7 +29,7 @@ export default function Audience() {
             <div
               key={key}
               data-testid={`audience-card-${key}`}
-              className="group min-h-[132px] rounded-2xl border border-slate-100 bg-white p-5 flex flex-col justify-between shadow-[0_4px_20px_rgb(0,0,0,0.03)] hover:-translate-y-1 hover:border-blue-100 hover:shadow-[0_14px_32px_rgba(37,99,235,0.1)] transition-transform duration-300"
+              className="bt-reference-card group min-h-[132px] rounded-2xl border border-slate-100 bg-white p-5 flex flex-col justify-between shadow-[0_4px_20px_rgb(0,0,0,0.03)] hover:-translate-y-1 hover:border-blue-100 hover:shadow-[0_14px_32px_rgba(37,99,235,0.1)] transition-transform duration-300"
             >
               <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center group-hover:bg-[#2563EB] group-hover:text-white transition-colors">
                 <I className="w-5 h-5" strokeWidth={1.75} />

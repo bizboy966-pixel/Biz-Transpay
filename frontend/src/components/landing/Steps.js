@@ -22,7 +22,7 @@ export default function Steps() {
 
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {STEPS.map(({ key, I }, index) => (
-            <div key={key} data-testid={`step-card-${key}`} className="relative rounded-2xl border border-slate-100 bg-white p-6 shadow-[0_4px_20px_rgb(0,0,0,0.03)]">
+            <div key={key} data-testid={`step-card-${key}`} className="bt-reference-card relative rounded-2xl border border-slate-100 bg-white p-6 shadow-[0_4px_20px_rgb(0,0,0,0.03)]">
               <div className="flex items-center justify-between">
                 <div className="w-11 h-11 rounded-xl bg-[#2563EB] text-white flex items-center justify-center shadow-[0_8px_18px_rgba(37,99,235,0.22)]">
                   <I className="w-5 h-5" strokeWidth={1.75} />

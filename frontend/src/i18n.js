@@ -41,6 +41,12 @@ const resources = {
         shared_link: 'Lien partagé',
         subscription: 'Abonnement',
       },
+      auth: {
+        eyebrow: 'Votre activité numérique',
+        title: 'Un espace clair pour vendre en ligne',
+        body: 'Présentez vos offres, partagez vos liens et suivez vos ventes depuis un espace pensé pour votre activité.',
+        point_1: 'Vendre en ligne', point_2: 'Partager vos offres', point_3: 'Suivre vos ventes',
+      },
       features: {
         heading: 'Tout pour votre activité en ligne',
         title: 'Tout pour votre activité en ligne',
@@ -116,7 +122,7 @@ const resources = {
       },
       register: {
         title: 'Créer un compte',
-        subtitle: "Rejoignez Biz-transPay et profitez d'une solution de paiement rapide, sécurisée et fiable.",
+        subtitle: 'Créez votre espace Biz-transPay et développez votre activité en ligne avec des outils simples pour vendre vos offres.',
         full_name: 'Nom complet', full_name_ph: 'Entrez votre nom complet',
         username: "Nom d'utilisateur", username_ph: "Choisissez un nom d'utilisateur",
         account_type: 'Type de compte',
@@ -279,6 +285,12 @@ const resources = {
         quick_sell: 'Sell', quick_link: 'Link', quick_track: 'Track', quick_share: 'Share',
         sale_received: 'Sale received', product_order: 'Digital order', shared_link: 'Shared link', subscription: 'Subscription',
       },
+      auth: {
+        eyebrow: 'Your digital business',
+        title: 'A clear space to sell online',
+        body: 'Showcase your offers, share your links and track your sales from a workspace designed for your business.',
+        point_1: 'Sell online', point_2: 'Share your offers', point_3: 'Track your sales',
+      },
       features: {
         heading: 'Everything for your online business',
         title: 'Everything for your online business', subtitle: 'Simple tools to showcase your offers, collect sales and track your activity from one place.',
@@ -325,7 +337,7 @@ const resources = {
         pricing: 'Who is it for?', about: 'About', security: 'Security',
         help: 'Help center', faq: 'FAQ', terms: 'Terms of service', privacy: 'Privacy policy',
         rights: 'All rights reserved.' },
-      register: { title: 'Create an account', subtitle: 'Join Biz-transPay and enjoy a fast, secure and reliable payment solution.',
+      register: { title: 'Create an account', subtitle: 'Create your Biz-transPay workspace and grow your online business with simple tools to sell your offers.',
         full_name: 'Full name', full_name_ph: 'Enter your full name',
         username: 'Username', username_ph: 'Choose a username',
         account_type: 'Account type',

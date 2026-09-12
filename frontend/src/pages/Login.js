@@ -42,9 +42,24 @@ export default function Login() {
         </div>
       </header>
 
-      <main className="flex-1 flex items-center justify-center py-12 px-4 relative">
+      <main className="bt-auth-main flex-1">
+        <div className="bt-auth-stage">
+          <aside className="bt-auth-visual" aria-label={t('auth.title')}>
+            <Logo dark />
+            <div className="bt-auth-visual-content">
+              <div className="bt-kicker text-white/80">{t('auth.eyebrow')}</div>
+              <h2 className="bt-auth-visual-title">{t('auth.title')}</h2>
+              <p className="bt-auth-visual-copy">{t('auth.body')}</p>
+              <div className="bt-auth-visual-points">
+                <span className="bt-auth-visual-point">{t('auth.point_1')}</span>
+                <span className="bt-auth-visual-point">{t('auth.point_2')}</span>
+                <span className="bt-auth-visual-point">{t('auth.point_3')}</span>
+              </div>
+            </div>
+          </aside>
 
-        <form onSubmit={submit} className="bt-auth-card p-7 sm:p-10" data-testid="login-form">
+          <div className="bt-auth-form-column">
+            <form onSubmit={submit} className="bt-auth-card p-7 sm:p-10" data-testid="login-form">
           <div className="text-center mb-9">
             <div className="mx-auto w-14 h-14 rounded-2xl bg-[#EFF6FF] border border-[#D8E7FF] flex items-center justify-center">
               <LogInIcon className="w-7 h-7 text-[#2563EB]" strokeWidth={1.75} />
@@ -58,7 +73,7 @@ export default function Login() {
             <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('login.identifier')}</label>
             <div className="relative">
               <Mail className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
-              <input data-testid="input-identifier" type="text" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="john@example.com" className="bt-field pl-11 pr-4" />
+              <input data-testid="input-identifier" type="text" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="john@example.com" className="bt-field pl-11 pr-4" />
             </div>
           </div>
 
@@ -66,7 +81,7 @@ export default function Login() {
             <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('login.password')}</label>
             <div className="relative">
               <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
-              <input data-testid="input-password" type={showPwd ? 'text' : 'password'} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="bt-field pl-11 pr-11" />
+              <input data-testid="input-password" type={showPwd ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="bt-field pl-11 pr-11" />
               <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd">
                 {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -80,7 +95,9 @@ export default function Login() {
           <p className="mt-6 text-center text-sm text-slate-500">
             {t('login.no_account')} <Link to="/register" className="text-[#2563EB] font-semibold" data-testid="link-register">{t('login.register')}</Link>
           </p>
-        </form>
+            </form>
+          </div>
+        </div>
       </main>
     </div>
   );

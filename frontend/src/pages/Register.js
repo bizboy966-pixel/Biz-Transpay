@@ -70,8 +70,24 @@ export default function Register() {
         </div>
       </header>
 
-      <main className="flex-1 relative py-10 px-4">
-        <form onSubmit={onSubmit} className="bt-auth-card max-w-2xl mx-auto p-7 sm:p-11" data-testid="register-form">
+      <main className="bt-auth-main flex-1">
+        <div className="bt-auth-stage">
+          <aside className="bt-auth-visual" aria-label={t('auth.title')}>
+            <Logo dark />
+            <div className="bt-auth-visual-content">
+              <div className="bt-kicker text-white/80">{t('auth.eyebrow')}</div>
+              <h2 className="bt-auth-visual-title">{t('auth.title')}</h2>
+              <p className="bt-auth-visual-copy">{t('auth.body')}</p>
+              <div className="bt-auth-visual-points">
+                <span className="bt-auth-visual-point">{t('auth.point_1')}</span>
+                <span className="bt-auth-visual-point">{t('auth.point_2')}</span>
+                <span className="bt-auth-visual-point">{t('auth.point_3')}</span>
+              </div>
+            </div>
+          </aside>
+
+          <div className="bt-auth-form-column">
+        <form onSubmit={onSubmit} className="bt-auth-card bt-auth-card--wide max-w-2xl mx-auto p-7 sm:p-11" data-testid="register-form">
           <div className="text-center mb-9">
             <div className="mx-auto w-14 h-14 rounded-2xl bg-[#EFF6FF] border border-[#D8E7FF] flex items-center justify-center">
               <UserPlus className="w-7 h-7 text-[#2563EB]" strokeWidth={1.75} />
@@ -83,10 +99,10 @@ export default function Register() {
 
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label={t('register.full_name')} icon={User} error={errors.full_name}>
-               <input data-testid="input-full-name" type="text" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
+               <input data-testid="input-full-name" type="text" autoComplete="name" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
             </Field>
             <Field label={t('register.username')} icon={AtSign} error={errors.username}>
-               <input data-testid="input-username" type="text" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
+               <input data-testid="input-username" type="text" autoComplete="username" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
             </Field>
           </div>
 
@@ -142,7 +158,7 @@ export default function Register() {
                    <span className="text-[10px] font-bold tracking-wider text-slate-500">{country.code}</span>
                   <span className="text-sm font-semibold text-slate-700">{country.dial}</span>
                 </div>
-               <input data-testid="input-phone" type="tel" value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder={t('register.phone_ph')} className="bt-field pl-[110px] pr-4" />
+               <input data-testid="input-phone" type="tel" autoComplete="tel" value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder={t('register.phone_ph')} className="bt-field pl-[110px] pr-4" />
               </div>
               {errors.phone && <p className="mt-1 text-xs text-red-500">{errors.phone}</p>}
             </div>
@@ -152,14 +168,14 @@ export default function Register() {
           </div>
 
           <Field label={t('register.password')} icon={Lock} error={errors.password} extra="mt-5">
-             <input data-testid="input-password" type={showPwd ? 'text' : 'password'} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="bt-field pl-11 pr-11" />
+             <input data-testid="input-password" type={showPwd ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-1">
               {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </Field>
 
           <Field label={t('register.confirm')} icon={Lock} error={errors.confirm} extra="mt-5">
-             <input data-testid="input-confirm-password" type={showPwd2 ? 'text' : 'password'} value={form.confirm} onChange={(e) => set('confirm', e.target.value)} placeholder={t('register.confirm_ph')} className="bt-field pl-11 pr-11" />
+             <input data-testid="input-confirm-password" type={showPwd2 ? 'text' : 'password'} autoComplete="new-password" value={form.confirm} onChange={(e) => set('confirm', e.target.value)} placeholder={t('register.confirm_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd2((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-2">
               {showPwd2 ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
@@ -198,6 +214,8 @@ export default function Register() {
             {t('register.have_account')} <Link to="/login" className="text-[#2563EB] font-semibold hover:underline" data-testid="link-login">{t('register.login')}</Link>
           </p>
         </form>
+          </div>
+        </div>
       </main>
     </div>
   );

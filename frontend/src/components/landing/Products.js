@@ -30,7 +30,7 @@ export default function Products() {
             <div
               key={key}
               data-testid={`product-card-${key}`}
-              className="group flex items-center gap-4 min-h-[112px] rounded-2xl border border-slate-100 bg-white px-5 py-4 shadow-[0_4px_20px_rgb(0,0,0,0.03)] hover:-translate-y-1 hover:border-blue-100 hover:shadow-[0_14px_32px_rgba(37,99,235,0.1)] transition-transform duration-300"
+              className="bt-reference-card group flex items-center gap-4 min-h-[112px] rounded-2xl border border-slate-100 bg-white px-5 py-4 shadow-[0_4px_20px_rgb(0,0,0,0.03)] hover:-translate-y-1 hover:border-blue-100 hover:shadow-[0_14px_32px_rgba(37,99,235,0.1)] transition-transform duration-300"
             >
               <div className={`w-11 h-11 shrink-0 rounded-xl ${tone} flex items-center justify-center group-hover:scale-105 transition-transform`}>
                 <I className="w-5 h-5" strokeWidth={1.75} />

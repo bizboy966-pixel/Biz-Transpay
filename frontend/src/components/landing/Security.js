@@ -22,7 +22,7 @@ export default function Security() {
 
           <div className="mt-7 grid sm:grid-cols-2 gap-3">
             {items.map((it, i) => (
-              <div key={i} className="flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
+              <div key={i} className="bt-reference-card flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
                 <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center">
                   <it.i className="w-4 h-4" strokeWidth={1.75} />
                 </div>
