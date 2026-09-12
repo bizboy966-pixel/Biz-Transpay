@@ -322,7 +322,7 @@ function MoMoLinkForm({ link, onSuccess }) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    fetch(`${process.env.REACT_APP_BACKEND_URL}/api/deposits/config`).then(r => r.json())
+    fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/config`).then(r => r.json())
       .then(d => setCatalog(d.catalog || [])).catch(() => {});
   }, []);
   const countryEntry = catalog.find((c) => c.country === country);
@@ -338,7 +338,7 @@ function MoMoLinkForm({ link, onSuccess }) {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/links/pay/mobile-money`, {
+      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/links/pay/mobile-money`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           slug: link.slug,
@@ -419,7 +419,7 @@ function MoMoLinkTracker({ payment }) {
     if (p.status !== 'pending') return;
     const iv = setInterval(async () => {
       try {
-        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/links/payments/${p.id}`);
+        const res = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/links/payments/${p.id}`);
         const d = await res.json();
         setP(d);
         if (d.status !== 'pending') clearInterval(iv);
