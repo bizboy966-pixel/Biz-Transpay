@@ -1,26 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Save, Plus, Trash2, ToggleLeft, ToggleRight, Smartphone, ArrowDownToLine, Bitcoin } from 'lucide-react';
+import { Save, Trash2, ToggleLeft, ToggleRight, RefreshCw, Smartphone, ArrowDownToLine, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
-
-// FedaPay-supported countries (must match backend `fedapay.COUNTRY_LABELS`).
-const FEDAPAY_COUNTRIES = [
-  { code: 'BJ', label: 'Bénin', flag: 'BJ' },
-  { code: 'CI', label: 'Côte d\u2019Ivoire', flag: 'CI' },
-  { code: 'TG', label: 'Togo', flag: 'TG' },
-  { code: 'SN', label: 'Sénégal', flag: 'SN' },
-  { code: 'ML', label: 'Mali', flag: 'ML' },
-  { code: 'NE', label: 'Niger', flag: 'NE' },
-  { code: 'BF', label: 'Burkina Faso', flag: 'BF' },
-  { code: 'GN', label: 'Guinée', flag: 'GN' },
-];
-
-const CURRENCIES = ['XOF', 'XAF', 'GNF', 'CDF', 'USD', 'EUR'];
 
 export default function AdminDepositConfig() {
   const [cfg, setCfg] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [savingSection, setSavingSection] = useState(null);
+  const [showHidden, setShowHidden] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const load = () => api.get('/admin/deposit/config').then(({ data }) => setCfg(data)).catch(() => {});
   useEffect(() => { load(); }, []);
@@ -62,17 +50,25 @@ export default function AdminDepositConfig() {
     ops[idx] = { ...ops[idx], [key]: val };
     setMM({ ...mm, operators: ops });
   };
-  const addOp = () => setMM({
-    ...mm,
-    operators: [...mm.operators, { country: 'TG', code: '', name: '', currency: 'XOF', fee_pct: 1.5, min: 100, max: 500000, active: true }],
-  });
-  const removeOp = (idx) => setMM({ ...mm, operators: mm.operators.filter((_, i) => i !== idx) });
-
   // Countries currently used in the ops list — displayed with a summary badge
   const countryCounts = mm.operators.reduce((acc, o) => {
     acc[o.country] = (acc[o.country] || 0) + 1;
     return acc;
   }, {});
+  const visibleOperators = mm.operators.filter((o) => showHidden || !o.hidden);
+  const hiddenCount = mm.operators.filter((o) => o.hidden).length;
+
+  const syncCatalog = async () => {
+    setSyncing(true);
+    try {
+      const { data } = await api.post('/admin/deposit/catalog/sync');
+      setCfg(data);
+      setDirty(false);
+      toast.success('Catalogue FedaPay synchronisé');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Synchronisation impossible');
+    } finally { setSyncing(false); }
+  };
 
   return (
     <div className="space-y-4 sm:space-y-6" data-testid="admin-deposit-config">
@@ -80,19 +76,25 @@ export default function AdminDepositConfig() {
         <div>
           <h1 className="font-cabinet font-bold text-slate-900 text-base sm:text-lg">Configuration des dépôts</h1>
           <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">
-            Frais, montants minimum/maximum et devise par pays et par opérateur Mobile Money.
-            Ces valeurs s'appliquent à tous les dépôts (direct, lien de paiement, API).
+            Catalogue fourni par FedaPay. Vous pouvez régler les frais plateforme,
+            les limites et l&apos;état local, sans créer d&apos;opérateur.
           </p>
         </div>
-        <button onClick={save} disabled={!dirty} data-testid="btn-save-deposit-config"
-          className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-3 sm:px-4 py-2 rounded-full text-[11px] sm:text-xs disabled:opacity-50">
-          <Save className="w-3.5 h-3.5" /> Enregistrer
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={syncCatalog} disabled={syncing} data-testid="btn-sync-deposit-catalog"
+            className="inline-flex items-center gap-2 border border-slate-200 text-slate-700 hover:bg-slate-50 font-bold px-3 py-2 rounded-full text-[11px] sm:text-xs disabled:opacity-50">
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} /> {syncing ? 'Synchronisation…' : 'Synchroniser'}
+          </button>
+          <button onClick={save} disabled={!dirty} data-testid="btn-save-deposit-config"
+            className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-3 sm:px-4 py-2 rounded-full text-[11px] sm:text-xs disabled:opacity-50">
+            <Save className="w-3.5 h-3.5" /> Enregistrer
+          </button>
+        </div>
       </div>
 
       <Section
         title="Dépôts → Mobile Money"
-        subtitle={`${mm.operators.length} opérateurs — ${Object.keys(countryCounts).length} pays`}
+        subtitle={`${mm.operators.length} capacités FedaPay — ${Object.keys(countryCounts).length} pays`}
         Icon={ArrowDownToLine}
         iconBg="bg-blue-50 text-[#2563EB]"
         enabled={mm.enabled}
@@ -102,11 +104,12 @@ export default function AdminDepositConfig() {
       >
         {/* Country summary chips */}
         <div className="flex flex-wrap gap-1.5 mb-3">
-          {FEDAPAY_COUNTRIES.map((c) => (
-            <span key={c.code} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold ${countryCounts[c.code] ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-400'}`}>
-              {c.flag} {c.label} · {countryCounts[c.code] || 0}
+          {Object.entries(countryCounts).map(([code, count]) => (
+            <span key={code} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700">
+              {code} · {count}
             </span>
           ))}
+          {hiddenCount > 0 && <button type="button" onClick={() => setShowHidden((v) => !v)} className="text-[10px] font-semibold text-[#2563EB] underline underline-offset-2">{showHidden ? 'Masquer les capacités masquées' : `Afficher les capacités masquées (${hiddenCount})`}</button>}
         </div>
 
         <div className="overflow-x-auto">
@@ -127,27 +130,19 @@ export default function AdminDepositConfig() {
               </tr>
             </thead>
             <tbody>
-              {mm.operators.map((o, idx) => (
-                <tr key={idx} data-testid={`dep-op-row-${idx}`} className="border-t border-slate-50">
+              {visibleOperators.map((o, idx) => (
+                <tr key={`${o.country}-${o.code}`} data-testid={`dep-op-row-${idx}`} className={`border-t border-slate-50 ${o.hidden ? 'opacity-55 bg-slate-50' : ''}`}>
                   <td className="px-2 sm:px-3 py-2">
-                    <select value={o.country} onChange={(e) => updateOp(idx, 'country', e.target.value)} data-testid={`dep-op-country-${idx}`}
-                      className="px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs">
-                      {FEDAPAY_COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.code}</option>)}
-                    </select>
+                    <span className="font-mono font-bold text-slate-900">{o.country}</span>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
-                    <input value={o.code} onChange={(e) => updateOp(idx, 'code', e.target.value.toLowerCase())} data-testid={`dep-op-code-${idx}`}
-                      className="w-24 sm:w-28 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs font-mono" />
+                    <span className="font-mono text-slate-600">{o.code}</span>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
-                    <input value={o.name} onChange={(e) => updateOp(idx, 'name', e.target.value)} data-testid={`dep-op-name-${idx}`}
-                      className="w-36 sm:w-44 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs" />
+                    <span className="text-slate-700">{o.name}</span>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
-                    <select value={o.currency || 'XOF'} onChange={(e) => updateOp(idx, 'currency', e.target.value)} data-testid={`dep-op-currency-${idx}`}
-                      className="px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs">
-                      {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                    <span className="font-mono text-slate-600">{o.currency || 'XOF'}</span>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
                     <input type="number" step="0.1" min="0"
@@ -155,8 +150,10 @@ export default function AdminDepositConfig() {
                       onChange={(e) => {
                         const g = parseFloat(e.target.value) || 0;
                         const p = parseFloat(o.platform_fee_pct) || 0;
-                        updateOp(idx, 'gateway_fee_pct', g);
-                        updateOp(idx, 'fee_pct', +(g + p).toFixed(4));
+                        const rowIndex = mm.operators.indexOf(o);
+                        const ops = [...mm.operators];
+                        ops[rowIndex] = { ...ops[rowIndex], gateway_fee_pct: g, fee_pct: +(g + p).toFixed(4) };
+                        setMM({ ...mm, operators: ops });
                       }}
                       data-testid={`dep-op-gateway-fee-${idx}`}
                       className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
@@ -167,8 +164,10 @@ export default function AdminDepositConfig() {
                       onChange={(e) => {
                         const p = parseFloat(e.target.value) || 0;
                         const g = parseFloat(o.gateway_fee_pct ?? o.fee_pct) || 0;
-                        updateOp(idx, 'platform_fee_pct', p);
-                        updateOp(idx, 'fee_pct', +(g + p).toFixed(4));
+                        const rowIndex = mm.operators.indexOf(o);
+                        const ops = [...mm.operators];
+                        ops[rowIndex] = { ...ops[rowIndex], platform_fee_pct: p, fee_pct: +(g + p).toFixed(4) };
+                        setMM({ ...mm, operators: ops });
                       }}
                       data-testid={`dep-op-platform-fee-${idx}`}
                       className="w-14 sm:w-16 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
@@ -179,36 +178,35 @@ export default function AdminDepositConfig() {
                     </span>
                   </td>
                   <td className="px-2 sm:px-3 py-2">
-                    <input type="number" value={o.min} onChange={(e) => updateOp(idx, 'min', parseInt(e.target.value) || 0)} data-testid={`dep-op-min-${idx}`}
+                    <input type="number" value={o.min} min="0" onChange={(e) => updateOp(mm.operators.indexOf(o), 'min', parseInt(e.target.value) || 0)} data-testid={`dep-op-min-${idx}`}
                       className="w-20 sm:w-24 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
                   </td>
                   <td className="px-2 sm:px-3 py-2">
-                    <input type="number" value={o.max} onChange={(e) => updateOp(idx, 'max', parseInt(e.target.value) || 0)} data-testid={`dep-op-max-${idx}`}
+                    <input type="number" value={o.max} min="0" onChange={(e) => updateOp(mm.operators.indexOf(o), 'max', parseInt(e.target.value) || 0)} data-testid={`dep-op-max-${idx}`}
                       className="w-24 sm:w-28 px-1.5 sm:px-2 py-1 border border-slate-200 rounded-lg text-[10px] sm:text-xs text-right" />
                   </td>
                   <td className="px-2 sm:px-3 py-2 text-center">
-                    <input type="checkbox" checked={!!o.active} onChange={(e) => updateOp(idx, 'active', e.target.checked)} data-testid={`dep-op-active-${idx}`}
+                    <input type="checkbox" checked={!!o.active} onChange={(e) => updateOp(mm.operators.indexOf(o), 'active', e.target.checked)} data-testid={`dep-op-active-${idx}`}
                       className="w-4 h-4 accent-[#2563EB]" />
                   </td>
                   <td className="px-2 sm:px-3 py-2 text-center">
-                    <button onClick={() => removeOp(idx)} data-testid={`dep-op-remove-${idx}`}
-                      className="w-7 h-7 rounded-lg hover:bg-red-50 text-red-500 flex items-center justify-center mx-auto">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {o.hidden ? (
+                      <button onClick={() => updateOp(mm.operators.indexOf(o), 'hidden', false)} className="text-[10px] font-bold text-emerald-600">Restaurer</button>
+                    ) : (
+                      <button onClick={() => updateOp(mm.operators.indexOf(o), 'hidden', true)} data-testid={`dep-op-hide-${idx}`}
+                        className="w-7 h-7 rounded-lg hover:bg-red-50 text-red-500 flex items-center justify-center mx-auto" title="Masquer cette capacité">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
-              {mm.operators.length === 0 && (
-                <tr><td colSpan={11} className="text-center py-6 text-[11px] text-slate-400">Aucun opérateur configuré. Cliquez sur « Ajouter un opérateur ».</td></tr>
+              {visibleOperators.length === 0 && (
+                <tr><td colSpan={11} className="text-center py-6 text-[11px] text-slate-400">Aucune capacité fournie par FedaPay.</td></tr>
               )}
             </tbody>
           </table>
         </div>
-        <button onClick={addOp} data-testid="btn-add-dep-op"
-          className="mt-3 inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-[#2563EB] hover:text-[#1D4ED8]">
-          <Plus className="w-3.5 h-3.5" /> Ajouter un opérateur
-        </button>
-
         <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50/60 p-3 text-[11px] text-slate-600 leading-relaxed">
           <div className="flex items-center gap-1.5 font-bold text-slate-700 mb-1"><Smartphone className="w-3 h-3" /> Application des frais</div>
           Les frais et limites configurés ici sont appliqués <b>automatiquement</b> à tous les dépôts Mobile Money :
