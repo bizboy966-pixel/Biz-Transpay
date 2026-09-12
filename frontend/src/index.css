@@ -1,7 +1,7 @@
 /* Biz-transPay — shared visual system */
 @font-face {
-  font-family: 'Strigiform Knights';
-  src: url('./assets/fonts/strigiform-knights-regular.woff') format('woff');
+  font-family: 'Galcio DEMO';
+  src: url('./assets/fonts/galcio-demo-regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -25,7 +25,7 @@
 }
 
 html {
-  font-family: 'Strigiform Knights', system-ui, sans-serif;
+  font-family: 'Galcio DEMO', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   scroll-behavior: smooth;
 }
@@ -40,12 +40,12 @@ body {
 }
 
 .font-cabinet {
-  font-family: 'Strigiform Knights', system-ui, sans-serif;
+  font-family: 'Galcio DEMO', system-ui, sans-serif;
   letter-spacing: -0.02em;
 }
 
 .font-jakarta {
-  font-family: 'Strigiform Knights', system-ui, sans-serif;
+  font-family: 'Galcio DEMO', system-ui, sans-serif;
 }
 
 /* The local typeface is intentionally used for every surface. These

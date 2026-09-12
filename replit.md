@@ -49,3 +49,16 @@ or frontend environment variables:
 `JWT_SECRET` should also be set to a durable secret outside local development.
 The Replit workflow uses the existing `SESSION_SECRET` automatically when it
 is available and never exposes it to the frontend.
+
+## Official visual rules
+
+- The official local interface font is **Galcio DEMO Regular**, stored in the
+  frontend assets. Do not reintroduce Google Fonts, Fontshare, or another
+  external font service.
+- The existing Biz-transPay color palette and brand identity must be preserved.
+- The SoleasPay login page is only a visual and UX reference for hierarchy,
+  composition, spacing, form structure, card treatment, and responsive behavior.
+  Do not copy its colors, gradients, branding, or content.
+- Future screens and features must reuse the existing visual system and shared
+  components instead of introducing a new card, button, radius, spacing scale,
+  or typography system.
