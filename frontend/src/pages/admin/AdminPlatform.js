@@ -127,7 +127,7 @@ export default function AdminPlatform() {
 
         {fee.enabled && (
           <div className="mt-4 p-3 bg-slate-50 rounded-xl text-xs text-slate-600" data-testid="fee-preview">
-            💡 Aperçu : sur un échange de <b>{previewOn.toLocaleString()} XOF</b> → frais appliqués : <b className="text-slate-900">{previewClamped.toLocaleString(undefined, { maximumFractionDigits: 2 })} XOF</b>
+             Aperçu : sur un échange de <b>{previewOn.toLocaleString()} XOF</b> → frais appliqués : <b className="text-slate-900">{previewClamped.toLocaleString(undefined, { maximumFractionDigits: 2 })} XOF</b>
           </div>
         )}
       </div>

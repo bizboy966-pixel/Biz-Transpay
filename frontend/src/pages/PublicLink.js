@@ -21,11 +21,21 @@ export default function PublicLink() {
       .catch(() => setFeatures({ mobile_money_enabled: true, crypto_enabled: true }));
   }, [slug]);
 
-  if (err) return <div className="min-h-screen flex items-center justify-center text-slate-600">{err}</div>;
-  if (!link) return <div className="min-h-screen flex items-center justify-center">Chargement…</div>;
+  if (err) return <div className="bt-page min-h-screen flex items-center justify-center p-6 text-slate-600"><div className="bt-panel p-8 text-center">{err}</div></div>;
+  if (!link) return (
+    <div className="bt-page min-h-screen flex items-center justify-center p-6">
+      <div className="w-full max-w-md bt-panel p-6">
+        <div className="bt-skeleton h-12 w-12 rounded-2xl mx-auto" />
+        <div className="bt-skeleton h-4 w-36 rounded mx-auto mt-5" />
+        <div className="bt-skeleton h-3 w-52 rounded mx-auto mt-3" />
+        <div className="bt-skeleton h-12 w-full rounded-xl mt-8" />
+        <div className="bt-skeleton h-12 w-full rounded-xl mt-3" />
+      </div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 flex flex-col" data-testid="public-link-page">
+    <div className="bt-page min-h-screen flex flex-col" data-testid="public-link-page">
       <header className="border-b border-slate-200 bg-white">
         <div className="max-w-4xl mx-auto px-4 h-14 flex items-center"><Logo /></div>
       </header>
@@ -43,7 +53,7 @@ export default function PublicLink() {
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-xl p-4 sm:p-6">
+           <div className="bt-public-card bt-panel p-4 sm:p-6">
             {/* Header - merchant info */}
             <div className="text-center">
               {link.logo ? (
@@ -276,7 +286,7 @@ function CryptoLinkTracker({ payment, link }) {
       <InfoRow label="Adresse de dépôt" value={payment.deposit_address} mono testId="pay-address" onCopy={() => copy(payment.deposit_address, 'Adresse')} />
       {payment.memo && <InfoRow label={`Memo (${payment.memo_type || 'tag'}) — REQUIS`} value={payment.memo} mono testId="pay-memo" onCopy={() => copy(payment.memo, 'Memo')} warn />}
       <div className="p-2.5 bg-amber-50 border border-amber-100 rounded-lg text-[10px] sm:text-[11px] text-amber-800">
-        ⚠️ Envoyez uniquement <b>{payment.coin}</b> sur <b>{payment.network}</b>. Toute autre crypto ou réseau = fonds perdus.
+         Envoyez uniquement <b>{payment.coin}</b> sur <b>{payment.network}</b>. Toute autre crypto ou réseau = fonds perdus.
       </div>
       <div className="text-[10px] text-slate-500 text-center">Vérification automatique du paiement en cours…</div>
     </div>

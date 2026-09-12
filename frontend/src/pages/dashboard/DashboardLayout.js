@@ -47,9 +47,9 @@ export default function DashboardLayout() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50" data-testid="dashboard-layout">
+    <div className="bt-shell" data-testid="dashboard-layout">
       {/* Sidebar */}
-      <aside className={`fixed top-0 left-0 z-40 h-screen bg-white border-r border-slate-200 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64`} data-testid="sidebar">
+      <aside className={`bt-sidebar fixed top-0 left-0 z-40 h-[100dvh] border-r transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64`} data-testid="sidebar">
         <div className="h-16 flex items-center gap-2 px-4 border-b border-slate-100">
           <Logo />
           <button onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="sidebar-close">
@@ -60,8 +60,8 @@ export default function DashboardLayout() {
         <nav className="p-3 space-y-0.5">
           {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.end} data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
-              className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
-                isActive ? 'bg-blue-50 text-[#2563EB]' : 'text-slate-700 hover:bg-slate-50'
+              className={({ isActive }) => `bt-sidebar-link flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
+                isActive ? 'active' : ''
               }`}>
               <n.i className="w-4 h-4" strokeWidth={1.75} />
               <div>
@@ -73,8 +73,8 @@ export default function DashboardLayout() {
           <div className="my-3 border-t border-slate-100" />
           {nav2.map((n) => (
             <NavLink key={n.to} to={n.to} data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
-              className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
-                isActive ? 'bg-blue-50 text-[#2563EB]' : 'text-slate-700 hover:bg-slate-50'
+              className={({ isActive }) => `bt-sidebar-link flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
+                isActive ? 'active' : ''
               }`}>
               <n.i className="w-4 h-4" strokeWidth={1.75} />
               {n.l}
@@ -102,7 +102,7 @@ export default function DashboardLayout() {
 
       {/* Topbar */}
       <div className={`transition-[padding] duration-300 ${sidebarOpen ? 'lg:pl-64' : 'lg:pl-0'}`}>
-        <header className="sticky top-0 z-30 bg-white/85 backdrop-blur-md border-b border-slate-200 h-16 flex items-center px-5 gap-3" data-testid="dashboard-topbar">
+        <header className="bt-topbar sticky top-0 z-30 border-b h-[72px] flex items-center px-5 gap-3" data-testid="dashboard-topbar">
           <button onClick={() => setSidebarOpen((v) => !v)} data-testid="btn-toggle-sidebar" className="w-10 h-10 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
             <Menu className="w-4 h-4" />
           </button>
@@ -128,7 +128,7 @@ export default function DashboardLayout() {
                     <div className="text-xs text-slate-500">@{user?.username}</div>
                   </div>
                   {(user?.role === 'admin' || user?.role === 'super_admin') && (
-                    <Link to="/admin" className="block px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50" data-testid="menu-admin">🛡️ Admin Panel</Link>
+                   <Link to="/admin" className="block px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50" data-testid="menu-admin">Admin Panel</Link>
                   )}
                   <Link to="/dashboard/settings" className="block px-4 py-2 text-sm hover:bg-slate-50" data-testid="menu-settings">{t('dashboard.settings')}</Link>
                   <button onClick={logout} data-testid="btn-logout" className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
@@ -140,7 +140,7 @@ export default function DashboardLayout() {
           </div>
         </header>
 
-        <main className="p-5 sm:p-6 max-w-6xl mx-auto">
+           <main className="bt-content p-5 sm:p-7">
           <Outlet />
         </main>
       </div>

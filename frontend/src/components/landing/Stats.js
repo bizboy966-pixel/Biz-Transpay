@@ -27,10 +27,10 @@ function fmt(n, suffix = '') {
 }
 
 const AVATARS = [
-  { c: 'from-orange-400 to-pink-500', i: '👨🏾' },
-  { c: 'from-blue-400 to-indigo-500', i: '👩🏽' },
-  { c: 'from-emerald-400 to-teal-500', i: '👨🏽' },
-  { c: 'from-violet-400 to-purple-500', i: '👩🏾' },
+  { c: 'from-orange-400 to-pink-500', i: 'AB' },
+  { c: 'from-blue-400 to-indigo-500', i: 'MK' },
+  { c: 'from-emerald-400 to-teal-500', i: 'SD' },
+  { c: 'from-violet-400 to-purple-500', i: 'LN' },
 ];
 
 export default function Stats() {

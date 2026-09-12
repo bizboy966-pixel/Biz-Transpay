@@ -7,7 +7,7 @@ import {
 import { toast } from 'sonner';
 import api from '@/api';
 
-const flags = { CI: '🇨🇮', SN: '🇸🇳', TG: '🇹🇬', ML: '🇲🇱', BF: '🇧🇫', CM: '🇨🇲', BJ: '🇧🇯' };
+const flags = { CI: 'CI', SN: 'SN', TG: 'TG', ML: 'ML', BF: 'BF', CM: 'CM', BJ: 'BJ' };
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
@@ -87,7 +87,7 @@ export default function AdminUsers() {
                     <div className="text-xs text-slate-800">{u.email}</div>
                     <div className="text-[11px] text-slate-500">{u.phone}</div>
                   </td>
-                  <td className="px-5 py-3 text-lg">{flags[u.country] || '🌍'}</td>
+                  <td className="px-5 py-3 text-xs font-bold tracking-wider text-slate-500">{flags[u.country] || u.country || '—'}</td>
                   <td className="px-5 py-3"><KycBadge status={u.kyc_status} /></td>
                   <td className="px-5 py-3 text-right font-semibold text-xs">{(u.balance_xof || 0).toLocaleString()}</td>
                   <td className="px-5 py-3 text-right font-semibold text-xs">{(u.balance_xaf || 0).toLocaleString()}</td>

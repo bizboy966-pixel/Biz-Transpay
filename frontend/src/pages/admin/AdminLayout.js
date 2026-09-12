@@ -51,9 +51,9 @@ export default function AdminLayout() {
   const roleLabel = user?.role === 'super_admin' ? 'Super Administrateur' : 'Administrateur';
 
   return (
-    <div className="min-h-screen bg-slate-50 flex" data-testid="admin-layout">
+    <div className="bt-shell flex" data-testid="admin-layout">
       {/* Sidebar */}
-      <aside className={`fixed top-0 left-0 z-40 h-screen transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64 bg-[#0F172A] text-slate-300`} data-testid="admin-sidebar">
+      <aside className={`fixed top-0 left-0 z-40 h-[100dvh] transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64 bg-[#0F172A] text-slate-300`} data-testid="admin-sidebar">
         <div className="h-16 flex items-center gap-2.5 px-5 border-b border-white/10">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] flex items-center justify-center">
             <span className="text-white font-cabinet font-extrabold text-lg">B</span>
@@ -116,7 +116,7 @@ export default function AdminLayout() {
             <div className="font-cabinet font-extrabold text-slate-900 text-base">
               {NAV.filter((n) => n.to).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Admin'}
             </div>
-            <div className="text-[11px] text-slate-500 font-medium">Bienvenue, {user?.full_name?.split(' ')[0] || 'Admin'} 👋</div>
+             <div className="text-[11px] text-slate-500 font-medium">Bienvenue, {user?.full_name?.split(' ')[0] || 'Admin'}</div>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <button className="w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="admin-search"><Search className="w-4 h-4 text-slate-600" /></button>
@@ -140,7 +140,7 @@ export default function AdminLayout() {
           </div>
         </header>
 
-        <main className="p-5 sm:p-6 max-w-7xl mx-auto">
+         <main className="bt-content p-5 sm:p-7 max-w-7xl">
           <Outlet />
         </main>
       </div>

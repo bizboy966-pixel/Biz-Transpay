@@ -5,14 +5,14 @@ import api from '@/api';
 
 // FedaPay-supported countries (must match backend `fedapay.COUNTRY_LABELS`).
 const FEDAPAY_COUNTRIES = [
-  { code: 'BJ', label: 'Bénin', flag: '🇧🇯' },
-  { code: 'CI', label: 'Côte d\u2019Ivoire', flag: '🇨🇮' },
-  { code: 'TG', label: 'Togo', flag: '🇹🇬' },
-  { code: 'SN', label: 'Sénégal', flag: '🇸🇳' },
-  { code: 'ML', label: 'Mali', flag: '🇲🇱' },
-  { code: 'NE', label: 'Niger', flag: '🇳🇪' },
-  { code: 'BF', label: 'Burkina Faso', flag: '🇧🇫' },
-  { code: 'GN', label: 'Guinée', flag: '🇬🇳' },
+  { code: 'BJ', label: 'Bénin', flag: 'BJ' },
+  { code: 'CI', label: 'Côte d\u2019Ivoire', flag: 'CI' },
+  { code: 'TG', label: 'Togo', flag: 'TG' },
+  { code: 'SN', label: 'Sénégal', flag: 'SN' },
+  { code: 'ML', label: 'Mali', flag: 'ML' },
+  { code: 'NE', label: 'Niger', flag: 'NE' },
+  { code: 'BF', label: 'Burkina Faso', flag: 'BF' },
+  { code: 'GN', label: 'Guinée', flag: 'GN' },
 ];
 
 const CURRENCIES = ['XOF', 'XAF', 'GNF', 'CDF', 'USD', 'EUR'];

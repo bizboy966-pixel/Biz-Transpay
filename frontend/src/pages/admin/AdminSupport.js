@@ -128,7 +128,7 @@ export default function AdminSupport() {
                     <div className="font-semibold text-xs text-slate-900 truncate">{c.user?.full_name || c.user?.username}</div>
                     {c.unread_count > 0 && <span className="ml-auto shrink-0 w-4 h-4 rounded-full bg-[#2563EB] text-white text-[9px] font-bold flex items-center justify-center">{c.unread_count}</span>}
                   </div>
-                  <div className="text-[10px] text-slate-500 truncate">{c.last_sender === 'admin' ? 'Vous : ' : ''}{c.last_message || '📎 Pièce jointe'}</div>
+                   <div className="text-[10px] text-slate-500 truncate">{c.last_sender === 'admin' ? 'Vous : ' : ''}{c.last_message || 'Pièce jointe'}</div>
                   <div className="text-[9px] text-slate-400">{new Date(c.last_created).toLocaleString()}</div>
                 </div>
               </button>

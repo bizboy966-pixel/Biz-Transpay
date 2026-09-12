@@ -35,8 +35,8 @@ export default function PaymentSuccess() {
   }, [sessionId]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-white to-slate-50 p-6">
-      <div className="max-w-md w-full bg-white rounded-[24px] border border-slate-100 shadow-xl p-10 text-center" data-testid="payment-success-page">
+    <div className="bt-page min-h-screen flex items-center justify-center p-6">
+      <div className="bt-panel max-w-md w-full p-8 sm:p-10 text-center" data-testid="payment-success-page">
         {status === 'polling' && (
           <>
             <div className="mx-auto w-16 h-16 rounded-full border-4 border-blue-100 border-t-[#2563EB] animate-spin" />

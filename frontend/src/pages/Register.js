@@ -60,8 +60,8 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-slate-50 flex flex-col" data-testid="register-page">
-      <header className="border-b border-slate-200/70 bg-white/80 backdrop-blur-xl">
+    <div className="bt-auth-shell flex flex-col" data-testid="register-page">
+      <header className="bt-auth-header">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <Logo />
           <Link to="/login" data-testid="link-to-login" className="text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]">
@@ -70,25 +70,23 @@ export default function Register() {
         </div>
       </header>
 
-      <main className="flex-1 relative py-12 overflow-hidden">
-        <div className="absolute top-20 left-10 w-64 h-64 rounded-full bg-blue-100/50 blur-3xl pointer-events-none" />
-        <div className="absolute bottom-10 right-10 w-72 h-72 rounded-full bg-blue-100/40 blur-3xl pointer-events-none" />
-
-        <form onSubmit={onSubmit} className="relative max-w-2xl mx-auto bg-white border border-slate-100 rounded-[28px] shadow-[0_20px_60px_-20px_rgba(15,23,42,0.15)] p-8 sm:p-12" data-testid="register-form">
-          <div className="text-center mb-8">
-            <div className="mx-auto w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center">
+      <main className="flex-1 relative py-10 px-4">
+        <form onSubmit={onSubmit} className="bt-auth-card max-w-2xl mx-auto p-7 sm:p-11" data-testid="register-form">
+          <div className="text-center mb-9">
+            <div className="mx-auto w-14 h-14 rounded-2xl bg-[#EFF6FF] border border-[#D8E7FF] flex items-center justify-center">
               <UserPlus className="w-7 h-7 text-[#2563EB]" strokeWidth={1.75} />
             </div>
-            <h1 className="mt-5 font-cabinet text-3xl sm:text-4xl font-extrabold tracking-tighter text-slate-900">{t('register.title')}</h1>
+            <div className="bt-kicker mt-5">Biz-transPay</div>
+            <h1 className="mt-2 font-cabinet text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">{t('register.title')}</h1>
             <p className="mt-2 text-slate-600">{t('register.subtitle')}</p>
           </div>
 
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label={t('register.full_name')} icon={User} error={errors.full_name}>
-              <input data-testid="input-full-name" type="text" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none transition-colors" />
+               <input data-testid="input-full-name" type="text" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
             </Field>
             <Field label={t('register.username')} icon={AtSign} error={errors.username}>
-              <input data-testid="input-username" type="text" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none transition-colors" />
+               <input data-testid="input-username" type="text" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
             </Field>
           </div>
 
@@ -141,27 +139,27 @@ export default function Register() {
               <div className="relative">
                 <Phone className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <div className="absolute left-11 top-1/2 -translate-y-1/2 flex items-center gap-1.5 pr-2 border-r border-slate-200 h-7">
-                  <span className="text-sm">{country.flag}</span>
+                   <span className="text-[10px] font-bold tracking-wider text-slate-500">{country.code}</span>
                   <span className="text-sm font-semibold text-slate-700">{country.dial}</span>
                 </div>
-                <input data-testid="input-phone" type="tel" value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder={t('register.phone_ph')} className="w-full pl-[110px] pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+               <input data-testid="input-phone" type="tel" value={form.phone} onChange={(e) => set('phone', e.target.value)} placeholder={t('register.phone_ph')} className="bt-field pl-[110px] pr-4" />
               </div>
               {errors.phone && <p className="mt-1 text-xs text-red-500">{errors.phone}</p>}
             </div>
             <Field label={t('register.email')} icon={Mail} error={errors.email}>
-              <input data-testid="input-email" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={t('register.email_ph')} className="w-full pl-11 pr-4 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+               <input data-testid="input-email" type="email" value={form.email} onChange={(e) => set('email', e.target.value)} placeholder={t('register.email_ph')} className="bt-field pl-11 pr-4" />
             </Field>
           </div>
 
           <Field label={t('register.password')} icon={Lock} error={errors.password} extra="mt-5">
-            <input data-testid="input-password" type={showPwd ? 'text' : 'password'} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="w-full pl-11 pr-11 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+             <input data-testid="input-password" type={showPwd ? 'text' : 'password'} value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-1">
               {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </Field>
 
           <Field label={t('register.confirm')} icon={Lock} error={errors.confirm} extra="mt-5">
-            <input data-testid="input-confirm-password" type={showPwd2 ? 'text' : 'password'} value={form.confirm} onChange={(e) => set('confirm', e.target.value)} placeholder={t('register.confirm_ph')} className="w-full pl-11 pr-11 py-3.5 border border-slate-200 rounded-xl focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 outline-none" />
+             <input data-testid="input-confirm-password" type={showPwd2 ? 'text' : 'password'} value={form.confirm} onChange={(e) => set('confirm', e.target.value)} placeholder={t('register.confirm_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd2((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-2">
               {showPwd2 ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
@@ -187,11 +185,11 @@ export default function Register() {
             {errors.terms && <p className="mt-1 text-xs text-red-500">{errors.terms}</p>}
           </div>
 
-          <button
+           <button
             type="submit"
             disabled={loading}
             data-testid="btn-submit-register"
-            className="mt-8 w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-4 rounded-xl shadow-[0_10px_30px_-8px_rgba(37,99,235,0.6)] hover:-translate-y-0.5 transition-transform inline-flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed disabled:transform-none"
+             className="bt-button-primary mt-8 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed"
           >
             {loading ? 'Création en cours…' : <><UserPlus className="w-5 h-5" /> {t('register.submit')}</>}
           </button>

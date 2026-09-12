@@ -1,7 +1,7 @@
-/* Biz-transPay – global styles */
+/* Biz-transPay — shared visual system */
 @font-face {
   font-family: 'Strigiform Knights';
-  src: url('/fonts/strigiform-knights-regular.woff') format('woff');
+  src: url('./assets/fonts/strigiform-knights-regular.woff') format('woff');
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -16,6 +16,12 @@
   --bt-blue-dark: #1D4ED8;
   --bt-blue-light: #3B82F6;
   --bt-blue-surface: #EFF6FF;
+  --bt-ink: #0F172A;
+  --bt-muted: #64748B;
+  --bt-line: #DCE5F2;
+  --bt-surface: #F5F8FD;
+  --bt-radius: 18px;
+  --bt-shadow: 0 18px 50px -28px rgba(15, 23, 42, .28);
 }
 
 html {
@@ -27,8 +33,10 @@ html {
 body {
   margin: 0;
   color: #0F172A;
-  background: #FFFFFF;
+  background: #F5F8FD;
   font-family: inherit;
+  font-size: 15px;
+  letter-spacing: .005em;
 }
 
 .font-cabinet {
@@ -38,6 +46,218 @@ body {
 
 .font-jakarta {
   font-family: 'Strigiform Knights', system-ui, sans-serif;
+}
+
+/* The local typeface is intentionally used for every surface. These
+   utility classes only tune rhythm; they do not introduce a second font. */
+.font-cabinet,
+.font-jakarta,
+button,
+input,
+textarea,
+select {
+  letter-spacing: .005em;
+}
+
+.bt-page {
+  min-height: 100dvh;
+  background:
+    linear-gradient(180deg, rgba(239,246,255,.82) 0, rgba(245,248,253,.96) 24rem),
+    #F5F8FD;
+}
+
+.bt-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .26;
+  background-image: radial-gradient(rgba(37,99,235,.12) .6px, transparent .6px);
+  background-size: 18px 18px;
+  mask-image: linear-gradient(180deg, #000, transparent 72%);
+  z-index: 0;
+}
+
+.bt-panel {
+  background: rgba(255,255,255,.92);
+  border: 1px solid var(--bt-line);
+  border-radius: var(--bt-radius);
+  box-shadow: var(--bt-shadow);
+}
+
+.bt-panel-flat {
+  background: #fff;
+  border: 1px solid var(--bt-line);
+  border-radius: var(--bt-radius);
+}
+
+.bt-field {
+  width: 100%;
+  min-height: 46px;
+  border: 1px solid var(--bt-line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--bt-ink);
+  transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease;
+}
+
+.bt-field:hover { border-color: #B7C9E4; }
+.bt-field:focus {
+  border-color: var(--bt-blue);
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(37,99,235,.11);
+}
+
+.bt-button-primary {
+  background: var(--bt-blue);
+  color: #fff;
+  border-radius: 12px;
+  box-shadow: 0 12px 24px -14px rgba(37,99,235,.85);
+  transition: background-color .18s ease, transform .18s ease, box-shadow .18s ease;
+}
+.bt-button-primary:hover {
+  background: var(--bt-blue-dark);
+  transform: translateY(-1px);
+  box-shadow: 0 16px 28px -15px rgba(37,99,235,.95);
+}
+.bt-button-primary:disabled { opacity: .62; transform: none; }
+
+.bt-kicker {
+  color: var(--bt-blue);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .16em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.bt-auth-shell {
+  min-height: 100dvh;
+  background: #F5F8FD;
+  position: relative;
+  overflow: hidden;
+}
+.bt-auth-shell::before,
+.bt-auth-shell::after {
+  content: '';
+  position: absolute;
+  width: 31rem;
+  height: 31rem;
+  border: 1px solid rgba(37,99,235,.10);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.bt-auth-shell::before { top: -16rem; right: -10rem; }
+.bt-auth-shell::after { bottom: -19rem; left: -12rem; }
+
+.bt-auth-header {
+  position: relative;
+  z-index: 1;
+  height: 76px;
+  background: rgba(255,255,255,.82);
+  border-bottom: 1px solid var(--bt-line);
+  backdrop-filter: blur(16px);
+}
+
+.bt-auth-card {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 520px);
+  background: rgba(255,255,255,.96);
+  border: 1px solid var(--bt-line);
+  border-radius: 22px;
+  box-shadow: 0 26px 70px -34px rgba(15,23,42,.30);
+}
+
+.bt-shell {
+  min-height: 100dvh;
+  background: var(--bt-surface);
+}
+.bt-sidebar {
+  background: #fff;
+  border-color: var(--bt-line);
+}
+.bt-sidebar-link {
+  color: #475569;
+  border: 1px solid transparent;
+}
+.bt-sidebar-link:hover { background: var(--bt-blue-surface); color: var(--bt-blue-dark); }
+.bt-sidebar-link.active {
+  background: var(--bt-blue-surface);
+  border-color: #D8E7FF;
+  color: var(--bt-blue-dark);
+}
+.bt-topbar {
+  background: rgba(255,255,255,.90);
+  border-color: var(--bt-line);
+  backdrop-filter: blur(16px);
+}
+.bt-content {
+  width: min(100%, 1180px);
+  margin: 0 auto;
+}
+.bt-table-wrap { overflow-x: auto; border: 1px solid var(--bt-line); border-radius: 16px; background: #fff; }
+.bt-table-wrap table { min-width: 640px; }
+
+/* Existing screens share these utility combinations. Keeping the refinement
+   here prevents small visual drifts across the dashboard and admin routes. */
+.bt-shell .bg-white.border-slate-100.rounded-2xl,
+.bt-shell .bg-white.border-slate-100.rounded-xl {
+  border-color: var(--bt-line);
+  box-shadow: 0 12px 32px -26px rgba(15,23,42,.30);
+}
+.bt-shell input:not([type="checkbox"]):not([type="radio"]),
+.bt-shell select,
+.bt-shell textarea {
+  border-color: var(--bt-line);
+  border-radius: 11px;
+  background: #fff;
+}
+.bt-shell input:not([type="checkbox"]):not([type="radio"]):focus,
+.bt-shell select:focus,
+.bt-shell textarea:focus {
+  outline: none;
+  border-color: var(--bt-blue);
+  box-shadow: 0 0 0 4px rgba(37,99,235,.10);
+}
+
+.bt-public-card input,
+.bt-public-card select,
+.bt-public-card textarea {
+  min-height: 43px;
+  border-color: var(--bt-line);
+  background: #fff;
+  border-radius: 11px;
+}
+.bt-public-card input:focus,
+.bt-public-card select:focus,
+.bt-public-card textarea:focus {
+  outline: none;
+  border-color: var(--bt-blue);
+  box-shadow: 0 0 0 4px rgba(37,99,235,.10);
+}
+.bt-skeleton {
+  overflow: hidden;
+  position: relative;
+  background: #E8EEF8;
+}
+.bt-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,.65), transparent);
+  transform: translateX(-100%);
+  animation: bt-shimmer 1.7s ease-in-out infinite;
+}
+@keyframes bt-shimmer {
+  to { transform: translateX(100%); }
+}
+
+@media (max-width: 767px) {
+  body { font-size: 14px; }
+  .bt-auth-header { height: 68px; }
+  .bt-auth-card { border-radius: 18px; }
+  .bt-content { width: 100%; }
 }
 
 button,
@@ -115,12 +335,12 @@ optgroup {
 }
 
 .bt-glass {
-  background: rgba(255,255,255,0.82);
+  background: rgba(255,255,255,0.90);
   backdrop-filter: saturate(180%) blur(18px);
   -webkit-backdrop-filter: saturate(180%) blur(18px);
 }
 
-/* World-map background */
+/* World-map background, kept in Biz-transPay blue */
 .bt-worldmap {
   background-image: radial-gradient(circle at 1px 1px, rgba(37,99,235,0.16) 1px, transparent 0);
   background-size: 22px 22px;
@@ -142,4 +362,4 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* Hide App.css defaults */
-.App { min-height: 100vh; }
+.App { min-height: 100dvh; }

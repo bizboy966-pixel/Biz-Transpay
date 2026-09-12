@@ -166,7 +166,7 @@ export default function ApiKeys() {
   };
 
   const regen = async (row) => {
-    if (!window.confirm(`Régénérer la clé "${row.name}" ?\n\n⚠️ L'ancienne clé cessera immédiatement de fonctionner.`)) return;
+    if (!window.confirm(`Régénérer la clé "${row.name}" ?\n\nL'ancienne clé cessera immédiatement de fonctionner.`)) return;
     try {
       const { data } = await api.post(`/merchant/keys/${row.id}/regenerate`);
       setReveal({ secret: data.secret, name: data.name, env: data.env, id: data.id });

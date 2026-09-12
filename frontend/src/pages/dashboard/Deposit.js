@@ -311,7 +311,7 @@ function CryptoDepositTracker({ deposit: initial }) {
           </div>
 
           <div className="p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] sm:text-xs text-amber-800">
-            ⚠️ Envoyez uniquement <b>{deposit.coin}</b> sur le réseau <b>{deposit.network}</b>. Envoyer une autre cryptomonnaie ou un autre réseau entraîne la perte définitive des fonds.
+             Envoyez uniquement <b>{deposit.coin}</b> sur le réseau <b>{deposit.network}</b>. Envoyer une autre cryptomonnaie ou un autre réseau entraîne la perte définitive des fonds.
           </div>
 
           <div className="text-[10px] sm:text-[11px] text-slate-500 text-center">
