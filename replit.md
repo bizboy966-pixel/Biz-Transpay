@@ -62,6 +62,8 @@ is available and never exposes it to the frontend.
 - Future screens and features must reuse the existing visual system and shared
   components instead of introducing a new card, button, radius, spacing scale,
   or typography system.
-- Diokoma (https://www.diokoma.com/) is the structural reference for card
-  positioning, proportions, whitespace, rounded forms, and page composition.
-  Its branding, colors, and content must not be copied.
+- The Diokoma Action registration page
+  (https://action.diokoma.sn/r/QIVVPPEZ) is the primary structural reference
+  for card positioning, proportions, whitespace, field sizing, rounded forms,
+  and page composition. Its branding, colors, imagery, and content must not be
+  copied.
