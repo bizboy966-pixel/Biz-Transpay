@@ -1,3 +1,4 @@
 - [Replit runtime setup](replit-runtime-setup.md) — Imported payment apps may need a local compatibility layer for private packages and a workflow-attached local MongoDB.
 - [Imported Emergent dependencies](imported-emergent-dependencies.md) — imported apps may reference private packages unavailable in Replit's package registry.
 - [Biz-transPay visual system](biz-transpay-visual-system.md) — Kripa Regular is the official local font and all future UI work reuses the shared Biz-transPay visual system.
+- [PayDunya fee catalog](paydunya-fee-catalog.md) — PayDunya pay-in uses an admin-managed country/operator catalog and lets the payer choose who bears the fees.
