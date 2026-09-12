@@ -71,7 +71,7 @@ export default function Stats() {
             <div>
               <div className="inline-flex items-center gap-2 bg-white/10 text-white/90 px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-wider backdrop-blur">
                 <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse" />
-                Trusted worldwide
+                 {t('stats.badge')}
               </div>
               <h2 className="mt-3 font-cabinet text-2xl sm:text-3xl font-extrabold text-white tracking-tighter">{t('stats.title')}</h2>
 

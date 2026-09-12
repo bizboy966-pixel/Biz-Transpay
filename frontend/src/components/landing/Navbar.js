@@ -30,8 +30,8 @@ export default function Navbar() {
   const items = [
     { to: '/', key: 'home' },
     { to: '/#services', key: 'services' },
-    { to: '/#pricing', key: 'pricing' },
-    { to: '/#api', key: 'api' },
+    { to: '/#audience', key: 'pricing' },
+    { to: '/#steps', key: 'api' },
     { to: '/#about', key: 'about' },
     { to: '/#contact', key: 'contact' },
   ];

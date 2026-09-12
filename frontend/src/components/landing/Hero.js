@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight, Play, ShieldCheck, Lock, TrendingUp, ArrowUpRight, ArrowDownLeft, Repeat, Link2 } from 'lucide-react';
+import { ArrowRight, Play, ShieldCheck, Link2, BarChart3, Share2, ShoppingBag } from 'lucide-react';
 
 export default function Hero() {
   const { t } = useTranslation();
@@ -54,21 +54,21 @@ export default function Hero() {
           </div>
 
           <div className="mt-8 flex flex-wrap items-center gap-6 text-xs text-slate-500">
-            <div className="flex items-center gap-1.5"><ShieldCheck className="w-4 h-4 text-emerald-500" /> PCI-DSS</div>
-            <div className="flex items-center gap-1.5"><Lock className="w-4 h-4 text-emerald-500" /> SSL 256-bit</div>
-            <div className="flex items-center gap-1.5"><TrendingUp className="w-4 h-4 text-emerald-500" /> 99.9% uptime</div>
+            <div className="flex items-center gap-1.5"><Share2 className="w-4 h-4 text-emerald-500" /> {t('hero.proof_1')}</div>
+            <div className="flex items-center gap-1.5"><ShoppingBag className="w-4 h-4 text-emerald-500" /> {t('hero.proof_2')}</div>
+            <div className="flex items-center gap-1.5"><BarChart3 className="w-4 h-4 text-emerald-500" /> {t('hero.proof_3')}</div>
           </div>
         </div>
 
         {/* RIGHT - Phone mockup */}
         <div className="relative h-[480px] sm:h-[520px] flex items-center justify-center">
-          {/* Floating XOF bubble */}
+          {/* Floating product bubble */}
           <div className="absolute left-2 sm:left-6 top-16 animate-float-slow z-20">
-            <div className="w-12 h-12 rounded-full bg-white shadow-[0_8px_24px_rgba(37,99,235,0.22)] border border-blue-100 flex items-center justify-center font-cabinet font-extrabold text-[#2563EB] text-sm">XOF</div>
+            <div className="w-12 h-12 rounded-full bg-white shadow-[0_8px_24px_rgba(37,99,235,0.22)] border border-blue-100 flex items-center justify-center font-cabinet font-extrabold text-[#2563EB] text-sm">PDF</div>
           </div>
-          {/* Floating XAF bubble */}
+          {/* Floating link bubble */}
           <div className="absolute right-2 sm:right-4 top-24 animate-float z-20">
-            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-500 shadow-[0_8px_24px_rgba(16,185,129,0.3)] flex items-center justify-center font-cabinet font-extrabold text-white text-sm">XAF</div>
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-emerald-400 to-emerald-500 shadow-[0_8px_24px_rgba(16,185,129,0.3)] flex items-center justify-center font-cabinet font-extrabold text-white text-sm">URL</div>
           </div>
           {/* Security badge */}
           <div className="absolute right-2 sm:right-0 bottom-16 z-20 animate-float">
@@ -76,7 +76,7 @@ export default function Hero() {
               <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center"><ShieldCheck className="w-4 h-4 text-white" /></div>
               <div>
                 <div className="text-[9px] text-slate-500 font-semibold uppercase tracking-wider">Sécurité</div>
-                <div className="text-xs font-bold text-slate-900">100% Sécurisé</div>
+                <div className="text-xs font-bold text-slate-900">{t('hero.secure')}</div>
               </div>
             </div>
           </div>
@@ -96,16 +96,16 @@ export default function Hero() {
                 <div className="rounded-xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] p-3 text-white relative overflow-hidden">
                   <div className="text-[9px] uppercase tracking-wider text-white/70 font-semibold">{t('hero.balance')}</div>
                   <div className="mt-1 font-cabinet text-lg font-extrabold">2,450,000 <span className="text-[10px] opacity-80">XOF</span></div>
-                  <div className="mt-2 text-[9px] font-mono opacity-70">•••• •••• •••• 4242</div>
+                   <div className="mt-2 text-[9px] font-mono opacity-70">Votre activité en un coup d’œil</div>
                   <div className="absolute -right-4 -bottom-4 w-20 h-20 rounded-full bg-white/10" />
                 </div>
                 {/* Quick actions */}
                 <div className="grid grid-cols-4 gap-1.5 mt-3">
-                  {[
-                    { i: ArrowUpRight, c: 'bg-emerald-50 text-emerald-600', l: 'Transfer' },
-                    { i: ArrowDownLeft, c: 'bg-blue-50 text-blue-600', l: 'Dépôt' },
-                    { i: Link2, c: 'bg-violet-50 text-violet-600', l: 'Lien' },
-                    { i: Repeat, c: 'bg-orange-50 text-orange-600', l: 'Échange' },
+                     {[
+                       { i: ShoppingBag, c: 'bg-emerald-50 text-emerald-600', l: t('hero.quick_sell') },
+                       { i: Link2, c: 'bg-blue-50 text-blue-600', l: t('hero.quick_link') },
+                       { i: BarChart3, c: 'bg-violet-50 text-violet-600', l: t('hero.quick_track') },
+                       { i: Share2, c: 'bg-orange-50 text-orange-600', l: t('hero.quick_share') },
                   ].map((a, i) => (
                     <div key={i} className="flex flex-col items-center gap-1">
                       <div className={`w-8 h-8 rounded-lg ${a.c} flex items-center justify-center`}>
@@ -122,11 +122,11 @@ export default function Hero() {
                     <div className="text-[9px] text-[#2563EB] font-semibold">{t('hero.see_all')}</div>
                   </div>
                   <div className="mt-1.5 space-y-1">
-                    {[
-                      { l: 'Paiement reçu', a: '+250,000', c: 'text-emerald-600', bg: 'bg-emerald-100' },
-                      { l: 'Transfert', a: '-120,000', c: 'text-slate-900', bg: 'bg-blue-100' },
-                      { l: 'Échange XOF→XAF', a: '-80,000', c: 'text-slate-900', bg: 'bg-violet-100' },
-                      { l: 'Retrait vers compte', a: '-200,000', c: 'text-slate-900', bg: 'bg-orange-100' },
+                     {[
+                       { l: t('hero.sale_received'), a: '+250,000', c: 'text-emerald-600', bg: 'bg-emerald-100' },
+                       { l: t('hero.product_order'), a: '+120,000', c: 'text-emerald-600', bg: 'bg-blue-100' },
+                       { l: t('hero.shared_link'), a: '+80,000', c: 'text-emerald-600', bg: 'bg-violet-100' },
+                       { l: t('hero.subscription'), a: '+200,000', c: 'text-emerald-600', bg: 'bg-orange-100' },
                     ].map((tx, i) => (
                       <div key={i} className="flex items-center gap-1.5 bg-white rounded-lg p-1.5 border border-slate-100">
                         <div className={`w-5 h-5 rounded ${tx.bg}`} />
