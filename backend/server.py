@@ -4494,6 +4494,11 @@ async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
 @api.patch("/settings/profile", response_model=UserPublic)
 async def update_profile(req: UpdateProfile, uid: str = Depends(get_current_user_id)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    protected_fields = {"full_name", "phone", "email"}
+    if protected_fields.intersection(updates):
+        current_user = await get_user(uid)
+        if current_user.get("role") not in ("admin", "super_admin"):
+            raise HTTPException(403, "Seul un administrateur peut modifier les informations d'identité")
     if updates:
         if "email" in updates:
             updates["email"] = updates["email"].lower()

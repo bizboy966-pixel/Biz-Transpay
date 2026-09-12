@@ -1,7 +1,7 @@
-import { Link } from 'react-router-dom';
-import { BriefcaseBusiness, Globe2, Mail, Pencil, Phone, ShieldCheck, UserRound } from 'lucide-react';
+import { BriefcaseBusiness, Globe2, Mail, Phone, ShieldCheck, UserRound } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
+import Settings from './Settings';
 
 export default function Profile() {
   const { user } = useAuth();
@@ -15,9 +15,6 @@ export default function Profile() {
           <h1 className="font-cabinet text-2xl sm:text-3xl font-extrabold tracking-tighter text-slate-900">Profil</h1>
           <p className="text-slate-500 text-xs sm:text-sm mt-1">Vos informations personnelles et votre statut de compte.</p>
         </div>
-        <Link to="/dashboard/settings" data-testid="profile-edit-link" className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-2 text-xs font-bold text-[#2563EB] hover:bg-blue-100">
-          <Pencil className="w-3.5 h-3.5" /> Modifier
-        </Link>
       </div>
 
       <div className="bg-white border border-slate-100 rounded-2xl p-5 sm:p-6 shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
@@ -43,6 +40,8 @@ export default function Profile() {
           <Info icon={ShieldCheck} label="Statut KYC" value={kycVerified ? 'Vérifié' : 'Non vérifié'} />
         </div>
       </div>
+
+      <Settings embedded />
     </div>
   );
 }

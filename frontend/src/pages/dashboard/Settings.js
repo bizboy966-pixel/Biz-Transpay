@@ -1,18 +1,15 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Save, Lock, User, Globe, Coins, Shield } from 'lucide-react';
+import { Save, Lock, Globe, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import i18n from '@/i18n';
 
-export default function Settings() {
+export default function Settings({ embedded = false }) {
   const { t } = useTranslation();
   const { user, refresh } = useAuth();
   const [profile, setProfile] = useState({
-    full_name: user?.full_name || '',
-    email: user?.email || '',
-    phone: user?.phone || '',
     language: user?.language || 'fr',
     default_currency: user?.default_currency || 'XOF',
     two_fa_enabled: user?.two_fa_enabled || false,
@@ -20,7 +17,11 @@ export default function Settings() {
   const [pwd, setPwd] = useState({ current_password: '', new_password: '' });
 
   const saveProfile = async () => {
-    await api.patch('/settings/profile', profile);
+    await api.patch('/settings/profile', {
+      language: profile.language,
+      default_currency: profile.default_currency,
+      two_fa_enabled: profile.two_fa_enabled,
+    });
     if (profile.language !== i18n.language) { i18n.changeLanguage(profile.language); localStorage.setItem('btp_lang', profile.language); }
     toast.success(t('settings.saved'));
     refresh();
@@ -36,14 +37,10 @@ export default function Settings() {
 
   return (
     <div className="space-y-6" data-testid="page-settings">
-      <h1 className="font-cabinet text-3xl font-extrabold tracking-tighter text-slate-900">{t('settings.title')}</h1>
-
-      <Section icon={User} title={t('settings.profile')}>
-        <Input label={t('settings.full_name')} value={profile.full_name} onChange={(v) => setProfile({ ...profile, full_name: v })} tid="set-full-name" />
-        <Input label={t('settings.email')} value={profile.email} onChange={(v) => setProfile({ ...profile, email: v })} type="email" tid="set-email" />
-        <Input label={t('settings.phone')} value={profile.phone} onChange={(v) => setProfile({ ...profile, phone: v })} tid="set-phone" />
-        <button onClick={saveProfile} data-testid="btn-save-profile" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-6 py-3 rounded-full"><Save className="w-4 h-4" /> {t('settings.save')}</button>
-      </Section>
+      <div className={embedded ? 'pt-1' : ''}>
+        <h2 className={`font-cabinet font-extrabold tracking-tighter text-slate-900 ${embedded ? 'text-xl' : 'text-3xl'}`}>{t('settings.title')}</h2>
+        {embedded && <p className="text-slate-500 text-xs mt-1">Sécurité et préférences de votre espace.</p>}
+      </div>
 
       <Section icon={Lock} title={t('settings.security_t')}>
         <Input label={t('settings.current_pwd')} type="password" value={pwd.current_password} onChange={(v) => setPwd({ ...pwd, current_password: v })} tid="set-current-pwd" />

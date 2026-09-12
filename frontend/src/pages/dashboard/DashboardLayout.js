@@ -102,7 +102,6 @@ export default function DashboardLayout() {
                   {(user?.role === 'admin' || user?.role === 'super_admin') && (
                    <Link to="/admin" className="block px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50" data-testid="menu-admin">Admin Panel</Link>
                   )}
-                  <Link to="/dashboard/settings" className="block px-4 py-2 text-sm hover:bg-slate-50" data-testid="menu-settings">{t('dashboard.settings')}</Link>
                   <button onClick={logout} data-testid="btn-logout" className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
                     <LogOut className="w-3.5 h-3.5" /> {t('common.logout')}
                   </button>
