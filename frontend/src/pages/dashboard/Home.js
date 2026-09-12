@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Wallet, ArrowUpRight, ArrowDownLeft, Link2, Repeat, Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
+import { ArrowUpRight, ArrowDownLeft, Link2, Repeat, Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
@@ -70,47 +70,27 @@ export default function DashboardHome() {
       {/* Unified wallet card: composition follows the supplied wallet reference. */}
       <section
         data-testid="wallet-balance-card"
-        className="relative isolate overflow-hidden rounded-[1.45rem] border border-[#4B9BFF]/35 bg-gradient-to-br from-[#1874E8] via-[#0754C9] to-[#123A9E] text-white shadow-[0_20px_42px_-22px_rgba(13,57,143,.72)] sm:rounded-[1.7rem]"
+        className="relative isolate overflow-hidden rounded-[1.45rem] border border-[#43C5FF]/70 bg-[#0754C9] text-white shadow-[0_22px_48px_-20px_rgba(4,64,173,.7)] sm:rounded-[1.7rem]"
       >
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,.12),transparent_30%),linear-gradient(180deg,rgba(11,80,191,.05),rgba(4,40,123,.2))]" />
-        <div className="pointer-events-none absolute right-[-9%] top-[-32%] h-[22rem] w-[22rem] rounded-full border border-white/[.08]" />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-0 bg-[length:auto_11.5rem] bg-[position:100%_62%] bg-no-repeat opacity-[.9] drop-shadow-[0_14px_18px_rgba(2,28,91,.3)] sm:bg-[length:auto_18rem] sm:bg-[position:100%_28%] sm:opacity-95"
-          style={{ backgroundImage: "url('/wallet-card-illustration-cfa-transparent.png')" }}
-        />
-        <div className="relative min-h-[15rem] border-b border-white/25 px-4 pt-4 sm:min-h-[18rem] sm:px-7 sm:pt-6">
-          <div className="relative z-10 flex max-w-[58%] items-start gap-2.5 sm:max-w-[56%] sm:gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 shadow-inner ring-1 ring-white/15 sm:h-12 sm:w-12">
-              <Wallet className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} />
-            </div>
-            <div className="min-w-0 pt-0.5">
-              <h2 className="whitespace-nowrap font-cabinet text-[1.05rem] font-extrabold leading-tight tracking-[-.035em] sm:text-[1.8rem]">Mon portefeuille</h2>
-              <p className="mt-1 max-w-[19rem] text-[10px] leading-snug text-white/78 sm:text-sm">Gérez tous vos soldes en un seul endroit</p>
-            </div>
-          </div>
-          <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2 sm:bottom-6 sm:left-7 sm:gap-3">
-            <img src="/logo-mark.png" alt="Biz-transPay" className="h-10 w-10 shrink-0 object-contain sm:h-16 sm:w-16" />
-            <div className="min-w-0 leading-none">
-              <div className="whitespace-nowrap text-[1.05rem] font-extrabold tracking-[-.04em] text-white sm:text-[1.65rem]">
-                Biz-trans<span className="text-[#39C4FF]">Pay</span>
-              </div>
-              <div className="mt-1.5 whitespace-nowrap text-[5px] font-bold uppercase tracking-[.16em] text-white/75 sm:text-[8px]">
-                Paiements • Simples • Sécurisés • Rapides
-              </div>
-            </div>
-          </div>
+        <div className="relative aspect-[876/345] w-full border-b border-[#39C4FF]/60">
+          <img
+            src="/wallet-reference-top.webp"
+            alt="Mon portefeuille Biz-transPay"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <h2 className="sr-only">Mon portefeuille</h2>
+          <p className="sr-only">Gérez tous vos soldes en un seul endroit</p>
           <button
             onClick={toggleHidden}
             data-testid="btn-toggle-balance"
             aria-label={hidden ? 'Afficher les soldes' : 'Masquer les soldes'}
-            className="absolute right-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/15 backdrop-blur-sm transition-colors hover:bg-white/25 sm:right-6 sm:top-5 sm:h-11 sm:w-11"
+            className="absolute right-[2.8%] top-[5%] z-20 flex h-9 w-9 items-center justify-center rounded-full bg-[#1683EE]/95 text-white ring-1 ring-white/30 shadow-md transition-transform hover:scale-105 sm:h-12 sm:w-12"
           >
             {hidden ? <Eye className="h-[17px] w-[17px] sm:h-5 sm:w-5" /> : <EyeOff className="h-[17px] w-[17px] sm:h-5 sm:w-5" />}
           </button>
         </div>
 
-        <div className="relative grid min-h-[5.8rem] grid-cols-3 gap-0 border-t border-white/10 bg-[#063EAA]/80 px-2.5 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,.08)] backdrop-blur-[2px] sm:min-h-[7rem] sm:px-6 sm:py-5">
+        <div className="relative grid min-h-[6.2rem] grid-cols-3 gap-0 bg-gradient-to-b from-[#0759D2] to-[#0844B5] px-2.5 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,.13)] sm:min-h-[8.2rem] sm:px-6 sm:py-5">
           {wallets.map((b, index) => (
             <div
               key={b.curr}
