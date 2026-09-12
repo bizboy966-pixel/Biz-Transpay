@@ -187,7 +187,7 @@ export default function AdminPlatform() {
                   <div className="flex items-center justify-between">
                     <div>
                       <div className="font-cabinet font-bold text-sm text-slate-900">Mobile Money</div>
-                      <div className="text-[11px] text-slate-500">FedaPay · 8 pays · 21 opérateurs · XOF / XAF</div>
+                      <div className="text-[11px] text-slate-500">Easy Change Pay · catalogue crypto synchronisé</div>
                     </div>
                     <label className="inline-flex items-center cursor-pointer shrink-0">
                       <input type="checkbox"

@@ -535,120 +535,6 @@ DEFAULT_DEPOSIT_CONFIG = {
 }
 
 
-def _gateway_mobile_money_capabilities(kind: str) -> list[dict]:
-    """Return only Mobile Money capabilities declared by the integrated gateway.
-
-    FedaPay's v1 integration exposes the supported country/operator/mode
-    catalog in fedapay.py.  The Admin catalogue is derived from that source;
-    it is never extended from an Admin form.
-    """
-    capabilities = []
-    for country in fedapay.catalog():
-        currency = "GNF" if country["country"] == "GN" else "XOF"
-        for operator in country.get("operators", []):
-            if operator.get("kind") not in (kind, "both"):
-                continue
-            capabilities.append({
-                "country": country["country"],
-                "country_label": country.get("country_label", country["country"]),
-                "code": operator["code"],
-                "name": operator.get("label") or operator["code"],
-                "currency": currency,
-                "gateway_mode": operator.get("mode"),
-                "capability": operator.get("kind"),
-                "gateway": "fedapay",
-            })
-    return capabilities
-
-
-def _find_previous_gateway_operator(previous: list[dict], capability: dict) -> Optional[dict]:
-    """Match a persisted local row without allowing a new provider row."""
-    country = capability["country"]
-    code = capability["code"].lower()
-    exact = next(
-        (row for row in previous
-         if row.get("country", "").upper() == country and
-         row.get("code", "").lower() == code),
-        None,
-    )
-    if exact:
-        return exact
-
-    # Older withdrawal settings used short, hand-written aliases.  Keep their
-    # local fee/limit choices when they clearly identify the same provider.
-    label = capability["name"].lower()
-    aliases = {
-        "moov_tg": ("flooz", "moov"),
-        "togocel_tg": ("tmoney", "t-money", "togocel"),
-        "mtn_ci": ("mtn",),
-        "moov_ci": ("moov",),
-        "orange_ci": ("orange",),
-        "wave_ci": ("wave",),
-        "orange_sn": ("orange",),
-        "moov_sn": ("free", "moov"),
-        "moov_bf": ("moov",),
-        "mtn_bj": ("mtn",),
-        "moov_bj": ("moov",),
-        "celtiis_bj": ("celtiis",),
-    }
-    needles = aliases.get(code, tuple(label.split()))
-    for row in previous:
-        row_name = str(row.get("name") or "").lower()
-        if row.get("country", "").upper() == country and any(
-            needle in row_name or needle in str(row.get("code") or "").lower()
-            for needle in needles
-        ):
-            return row
-    return None
-
-
-async def _sync_gateway_mobile_money_config(cfg: dict, kind: str) -> dict:
-    """Reconcile local controls with the current integrated gateway catalog.
-
-    Provider capabilities are authoritative for identity, country, currency and
-    availability.  Admin-owned fields remain local: active, hidden, fees and
-    limits.  Unknown/manual rows are intentionally not exposed to users.
-    """
-    section = dict(cfg.get("mobile_money") or {})
-    previous = section.get("operators") or []
-    capabilities = _gateway_mobile_money_capabilities(kind)
-    operators = []
-    for capability in capabilities:
-        old = _find_previous_gateway_operator(previous, capability) or {}
-        legacy_total = old.get("fee_pct", 0)
-        gateway_fee = old.get("gateway_fee_pct")
-        platform_fee = old.get("platform_fee_pct")
-        # Before fees were split, the existing total is retained as the
-        # gateway share so payment behaviour does not silently change.
-        if gateway_fee is None and platform_fee is None:
-            gateway_fee, platform_fee = legacy_total, 0
-        gateway_fee = float(gateway_fee or 0)
-        platform_fee = float(platform_fee or 0)
-        operators.append({
-            **capability,
-            "gateway_fee_pct": gateway_fee,
-            "platform_fee_pct": platform_fee,
-            "fee_pct": round(gateway_fee + platform_fee, 4),
-            "min": old.get("min", 1000 if capability["currency"] == "GNF" else 100),
-            "max": old.get("max", 500000),
-            "active": old.get("active", True),
-            "hidden": old.get("hidden", False),
-        })
-
-    result = dict(cfg)
-    result["mobile_money"] = {**section, "operators": operators}
-    # Persist only when reconciliation changed the stored catalogue.  This
-    # also migrates old manually-entered rows out of the active configuration.
-    stored = {k: v for k, v in cfg.items() if k != "_id"}
-    reconciled = {k: v for k, v in result.items() if k != "_id"}
-    if stored != reconciled:
-        await db.settings.update_one(
-            {"id": cfg.get("id")},
-            {"$set": {"mobile_money": result["mobile_money"]}},
-        )
-    return result
-
-
 async def get_deposit_config() -> dict:
     doc = await db.settings.find_one({"id": "deposit_config"}, {"_id": 0})
     if not doc:
@@ -4901,7 +4787,9 @@ _NETWORK_REGEX: dict[str, str] = {
 
 
 @api.get("/admin/crypto/coins")
-async def admin_crypto_coins(direction: str = "withdrawal", admin=Depends(get_admin)):
+async def admin_crypto_coins(direction: str = "withdrawal",
+                             refresh: bool = False,
+                             admin=Depends(get_admin)):
     """List all coins available on IziChange, grouped by ticker, with the
     per-coin fee split (gateway/platform) and hidden flag for the requested
     direction. `direction` = "withdrawal" (default, reads transfer_config)
@@ -4911,7 +4799,7 @@ async def admin_crypto_coins(direction: str = "withdrawal", admin=Depends(get_ad
     coins: dict[str, str] = {}
     if izipay.is_configured():
         try:
-            assets = await izipay.list_assets()
+            assets = await izipay.list_assets(force=refresh)
             for a in assets:
                 if not a.get("isActive"):
                     continue
@@ -6085,40 +5973,9 @@ class AdminTransferConfigReq(BaseModel):
     crypto: Optional[dict] = None
 
 
-def _validate_gateway_operator_patch(section: Optional[dict], kind: str) -> None:
-    """Reject rows that are not capabilities of the integrated gateway."""
-    if not section or "operators" not in section:
-        return
-    supported = {
-        (item["country"], item["code"])
-        for item in _gateway_mobile_money_capabilities(kind)
-    }
-    unknown = [
-        f'{row.get("country", "?")}/{row.get("code", "?")}'
-        for row in section.get("operators", [])
-        if (str(row.get("country", "")).upper(), str(row.get("code", "")).lower())
-        not in supported
-    ]
-    if unknown:
-        raise HTTPException(
-            400,
-            "Opérateur non fourni par FedaPay : " + ", ".join(unknown),
-        )
-
-
 @api.get("/admin/transfer/config")
 async def admin_get_transfer_config(admin=Depends(get_admin)):
     return await get_transfer_config()
-
-
-@api.post("/admin/transfer/catalog/sync")
-async def admin_sync_transfer_catalog(admin=Depends(get_admin)):
-    cfg = await get_transfer_config()
-    await audit(
-        admin["id"], admin["username"], "sync_transfer_gateway_catalog",
-        details={"gateway": "fedapay", "direction": "payout"},
-    )
-    return cfg
 
 
 class AdminPlatformConfigReq(BaseModel):
@@ -6286,7 +6143,6 @@ async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depend
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "Aucune modification")
-    _validate_gateway_operator_patch(updates.get("mobile_money"), "payout")
     # Deep-merge sub-dicts so partial toggles (e.g. {"crypto": {"enabled": true}})
     # don't wipe cryptos/networks/operators lists.
     current = await get_transfer_config()
@@ -6314,23 +6170,12 @@ async def admin_get_deposit_config(admin=Depends(get_admin)):
     return await get_deposit_config()
 
 
-@api.post("/admin/deposit/catalog/sync")
-async def admin_sync_deposit_catalog(admin=Depends(get_admin)):
-    cfg = await get_deposit_config()
-    await audit(
-        admin["id"], admin["username"], "sync_deposit_gateway_catalog",
-        details={"gateway": "fedapay", "direction": "collect"},
-    )
-    return cfg
-
-
 @api.patch("/admin/deposit/config")
 async def admin_update_deposit_config(req: AdminDepositConfigReq,
                                        admin=Depends(get_admin)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "Aucune modification")
-    _validate_gateway_operator_patch(updates.get("mobile_money"), "collect")
     current = await get_deposit_config()
     dot_updates: dict = {}
     for section, patch in updates.items():

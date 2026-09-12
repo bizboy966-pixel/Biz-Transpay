@@ -103,7 +103,7 @@ export default function AdminBenefits() {
           </button>
         </div>
         <ul className="text-[11px] sm:text-xs text-slate-600 space-y-1 list-disc list-inside leading-relaxed">
-          <li>À chaque transaction (dépôt ou retrait, MoMo ou crypto), les frais sont ventilés en deux parts : <b>Passerelle</b> (reversée au fournisseur : FedaPay, IziChange…) et <b>Plateforme</b> (votre marge nette).</li>
+          <li>À chaque transaction crypto, les frais sont ventilés en deux parts : <b>Passerelle</b> (reversée à Easy Change Pay) et <b>Plateforme</b> (votre marge nette).</li>
           <li>Cette page ne comptabilise <b>QUE la part Plateforme</b>, exactement comme elle est configurée dans <span className="font-mono text-[10px] bg-slate-100 rounded px-1">Admin &gt; Config. dépôts / transferts</span>.</li>
           <li>Les 3 portefeuilles restent séparés — aucune conversion USDT↔XOF n&apos;est appliquée pour préserver la lisibilité par devise.</li>
           <li>Seules les transactions <b>confirmées</b> (statut <span className="font-mono">completed</span> / <span className="font-mono">paid</span>) sont comptées.</li>

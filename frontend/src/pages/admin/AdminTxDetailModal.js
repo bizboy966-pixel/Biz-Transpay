@@ -195,8 +195,8 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                       testid="kv-net" />
                 )}
                 <KV icon={Hash} label="Identifiant interne" value={tx.id} mono copyable testid="kv-tx-id" />
-                {(meta.izipay_intent_id || meta.izipay_payout_id || meta.fedapay_reference) && (
-                  <KV icon={Hash} label="ID passerelle" value={meta.izipay_intent_id || meta.izipay_payout_id || meta.fedapay_reference} mono copyable testid="kv-provider-id" />
+                {(meta.izipay_intent_id || meta.izipay_payout_id) && (
+                  <KV icon={Hash} label="ID passerelle" value={meta.izipay_intent_id || meta.izipay_payout_id} mono copyable testid="kv-provider-id" />
                 )}
                 {dateObj && (
                   <>
