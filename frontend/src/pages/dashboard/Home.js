@@ -46,6 +46,10 @@ export default function DashboardHome() {
   ].filter((w) => !features || features[`wallet_${w.key}_enabled`] !== false);
 
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const balanceFontSize = (wallet) => {
+    const characterCount = `${mask(wallet.bal)} ${wallet.curr}`.length;
+    return `clamp(0.41rem, ${Math.min(18, 100 / characterCount)}cqw, 1.5rem)`;
+  };
 
   return (
     <div className="space-y-4 sm:space-y-6" data-testid="dashboard-home">
@@ -72,10 +76,10 @@ export default function DashboardHome() {
         <div className="pointer-events-none absolute right-[-9%] top-[-32%] h-[22rem] w-[22rem] rounded-full border border-white/[.08]" />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-0 bg-[length:auto_112%] bg-[position:96%_54%] bg-no-repeat opacity-[.82] drop-shadow-[0_14px_18px_rgba(2,28,91,.3)] sm:bg-[length:auto_138%] sm:bg-[position:93%_54%] sm:opacity-[.9]"
+          className="pointer-events-none absolute inset-0 z-0 bg-[length:auto_11.5rem] bg-[position:100%_62%] bg-no-repeat opacity-[.9] drop-shadow-[0_14px_18px_rgba(2,28,91,.3)] sm:bg-[length:auto_18rem] sm:bg-[position:100%_28%] sm:opacity-95"
           style={{ backgroundImage: "url('/wallet-card-illustration-cfa-transparent.png')" }}
         />
-        <div className="relative min-h-[12rem] border-b border-white/25 px-4 pt-4 sm:min-h-[15rem] sm:px-7 sm:pt-6">
+        <div className="relative min-h-[15rem] border-b border-white/25 px-4 pt-4 sm:min-h-[18rem] sm:px-7 sm:pt-6">
           <div className="relative z-10 flex max-w-[58%] items-start gap-2.5 sm:max-w-[56%] sm:gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 shadow-inner ring-1 ring-white/15 sm:h-12 sm:w-12">
               <Wallet className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} />
@@ -83,6 +87,17 @@ export default function DashboardHome() {
             <div className="min-w-0 pt-0.5">
               <h2 className="whitespace-nowrap font-cabinet text-[1.05rem] font-extrabold leading-tight tracking-[-.035em] sm:text-[1.8rem]">Mon portefeuille</h2>
               <p className="mt-1 max-w-[19rem] text-[10px] leading-snug text-white/78 sm:text-sm">Gérez tous vos soldes en un seul endroit</p>
+            </div>
+          </div>
+          <div className="absolute bottom-4 left-4 z-10 flex items-center gap-2 sm:bottom-6 sm:left-7 sm:gap-3">
+            <img src="/logo-mark.png" alt="Biz-transPay" className="h-10 w-10 shrink-0 object-contain sm:h-16 sm:w-16" />
+            <div className="min-w-0 leading-none">
+              <div className="whitespace-nowrap text-[1.05rem] font-extrabold tracking-[-.04em] text-white sm:text-[1.65rem]">
+                Biz-trans<span className="text-[#39C4FF]">Pay</span>
+              </div>
+              <div className="mt-1.5 whitespace-nowrap text-[5px] font-bold uppercase tracking-[.16em] text-white/75 sm:text-[8px]">
+                Paiements • Simples • Sécurisés • Rapides
+              </div>
             </div>
           </div>
           <button
@@ -101,8 +116,9 @@ export default function DashboardHome() {
               key={b.curr}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
               className={`flex min-w-0 items-center px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
+              style={{ containerType: 'inline-size' }}
             >
-              <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+              <div className="flex min-w-0 items-center gap-1 sm:gap-3">
                 <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[8px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:h-14 sm:w-14 sm:text-[11px] ${
                   b.curr === 'XOF'
                     ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
@@ -114,7 +130,8 @@ export default function DashboardHome() {
                 </span>
                 <div
                   data-testid={`balance-value-${b.curr.toLowerCase()}`}
-                  className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[clamp(.65rem,2.8vw,1.2rem)] font-extrabold tracking-[-.045em] text-white sm:text-[clamp(1rem,2vw,1.5rem)]"
+                  className="min-w-0 max-w-full overflow-hidden whitespace-nowrap text-center font-extrabold tracking-[-.045em] text-white sm:flex-1 sm:text-left"
+                  style={{ fontSize: balanceFontSize(b) }}
                   title={`${mask(b.bal)} ${b.curr}`}
                 >
                   {mask(b.bal)} <span className="text-[.72em] font-semibold text-white/80">{b.curr}</span>
