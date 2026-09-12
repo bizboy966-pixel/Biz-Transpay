@@ -1,0 +1,429 @@
+PROMPT — RECRÉATION ET INTÉGRATION DE LA CARTE « MON PORTEFEUILLE » BIZ-TRANSPAY
+
+Modifie uniquement la carte « Mon portefeuille » du Dashboard de Biz-transPay en te basant sur la maquette de référence fournie. Ne modifie aucune fonctionnalité métier, aucun calcul de solde et aucun système de transaction. Il s'agit ici d'une modification de l'interface et de la présentation de la carte.
+
+1. STRUCTURE GÉNÉRALE DE LA CARTE
+
+Créer une seule grande carte portefeuille, avec un design moderne, professionnel et premium.
+
+La carte doit :
+
+être entièrement arrondie ;
+
+utiliser le thème bleu de Biz-transPay ;
+
+avoir un dégradé bleu moderne ;
+
+utiliser des effets de profondeur très légers ;
+
+conserver une bonne lisibilité ;
+
+être responsive sur mobile et desktop ;
+
+ne pas prendre inutilement trop de hauteur ;
+
+laisser suffisamment d'espace à la partie affichant les soldes.
+
+
+La carte doit être considérée comme un seul composant visuel, et non comme trois cartes indépendantes.
+
+
+---
+
+2. LOGO BIZ-TRANSPAY
+
+Utiliser exactement le logo Biz-transPay que je vais fournir.
+
+⚠️ Ne recrée pas le logo avec du texte ou une icône différente.
+
+Le fichier du logo doit être utilisé comme véritable image/logo.
+
+Positionnement
+
+Le logo doit être intégré dans la partie portefeuille de la carte.
+
+Il doit être :
+
+suffisamment petit pour ne pas prendre trop de place ;
+
+entièrement visible ;
+
+non coupé ;
+
+non déformé ;
+
+proportionnel ;
+
+correctement centré dans sa zone.
+
+
+Ne pas agrandir le logo inutilement.
+
+Si le logo original est trop grand, réduire uniquement sa taille d'affichage jusqu'à ce qu'il s'intègre parfaitement dans la carte.
+
+Le ratio du logo doit impérativement être conservé.
+
+
+---
+
+3. ILLUSTRATION DU PORTEFEUILLE
+
+La carte doit également conserver une illustration de portefeuille, comme dans la maquette de référence.
+
+Cette illustration doit être positionnée sur la partie droite de la zone supérieure de la carte.
+
+Elle doit rester relativement compacte afin de laisser suffisamment d'espace aux informations de solde.
+
+Important
+
+L'illustration ne doit pas prendre toute la largeur de la carte.
+
+Elle doit être suffisamment réduite pour que la zone des soldes située en dessous dispose de beaucoup plus d'espace.
+
+
+---
+
+4. PARTIE SUPÉRIEURE
+
+En haut de la carte, afficher :
+
+Icône portefeuille
+
+Une petite icône représentant un portefeuille.
+
+Texte principal
+
+Mon portefeuille
+
+Texte secondaire
+
+Gérez tous vos soldes en un seul endroit
+
+Le texte doit respecter la même police et le même système typographique que le reste de Biz-transPay.
+
+
+---
+
+5. ZONE DU LOGO
+
+Sous le titre, intégrer le véritable logo Biz-transPay fourni.
+
+Le logo doit être suffisamment petit pour laisser respirer la carte.
+
+Ne pas afficher une deuxième version du logo.
+
+Ne pas écrire manuellement « Biz-transPay » à côté ou sous le logo si le texte est déjà intégré dans le fichier du logo.
+
+
+---
+
+6. ZONE DES SOLDES
+
+C'est la partie la plus importante.
+
+Les trois soldes doivent être regroupés dans la même grande carte, et non dans trois cartes séparées.
+
+Les trois devises sont :
+
+XOF
+
+XAF
+
+USDT
+
+
+Chaque solde doit avoir :
+
+son indicateur/devise ;
+
+son montant ;
+
+son unité.
+
+
+Exemple :
+
+FCFA — 11 552 XOF
+
+CFA — 0 XAF
+
+USDT — 9,27 USDT
+
+
+---
+
+7. ALIGNEMENT DES SOLDES
+
+Les informations doivent être disposées de manière horizontale et compacte.
+
+Exemple conceptuel :
+
+FCFA   11 552 XOF | CFA   0 XAF | USDT   9,27 USDT
+
+Les trois blocs doivent rester dans la même ligne lorsque l'espace disponible le permet.
+
+RÈGLE IMPORTANTE
+
+Lorsque le montant augmente, le texte doit se contracter/réduire automatiquement pour rester dans son espace.
+
+Il ne faut pas :
+
+faire passer l'unité sur une deuxième ligne ;
+
+casser le montant ;
+
+faire revenir « XOF », « XAF » ou « USDT » à la ligne suivante ;
+
+provoquer un débordement ;
+
+créer un retour automatique non désiré.
+
+
+Par exemple, si le montant devient :
+
+1 250 000 XOF
+
+ou
+
+125 000 000 XOF
+
+le montant et son unité doivent continuer à rester correctement alignés dans leur zone.
+
+Utiliser une logique responsive appropriée :
+
+réduction progressive de la taille de police si nécessaire ;
+
+ajustement de l'espacement ;
+
+largeur flexible ;
+
+min-width: 0 lorsque nécessaire ;
+
+éviter les wrap non souhaités ;
+
+utiliser white-space: nowrap pour les valeurs qui doivent rester sur une ligne.
+
+
+L'objectif est que les informations restent toujours propres et lisibles, même avec des montants beaucoup plus importants.
+
+
+---
+
+8. ESPACEMENT
+
+Réduire légèrement la taille globale de la partie portefeuille et de l'illustration afin de donner plus d'espace à la zone des soldes.
+
+Je veux précisément :
+
+portefeuille légèrement plus petit ;
+
+logo légèrement plus petit ;
+
+illustration portefeuille légèrement plus petite ;
+
+zone des soldes légèrement plus grande ;
+
+informations mieux espacées horizontalement.
+
+
+Il ne faut cependant pas rendre la carte trop petite.
+
+L'objectif est d'obtenir une carte compacte mais riche en informations.
+
+
+---
+
+9. ICÔNE « MASQUER »
+
+Conserver l'icône permettant de masquer/afficher les soldes.
+
+Elle doit être placée dans un endroit cohérent, idéalement dans la partie supérieure droite de la carte.
+
+Le fonctionnement actuel doit être conservé :
+
+👁️ afficher les soldes
+🙈 masquer les soldes
+
+Ne modifie pas cette fonctionnalité.
+
+
+---
+
+10. COULEURS
+
+Utiliser principalement :
+
+bleu Biz-transPay ;
+
+bleu plus clair pour les effets ;
+
+blanc pour les textes ;
+
+éventuellement des nuances/transparences très légères.
+
+
+Le rendu doit être similaire à une interface fintech moderne et professionnelle.
+
+Éviter :
+
+couleurs trop nombreuses ;
+
+effets excessifs ;
+
+éléments trop lumineux ;
+
+design chargé.
+
+
+
+---
+
+11. RESPONSIVE MOBILE
+
+Sur téléphone, la carte doit rester parfaitement adaptée à la largeur disponible.
+
+Elle ne doit jamais provoquer :
+
+scroll horizontal ;
+
+texte coupé ;
+
+montant invisible ;
+
+logo coupé ;
+
+illustration dépassant de la carte ;
+
+chevauchement entre les éléments.
+
+
+La carte doit être optimisée en priorité pour le format mobile.
+
+
+---
+
+12. RESPONSIVE POUR LES GROS MONTANTS
+
+Prévoir dès maintenant les montants futurs.
+
+Ne pas coder la carte uniquement pour :
+
+11 552 XOF
+
+ou
+
+9,27 USDT.
+
+Elle doit fonctionner correctement avec :
+
+100 000 XOF
+1 000 000 XOF
+10 000 000 XOF
+100 000 000 XOF
+
+etc.
+
+Les trois blocs doivent conserver leur structure.
+
+
+---
+
+13. PRÉSERVER LES DONNÉES RÉELLES
+
+La carte doit continuer à récupérer les soldes depuis les données réelles du compte.
+
+Ne pas mettre de valeurs statiques dans le code.
+
+Les valeurs affichées doivent rester dynamiques :
+
+Solde XOF → solde XOF réel de l'utilisateur
+Solde XAF → solde XAF réel de l'utilisateur
+Solde USDT → solde USDT réel de l'utilisateur
+
+La modification concerne uniquement la présentation visuelle.
+
+
+---
+
+14. NE PAS MODIFIER LE RESTE DU DASHBOARD
+
+⚠️ Très important :
+
+Cette tâche concerne uniquement la carte « Mon portefeuille ».
+
+Ne modifie pas :
+
+les boutons Transférer ;
+
+Dépôt ;
+
+Lien de paiement ;
+
+Échange ;
+
+la recherche ;
+
+l'activité récente ;
+
+la barre de navigation ;
+
+les transactions ;
+
+les fonctionnalités de paiement ;
+
+les API ;
+
+les wallets ;
+
+les calculs ;
+
+la base de données.
+
+
+
+---
+
+15. RÈGLE DE VALIDATION
+
+Avant de considérer la tâche comme terminée, teste la carte avec plusieurs longueurs de montants :
+
+1. Petit montant.
+
+
+2. Montant moyen.
+
+
+3. Très grand montant.
+
+
+4. XOF.
+
+
+5. XAF.
+
+
+6. USDT.
+
+
+7. Solde masqué.
+
+
+8. Solde affiché.
+
+
+9. Écran mobile étroit.
+
+
+10. Écran mobile plus large.
+
+
+
+Résultat attendu
+
+La carte doit toujours rester :
+
+propre + compacte + professionnelle + lisible + responsive.
+
+Et surtout :
+
+> Le logo Biz-transPay fourni doit être utilisé exactement comme image officielle, simplement réduit proportionnellement pour pouvoir être intégré correctement dans la carte portefeuille.

@@ -63,38 +63,72 @@ export default function DashboardHome() {
         </div>
       )}
 
-      {/* Balance cards + hide/show toggle */}
-      <div className="flex items-center justify-between">
-        <div className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-slate-500">{t('dashboard.available') || 'Portefeuilles'}</div>
-        <button onClick={toggleHidden} data-testid="btn-toggle-balance" className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 hover:text-[#2563EB] px-2.5 py-1 rounded-full hover:bg-slate-100">
-          {hidden ? <><Eye className="w-3.5 h-3.5" /> Afficher</> : <><EyeOff className="w-3.5 h-3.5" /> Masquer</>}
-        </button>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-        {wallets.map((b) => (
-          <div key={b.curr} data-testid={`balance-card-${b.curr.toLowerCase()}`} className={`relative overflow-hidden rounded-2xl p-4 sm:p-5 text-white bg-gradient-to-br ${b.gradient} ${b.shadow}`}>
-            <div className="absolute -top-12 -right-12 w-32 h-32 sm:w-40 sm:h-40 rounded-full bg-white/10" />
-            <div className="absolute -bottom-16 -left-10 w-32 h-32 sm:w-40 sm:h-40 rounded-full bg-white/5" />
-            <div className="relative flex items-start justify-between">
-              <div className="min-w-0 flex-1">
-                <div className="text-[9px] sm:text-[10px] uppercase tracking-widest text-white/80 font-semibold">{t('dashboard.available')}</div>
-                <div className="mt-1 font-cabinet font-extrabold text-xl sm:text-2xl md:text-3xl">{b.curr}</div>
-                <div className="mt-1.5 sm:mt-2 font-mono text-white/85 text-xs sm:text-sm truncate" data-testid={`balance-value-${b.curr.toLowerCase()}`}>
-                  {mask(b.bal)} <span className="text-[10px] sm:text-[11px]">{b.curr}</span>
-                </div>
-                {b.crypto && (
-                  <div className="mt-1 inline-flex items-center gap-1 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider bg-white/15 backdrop-blur px-1.5 py-0.5 rounded-full">
-                    Multi-réseaux
-                  </div>
-                )}
+      {/* Unified wallet card: balances stay in one compact visual surface. */}
+      <section
+        data-testid="wallet-balance-card"
+        className="relative isolate overflow-hidden rounded-[1.45rem] bg-gradient-to-br from-[#3184F4] via-[#1760D9] to-[#123DAD] px-4 py-4 text-white shadow-[0_18px_38px_-18px_rgba(25,83,194,.62)] sm:rounded-[1.7rem] sm:px-6 sm:py-5"
+      >
+        <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-[#62B5FF]/20 blur-[1px]" />
+        <div className="pointer-events-none absolute -bottom-40 left-1/4 h-72 w-72 rounded-full border border-white/10" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[.09] to-transparent" />
+
+        <div className="relative flex min-h-[10.5rem] items-start justify-between gap-3 sm:min-h-[11.5rem]">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/10 backdrop-blur-sm sm:h-10 sm:w-10">
+                <Wallet className="h-[18px] w-[18px] text-white sm:h-5 sm:w-5" strokeWidth={1.8} />
               </div>
-              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-white/15 backdrop-blur flex items-center justify-center shrink-0">
-                <Wallet className="w-4 h-4 text-white" strokeWidth={1.75} />
+              <div className="min-w-0">
+                <h2 className="font-cabinet text-[1.05rem] font-extrabold leading-tight tracking-[-.025em] sm:text-xl">Mon portefeuille</h2>
+                <p className="mt-0.5 max-w-[16rem] text-[10px] leading-snug text-white/72 sm:text-xs">Gérez tous vos soldes en un seul endroit</p>
               </div>
             </div>
+            <div className="mt-3 flex h-[3.55rem] w-[7.9rem] items-center justify-center overflow-hidden rounded-xl bg-white px-2 shadow-sm sm:mt-4 sm:h-[4.05rem] sm:w-[9.4rem]">
+              <img src="/logo-full.png" alt="Biz-transPay" className="h-full w-full object-contain" />
+            </div>
           </div>
-        ))}
-      </div>
+
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <button
+              onClick={toggleHidden}
+              data-testid="btn-toggle-balance"
+              aria-label={hidden ? 'Afficher les soldes' : 'Masquer les soldes'}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/10 backdrop-blur-sm transition-colors hover:bg-white/25 sm:h-10 sm:w-10"
+            >
+              {hidden ? <Eye className="h-[17px] w-[17px]" /> : <EyeOff className="h-[17px] w-[17px]" />}
+            </button>
+            <div className="relative mt-1 h-[4.25rem] w-[6.2rem] opacity-95 sm:h-[4.8rem] sm:w-[7.8rem]" aria-hidden="true">
+              <div className="absolute right-0 top-1 h-10 w-[4.9rem] rotate-[10deg] rounded-lg border border-white/40 bg-[#5DB5FA]/55 shadow-lg sm:h-12 sm:w-[6.1rem]" />
+              <div className="absolute right-1 top-3 h-10 w-[5.4rem] -rotate-[4deg] rounded-lg border border-white/55 bg-[#1661D7] shadow-xl sm:h-12 sm:w-[6.8rem]" />
+              <div className="absolute bottom-0 right-0 flex h-9 w-[5.7rem] items-center justify-center rounded-lg border border-white/55 bg-gradient-to-br from-[#4A9DF2] to-[#1550C5] shadow-xl sm:h-11 sm:w-[7.2rem]">
+                <Wallet className="h-5 w-5 text-white/90 sm:h-6 sm:w-6" strokeWidth={1.5} />
+              </div>
+              <div className="absolute bottom-0 left-0 h-5 w-5 rounded-full border border-white/40 bg-[#36B6F2] shadow-md sm:h-6 sm:w-6" />
+            </div>
+          </div>
+        </div>
+
+        <div className="relative grid grid-cols-3 gap-0 rounded-[1.1rem] border border-white/20 bg-[#0D4ABF]/45 p-2.5 backdrop-blur-[2px] sm:p-3">
+          {wallets.map((b, index) => (
+            <div
+              key={b.curr}
+              data-testid={`balance-card-${b.curr.toLowerCase()}`}
+              className={`min-w-0 px-1 py-1 sm:px-3 sm:py-0 ${index > 0 ? 'border-l border-white/20' : ''}`}
+            >
+              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+                <span className="shrink-0 text-[9px] font-extrabold uppercase tracking-[.12em] text-white/70 sm:text-[10px]">{b.curr}</span>
+                <div
+                  data-testid={`balance-value-${b.curr.toLowerCase()}`}
+                  className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[clamp(.44rem,2.2vw,1rem)] font-bold tracking-[-.045em] text-white"
+                  title={`${mask(b.bal)} ${b.curr}`}
+                >
+                  {mask(b.bal)} <span className="text-[.72em] font-semibold text-white/72">{b.curr}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
 
       {/* Quick actions */}
       <div className="bg-white border border-slate-100 rounded-2xl p-3 sm:p-5 shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
