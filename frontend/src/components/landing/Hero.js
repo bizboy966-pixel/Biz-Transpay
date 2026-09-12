@@ -21,13 +21,7 @@ export default function Hero() {
           </div>
 
           <h1 className="font-cabinet text-3xl sm:text-4xl lg:text-5xl font-extrabold tracking-tighter text-slate-900 leading-[1.08]">
-            {t('hero.title_1')}
-            <br />
-            {t('hero.title_2')}{' '}
-            <span className="bg-gradient-to-r from-[#3B82F6] to-[#1D4ED8] bg-clip-text text-transparent">{t('hero.title_3_a')}</span>
-            <br />
-            {t('hero.title_3_b')}{' '}
-            <span className="bg-gradient-to-r from-[#3B82F6] to-[#1D4ED8] bg-clip-text text-transparent">{t('hero.title_3_c')}</span>
+            {t('hero.title')}
           </h1>
 
           <p className="mt-5 text-sm sm:text-base text-slate-600 max-w-lg leading-relaxed">{t('hero.subtitle')}</p>

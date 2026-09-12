@@ -16,6 +16,7 @@ const resources = {
       },
       hero: {
         badge: 'Pour les vendeurs en ligne',
+        title: 'La plateforme pensée pour vendre vos produits numériques',
         title_1: 'La plateforme pensée pour',
         title_2: 'vendre vos',
         title_3_a: 'produits',
@@ -41,6 +42,7 @@ const resources = {
         subscription: 'Abonnement',
       },
       features: {
+        heading: 'Tout pour votre activité en ligne',
         title: 'Tout pour votre activité en ligne',
         subtitle: 'Des outils simples pour présenter vos offres, encaisser vos ventes et suivre votre activité depuis un seul espace.',
         f1_t: 'Vendre en ligne', f1_d: 'Présentez vos produits numériques et permettez à vos clients de découvrir facilement vos offres.',
@@ -266,6 +268,7 @@ const resources = {
        nav: { home: 'Home', services: 'Features', pricing: 'Who is it for?', api: 'Journey', about: 'About', contact: 'Contact', login: 'Log in', register: 'Sign up' },
       hero: {
         badge: 'For online sellers',
+        title: 'The platform built to sell your digital products',
         title_1: 'The platform built to',
         title_2: 'sell your',
         title_3_a: 'digital', title_3_b: '', title_3_c: 'products',
@@ -277,6 +280,7 @@ const resources = {
         sale_received: 'Sale received', product_order: 'Digital order', shared_link: 'Shared link', subscription: 'Subscription',
       },
       features: {
+        heading: 'Everything for your online business',
         title: 'Everything for your online business', subtitle: 'Simple tools to showcase your offers, collect sales and track your activity from one place.',
         f1_t: 'Sell online', f1_d: 'Showcase your digital products and help customers discover your offers easily.',
         f2_t: 'Create sales links', f2_d: 'Create links to present and sell your products directly to customers.',
