@@ -52,7 +52,7 @@ is available and never exposes it to the frontend.
 
 ## Official visual rules
 
-- The official local interface font is **Galcio DEMO Regular**, stored in the
+- The official local interface font is **Kripa Regular**, stored in the
   frontend assets. Do not reintroduce Google Fonts, Fontshare, or another
   external font service.
 - The existing Biz-transPay color palette and brand identity must be preserved.
