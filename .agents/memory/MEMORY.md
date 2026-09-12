@@ -1,0 +1,1 @@
+- [Replit runtime setup](replit-runtime-setup.md) — Imported payment apps may need a local compatibility layer for private packages and a workflow-attached local MongoDB.

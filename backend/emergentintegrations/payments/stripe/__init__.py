@@ -1,0 +1,1 @@
+"""Stripe checkout compatibility namespace."""
