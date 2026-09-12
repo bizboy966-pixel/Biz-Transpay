@@ -66,15 +66,16 @@ export default function DashboardHome() {
       {/* Unified wallet card: composition follows the supplied wallet reference. */}
       <section
         data-testid="wallet-balance-card"
-        className="relative isolate overflow-hidden rounded-[1.45rem] bg-gradient-to-br from-[#1672F2] via-[#0754D1] to-[#123AAB] text-white shadow-[0_18px_38px_-18px_rgba(25,83,194,.62)] sm:rounded-[1.7rem]"
+        className="relative isolate overflow-hidden rounded-[1.45rem] border border-[#4B9BFF]/35 bg-gradient-to-br from-[#1874E8] via-[#0754C9] to-[#123A9E] text-white shadow-[0_20px_42px_-22px_rgba(13,57,143,.72)] sm:rounded-[1.7rem]"
       >
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_72%_28%,rgba(65,181,255,.38),transparent_28%),linear-gradient(145deg,rgba(255,255,255,.13),transparent_38%)]" />
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(135deg,rgba(255,255,255,.12),transparent_30%),linear-gradient(180deg,rgba(11,80,191,.05),rgba(4,40,123,.2))]" />
+        <div className="pointer-events-none absolute right-[-9%] top-[-32%] h-[22rem] w-[22rem] rounded-full border border-white/[.08]" />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-0 bg-[length:auto_88%] bg-[position:92%_34%] bg-no-repeat opacity-30 mix-blend-screen sm:bg-[length:auto_105%] sm:bg-[position:88%_36%] sm:opacity-35"
+          className="pointer-events-none absolute inset-0 z-0 bg-[length:auto_112%] bg-[position:96%_54%] bg-no-repeat opacity-[.82] drop-shadow-[0_14px_18px_rgba(2,28,91,.3)] sm:bg-[length:auto_138%] sm:bg-[position:93%_54%] sm:opacity-[.9]"
           style={{ backgroundImage: "url('/wallet-card-illustration-cfa-transparent.png')" }}
         />
-        <div className="relative min-h-[9rem] border-b border-white/20 px-4 pt-4 sm:min-h-[11rem] sm:px-7 sm:pt-6">
+        <div className="relative min-h-[12rem] border-b border-white/25 px-4 pt-4 sm:min-h-[15rem] sm:px-7 sm:pt-6">
           <div className="relative z-10 flex max-w-[58%] items-start gap-2.5 sm:max-w-[56%] sm:gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 shadow-inner ring-1 ring-white/15 sm:h-12 sm:w-12">
               <Wallet className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} />
@@ -94,7 +95,7 @@ export default function DashboardHome() {
           </button>
         </div>
 
-        <div className="relative grid min-h-[5.5rem] grid-cols-3 gap-0 bg-[#0A48BE]/55 px-2.5 py-4 sm:min-h-[7rem] sm:px-6 sm:py-5">
+        <div className="relative grid min-h-[5.8rem] grid-cols-3 gap-0 border-t border-white/10 bg-[#063EAA]/80 px-2.5 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,.08)] backdrop-blur-[2px] sm:min-h-[7rem] sm:px-6 sm:py-5">
           {wallets.map((b, index) => (
             <div
               key={b.curr}
