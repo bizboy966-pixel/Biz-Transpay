@@ -1,0 +1,401 @@
+# PROMPT — INTÉGRATION DU NOUVEAU PRESTATAIRE DE PAIEMENT DANS BIZ-TRANSPAY
+
+Nous allons maintenant commencer **l’intégration d’un nouveau prestataire de paiement dans Biz-transPay**, mais nous allons procéder **étape par étape** afin d’éviter les erreurs et de garantir une intégration réellement fonctionnelle.
+
+## 1. AJOUTER « PRESTATAIRE DE PAIEMENT » DANS L’ADMIN PANEL
+
+Dans l’**Admin Panel**, au niveau du menu accessible avec les **trois petits points / options**, ajouter une nouvelle rubrique :
+
+> **Prestataire de paiement**
+
+Cette rubrique sera l’espace central permettant à l’administrateur de gérer les intégrations des différentes passerelles de paiement.
+
+### Ne pas modifier les autres rubriques existantes
+
+Les fonctionnalités actuellement présentes dans le menu doivent rester intactes.
+
+Ajouter uniquement :
+
+**Prestataire de paiement**
+
+---
+
+## 2. STRUCTURE DE LA NOUVELLE RUBRIQUE
+
+Lorsque l’administrateur clique sur :
+
+> **Prestataire de paiement**
+
+il doit accéder à une interface permettant de voir et de configurer les passerelles intégrées.
+
+Prévoir une structure professionnelle permettant, pour chaque prestataire :
+
+* Nom du prestataire
+* Statut : Activé / Désactivé
+* Mode : Test / Production
+* Clés API
+* Secret API
+* Clé publique, si nécessaire
+* Webhook URL
+* Webhook Secret
+* autres paramètres requis par la documentation du prestataire
+
+⚠️ **Ne crée pas de champs arbitraires.**
+
+Les champs exacts seront déterminés **uniquement après analyse de la documentation officielle que je vais fournir.**
+
+---
+
+# 3. DOCUMENTATION DU PRESTATAIRE
+
+Je vais maintenant te transmettre :
+
+* la documentation complète du prestataire ;
+* la documentation API ;
+* les endpoints ;
+* les méthodes d’authentification ;
+* les informations concernant les webhooks ;
+* les flux de paiement ;
+* les pays ;
+* les opérateurs ;
+* les devises ;
+* les éventuelles exigences de sécurité.
+
+### Ta première mission après réception de la documentation
+
+**Ne commence pas immédiatement à coder.**
+
+Commence d’abord par analyser entièrement la documentation et identifie précisément **tout ce dont tu as besoin de ma part** pour réaliser l’intégration.
+
+Présente-moi une liste claire :
+
+### Informations que je dois fournir
+
+Par exemple, uniquement si la documentation les exige :
+
+* API Key
+* Secret Key
+* Public Key
+* Merchant ID
+* Client ID
+* Client Secret
+* Webhook Secret
+* identifiant marchand
+* credentials de production
+* credentials sandbox/test
+* IP à mettre éventuellement en liste blanche
+* URL de retour
+* autres paramètres obligatoires
+
+**Ne me demande pas une information si elle n’est pas nécessaire selon la documentation.**
+
+---
+
+# 4. WEBHOOK
+
+Analyse particulièrement la partie **Webhook** de la documentation.
+
+Détermine :
+
+* comment le webhook est configuré ;
+* quelle URL Biz-transPay doit fournir ;
+* quelle méthode HTTP est utilisée ;
+* quels headers sont nécessaires ;
+* comment la signature est générée ;
+* comment la signature doit être vérifiée ;
+* quel secret est utilisé ;
+* quelles données sont envoyées ;
+* quels statuts peuvent être reçus ;
+* comment éviter les doublons ;
+* quelle réponse HTTP Biz-transPay doit retourner.
+
+Après l'intégration, le système devra être capable de me fournir clairement :
+
+> **URL Webhook à renseigner chez le prestataire**
+
+et, si nécessaire :
+
+> **Webhook Secret à configurer.**
+
+⚠️ Les secrets ne doivent jamais être affichés dans le code source ou dans l’interface publique.
+
+---
+
+# 5. PREMIÈRE PHASE : UNIQUEMENT LE DÉPÔT / PAY-IN
+
+Pour cette première étape, **nous intégrons uniquement le système de dépôt**, c’est-à-dire le **Pay-in**.
+
+Ne développe pas encore :
+
+* le Pay-out ;
+* les retraits ;
+* les transferts ;
+* les conversions ;
+* d'autres fonctionnalités non demandées.
+
+Nous voulons d’abord obtenir **un Pay-in parfaitement fonctionnel**, le tester et le valider.
+
+Ensuite seulement, nous passerons à l’étape suivante.
+
+---
+
+# 6. FLUX DU DÉPÔT
+
+Le fonctionnement devra respecter exactement le flux réel défini par la documentation du prestataire.
+
+De manière générale, le système devra fonctionner ainsi :
+
+```text
+Utilisateur
+     ↓
+Dépôt
+     ↓
+Choix du pays
+     ↓
+Choix de l'opérateur / moyen de paiement
+     ↓
+Montant
+     ↓
+Création de la requête Pay-in
+     ↓
+Prestataire de paiement
+     ↓
+Flux de confirmation requis par le prestataire
+     ↓
+Paiement confirmé
+     ↓
+Webhook
+     ↓
+Vérification de la signature
+     ↓
+Vérification du statut réel
+     ↓
+Transaction validée
+     ↓
+Crédit automatique du wallet
+```
+
+Mais **ne suppose pas que ce flux est exactement celui-ci**.
+
+Après lecture de la documentation, adapte le flux aux exigences réelles du prestataire.
+
+---
+
+# 7. RÈGLE DE SÉCURITÉ CRITIQUE
+
+Le wallet de l'utilisateur **ne doit jamais être crédité simplement parce qu'une requête de paiement a été créée**.
+
+La création d'une requête signifie uniquement :
+
+> **Transaction en attente**
+
+Le crédit doit intervenir uniquement après confirmation fiable du paiement.
+
+Exemple :
+
+```text
+pending
+   ↓
+confirmation réelle
+   ↓
+webhook valide
+   ↓
+signature vérifiée
+   ↓
+statut confirmé
+   ↓
+SUCCESS
+   ↓
+crédit wallet
+```
+
+Si le paiement :
+
+* échoue ;
+* est annulé ;
+* expire ;
+* est refusé ;
+* reste en attente ;
+
+le wallet **ne doit pas être crédité**.
+
+---
+
+# 8. PROTECTION CONTRE LES DOUBLONS
+
+Prévoir une protection contre les doubles crédits.
+
+Une même transaction ne doit jamais pouvoir créditer deux fois le compte d'un utilisateur, même si :
+
+* le webhook est reçu plusieurs fois ;
+* la requête est répétée ;
+* le prestataire renvoie plusieurs notifications ;
+* l'utilisateur actualise la page ;
+* le serveur reçoit plusieurs appels.
+
+Utiliser un identifiant unique de transaction et un mécanisme d’**idempotence** adapté à la documentation du prestataire.
+
+---
+
+# 9. CONFIGURATION DES FRAIS
+
+L'intégration devra également être compatible avec le système de frais déjà prévu dans Biz-transPay.
+
+Pour le dépôt, conserver la séparation entre :
+
+* **Frais passerelle**
+* **Frais plateforme**
+* **Total des frais**
+
+Mais ne change pas encore toute la logique de la section Frais sans instruction supplémentaire.
+
+L'intégration doit simplement être conçue de manière à pouvoir utiliser ces paramètres.
+
+---
+
+# 10. PAYS, DEVISES ET OPÉRATEURS
+
+Après analyse de la documentation/API, identifie précisément :
+
+* les pays supportés ;
+* les devises supportées ;
+* les opérateurs disponibles ;
+* les méthodes de paiement ;
+* les limites minimum/maximales ;
+* les différents flux selon les opérateurs.
+
+⚠️ **Ne crée aucun pays ou opérateur sur la base d'une supposition.**
+
+Les données doivent être basées sur la documentation ou les réponses réelles de l’API.
+
+---
+
+# 11. FLUX SPÉCIFIQUES DES OPÉRATEURS
+
+Il faudra également vérifier si certains opérateurs utilisent :
+
+* OTP ;
+* confirmation sur téléphone ;
+* USSD ;
+* redirection vers une application ;
+* page de paiement ;
+* confirmation dans l'application Mobile Money ;
+* autre mécanisme.
+
+Chaque flux doit être respecté individuellement.
+
+**Ne crée pas un flux générique qui risque de casser les opérateurs ayant un fonctionnement différent.**
+
+---
+
+# 12. AVANT DE CODER
+
+Après avoir reçu et analysé la documentation, réponds-moi d'abord avec un rapport structuré contenant :
+
+### A. Informations nécessaires de ma part
+
+Liste exacte des clés, identifiants et paramètres que je dois fournir.
+
+### B. Informations que Biz-transPay doit générer
+
+Par exemple :
+
+* URL Webhook ;
+* secret Webhook, si nécessaire ;
+* autres paramètres générés côté système.
+
+### C. Endpoints nécessaires
+
+Liste les endpoints utilisés pour le Pay-in.
+
+### D. Authentification
+
+Explique précisément comment l'API s'authentifie.
+
+### E. Flux Pay-in
+
+Explique le parcours complet d'un dépôt.
+
+### F. Webhook
+
+Explique comment Biz-transPay recevra et vérifiera la confirmation.
+
+### G. Pays / opérateurs
+
+Liste les pays, devises et opérateurs réellement supportés selon la documentation.
+
+### H. Sécurité
+
+Liste les mécanismes nécessaires :
+
+* signature ;
+* secret ;
+* HTTPS ;
+* idempotence ;
+* validation du statut ;
+* protection contre les doublons ;
+* stockage sécurisé des clés.
+
+---
+
+# 13. NE PAS MODIFIER LE SYSTÈME EXISTANT SANS NÉCESSITÉ
+
+Avant toute modification, analyse l'architecture actuelle de Biz-transPay.
+
+Identifie :
+
+* système de wallets ;
+* système de transactions ;
+* système de dépôt ;
+* système de frais ;
+* système d'administration ;
+* système de notifications ;
+* système de webhooks déjà existant.
+
+**Réutilise les composants existants lorsqu'ils sont fiables.**
+
+Ne recrée pas inutilement un nouveau système de wallet ou de transaction.
+
+---
+
+# 14. MÉTHODE DE TRAVAIL
+
+Nous allons travailler **progressivement** :
+
+### Étape 1
+
+Analyse complète de la documentation.
+
+### Étape 2
+
+Liste des informations que je dois fournir.
+
+### Étape 3
+
+Configuration du prestataire dans :
+
+> **Admin Panel → Prestataire de paiement**
+
+### Étape 4
+
+Intégration du **Pay-in uniquement**.
+
+### Étape 5
+
+Test complet.
+
+### Étape 6
+
+Validation du dépôt.
+
+### Étape 7
+
+Seulement après validation, nous passerons au **Pay-out / retrait**.
+
+---
+
+## OBJECTIF
+
+Je veux une intégration **propre, sécurisée, maintenable et réellement fonctionnelle**, basée sur **la documentation officielle du prestataire**, et non sur des suppositions.
+
+**Pour commencer, attends que je t’envoie la documentation complète du prestataire. Analyse-la entièrement avant de coder et indique-moi précisément toutes les informations que je dois te fournir pour commencer l’intégration du Pay-in.**
