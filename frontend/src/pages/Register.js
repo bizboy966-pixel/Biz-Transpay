@@ -98,8 +98,8 @@ export default function Register() {
           </div>
 
           <div className="grid sm:grid-cols-2 gap-4">
-             <Field label={t('register.full_name')} labelClassName="text-center" icon={User} error={errors.full_name}>
-               <input data-testid="input-full-name" type="text" autoComplete="name" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
+             <Field label={t('register.full_name')} htmlFor="register-full-name" labelClassName="text-center" icon={User} error={errors.full_name}>
+               <input id="register-full-name" data-testid="input-full-name" type="text" autoComplete="name" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
             </Field>
             <Field label={t('register.username')} icon={AtSign} error={errors.username}>
                <input data-testid="input-username" type="text" autoComplete="username" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
@@ -190,10 +190,10 @@ export default function Register() {
   );
 }
 
-function Field({ label, icon: Icon, error, children, extra = '', labelClassName = '' }) {
+function Field({ label, icon: Icon, error, children, extra = '', htmlFor, labelClassName = '' }) {
   return (
     <div className={extra}>
-      <label className={`text-sm font-semibold text-slate-700 mb-2 block ${labelClassName}`}>{label}</label>
+      <label htmlFor={htmlFor} className={`text-sm font-semibold text-slate-700 mb-2 block ${labelClassName}`}>{label}</label>
       <div className="relative">
         <Icon className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
         {children}
