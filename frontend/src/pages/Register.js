@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { User, AtSign, Globe, Phone, Mail, Lock, Eye, EyeOff, UserPlus, Building2, Check, CreditCard } from 'lucide-react';
+import { User, AtSign, Globe, Phone, Mail, Lock, Eye, EyeOff, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
@@ -12,7 +12,7 @@ export default function Register() {
   const nav = useNavigate();
   const { register } = useAuth();
   const [form, setForm] = useState({
-    full_name: '', username: '', account_type: 'personal', country: 'TG',
+    full_name: '', username: '', country: 'TG',
     phone: '', email: '', password: '', confirm: '',
     robot: false, terms: false,
   });
@@ -46,7 +46,7 @@ export default function Register() {
     try {
       await register({
         full_name: form.full_name, username: form.username,
-        account_type: form.account_type, country: form.country,
+        account_type: 'merchant', country: form.country,
         phone: `${country.dial} ${form.phone}`, email: form.email,
         password: form.password,
       });
@@ -98,43 +98,12 @@ export default function Register() {
           </div>
 
           <div className="grid sm:grid-cols-2 gap-4">
-            <Field label={t('register.full_name')} icon={User} error={errors.full_name}>
+             <Field label={t('register.full_name')} labelClassName="text-center" icon={User} error={errors.full_name}>
                <input data-testid="input-full-name" type="text" autoComplete="name" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
             </Field>
             <Field label={t('register.username')} icon={AtSign} error={errors.username}>
                <input data-testid="input-username" type="text" autoComplete="username" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
             </Field>
-          </div>
-
-          <div className="mt-5">
-            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('register.account_type')}</label>
-            <div className="grid grid-cols-2 gap-3">
-              {[
-                { v: 'personal', I: User, t: t('register.personal'), d: t('register.personal_d') },
-                { v: 'merchant', I: Building2, t: t('register.merchant'), d: t('register.merchant_d') },
-              ].map((opt) => (
-                <button
-                  key={opt.v}
-                  type="button"
-                  data-testid={`account-type-${opt.v}`}
-                  onClick={() => set('account_type', opt.v)}
-                  className={`relative p-5 rounded-2xl border-2 text-left transition-colors ${
-                    form.account_type === opt.v ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 bg-white hover:border-slate-300'
-                  }`}
-                >
-                  {form.account_type === opt.v && (
-                    <div className="absolute top-3 right-3 w-6 h-6 rounded-full bg-[#2563EB] text-white flex items-center justify-center">
-                      <Check className="w-3.5 h-3.5" strokeWidth={3} />
-                    </div>
-                  )}
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-3 ${form.account_type === opt.v ? 'bg-[#2563EB] text-white' : 'bg-blue-50 text-[#2563EB]'}`}>
-                    <opt.I className="w-5 h-5" strokeWidth={1.75} />
-                  </div>
-                  <div className="font-cabinet font-bold text-slate-900">{opt.t}</div>
-                  <div className="text-xs text-slate-500 mt-1">{opt.d}</div>
-                </button>
-              ))}
-            </div>
           </div>
 
           <div className="mt-5">
@@ -221,10 +190,10 @@ export default function Register() {
   );
 }
 
-function Field({ label, icon: Icon, error, children, extra = '' }) {
+function Field({ label, icon: Icon, error, children, extra = '', labelClassName = '' }) {
   return (
     <div className={extra}>
-      <label className="text-sm font-semibold text-slate-700 mb-2 block">{label}</label>
+      <label className={`text-sm font-semibold text-slate-700 mb-2 block ${labelClassName}`}>{label}</label>
       <div className="relative">
         <Icon className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
         {children}

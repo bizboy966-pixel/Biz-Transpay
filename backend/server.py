@@ -308,11 +308,15 @@ async def register(req: RegisterRequest):
     # First user becomes super_admin automatically
     is_first = (await db.users.count_documents({})) == 0
     role = "super_admin" if is_first else "user"
+    # Registration always creates the merchant profile. The request field is
+    # kept for backward compatibility with existing clients, but the public
+    # registration flow no longer lets users choose a profile type.
+    account_type = "merchant"
     user_doc = {
         "id": uid,
         "full_name": req.full_name,
         "username": req.username.lower(),
-        "account_type": req.account_type,
+        "account_type": account_type,
         "country": req.country,
         "phone": req.phone,
         "email": req.email.lower(),
@@ -333,7 +337,7 @@ async def register(req: RegisterRequest):
     await db.users.insert_one(user_doc)
 
     # generate API keys for merchant accounts
-    if req.account_type == "merchant":
+    if account_type == "merchant":
         keys = {
             "user_id": uid,
             "public_key": f"pk_test_{secrets.token_urlsafe(24)}",
