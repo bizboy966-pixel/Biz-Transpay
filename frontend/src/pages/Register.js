@@ -62,9 +62,9 @@ export default function Register() {
   return (
     <div className="bt-auth-shell flex flex-col" data-testid="register-page">
       <header className="bt-auth-header">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-3">
           <Logo />
-          <Link to="/login" data-testid="link-to-login" className="text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]">
+            <Link to="/login" data-testid="link-to-login" className="shrink-0 whitespace-nowrap text-xs sm:text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]">
             {t('register.have_account')} <span className="underline underline-offset-4">{t('register.login')}</span>
           </Link>
         </div>

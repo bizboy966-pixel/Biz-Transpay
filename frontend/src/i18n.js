@@ -136,7 +136,7 @@ const resources = {
         terms_link_2: 'Politique de confidentialité',
         terms_end: 'de Biz-transPay.',
         submit: 'Créer mon compte',
-        have_account: 'Vous avez déjà un compte ?',
+        have_account: 'Déjà un compte ?',
         login: 'Se connecter',
         errors: {
           required: 'Ce champ est requis', mismatch: 'Les mots de passe ne correspondent pas',

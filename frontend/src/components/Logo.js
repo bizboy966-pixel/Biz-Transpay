@@ -5,15 +5,15 @@ const LOGO_URL = '/logo-mark.png';
 export function Logo({ compact = false, dark = false }) {
   return (
     <Link to="/" className="flex items-center gap-2.5 group" data-testid="brand-logo">
-      <div className="relative w-11 h-11 rounded-2xl overflow-hidden bg-white shadow-[0_6px_16px_-6px_rgba(37,99,235,0.35)] ring-1 ring-blue-100 group-hover:scale-105 transition-transform">
+      <div className="relative w-11 h-11 shrink-0 rounded-2xl overflow-hidden bg-white shadow-[0_6px_16px_-6px_rgba(37,99,235,0.35)] ring-1 ring-blue-100 group-hover:scale-105 transition-transform">
         <img src={LOGO_URL} alt="Biz-transPay" className="w-full h-full object-contain p-0.5" />
       </div>
       {!compact && (
-        <div className="leading-tight">
-          <div className={`font-cabinet font-extrabold text-[18px] ${dark ? 'text-white' : 'text-slate-900'}`}>
+        <div className="leading-tight shrink-0 whitespace-nowrap">
+          <div className={`font-cabinet font-extrabold text-[18px] whitespace-nowrap ${dark ? 'text-white' : 'text-slate-900'}`}>
             Biz<span className="text-[#2563EB]">-</span>transPay
           </div>
-          <div className={`text-[10px] font-semibold tracking-[0.18em] uppercase ${dark ? 'text-white/60' : 'text-slate-400'}`}>Vendre en ligne</div>
+          <div className={`whitespace-nowrap text-[10px] font-semibold tracking-[0.14em] uppercase ${dark ? 'text-white/60' : 'text-slate-400'}`}>Vendre en ligne</div>
         </div>
       )}
     </Link>

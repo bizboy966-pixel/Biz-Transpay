@@ -371,6 +371,10 @@ select {
 @media (max-width: 767px) {
   body { font-size: 14px; }
   .bt-auth-header { height: 68px; }
+  .bt-auth-header [data-testid="brand-logo"] { gap: .5rem; }
+  .bt-auth-header [data-testid="brand-logo"] > div:first-child { width: 2.5rem; height: 2.5rem; border-radius: .75rem; }
+  .bt-auth-header [data-testid="brand-logo"] > div:last-child > div:first-child { font-size: 16px; }
+  .bt-auth-header [data-testid="brand-logo"] > div:last-child > div:last-child { font-size: 9px; letter-spacing: .11em; }
   .bt-auth-card { border-radius: 14px; }
   .bt-auth-main { padding: 28px 16px 40px; }
   .bt-content { width: 100%; }
