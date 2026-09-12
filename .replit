@@ -5,3 +5,8 @@ channel = "stable-25_05"
 
 [agent]
 expertMode = true
+
+[userenv]
+
+[userenv.shared]
+DB_NAME = "biz_transpay"
