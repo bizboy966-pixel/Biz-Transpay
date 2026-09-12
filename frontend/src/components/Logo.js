@@ -13,7 +13,7 @@ export function Logo({ compact = false, dark = false }) {
           <div className={`font-cabinet font-extrabold text-[18px] ${dark ? 'text-white' : 'text-slate-900'}`}>
             Biz<span className="text-[#2563EB]">-</span>transPay
           </div>
-          <div className={`text-[10px] font-semibold tracking-[0.18em] uppercase ${dark ? 'text-white/60' : 'text-slate-400'}`}>Passerelle de paiement</div>
+          <div className={`text-[10px] font-semibold tracking-[0.18em] uppercase ${dark ? 'text-white/60' : 'text-slate-400'}`}>Vendre en ligne</div>
         </div>
       )}
     </Link>
