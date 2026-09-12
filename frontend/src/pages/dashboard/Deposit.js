@@ -1,12 +1,114 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, ExternalLink, Rocket } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, Rocket } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import ComingSoon from '@/components/ComingSoon';
+
+const PSR_ASSET_IDS = {
+  css: 'paydunya-psr-css',
+  jquery: 'paydunya-psr-jquery',
+  script: 'paydunya-psr-script',
+};
+let psrAssetsPromise;
+
+function loadExternalAsset({ id, tag, url, attributes = {} }) {
+  if (typeof document === 'undefined') return Promise.reject(new Error('Le navigateur est requis pour le paiement PSR.'));
+  if ((id === PSR_ASSET_IDS.jquery && window.jQuery)
+      || (id === PSR_ASSET_IDS.script && window.PayDunya?.setup)) {
+    const ready = document.getElementById(id);
+    if (ready) ready.dataset.loaded = 'true';
+    return Promise.resolve();
+  }
+  const existing = document.getElementById(id);
+  if (existing?.dataset.loaded === 'true') return Promise.resolve();
+  const element = existing || document.createElement(tag);
+  element.id = id;
+  Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+  if (!existing) document.head.appendChild(element);
+  return new Promise((resolve, reject) => {
+    element.addEventListener('load', () => {
+      element.dataset.loaded = 'true';
+      resolve();
+    }, { once: true });
+    element.addEventListener('error', () => reject(new Error(`Impossible de charger l’intégration PayDunya PSR (${url}).`)), { once: true });
+    if (tag === 'link' && !existing) element.href = url;
+    if (tag === 'script' && !existing) element.src = url;
+  });
+}
+
+function ensurePaydunyaPsrAssets() {
+  if (psrAssetsPromise) return psrAssetsPromise;
+  psrAssetsPromise = (async () => {
+    await loadExternalAsset({
+      id: PSR_ASSET_IDS.css,
+      tag: 'link',
+      url: 'https://paydunya.com/psr/css/psr.paydunya.css',
+      attributes: { rel: 'stylesheet' },
+    });
+    if (!window.jQuery) {
+      await loadExternalAsset({
+        id: PSR_ASSET_IDS.jquery,
+        tag: 'script',
+        url: 'https://code.jquery.com/jquery-3.6.0.min.js',
+        attributes: { defer: 'true' },
+      });
+    }
+    await loadExternalAsset({
+      id: PSR_ASSET_IDS.script,
+      tag: 'script',
+      url: 'https://paydunya.com/psr/js/psr.paydunya.min.js',
+      attributes: { defer: 'true' },
+    });
+    if (!window.PayDunya || typeof window.PayDunya.setup !== 'function') {
+      throw new Error('Le module officiel PayDunya PSR est indisponible.');
+    }
+  })().catch((error) => {
+    psrAssetsPromise = null;
+    throw error;
+  });
+  return psrAssetsPromise;
+}
+
+function startPaydunyaPsr({ deposit, onTerminate }) {
+  const PayDunya = window.PayDunya;
+  if (!PayDunya || typeof PayDunya.setup !== 'function') {
+    throw new Error('Le module officiel PayDunya PSR est indisponible.');
+  }
+  if (!deposit?.id && !deposit?.psr_token_url) {
+    throw new Error('PayDunya n’a pas fourni de référence PSR.');
+  }
+  const tokenUrl = deposit.psr_token_url
+    || `${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/paydunya/psr/${encodeURIComponent(deposit.id)}/token`;
+  let terminated = false;
+  const terminate = (...args) => {
+    if (terminated) return;
+    terminated = true;
+    onTerminate(...args);
+  };
+  const options = {
+    selector: '#paydunya-psr',
+    url: tokenUrl,
+    method: 'GET',
+    displayMode: PayDunya.DISPLAY_IN_POPUP || 'DISPLAY_IN_POPUP',
+    onTerminate: terminate,
+  };
+  const initialized = PayDunya.setup(options);
+  if (initialized === false) {
+    throw new Error('PayDunya n’a pas pu initialiser la fenêtre PSR.');
+  }
+  // Some PSR SDK versions obtain the token from `url`; others expose the
+  // token returned by our POST through requestToken. Support both official
+  // contracts without ever implementing a local payment protocol.
+  const token = deposit.token || deposit.psr_token || deposit.checkout_token;
+  if (token && typeof PayDunya.requestToken === 'function') {
+    const requested = PayDunya.requestToken(token);
+    if (requested === false) throw new Error('PayDunya a refusé le token PSR.');
+  }
+}
 
 export default function Deposit() {
   const nav = useNavigate();
@@ -85,9 +187,20 @@ function MethodPicker({ features, onPick }) {
     (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
     || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
   );
+  const [providerAvailable, setProviderAvailable] = useState(true);
+  useEffect(() => {
+    api.get('/deposits/config').then(({ data }) => {
+      const modes = data.modes || data.provider_modes || data.paydunya?.modes;
+      const hasModeConfig = modes && typeof modes === 'object' && Object.keys(modes).length > 0;
+      const hasMode = !hasModeConfig || Object.values(modes).some((entry) => (
+        typeof entry === 'object' ? entry.enabled !== false && entry.available !== false : entry !== false
+      ));
+      setProviderAvailable(data.enabled !== false && hasMode);
+    }).catch(() => setProviderAvailable(false));
+  }, []);
   const methods = [
     { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux', enabled: cryptoOn },
-    { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…', enabled: mmOn },
+    { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…', enabled: mmOn && providerAvailable },
   ];
   const available = methods.filter((m) => m.enabled);
   return (
@@ -360,20 +473,48 @@ function SoonMobileMoney() {
 
 function MobileMoneyForm({ onSuccess }) {
   const [catalog, setCatalog] = useState([]);
+  const [provider, setProvider] = useState(null);
   const [country, setCountry] = useState('');
   const [operator, setOperator] = useState('');
   const [phone, setPhone] = useState('');
   const [amount, setAmount] = useState('');
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
-  const [feeBearer, setFeeBearer] = useState('sender');
+  const [feeBearer, setFeeBearer] = useState('merchant');
+  const [paymentMode, setPaymentMode] = useState('softpay_direct');
+  const [modeLoading, setModeLoading] = useState(true);
+  const [psrReady, setPsrReady] = useState(false);
+  const [psrAssetError, setPsrAssetError] = useState('');
   const [loading, setLoading] = useState(false);
   const { user } = useAuth();
 
   useEffect(() => {
     api.get('/deposits/config').then(({ data }) => {
       setCatalog(data.catalog || []);
-    }).catch(() => {});
+      const rawModes = data.modes || data.provider_modes || data.paydunya?.modes || {};
+      const enabled = (key, fallback = false) => {
+        const value = rawModes[key] ?? data[`${key}_enabled`];
+        if (typeof value === 'object' && value !== null) return value.enabled !== false && value.available !== false;
+        return value === undefined ? fallback : value !== false;
+      };
+      const psrEnabled = enabled('psr');
+      setProvider({
+        enabled: data.enabled !== false,
+        modes: {
+          softpay_direct: enabled('softpay_direct', enabled('softpay', true)),
+          // PSR is advertised only after the official browser SDK is ready.
+          psr: psrEnabled,
+          par_redirect: enabled('par_redirect', enabled('par')),
+        },
+      });
+      if (psrEnabled) {
+        ensurePaydunyaPsrAssets()
+          .then(() => setPsrReady(true))
+          .catch((error) => setPsrAssetError(error.message || 'Le module officiel PayDunya PSR est indisponible.'));
+      }
+    }).catch(() => {
+      setProvider({ enabled: false, modes: { softpay_direct: false, psr: false, par_redirect: false } });
+    }).finally(() => setModeLoading(false));
     if (user?.email) setEmail(user.email);
     if (user?.full_name) setFullName(user.full_name);
   }, [user]);
@@ -381,8 +522,39 @@ function MobileMoneyForm({ onSuccess }) {
   const countryEntry = catalog.find((c) => c.country === country);
   const operators = countryEntry?.operators || [];
   const selectedOp = operators.find((o) => o.code === operator);
-  const previewFee = selectedOp && amount ? (parseFloat(amount) * (selectedOp.fee_pct || 0) / 100) : 0;
-  const previewNet = amount ? Math.max(parseFloat(amount) - previewFee, 0) : 0;
+  const baseAmount = Number(amount) || 0;
+  const currency = selectedOp?.currency || 'XOF';
+  const roundMoney = (value) => ['XOF', 'XAF', 'GNF'].includes(currency)
+    ? Math.round(value)
+    : Math.round(value * 100) / 100;
+  const previewBase = roundMoney(baseAmount);
+  const gatewayPctValue = Number(selectedOp?.gateway_fee_pct ?? 0);
+  const legacyFeePct = selectedOp?.fee_pct == null ? null : Number(selectedOp.fee_pct);
+  // Match the server's legacy compatibility rule: old catalog rows with only
+  // fee_pct still apply that rate as the gateway fee.
+  const useLegacyFee = legacyFeePct != null && (
+    selectedOp?.gateway_fee_pct == null
+    || (gatewayPctValue === 0 && Number(selectedOp?.platform_fee_pct || 0) === 0)
+  );
+  const gatewayPct = useLegacyFee ? legacyFeePct : gatewayPctValue;
+  const gatewayFixed = Number(selectedOp?.gateway_fee_fixed || 0);
+  const platformPct = Number(selectedOp?.platform_fee_pct || 0);
+  const platformFixed = Number(selectedOp?.platform_fee_fixed || 0);
+  const gatewayFee = roundMoney(previewBase * gatewayPct / 100 + gatewayFixed);
+  const platformFee = roundMoney(previewBase * platformPct / 100 + platformFixed);
+  const totalFee = roundMoney(gatewayFee + platformFee);
+  const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
+  const creditedAmount = previewBase;
+  const availableModes = useMemo(() => provider?.enabled
+    ? ['softpay_direct', 'psr', 'par_redirect'].filter((mode) => provider.modes?.[mode] && (mode !== 'psr' || psrReady))
+    : [], [provider, psrReady]);
+  const alternatives = useMemo(() => availableModes.filter((mode) => mode !== 'softpay_direct'), [availableModes]);
+
+  useEffect(() => {
+    if (provider && !provider.modes?.[paymentMode]) {
+      setPaymentMode(provider.modes?.softpay_direct ? 'softpay_direct' : (availableModes[0] || 'softpay_direct'));
+    }
+  }, [provider, paymentMode, availableModes]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -390,18 +562,18 @@ function MobileMoneyForm({ onSuccess }) {
       toast.error('Tous les champs sont obligatoires');
       return;
     }
-    if (parseInt(amount) < (selectedOp?.min || 100)) {
+    if (baseAmount < (selectedOp?.min || 100)) {
       toast.error(`Montant minimum : ${selectedOp?.min || 100} ${selectedOp?.currency || 'XOF'}`);
       return;
     }
-    if (selectedOp?.max && parseInt(amount) > selectedOp.max) {
+    if (selectedOp?.max && baseAmount > selectedOp.max) {
       toast.error(`Montant maximum : ${selectedOp.max} ${selectedOp.currency || 'XOF'}`);
       return;
     }
     setLoading(true);
     try {
-      const { data } = await api.post('/deposits/mobile-money', {
-        amount: parseInt(amount),
+      const request = {
+        amount: baseAmount,
         currency: selectedOp?.currency || 'XOF',
         email: email.trim(),
         full_name: fullName.trim(),
@@ -409,16 +581,71 @@ function MobileMoneyForm({ onSuccess }) {
         operator,
         phone_number: phone.trim(),
         fee_bearer: feeBearer,
-      });
+      };
+      if (paymentMode === 'psr') {
+        // The SDK is loaded before this request, so a failed browser
+        // integration cannot create an orphan invoice.
+        const { data } = await api.post('/deposits/mobile-money/psr', request);
+        if (!data?.id) {
+          throw new Error('PayDunya n’a pas fourni de référence PSR. Aucun suivi local n’est possible.');
+        }
+        startPaydunyaPsr({
+          deposit: data,
+          onTerminate: () => onSuccess({
+            ...data,
+            __psr: true,
+            operator_name: selectedOp?.name || selectedOp?.label || operator,
+            fee_bearer: feeBearer,
+          }),
+        });
+        toast.success('Fenêtre de paiement PSR ouverte');
+        return;
+      }
+      if (paymentMode === 'par_redirect') {
+        const { data } = await api.post('/deposits/mobile-money/par', request);
+        if (!data?.checkout_url) {
+          throw new Error('PayDunya n’a pas renvoyé de lien de paiement PAR. Aucun paiement n’a été lancé.');
+        }
+        // Redirect only after the customer explicitly selected PAR above.
+        window.location.assign(data.checkout_url);
+        return;
+      }
+      const { data } = await api.post('/deposits/mobile-money', request);
       toast.success(data.message || 'Vérifiez votre téléphone');
-      onSuccess(data);
+      onSuccess({
+        ...data,
+        operator_name: selectedOp?.name || selectedOp?.label || operator,
+        // The API snapshot is authoritative; the local values are only the
+        // pre-submit preview (including legacy fee_pct catalogs).
+        gateway_fee: data.gateway_fee ?? gatewayFee,
+        platform_fee: data.platform_fee ?? platformFee,
+        total_fee: data.total_fee ?? totalFee,
+        amount_to_pay: data.charged_amount ?? totalToPay,
+        amount_credited: data.wallet_credit_amount ?? data.amount_net ?? creditedAmount,
+        fee_bearer: feeBearer,
+      });
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erreur lors du dépôt');
     } finally { setLoading(false); }
   };
 
+  if (!modeLoading && (!provider?.enabled || availableModes.length === 0)) {
+    return (
+      <div className="bg-white border border-slate-100 rounded-2xl p-6 text-center" data-testid="momo-disabled">
+        <h2 className="font-cabinet text-lg font-extrabold text-slate-900">Mobile Money indisponible</h2>
+        <p className="mt-2 text-xs text-slate-500">{psrAssetError || 'Aucun mode PayDunya n’est actuellement disponible. Réessayez plus tard.'}</p>
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={submit} className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-4" data-testid="momo-deposit-form">
+      <div id="paydunya-psr" className="sr-only" aria-hidden="true" />
+      {psrAssetError && provider?.modes?.psr && (
+        <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] text-amber-800" data-testid="momo-psr-unavailable">
+          PSR est masqué car son intégration officielle n’a pas pu être initialisée. {psrAssetError}
+        </div>
+      )}
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Nom complet</label>
         <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} data-testid="momo-fullname" required
@@ -443,7 +670,7 @@ function MobileMoneyForm({ onSuccess }) {
           <select value={operator} onChange={(e) => setOperator(e.target.value)} data-testid="momo-operator" required disabled={!country}
             className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm bg-white disabled:bg-slate-50">
             <option value="">— Sélectionnez —</option>
-            {operators.map((o) => <option key={o.code} value={o.code}>{o.label}</option>)}
+             {operators.map((o) => <option key={o.code} value={o.code}>{o.name || o.label}</option>)}
           </select>
         </div>
       </div>
@@ -463,30 +690,69 @@ function MobileMoneyForm({ onSuccess }) {
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
         {selectedOp && amount && (
           <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-600">
-            <span>Frais {selectedOp.fee_pct}% :</span>
-            <span className="font-mono font-semibold text-slate-900">{previewFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
-            <span className="text-slate-400">•</span>
-            <span>Net crédité :</span>
-            <span className="font-mono font-bold text-emerald-700">{previewNet.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+             <div className="w-full grid grid-cols-2 gap-x-3 gap-y-1">
+               <span>Frais gateway ({gatewayPct}% + {gatewayFixed})</span>
+               <span className="font-mono font-semibold text-slate-900 text-right">{gatewayFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+               <span>Frais plateforme ({platformPct}% + {platformFixed})</span>
+               <span className="font-mono font-semibold text-slate-900 text-right">{platformFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+               <span className="font-bold text-slate-700 border-t border-slate-200 pt-1">Total des frais</span>
+               <span className="font-mono font-bold text-red-600 text-right border-t border-slate-200 pt-1">{totalFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+               <span className="font-semibold text-slate-700">Total à payer</span>
+               <span className="font-mono font-bold text-slate-900 text-right">{totalToPay.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+               <span className="font-semibold text-slate-700">Montant crédité</span>
+               <span className="font-mono font-bold text-emerald-700 text-right">{creditedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+             </div>
           </div>
         )}
       </div>
+      {alternatives.length > 0 && (
+        <section className="rounded-xl border border-violet-100 bg-violet-50/40 p-3" data-testid="momo-provider-modes">
+          <div className="text-xs font-bold text-slate-900">Autres modes PayDunya</div>
+          <p className="mt-1 text-[10px] leading-relaxed text-slate-500">SoftPay direct reste le mode recommandé. Choisissez un autre mode uniquement si vous souhaitez ce parcours.</p>
+          <div className="grid sm:grid-cols-2 gap-2 mt-2">
+            {provider.modes?.softpay_direct && (
+              <button type="button" onClick={() => setPaymentMode('softpay_direct')} data-testid="momo-mode-softpay_direct"
+                className={`text-left px-3 py-2 rounded-lg border text-[11px] font-semibold ${paymentMode === 'softpay_direct' ? 'border-emerald-500 bg-white text-emerald-700' : 'border-violet-100 bg-white/60 text-slate-600'}`}>
+                SoftPay direct · recommandé
+                <span className="block text-[10px] font-normal text-slate-500 mt-0.5">Demande directe sur votre téléphone</span>
+              </button>
+            )}
+            {alternatives.map((mode) => (
+              <button key={mode} type="button" onClick={() => setPaymentMode(mode)} data-testid={`momo-mode-${mode}`}
+                className={`text-left px-3 py-2 rounded-lg border text-[11px] font-semibold ${paymentMode === mode ? 'border-violet-500 bg-white text-violet-700' : 'border-violet-100 bg-white/60 text-slate-600'}`}>
+                {mode === 'psr' ? 'PSR · sans redirection' : 'PAR · avec redirection'}
+                <span className="block text-[10px] font-normal text-slate-500 mt-0.5">{mode === 'psr' ? 'Reste dans Biz-transPay' : 'Ouvre PayDunya après confirmation'}</span>
+              </button>
+            ))}
+          </div>
+          {paymentMode !== 'softpay_direct' && (
+            <p className="mt-2 text-[10px] text-violet-800">Mode sélectionné : <b>{paymentMode === 'psr' ? 'PSR sans redirection' : 'PAR avec redirection'}</b></p>
+          )}
+        </section>
+      )}
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Frais supportés par</label>
         <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => setFeeBearer('sender')} data-testid="momo-fee-sender"
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'sender' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
-            Marchand (vous)
+             <button type="button" onClick={() => setFeeBearer('merchant')} data-testid="momo-fee-merchant"
+             className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'merchant' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
+             Biz-transPay
           </button>
-          <button type="button" onClick={() => setFeeBearer('receiver')} data-testid="momo-fee-receiver"
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'receiver' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
+           <button type="button" onClick={() => setFeeBearer('client')} data-testid="momo-fee-client"
+             className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'client' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
             Client
           </button>
         </div>
+         {selectedOp && amount && (
+           <p className="mt-2 text-[11px] text-slate-500">
+             {feeBearer === 'client'
+               ? 'Le client paie le montant du dépôt et les frais. Le portefeuille est crédité du montant de base.'
+               : 'Biz-transPay prend les frais à sa charge. Le client paie uniquement le montant du dépôt.'}
+           </p>
+         )}
       </div>
       <button type="submit" disabled={loading} data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
-        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
+        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>{paymentMode === 'par_redirect' ? 'Continuer vers PayDunya' : paymentMode === 'psr' ? 'Préparer le paiement PSR' : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
       </button>
     </form>
   );
@@ -509,6 +775,14 @@ function MobileMoneyTracker({ deposit }) {
   const ok = d.status === 'approved';
   const failed = d.status === 'failed';
   const pending = !ok && !failed;
+  const operatorValue = typeof d.operator === 'object' ? (d.operator?.label || d.operator?.name || d.operator?.code) : d.operator;
+  const operatorName = d.operator_name || d.operator_label || operatorValue || 'Mobile Money';
+  const instructionValue = d.instructions || d.payment_instructions || d.pending_instructions || d.message;
+  const instructions = Array.isArray(instructionValue)
+    ? instructionValue.join(' ')
+    : (typeof instructionValue === 'string' && instructionValue.trim()
+      ? instructionValue
+      : `Une demande de ${d.amount_to_pay?.toLocaleString?.() || d.amount_to_pay || d.charged_amount || d.amount} ${d.currency || 'XOF'} via ${operatorName} a été envoyée au ${d.phone_number || 'numéro indiqué'}. Ouvrez la notification de votre opérateur et confirmez-la avec votre code secret.`);
 
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 text-center space-y-4" data-testid="momo-tracker">
@@ -521,15 +795,11 @@ function MobileMoneyTracker({ deposit }) {
         {failed && 'Paiement échoué'}
       </h2>
       <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
-        {pending && `Confirmez le paiement de ${d.amount?.toLocaleString?.() || d.amount} ${d.currency || 'XOF'} sur votre téléphone ${d.phone_number}. Cette page se mettra à jour automatiquement.`}
+         {pending && instructions}
         {ok && `Votre portefeuille a été crédité de ${d.amount_net?.toLocaleString?.() || d.amount_net || d.amount} ${d.currency || 'XOF'} (net après frais).`}
         {failed && `La transaction a été refusée ou annulée. ${d.failed_reason ? '('+d.failed_reason+')' : ''}`}
       </p>
-      {d.checkout_url && pending && (
-        <a href={d.checkout_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 text-xs font-bold text-[#2563EB] hover:underline">
-          Ouvrir le lien de paiement <ExternalLink className="w-3.5 h-3.5" />
-        </a>
-      )}
+       {pending && <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-[11px] text-blue-800">Restez sur cette page : le statut de la transaction est vérifié automatiquement.</div>}
     </div>
   );
 }

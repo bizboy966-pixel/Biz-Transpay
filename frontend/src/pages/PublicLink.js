@@ -327,7 +327,9 @@ function MoMoLinkForm({ link, onSuccess }) {
   const [amount, setAmount] = useState(isFree ? '' : String(link.amount || ''));
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
-  const [feeBearer, setFeeBearer] = useState('sender');
+  // Keep the business meaning independent from the legacy transport values:
+  // client pays vs Biz-transPay/merchant pays.
+  const [feeBearer, setFeeBearer] = useState('client');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -338,7 +340,27 @@ function MoMoLinkForm({ link, onSuccess }) {
   const countryEntry = catalog.find((c) => c.country === country);
   const operators = countryEntry?.operators || [];
   const selectedOp = operators.find((o) => o.code === operator);
-  const previewFee = selectedOp && amount ? (parseFloat(amount) * (selectedOp.fee_pct || 0) / 100) : 0;
+  const baseAmount = Number(amount) || 0;
+  const currency = selectedOp?.currency || 'XOF';
+  const roundMoney = (value) => ['XOF', 'XAF', 'GNF'].includes(currency)
+    ? Math.round(value)
+    : Math.round(value * 100) / 100;
+  const previewBase = roundMoney(baseAmount);
+  const gatewayPctValue = Number(selectedOp?.gateway_fee_pct ?? 0);
+  const legacyFeePct = selectedOp?.fee_pct == null ? null : Number(selectedOp.fee_pct);
+  const useLegacyFee = legacyFeePct != null && (
+    selectedOp?.gateway_fee_pct == null
+    || (gatewayPctValue === 0 && Number(selectedOp?.platform_fee_pct || 0) === 0)
+  );
+  const gatewayPct = useLegacyFee ? legacyFeePct : gatewayPctValue;
+  const gatewayFixed = Number(selectedOp?.gateway_fee_fixed || 0);
+  const platformPct = Number(selectedOp?.platform_fee_pct || 0);
+  const platformFixed = Number(selectedOp?.platform_fee_fixed || 0);
+  const gatewayFee = roundMoney(previewBase * gatewayPct / 100 + gatewayFixed);
+  const platformFee = roundMoney(previewBase * platformPct / 100 + platformFixed);
+  const totalFee = roundMoney(gatewayFee + platformFee);
+  const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
+  const creditedAmount = previewBase;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -348,18 +370,31 @@ function MoMoLinkForm({ link, onSuccess }) {
     }
     setLoading(true);
     try {
-      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/links/pay/mobile-money`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const endpoint = `${process.env.REACT_APP_BACKEND_URL || ''}/api/links/pay/mobile-money`;
+      const makeBody = (bearer) => ({
           slug: link.slug,
           amount: isFree ? parseFloat(amount) : undefined,
           full_name: fullName.trim(), email: email.trim(),
-          country, operator, phone_number: phone.trim(), fee_bearer: feeBearer,
-        }),
+           country, operator, phone_number: phone.trim(), fee_bearer: bearer,
+         });
+      // Newer backends accept client|merchant. Retry the pre-validation
+      // request with the historical sender|receiver values when an older
+      // schema rejects those literals (no invoice is created on 422).
+      let res = await fetch(endpoint, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(makeBody(feeBearer)),
       });
-      const data = await res.json();
+      let data = await res.json();
+      if (!res.ok && res.status === 422) {
+        const legacyBearer = feeBearer === 'client' ? 'sender' : 'receiver';
+        res = await fetch(endpoint, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(makeBody(legacyBearer)),
+        });
+        data = await res.json();
+      }
       if (!res.ok) throw new Error(data.detail || 'Erreur');
-      onSuccess(data);
+      onSuccess({ ...data, fee_bearer: feeBearer });
     } catch (err) { setError(err.message || 'Erreur'); }
     finally { setLoading(false); }
   };
@@ -402,17 +437,35 @@ function MoMoLinkForm({ link, onSuccess }) {
         </Field>
       )}
       {selectedOp && amount && (
-        <div className="text-[11px] text-slate-600">
-          Frais {selectedOp.fee_pct}% : <b>{previewFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</b>
+        <div className="rounded-xl bg-slate-50 border border-slate-100 p-2.5 text-[11px] text-slate-600">
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+            <span>Frais gateway ({gatewayPct}% + {gatewayFixed})</span>
+            <b className="text-right">{gatewayFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
+            <span>Frais plateforme ({platformPct}% + {platformFixed})</span>
+            <b className="text-right">{platformFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
+            <span className="border-t border-slate-200 pt-1 font-bold">Total des frais</span>
+            <b className="border-t border-slate-200 pt-1 text-right text-red-600">{totalFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
+            <span className="font-semibold">Total à payer</span>
+            <b className="text-right text-slate-900">{totalToPay.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
+            <span className="font-semibold">Montant crédité</span>
+            <b className="text-right text-emerald-700">{creditedAmount.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
+          </div>
         </div>
       )}
       <Field label="Frais supportés par">
         <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => setFeeBearer('sender')}
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'sender' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Marchand</button>
-          <button type="button" onClick={() => setFeeBearer('receiver')}
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'receiver' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Client</button>
+          <button type="button" onClick={() => setFeeBearer('client')}
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'client' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Client</button>
+          <button type="button" onClick={() => setFeeBearer('merchant')}
+            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'merchant' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Marchand / Biz-transPay</button>
         </div>
+        {selectedOp && amount && (
+          <p className="mt-2 text-[11px] text-slate-500">
+            {feeBearer === 'client'
+              ? 'Le client paie le montant du dépôt et les frais. Le marchand reçoit le montant de base.'
+              : 'Marchand / Biz-transPay prend les frais à sa charge. Le client paie uniquement le montant du dépôt.'}
+          </p>
+        )}
       </Field>
       {error && <div className="p-2 rounded-lg bg-red-50 text-red-700 text-[11px]">{error}</div>}
       <button type="submit" disabled={loading} data-testid="momo-link-submit"

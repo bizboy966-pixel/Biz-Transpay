@@ -1,0 +1,93 @@
+"""Small provider-only tests; no MongoDB or network is required."""
+import hashlib
+import asyncio
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import paydunya
+
+
+def test_fee_snapshot_client_and_merchant():
+    operator = {
+        "gateway_fee_pct": 2, "gateway_fee_fixed": 10,
+        "platform_fee_pct": 1, "platform_fee_fixed": 5,
+    }
+    client = paydunya.calculate_fees(1000, operator, "client")
+    assert client["charged_amount"] == 1045
+    assert client["wallet_credit_amount"] == 1000
+    merchant = paydunya.calculate_fees(1000, operator, "receiver")
+    assert merchant["charged_amount"] == 1000
+    assert merchant["total_fee"] == 45
+
+
+def test_modes_and_hosted_url_are_safe_defaults():
+    modes = paydunya.default_modes()
+    assert modes["softpay_direct"]["enabled"] is True
+    assert modes["psr"]["enabled"] is False
+    assert modes["par_redirect"]["enabled"] is False
+    assert paydunya.checkout_url(
+        {"response": {"response_text": "created https://app.paydunya.com/checkout/tok"}}
+    ) == "https://app.paydunya.com/checkout/tok"
+    assert all(op["currency"] in {"XOF", "XAF"}
+               for op in paydunya.default_catalog())
+
+
+def test_xof_fees_are_whole_units():
+    result = paydunya.calculate_fees(
+        1001, {"currency": "XOF", "gateway_fee_pct": 1.5}, "client")
+    assert result["gateway_fee"] == 15
+    assert result["charged_amount"] == 1016
+    legacy = paydunya.calculate_fees(
+        1000, {"currency": "XOF", "fee_pct": 1.5}, "client")
+    assert legacy["total_fee"] == 15
+
+
+def test_empty_session_secret_is_rejected():
+    with pytest.raises(paydunya.PayDunyaError):
+        paydunya.derive_fernet_key("")
+
+
+def test_togo_phone_and_static_hash():
+    assert paydunya.normalize_togo_phone("+228 90 12 34 56") == "90123456"
+    master = "test-master"
+    digest = hashlib.sha512(master.encode()).hexdigest()
+    assert paydunya.verify_static_hash(digest, master)
+    assert not paydunya.verify_static_hash("bad", master)
+
+
+def test_confirmation_rejects_amount_and_accepts_completed():
+    master = "test-master"
+    token = "invoice-token"
+    payload = {
+        "response_code": "00", "status": "completed", "token": token,
+        "amount": 1000, "currency": "XOF",
+        "hash": hashlib.sha512(master.encode()).hexdigest(),
+    }
+    assert paydunya.confirmation_valid(
+        payload, master_key=master, token=token, amount=1000, currency="XOF")
+    assert not paydunya.confirmation_valid(
+        {**payload, "amount": 999}, master_key=master, token=token,
+        amount=1000, currency="XOF")
+
+
+def test_togo_softpay_uses_documented_fields(monkeypatch):
+    seen = {}
+
+    async def fake_request(method, path, config, body=None):
+        seen.update(method=method, path=path, body=body)
+        return {"success": True}
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    asyncio.run(paydunya.softpay_payment(
+        {"mode": "test"}, invoice_token="tok",
+        operator={"endpoint_slug": "t-money-togo"}, phone="90123456",
+        amount=1000, currency="XOF", customer_name="A Test",
+        customer_email="a@example.com"))
+    assert seen["path"] == "/sandbox-api/v1/softpay/checkout/make-payment"
+    assert seen["body"] == {
+        "name_t_money": "A Test", "email_t_money": "a@example.com",
+        "phone_t_money": "90123456", "payment_token": "tok",
+    }

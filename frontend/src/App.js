@@ -39,6 +39,7 @@ import AdminRates from '@/pages/admin/AdminRates';
 import AdminConversions from '@/pages/admin/AdminConversions';
 import AdminFees from '@/pages/admin/AdminFees';
 import AdminBenefits from '@/pages/admin/AdminBenefits';
+import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -103,6 +104,7 @@ function App() {
             <Route path="conversions" element={<AdminConversions />} />
             <Route path="fees" element={<AdminFees />} />
             <Route path="benefits" element={<AdminBenefits />} />
+             <Route path="payment-providers" element={<AdminPaymentProviders />} />
           </Route>
         </Routes>
       </BrowserRouter>

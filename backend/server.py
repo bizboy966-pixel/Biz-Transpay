@@ -2,6 +2,7 @@
 import os
 import logging
 import secrets
+import hashlib
 import uuid
 import asyncio
 import json
@@ -33,6 +34,7 @@ from auth import hash_password, verify_password, create_token, get_current_user_
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
 import fedapay  # FedaPay Mobile Money integration (server-side only)
+import paydunya  # PayDunya SoftPay deposits (server-side only)
 
 # ---------- DB ----------
 mongo_url = os.environ["MONGO_URL"]
@@ -541,6 +543,82 @@ async def get_deposit_config() -> dict:
         await db.settings.insert_one(DEFAULT_DEPOSIT_CONFIG.copy())
         doc = await db.settings.find_one({"id": "deposit_config"}, {"_id": 0})
     return doc
+
+
+PAYDUNYA_WALLET_CURRENCIES = {"XOF", "XAF"}
+
+PAYDUNYA_DEFAULT_CONFIG = {
+    "id": "payment_provider_paydunya",
+    "enabled": True,
+    "mode": "test",
+    "store_name": "Biz-transPay",
+    # Each pay-in path is independently switchable.  Do not infer one mode
+    # from another: this is also enforced by every create endpoint below.
+    "modes": paydunya.default_modes(),
+        "catalog": paydunya.default_catalog(),
+}
+
+
+async def get_paydunya_config(decrypt: bool = False) -> dict:
+    doc = await db.settings.find_one({"id": "payment_provider_paydunya"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(PAYDUNYA_DEFAULT_CONFIG.copy())
+        doc = await db.settings.find_one({"id": "payment_provider_paydunya"}, {"_id": 0})
+    if decrypt:
+        doc = dict(doc)
+        # Credential decryption is part of an actual provider operation.  Do
+        # not turn a missing/rotated SESSION_SECRET into an empty credential
+        # set and then accidentally issue a different, misleading error.
+        doc["_credentials"] = paydunya.credentials(
+            doc, os.environ.get("SESSION_SECRET", ""))
+    return doc
+
+
+def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
+    configured = bool(cfg.get("master_key_encrypted")
+                     and cfg.get("private_key_encrypted")
+                     and cfg.get("token_encrypted"))
+    modes = cfg.get("modes")
+    if not isinstance(modes, dict):
+        # Legacy settings only implemented direct SoftPay.  Do not advertise
+        # newly added client/redirect flows until an administrator enables
+        # them explicitly.
+        modes = {"softpay_direct": {"enabled": True},
+                 "psr": {"enabled": False},
+                 "par_redirect": {"enabled": False}}
+    public_modes = {}
+    for mode in paydunya.PAY_IN_MODES:
+        raw = modes.get(mode, {})
+        enabled = bool(raw.get("enabled", False)) if isinstance(raw, dict) else bool(raw)
+        public_modes[mode] = {
+            "enabled": enabled,
+            "available": bool(cfg.get("enabled", False) and configured and enabled),
+        }
+    result = {
+        "enabled": bool(cfg.get("enabled", False)),
+        "mode": cfg.get("mode", "test"),
+        "store_name": cfg.get("store_name") or "Biz-transPay",
+        "configured": configured,
+        "modes": public_modes,
+        "mode_availability": {name: value["available"]
+                             for name, value in public_modes.items()},
+    }
+    if admin:
+        for key in ("master_key", "public_key", "private_key", "token"):
+            encrypted = cfg.get(f"{key}_encrypted")
+            result[f"{key}_configured"] = bool(encrypted)
+        result["catalog"] = [
+            op for op in (cfg.get("catalog") or [])
+            if str(op.get("currency") or "").upper() in PAYDUNYA_WALLET_CURRENCIES
+        ]
+    else:
+        result["catalog"] = [
+            op for op in (cfg.get("catalog") or [])
+            if op.get("active", True) and not op.get("archived", False)
+            and not op.get("hidden", False)
+            and str(op.get("currency") or "").upper() in PAYDUNYA_WALLET_CURRENCIES
+        ]
+    return result
 
 
 def _find_deposit_operator(cfg: dict, country: str, code: str) -> Optional[dict]:
@@ -1166,300 +1244,600 @@ async def fedapay_catalog():
 
 @api.get("/deposits/config")
 async def deposits_config_public():
-    """Public per-country/operator fee & limits for Mobile Money deposits.
-
-    Returned to the frontend so the deposit form can render the correct
-    countries/operators, apply min/max validation, and preview the fee.
-    Any operator that is disabled admin-side is excluded from the result.
-    """
-    cfg = await get_deposit_config()
-    mm = cfg.get("mobile_money") or {}
-    ops = [
-        op for op in mm.get("operators", [])
-        if op.get("active", True) and not op.get("hidden", False)
-    ]
-    # Group by country to mirror /fedapay/catalog
-    by_country: dict[str, list[dict]] = {}
-    for op in ops:
-        by_country.setdefault(op["country"], []).append({
-            "code": op["code"],
-            "name": op.get("name") or op["code"],
+    cfg = await get_paydunya_config()
+    public = _paydunya_public_config(cfg)
+    # Grouping is retained for the existing deposit form contract.
+    grouped: dict[str, dict] = {}
+    for op in public["catalog"]:
+        country = op.get("country", "")
+        entry = grouped.setdefault(country, {
+            "country": country,
+            "country_label": op.get("country_label")
+                or paydunya.COUNTRY_LABELS.get(country, country),
+            "operators": [],
+        })
+        gateway_pct = float(op.get("gateway_fee_pct", 0))
+        platform_pct = float(op.get("platform_fee_pct", 0))
+        if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
+            gateway_pct = float(op.get("fee_pct", 0))
+        gateway_fixed = float(op.get("gateway_fee_fixed", 0))
+        platform_fixed = float(op.get("platform_fee_fixed", 0))
+        entry["operators"].append({
+            "code": op["code"], "name": op.get("name") or op["code"],
             "label": op.get("name") or op["code"],
             "currency": op.get("currency") or "XOF",
-            "fee_pct": float(op.get("fee_pct", 0)),
-            "gateway_fee_pct": float(op.get("gateway_fee_pct", 0)),
-            "platform_fee_pct": float(op.get("platform_fee_pct", 0)),
+            "endpoint_slug": op.get("endpoint_slug"),
+            "gateway_fee_pct": gateway_pct, "gateway_fee_fixed": gateway_fixed,
+            "platform_fee_pct": platform_pct, "platform_fee_fixed": platform_fixed,
+            "fee_pct": gateway_pct + platform_pct,
+            "total_fee_pct": gateway_pct + platform_pct,
+            "fee_preview": {
+                "gateway_fee": gateway_fixed, "platform_fee": platform_fixed,
+                "total_fee": gateway_fixed + platform_fixed,
+                "formula": "amount * (gateway_fee_pct + platform_fee_pct) / 100 + fixed_fees",
+            },
             "min": float(op.get("min", 100)),
             "max": float(op.get("max", 0)) or None,
         })
-    catalog = []
-    for iso, operators in by_country.items():
-        catalog.append({
-            "country": iso,
-            "country_label": fedapay.COUNTRY_LABELS.get(iso, iso),
-            "operators": operators,
-        })
-    return {
-        "enabled": bool(mm.get("enabled", True)),
-        "catalog": catalog,
-    }
+    public["catalog"] = list(grouped.values())
+    return public
 
 
 class MobileMoneyDepositRequest(BaseModel):
-    amount: int = Field(..., ge=100)  # FedaPay expects integer major units
+    amount: float = Field(..., ge=1)
     currency: str = "XOF"
     email: str
     full_name: str
     country: str            # ISO-2, e.g. BJ, TG, CI
     operator: str           # code, e.g. mtn_bj, moov_tg, orange_ci
     phone_number: str       # e.g. "97000001"
-    fee_bearer: Literal["sender", "receiver"] = "sender"
+    fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "client"
     description: Optional[str] = None
 
 
 @api.post("/deposits/mobile-money")
 async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
                                       uid: str = Depends(get_current_user_id)):
-    """Initiate a Mobile Money deposit via FedaPay.
-
-    Flow:
-      1. Create a FedaPay transaction
-      2. Generate a payment token
-      3. Trigger the USSD prompt on the customer's phone
-      4. Return {id, status} so the frontend can poll status
-      5. Wallet is credited on `transaction.approved` webhook
-    """
-    if not fedapay.is_configured():
+    """Create a PayDunya invoice and trigger SoftPay; never credits here."""
+    cfg = await get_paydunya_config(decrypt=True)
+    if not cfg.get("enabled"):
         raise HTTPException(503, "Passerelle Mobile Money non configurée")
-    op = fedapay.operator_for(req.country, req.operator)
-    if not op:
-        raise HTTPException(400, "Opérateur non disponible pour ce pays")
-    if op["kind"] not in ("collect", "both"):
-        raise HTTPException(400, "Opérateur non disponible pour les dépôts")
-
-    # Enforce the admin-configured limits + activation state per country/operator
-    dep_cfg = await get_deposit_config()
-    admin_op = _find_deposit_operator(dep_cfg, req.country, req.operator)
+    if not paydunya.mode_is_enabled(cfg, "softpay_direct"):
+        raise HTTPException(503, "Le paiement direct SoftPay est désactivé")
+    admin_op = next((op for op in cfg.get("catalog", [])
+                     if op.get("country", "").upper() == req.country.upper()
+                     and op.get("code", "").lower() == req.operator.lower()
+                     and op.get("active", True)
+                     and not op.get("archived", False)
+                     and not op.get("hidden", False)), None)
     if not admin_op:
-        raise HTTPException(
-            400,
-            "Cet opérateur Mobile Money est désactivé pour les dépôts. "
-            "Contactez le support ou choisissez un autre opérateur.",
-        )
+        raise HTTPException(400, "Opérateur non disponible pour ce pays")
     currency = (admin_op.get("currency") or req.currency or "XOF").upper()
-    min_amt = float(admin_op.get("min", 100))
-    max_amt = float(admin_op.get("max", 0)) or None
+    if currency not in PAYDUNYA_WALLET_CURRENCIES:
+        raise HTTPException(400, "Devise PayDunya non prise en charge par le portefeuille")
+    if req.currency and req.currency.upper() != currency:
+        raise HTTPException(400, f"Devise invalide pour cet opérateur : {currency}")
+    min_amt, max_amt = float(admin_op.get("min", 100)), float(admin_op.get("max", 0)) or None
     if req.amount < min_amt:
         raise HTTPException(400, f"Montant minimum : {int(min_amt)} {currency}")
     if max_amt and req.amount > max_amt:
         raise HTTPException(400, f"Montant maximum : {int(max_amt)} {currency}")
-
-    u = await get_user(uid)
+    bearer = "merchant" if req.fee_bearer in ("merchant", "receiver") else "client"
+    fees = paydunya.calculate_fees(req.amount, admin_op, bearer)
+    phone = req.phone_number
+    if req.country.upper() == "TG":
+        try:
+            phone = paydunya.normalize_togo_phone(phone)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
     dep_id = new_id()
     parts = (req.full_name or "").strip().split(" ", 1)
     first = parts[0] or "Client"
     last = parts[1] if len(parts) > 1 else first
-    callback = f"{os.environ.get('OFFICIAL_DOMAIN', '')}/dashboard/deposit?ref={dep_id}"
-
+    callback = f"{os.environ.get('OFFICIAL_DOMAIN', '')}/api/webhooks/paydunya?ref={dep_id}"
     try:
-        tx = await fedapay.create_transaction(
-            amount=int(req.amount),
-            currency=currency,
-            description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
-            customer_email=req.email,
-            customer_firstname=first,
-            customer_lastname=last,
-            customer_phone=req.phone_number,
-            customer_country=req.country,
+        invoice = await paydunya.create_invoice(
+            cfg, amount=fees["charged_amount"], currency=currency, token=dep_id,
+            customer={"firstname": first, "lastname": last, "email": req.email,
+                      "phone_number": phone},
             callback_url=callback,
-            metadata={"kind": "wallet_deposit",
-                      "biztranspay_user_id": uid,
-                      "biztranspay_deposit_id": dep_id,
-                      "fee_bearer": req.fee_bearer},
+            description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
-    except fedapay.FedaPayError as e:
-        logger.warning("fedapay create tx failed [%s] %s", e.status, e.message)
-        raise HTTPException(400 if e.status < 500 else 502,
-                            f"Passerelle Mobile Money: {e.message}")
-    tx_id = tx.get("id")
-    ref = tx.get("reference") or f"BTP-{dep_id[:8]}"
+        token = paydunya.invoice_token(invoice)
+        if not token:
+            raise paydunya.PayDunyaError(502, "PayDunya did not return an invoice token")
+        existing = await db.momo_deposits.find_one({"paydunya_token": token}, {"_id": 0})
+        if existing:
+            raise HTTPException(409, "Cette facture PayDunya existe déjà")
+        doc = {
+            "id": dep_id, "user_id": uid, "amount": req.amount,
+            "requested_amount": fees["requested_amount"],
+            "charged_amount": fees["charged_amount"],
+            "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+            "total_fee": fees["total_fee"], "wallet_credit_amount": fees["wallet_credit_amount"],
+            "fee_snapshot": {
+                **fees,
+                "gateway_fee_pct": float(admin_op.get("gateway_fee_pct", admin_op.get("fee_pct", 0))),
+                "gateway_fee_fixed": float(admin_op.get("gateway_fee_fixed", 0)),
+                "platform_fee_pct": float(admin_op.get("platform_fee_pct", 0)),
+                "platform_fee_fixed": float(admin_op.get("platform_fee_fixed", 0)),
+            },
+            "currency": currency, "email": req.email, "full_name": req.full_name,
+            "country": req.country, "operator": req.operator,
+            "operator_name": admin_op.get("name"),
+            "endpoint_slug": admin_op.get("endpoint_slug"),
+            "operator_snapshot": dict(admin_op),
+            "phone_number": phone, "fee_bearer": fees["fee_bearer"],
+            "paydunya_token": token,
+            "paydunya_reference": invoice.get("reference") or invoice.get("invoice_id"),
+            "checkout_url": paydunya.checkout_url(invoice),
+            "status": "pending", "provider": "paydunya",
+            "provider_mode": cfg.get("mode", "test"),
+            "paydunya_flow": "softpay_direct",
+            "prompt_sent": False, "prompt_error": None,
+            "created_at": now_iso(),
+        }
+        try:
+            await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
+            await db.momo_deposits.insert_one(doc)
+        except Exception as exc:
+            if "duplicate" in str(exc).lower():
+                raise HTTPException(409, "Cette facture PayDunya existe déjà")
+            raise
+        softpay = await paydunya.softpay_payment(
+            cfg, invoice_token=token, operator=admin_op, phone=phone,
+            amount=fees["charged_amount"], currency=currency,
+            customer_name=req.full_name, customer_email=req.email)
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"prompt_sent": True, "prompt_error": None,
+                      "paydunya_reference": (
+                          invoice.get("reference") or invoice.get("invoice_id")
+                          or softpay.get("reference"))}})
+    except HTTPException:
+        raise
+    except paydunya.PayDunyaError as exc:
+        if "doc" in locals() and doc.get("paydunya_token"):
+            safe_error = str(exc.message or "SoftPay provider error")[:240]
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "failed", "retryable": True,
+                          "prompt_sent": False, "prompt_error": safe_error,
+                          "failed_at": now_iso()}})
+        if cfg.get("mode") != "live" and any(term in exc.message.lower()
+                                             for term in ("password", "credential", "account")):
+            raise HTTPException(
+                503,
+                "Le compte de test PayDunya exige des identifiants sandbox "
+                "fournis par le client ou configurés par PayDunya.",
+            )
+        raise HTTPException(400 if exc.status < 500 else 502,
+                            f"Passerelle Mobile Money: {exc.message}")
+    except Exception as exc:
+        if "doc" in locals() and doc.get("paydunya_token"):
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "failed", "retryable": True,
+                          "prompt_sent": False,
+                          "prompt_error": str(exc)[:240],
+                          "failed_at": now_iso()}})
+        raise HTTPException(502, "Échec du déclenchement SoftPay")
 
-    try:
-        token_resp = await fedapay.generate_token(tx_id)
-    except fedapay.FedaPayError as e:
-        raise HTTPException(400, f"Passerelle Mobile Money: {e.message}")
-    token = token_resp.get("token") or ""
-    checkout_url = token_resp.get("url")
-
-    # Trigger the USSD prompt (no-redirect mode). If not supported for the
-    # operator, the checkout URL is a valid fallback (frontend will redirect).
-    prompt_sent = False
-    prompt_error: Optional[str] = None
-    try:
-        await fedapay.send_mobile_money(op["mode"], token)
-        prompt_sent = True
-    except fedapay.FedaPayError as e:
-        prompt_error = e.message
-        logger.info("fedapay send_mobile_money %s failed: %s", op["mode"], e.message)
-
-    doc = {
-        "id": dep_id,
-        "user_id": uid,
-        "amount": req.amount,
-        "currency": currency,
-        "email": req.email,
-        "full_name": req.full_name,
-        "country": req.country,
-        "operator": req.operator,
-        "operator_name": admin_op.get("name"),
-        "fee_pct_applied": float(admin_op.get("fee_pct", 1.0)),
-        "mode": op["mode"],
-        "phone_number": req.phone_number,
-        "fee_bearer": req.fee_bearer,
-        "fedapay_id": tx_id,
-        "fedapay_reference": ref,
-        "checkout_url": checkout_url,
-        "status": "pending",
-        "prompt_sent": prompt_sent,
-        "prompt_error": prompt_error,
-        "created_at": now_iso(),
-    }
-    await db.momo_deposits.insert_one(doc)
     return {
         "id": dep_id,
         "status": "pending",
-        "amount": req.amount,
+        "amount": fees["requested_amount"],
+        "requested_amount": fees["requested_amount"],
+        "charged_amount": fees["charged_amount"],
+        "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+        "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
         "currency": currency,
-        "operator": {"code": req.operator, "label": op["label"]},
-        "phone_number": req.phone_number,
-        "checkout_url": checkout_url,
-        "prompt_sent": prompt_sent,
-        "prompt_error": prompt_error,
+        "operator": {"code": req.operator, "label": admin_op.get("name"),
+                     "endpoint_slug": admin_op.get("endpoint_slug")},
+        "phone_number": phone, "checkout_url": doc["checkout_url"],
+        "prompt_sent": True, "prompt_error": None,
         "message": (
             "Vérifiez votre téléphone et validez la demande avec votre code Mobile Money."
-            if prompt_sent
+            if True
             else "Cliquez sur le lien de paiement pour valider la transaction."
         ),
     }
 
 
-async def _reconcile_momo_deposit(dep_id: str) -> None:
-    """Best-effort fallback poll of FedaPay in case the webhook lags."""
-    d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
-    if not d or d.get("status") not in ("pending",):
-        return
-    if not d.get("fedapay_id"):
-        return
+class PayDunyaInvoiceRequest(BaseModel):
+    """Request shared by the hosted (PAR) and client (PSR) flows.
+
+    Hosted/client checkout lets PayDunya choose the operator, therefore
+    ``country``/``operator`` are optional.  When supplied, they are still
+    validated against our catalog so the same limits and tariff snapshot are
+    used as direct SoftPay.
+    """
+    amount: float = Field(..., ge=1)
+    currency: str = "XOF"
+    email: str
+    full_name: str
+    country: Optional[str] = None
+    operator: Optional[str] = None
+    phone_number: Optional[str] = None
+    fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "client"
+    description: Optional[str] = None
+
+
+async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
+                                           uid: str, flow: str) -> dict:
+    """Create a pending local row plus a PayDunya invoice.
+
+    This helper deliberately does not approve or credit anything.  Approval is
+    only possible after ``confirm_invoice`` validates the provider response.
+    """
+    cfg = await get_paydunya_config(decrypt=True)
+    if not cfg.get("enabled"):
+        raise HTTPException(503, "Passerelle PayDunya non configurée")
+    if not paydunya.mode_is_enabled(cfg, flow):
+        raise HTTPException(503, f"Le mode PayDunya {flow} est désactivé")
+    if flow not in ("psr", "par_redirect"):
+        raise HTTPException(400, "Mode PayDunya invalide")
+
+    selected = None
+    if req.operator:
+        selected = next((op for op in cfg.get("catalog", [])
+                         if op.get("country", "").upper() == (req.country or "").upper()
+                         and op.get("code", "").lower() == req.operator.lower()
+                         and op.get("active", True)
+                         and not op.get("archived", False)
+                         and not op.get("hidden", False)), None)
+        if not selected:
+            raise HTTPException(400, "Opérateur non disponible pour ce pays")
+    elif req.country:
+        # A country-only request may use hosted PayDunya operator selection;
+        # use its first active entry solely for currency/limits/tariffs.
+        selected = next((op for op in cfg.get("catalog", [])
+                         if op.get("country", "").upper() == req.country.upper()
+                         and op.get("active", True)
+                         and not op.get("archived", False)
+                         and not op.get("hidden", False)), None)
+
+    currency = (selected.get("currency") if selected else req.currency or "XOF").upper()
+    if currency not in PAYDUNYA_WALLET_CURRENCIES:
+        raise HTTPException(400, "Devise PayDunya non prise en charge par le portefeuille")
+    if req.currency and req.currency.upper() != currency:
+        raise HTTPException(400, f"Devise invalide pour cet opérateur : {currency}")
+    if selected:
+        minimum = float(selected.get("min", 100))
+        maximum = float(selected.get("max", 0)) or None
+        if req.amount < minimum:
+            raise HTTPException(400, f"Montant minimum : {int(minimum)} {currency}")
+        if maximum and req.amount > maximum:
+            raise HTTPException(400, f"Montant maximum : {int(maximum)} {currency}")
+    tariff = selected or {}
+    bearer = "merchant" if req.fee_bearer in ("merchant", "receiver") else "client"
+    fees = paydunya.calculate_fees(req.amount, tariff, bearer)
+    phone = req.phone_number
+    if phone and (req.country or "").upper() == "TG":
+        try:
+            phone = paydunya.normalize_togo_phone(phone)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    dep_id = new_id()
+    parts = (req.full_name or "").strip().split(" ", 1)
+    first, last = (parts[0] or "Client"), (parts[1] if len(parts) > 1 else (parts[0] or "Client"))
+    callback = f"{os.environ.get('OFFICIAL_DOMAIN', '')}/api/webhooks/paydunya?ref={dep_id}"
     try:
-        tx = await fedapay.get_transaction(d["fedapay_id"])
-    except Exception:
-        return
-    status = (tx.get("status") or "").lower()
-    if status == "approved":
-        await _credit_momo_deposit(d)
-    elif status in ("declined", "canceled", "failed"):
-        await db.momo_deposits.update_one(
-            {"id": dep_id, "status": "pending"},
-            {"$set": {"status": "failed", "failed_reason": status}}
+        invoice = await paydunya.create_invoice(
+            cfg, amount=fees["charged_amount"], currency=currency, token=dep_id,
+            customer={"firstname": first, "lastname": last, "email": req.email,
+                      **({"phone_number": phone} if phone else {})},
+            callback_url=callback,
+            description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
+    except paydunya.PayDunyaError as exc:
+        raise HTTPException(400 if exc.status < 500 else 502,
+                            f"Passerelle PayDunya: {exc.message}")
+    token = paydunya.invoice_token(invoice)
+    if not token:
+        raise HTTPException(502, "PayDunya n'a pas retourné de token de facture")
+    psr_capability = secrets.token_urlsafe(32) if flow == "psr" else None
+    psr_capability_expires = (
+        datetime.now(timezone.utc) + timedelta(minutes=10)
+        if psr_capability else None
+    )
+
+    doc = {
+        "id": dep_id, "user_id": uid, "amount": req.amount,
+        "requested_amount": fees["requested_amount"],
+        "charged_amount": fees["charged_amount"],
+        "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+        "total_fee": fees["total_fee"], "wallet_credit_amount": fees["wallet_credit_amount"],
+        "fee_snapshot": {
+            **fees,
+            "gateway_fee_pct": float(tariff.get("gateway_fee_pct", tariff.get("fee_pct", 0))),
+            "gateway_fee_fixed": float(tariff.get("gateway_fee_fixed", 0)),
+            "platform_fee_pct": float(tariff.get("platform_fee_pct", 0)),
+            "platform_fee_fixed": float(tariff.get("platform_fee_fixed", 0)),
+        },
+        "currency": currency, "email": req.email, "full_name": req.full_name,
+        "country": req.country, "operator": req.operator,
+        "operator_name": selected.get("name") if selected else None,
+        "endpoint_slug": selected.get("endpoint_slug") if selected else None,
+        "operator_snapshot": dict(selected) if selected else None,
+        "phone_number": phone, "fee_bearer": fees["fee_bearer"],
+        "paydunya_token": token,
+        "paydunya_reference": invoice.get("reference") or invoice.get("invoice_id"),
+        "checkout_url": paydunya.checkout_url(invoice),
+        "status": "pending", "provider": "paydunya",
+        "provider_mode": cfg.get("mode", "test"), "paydunya_flow": flow,
+        "psr_capability_hash": (
+            hashlib.sha256(psr_capability.encode()).hexdigest()
+            if psr_capability else None),
+        "psr_capability_expires_at": (
+            psr_capability_expires.isoformat() if psr_capability_expires else None),
+        "psr_capability_used": False if psr_capability else None,
+        "created_at": now_iso(),
+    }
+    try:
+        await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
+    except Exception:
+        pass
+    try:
+        await db.momo_deposits.insert_one(doc)
+    except Exception as exc:
+        if "duplicate" in str(exc).lower():
+            raise HTTPException(409, "Cette facture PayDunya existe déjà")
+        raise
+    result = {
+        "id": dep_id, "status": "pending", "amount": fees["requested_amount"],
+        "requested_amount": fees["requested_amount"],
+        "charged_amount": fees["charged_amount"],
+        "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+        "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
+        "currency": currency, "mode": flow,
+    }
+    # PAR intentionally exposes only the hosted URL as a provider artifact;
+    # PSR exposes token + mode for the PayDunya client SDK.
+    if flow == "par_redirect":
+        result["checkout_url"] = doc["checkout_url"]
+    else:
+        result["psr_token_url"] = (
+            f"/api/deposits/paydunya/psr/{dep_id}/token"
+            f"?capability={psr_capability}")
+    return result
+
+
+@api.post("/deposits/mobile-money/par")
+@api.post("/deposits/mobile-money/par-redirect")
+@api.post("/deposits/paydunya/par")
+@api.post("/deposits/paydunya/par-redirect")
+async def create_paydunya_par(req: PayDunyaInvoiceRequest,
+                               uid: str = Depends(get_current_user_id)):
+    return await _create_paydunya_invoice_deposit(req, uid, "par_redirect")
+
+
+@api.post("/deposits/mobile-money/psr")
+@api.post("/deposits/paydunya/psr")
+async def create_paydunya_psr(req: PayDunyaInvoiceRequest,
+                               uid: str = Depends(get_current_user_id)):
+    return await _create_paydunya_invoice_deposit(req, uid, "psr")
+
+
+@api.get("/deposits/paydunya/psr/{deposit_id}/token")
+async def get_paydunya_psr_token(deposit_id: str, capability: str):
+    """Return the server-created invoice token to the official PSR SDK.
+
+    The URL is a short-lived bearer capability for the PayDunya SDK. It is
+    stored only as a SHA-256 hash, has no user identity, and is consumed once.
+    """
+    cfg = await get_paydunya_config()
+    if not paydunya.mode_is_enabled(cfg, "psr"):
+        raise HTTPException(503, "Le mode PayDunya PSR est désactivé")
+    if not capability or len(capability) > 256:
+        raise HTTPException(404, "Facture PSR introuvable ou indisponible")
+    capability_hash = hashlib.sha256(capability.encode()).hexdigest()
+    now = datetime.now(timezone.utc).isoformat()
+    deposit = await db.momo_deposits.find_one(
+        {
+            "id": deposit_id,
+            "provider": "paydunya",
+            "paydunya_flow": "psr",
+            "status": "pending",
+            "psr_capability_hash": capability_hash,
+            "psr_capability_used": {"$ne": True},
+            "psr_capability_expires_at": {"$gt": now},
+        },
+        {"_id": 0, "paydunya_token": 1},
+    )
+    if not deposit or not deposit.get("paydunya_token"):
+        raise HTTPException(404, "Facture PSR introuvable ou indisponible")
+    claimed = await db.momo_deposits.update_one(
+        {
+            "id": deposit_id,
+            "provider": "paydunya",
+            "paydunya_flow": "psr",
+            "status": "pending",
+            "psr_capability_hash": capability_hash,
+            "psr_capability_used": {"$ne": True},
+            "psr_capability_expires_at": {"$gt": now},
+        },
+        {"$set": {"psr_capability_used": True,
+                  "psr_capability_used_at": now_iso()}},
+    )
+    if claimed.modified_count != 1:
+        raise HTTPException(404, "Facture PSR introuvable ou indisponible")
+    return {"success": True, "token": deposit["paydunya_token"]}
+
+
+async def _reconcile_momo_deposit(dep_id: str) -> bool:
+    """Reconcile a pending PayDunya deposit server-to-server."""
+    d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
+    retryable_failed = d and d.get("status") == "failed" and d.get("retryable")
+    if not d or (d.get("status") not in ("pending", "approved") and not retryable_failed):
+        return bool(d and d.get("status") == "approved")
+    if d.get("provider") != "paydunya" or not d.get("paydunya_token"):
+        return False
+    if d.get("status") in ("pending", "failed"):
+        try:
+            cfg = await get_paydunya_config(decrypt=True)
+            response = await paydunya.confirm_invoice(cfg, d["paydunya_token"])
+            if not paydunya.confirmation_valid(
+                    response, master_key=(cfg.get("_credentials") or {}).get("master_key", ""),
+                    token=d["paydunya_token"], amount=d.get("charged_amount", d.get("amount")),
+                    currency=d.get("currency", "XOF")):
+                logger.warning("PayDunya confirmation rejected for %s", dep_id)
+                return False
+        except paydunya.PayDunyaError as exc:
+            # Configuration/credential failures must be visible to operators;
+            # transient provider failures simply leave the row pending for retry.
+            if exc.status == 500:
+                raise
+            return False
+        except Exception:
+            return False
+    await _credit_momo_deposit(d)
+    return True
+
+
+async def _claim_momo_flag(dep_id: str, flag: str) -> bool:
+    """Claim a non-wallet side effect exactly once."""
+    result = await db.momo_deposits.update_one(
+        {"id": dep_id, flag: {"$ne": True}},
+        {"$set": {flag: True, f"{flag}_claimed_at": now_iso()}})
+    return result.modified_count > 0
+
+
+async def _upsert_momo_ledger(d: dict, *, amount: float, currency: str,
+                              description: str, ledger_id: str,
+                              metadata: dict, tx_type: str = "deposit") -> None:
+    """Repairable deterministic ledger write (safe after a process crash)."""
+    doc = {
+        "id": ledger_id, "user_id": d["user_id"], "type": tx_type,
+        "direction": "in", "amount": amount, "currency": currency,
+        "status": "completed", "reference": f"BTP-PD-{d['id'][:16]}",
+        "description": description, "created_at": d.get("created_at", now_iso()),
+        "metadata": metadata,
+    }
+    try:
+        await db.transactions.create_index("id", unique=True)
+    except Exception:
+        pass
+    await db.transactions.update_one({"id": ledger_id}, {"$setOnInsert": doc}, upsert=True)
 
 
 async def _credit_momo_deposit(d: dict) -> None:
-    """Credit the user's wallet after a FedaPay approval. Idempotent.
+    """Crash-safe exactly-once wallet credit without Mongo transactions.
 
-    Fee is resolved from the admin `deposit_config` (per-country x per-operator
-    `fee_pct`). Falls back to the value stored on the deposit doc at creation
-    time, then 1% if nothing is set. Applying fees at credit-time (rather than
-    fee-lock at creation) lets the admin retroactively fix a mis-configured
-    rate without breaking the crediting logic.
-
-    If the deposit originated from a merchant API call (source="merchant_api"),
-    an additional `mobile_money.payment.approved` webhook event is dispatched
-    to the merchant's configured webhooks after the wallet credit.
+    The user update is the idempotency barrier: Mongo atomically evaluates the
+    absent deposit id and performs both the increment and set insertion.  A
+    retry after a crash repairs the deterministic ledger and status but cannot
+    increment again.
     """
-    dep_id = d["id"]
-    uid = d["user_id"]
+    dep_id, uid = d["id"], d["user_id"]
     currency = (d.get("currency") or "XOF").upper()
-    gross = float(d["amount"])
-    dep_cfg = await get_deposit_config()
-    admin_op = _find_deposit_operator(dep_cfg, d.get("country", ""), d.get("operator", ""))
-    if admin_op:
-        momo_fee_pct = float(admin_op.get("fee_pct", 1.0))
-        gateway_fee, platform_fee = _momo_platform_fee(admin_op, gross)
-    else:
-        momo_fee_pct = float(d.get("fee_pct_applied") or 1.0)
-        gateway_fee, platform_fee = round(gross * (momo_fee_pct / 100.0), 2), 0.0
-    fee = round(gross * (momo_fee_pct / 100.0), 2)
-    net = round(gross - fee, 2)
-    r = await db.momo_deposits.update_one(
-        {"id": dep_id, "status": "pending"},
+    gross = float(d.get("requested_amount", d.get("amount", 0)))
+    gateway_fee = float(d.get("gateway_fee", 0))
+    platform_fee = float(d.get("platform_fee", 0))
+    fee = float(d.get("total_fee", gateway_fee + platform_fee))
+    net = float(d.get("wallet_credit_amount", gross))
+    field = f"balance_{currency.lower()}"
+    if currency not in PAYDUNYA_WALLET_CURRENCIES:
+        logger.error("Refusing PayDunya credit in unsupported currency %s", currency)
+        return
+
+    credited = await db.users.update_one(
+        {"id": uid, "credited_deposit_ids": {"$ne": dep_id}},
+        {"$inc": {field: net}, "$addToSet": {"credited_deposit_ids": dep_id}},
+    )
+    if credited.modified_count == 0:
+        user = await db.users.find_one({"id": uid}, {"_id": 0, "credited_deposit_ids": 1})
+        if not user or dep_id not in (user.get("credited_deposit_ids") or []):
+            return
+
+    metadata = {
+        "provider": d.get("provider") or ("fedapay" if d.get("fedapay_id") else "paydunya"),
+        "paydunya_token": d.get("paydunya_token"),
+        "paydunya_reference": d.get("paydunya_reference") or d.get("fedapay_reference"),
+        "operator": d.get("operator"), "country": d.get("country"),
+        "phone_number": d.get("phone_number"), "amount_gross": gross,
+        "charged_amount": d.get("charged_amount"), "fee": fee,
+        "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+        "amount_net": net, "method": "mobile_money",
+    }
+    if d.get("source") != "link_payment":
+        await _upsert_momo_ledger(
+            d, amount=net, currency=currency,
+            description=f"Dépôt Mobile Money ({d.get('operator')})",
+            ledger_id=f"paydunya-deposit-{dep_id}", metadata=metadata)
+    await db.momo_deposits.update_one(
+        {"id": dep_id, "status": {"$in": ["pending", "approved", "failed"]}},
         {"$set": {"status": "approved", "approved_at": now_iso(),
                   "amount_gross": gross, "fee": fee,
-                  "fee_pct": momo_fee_pct, "amount_net": net}}
-    )
-    if r.modified_count == 0:
-        return  # already credited
-    field = f"balance_{currency.lower()}"
-    if field not in ("balance_xof", "balance_xaf"):
-        field = "balance_xof"
-    await db.users.update_one({"id": uid}, {"$inc": {field: net}})
-    await record_tx(uid, "deposit", "in", net, currency,
-                    status="completed",
-                    description=f"Dépôt Mobile Money ({d.get('operator')})",
-                    metadata={"fedapay_id": d.get("fedapay_id"),
-                              "fedapay_reference": d.get("fedapay_reference"),
-                              "operator": d.get("operator"),
-                              "country": d.get("country"),
-                              "phone_number": d.get("phone_number"),
-                              "amount_gross": gross,
-                              "fee": fee, "fee_pct": momo_fee_pct,
-                              "gateway_fee": gateway_fee,
-                              "platform_fee": platform_fee,
-                              "amount_net": net,
-                              "method": "mobile_money"})
-    await notify(uid, "deposit_success",
-                 "Dépôt Mobile Money confirmé",
-                 f"Votre dépôt de {gross:,.0f} {currency} a été crédité (net {net:,.0f} {currency} après frais).",
-                 data={"deposit_id": dep_id, "amount": net, "currency": currency})
-    # If the deposit was initiated via the merchant API, fan-out a signed
-    # webhook so the merchant's backend can reconcile with their order.
-    if d.get("source") == "merchant_api":
+                  "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                  "amount_net": net}})
+
+    if await _claim_momo_flag(dep_id, "notification_claimed"):
+        await notify(uid, "deposit_success", "Dépôt Mobile Money confirmé",
+                     f"Votre dépôt de {gross:,.0f} {currency} a été crédité.",
+                     data={"deposit_id": dep_id, "amount": net, "currency": currency})
+        await db.momo_deposits.update_one(
+            {"id": dep_id}, {"$set": {"notification_sent": True}})
+    if d.get("source") == "merchant_api" and await _claim_momo_flag(dep_id, "webhook_claimed"):
         await _deliver_webhook(uid, "mobile_money.payment.approved", {
-            "payment_id": dep_id,
-            "reference": d.get("reference"),
-            "amount": _format_amount(gross),
-            "amount_gross": _format_amount(gross),
-            "amount_net": _format_amount(net),
-            "fee": _format_amount(fee),
-            "fee_pct": momo_fee_pct,
-            "currency": currency,
-            "country": d.get("country"),
-            "operator": d.get("operator"),
-            "customer_email": d.get("email"),
-            "customer_phone": d.get("phone_number"),
-            "provider_reference": d.get("fedapay_reference"),
-            "approved_at": _format_iso(datetime.now(timezone.utc)),
-        })
+            "payment_id": dep_id, "reference": d.get("reference"),
+            "amount": _format_amount(gross), "amount_gross": _format_amount(gross),
+            "amount_net": _format_amount(net), "fee": _format_amount(fee),
+            "gateway_fee": _format_amount(gateway_fee),
+            "platform_fee": _format_amount(platform_fee), "currency": currency,
+            "country": d.get("country"), "operator": d.get("operator"),
+            "customer_email": d.get("email"), "customer_phone": d.get("phone_number"),
+            "provider_reference": d.get("paydunya_reference")
+                or d.get("fedapay_reference"),
+            "approved_at": _format_iso(datetime.now(timezone.utc))})
+        await db.momo_deposits.update_one(
+            {"id": dep_id}, {"$set": {"webhook_sent": True}})
     elif d.get("source") == "link_payment" and d.get("link_payment_id"):
-        # Mark the link_payment as paid + increment link stats
         await db.link_payments.update_one(
             {"id": d["link_payment_id"], "status": "pending"},
             {"$set": {"status": "paid", "paid_at": now_iso(),
-                      "amount_net": net, "fee": fee}}
-        )
+                      "amount_net": net, "fee": fee}})
+        await db.momo_deposits.update_one(
+            {"id": dep_id}, {"$set": {"link_payment_claimed": True}})
         lp = await db.link_payments.find_one({"id": d["link_payment_id"]}, {"_id": 0})
         if lp:
+            await _upsert_momo_ledger(
+                d, amount=net, currency=currency,
+                description=f"Paiement lien {lp.get('slug')}",
+                ledger_id=f"paydunya-link-{dep_id}",
+                metadata={**metadata, "link_id": lp["link_id"],
+                          "link_payment_id": lp["id"]}, tx_type="link_payment")
+        if lp:
+            # The merchant link counter gets its own idempotency barrier so a
+            # crash between this update and the deposit flag cannot lose the
+            # accounting side effect or count it twice.
             await db.payment_links.update_one(
-                {"id": lp["link_id"]},
-                {"$inc": {"paid_count": 1, "total_amount": gross}}
-            )
-            await record_tx(uid, "link_payment", "in", net, currency,
-                            description=f"Paiement lien {lp.get('slug')}",
-                            metadata={"link_id": lp["link_id"], "link_payment_id": lp["id"],
-                                      "amount_gross": gross, "fee": fee, "fee_pct": momo_fee_pct,
-                                      "gateway_fee": gateway_fee,
-                                      "platform_fee": platform_fee,
-                                      "method": "mobile_money", "operator": d.get("operator")})
+                {"id": lp["link_id"], "paydunya_payment_ids": {"$ne": dep_id}},
+                {"$inc": {"paid_count": 1, "total_amount": gross},
+                 "$addToSet": {"paydunya_payment_ids": dep_id}})
+            await db.momo_deposits.update_one(
+                {"id": dep_id}, {"$set": {"link_stats_claimed": True}})
+
+
+async def _legacy_credit_momo_deposit_fedapay(d: dict) -> None:
+    """Deprecated compatibility shim for old FedaPay webhook rows."""
+    # Existing FedaPay rows are not routed through the PayDunya flow.  Keep
+    # the old function name available for deployments with historical rows,
+    # but apply their creation-time values rather than current tariffs.
+    if d.get("provider") == "paydunya":
+        return await _credit_momo_deposit(d)
+    gross = float(d.get("amount", 0))
+    fee = float(d.get("fee", round(
+        gross * float(d.get("fee_pct_applied", 0)) / 100, 2)))
+    old = dict(d)
+    old.update({
+        "requested_amount": gross, "charged_amount": gross,
+        "gateway_fee": float(d.get("gateway_fee", fee)),
+        "platform_fee": float(d.get("platform_fee", 0)),
+        "total_fee": fee, "wallet_credit_amount": float(d.get("amount_net", gross - fee)),
+    })
+    return await _credit_momo_deposit(old)
 
 
 @api.get("/deposits/mobile-money/{deposit_id}")
@@ -1467,10 +1845,67 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
     d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
     if not d:
         raise HTTPException(404, "Not found")
-    if d.get("status") == "pending":
+    if d.get("status") in ("pending", "approved") or (
+            d.get("status") == "failed" and d.get("retryable")):
         await _reconcile_momo_deposit(deposit_id)
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     return d
+
+
+@api.post("/webhooks/paydunya")
+async def paydunya_webhook(request: Request):
+    """PayDunya form webhook.
+
+    PayDunya signs the static form hash with SHA-512(master key), rather than
+    using a configurable webhook secret.  We still confirm the invoice over
+    the API before changing any wallet balance.
+    """
+    try:
+        form = dict(await request.form())
+    except Exception:
+        raw = await request.body()
+        try:
+            form = json.loads(raw)
+        except Exception:
+            from urllib.parse import parse_qs
+            form = {k: v[-1] for k, v in parse_qs(raw.decode()).items()}
+    payload, supplied_hash = paydunya.parse_webhook(form)
+    cfg = await get_paydunya_config(decrypt=True)
+    master = (cfg.get("_credentials") or {}).get("master_key", "")
+    if not paydunya.verify_static_hash(supplied_hash or payload.get("hash", ""), master):
+        raise HTTPException(400, "Invalid PayDunya webhook hash")
+    token = paydunya.invoice_token(payload)
+    dep = await db.momo_deposits.find_one(
+        {"provider": "paydunya", "paydunya_token": token}, {"_id": 0})
+    event_id = f"paydunya:{token}:{payload.get('status', '')}:{payload.get('response_code', '')}"
+    prior_event = await db.webhook_events.find_one(
+        {"event_id": event_id}, {"_id": 0, "processed": 1})
+    if prior_event and prior_event.get("processed"):
+        return {"received": True, "duplicate": True}
+    try:
+        await db.webhook_events.create_index("event_id", unique=True, sparse=True)
+    except Exception:
+        pass
+    if not prior_event:
+        try:
+            await db.webhook_events.insert_one({
+                "event_id": event_id, "type": "paydunya",
+                "payload": payload, "received_at": now_iso(), "processed": False})
+        except Exception:
+            # A concurrent callback may have won the unique insert.  It is
+            # safe to continue and let the pending->approved guard decide.
+            prior_event = await db.webhook_events.find_one(
+                {"event_id": event_id}, {"_id": 0, "processed": 1})
+            if prior_event and prior_event.get("processed"):
+                return {"received": True, "duplicate": True}
+    confirmed = False
+    if dep and (dep.get("status") in ("pending", "approved") or
+                (dep.get("status") == "failed" and dep.get("retryable"))):
+        confirmed = await _reconcile_momo_deposit(dep["id"])
+    if confirmed:
+        await db.webhook_events.update_one(
+            {"event_id": event_id}, {"$set": {"processed": True, "processed_at": now_iso()}})
+    return {"received": True}
 
 
 @api.post("/webhooks/fedapay")
@@ -1506,7 +1941,7 @@ async def fedapay_webhook(request: Request):
             tx_id = entity.get("id")
             d = await db.momo_deposits.find_one({"fedapay_id": tx_id})
             if d:
-                await _credit_momo_deposit(d)
+                await _legacy_credit_momo_deposit_fedapay(d)
         elif ev_name in ("transaction.canceled", "transaction.declined", "transaction.refunded"):
             tx_id = entity.get("id")
             d = await db.momo_deposits.find_one({"fedapay_id": tx_id})
@@ -2038,11 +2473,15 @@ async def get_link_payment_status(payment_id: str):
     lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     if not lp:
         raise HTTPException(404, "Not found")
-    # Mobile Money: poll FedaPay for the latest status
+    # Mobile Money: reconcile PayDunya server-to-server (legacy FedaPay rows
+    # remain readable, but are not used by newly-created links).
     if lp.get("method") == "mobile_money" and lp.get("status") == "pending":
         d = await db.momo_deposits.find_one({"id": lp.get("momo_deposit_id")}, {"_id": 0})
         if d:
-            if d.get("status") == "approved":
+            if d.get("provider") == "paydunya" and d.get("status") in ("pending", "approved"):
+                await _reconcile_momo_deposit(d["id"])
+                lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
+            elif d.get("status") == "approved":
                 await db.link_payments.update_one(
                     {"id": payment_id, "status": "pending"},
                     {"$set": {"status": "paid",
@@ -2072,19 +2511,19 @@ class LinkPayMoMoRequest(BaseModel):
     country: str  # ISO-2
     operator: str
     phone_number: str
-    fee_bearer: Literal["sender", "receiver"] = "sender"
+    fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "sender"
 
 
 @api.post("/links/pay/mobile-money")
 async def start_link_payment_momo(req: LinkPayMoMoRequest):
     """Public endpoint: a customer paying a payment link via Mobile Money.
 
-    Reuses the FedaPay flow (create_transaction → generate_token → USSD prompt)
-    and mirrors the deposit into a `momo_deposits` row so the existing webhook
-    handler (`_credit_momo_deposit`) credits the merchant's wallet on approval.
+    PayDunya SoftPay flow.  The merchant is credited only after the same
+    server-side confirmation/reconciliation used by wallet deposits.
     """
-    if not fedapay.is_configured():
-        raise HTTPException(503, "Passerelle Mobile Money non configurée")
+    cfg = await get_paydunya_config(decrypt=True)
+    if not cfg.get("enabled") or not paydunya.mode_is_enabled(cfg, "softpay_direct"):
+        raise HTTPException(503, "Le paiement direct SoftPay est désactivé")
     link = await db.payment_links.find_one({"slug": req.slug, "active": True})
     if not link:
         raise HTTPException(404, "Lien introuvable ou inactif")
@@ -2096,20 +2535,31 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
             raise HTTPException(400, "Montant requis pour ce lien")
         amount = float(req.amount)
 
-    op = fedapay.operator_for(req.country, req.operator)
-    if not op or op["kind"] not in ("collect", "both"):
-        raise HTTPException(400, "Opérateur indisponible pour ce pays")
-    dep_cfg = await get_deposit_config()
-    admin_op = _find_deposit_operator(dep_cfg, req.country, req.operator)
+    admin_op = next((op for op in cfg.get("catalog", [])
+                     if op.get("country", "").upper() == req.country.upper()
+                     and op.get("code", "").lower() == req.operator.lower()
+                     and op.get("active", True)
+                     and not op.get("archived", False)
+                     and not op.get("hidden", False)), None)
     if not admin_op:
         raise HTTPException(400, "Cet opérateur est désactivé.")
     currency = (admin_op.get("currency") or "XOF").upper()
+    if currency not in PAYDUNYA_WALLET_CURRENCIES:
+        raise HTTPException(400, "Devise PayDunya non prise en charge par le portefeuille")
     min_amt = float(admin_op.get("min", 100))
     max_amt = float(admin_op.get("max", 0)) or None
     if amount < min_amt:
         raise HTTPException(400, f"Montant minimum : {int(min_amt)} {currency}")
     if max_amt and amount > max_amt:
         raise HTTPException(400, f"Montant maximum : {int(max_amt)} {currency}")
+    bearer = "merchant" if req.fee_bearer in ("receiver", "merchant") else "client"
+    fees = paydunya.calculate_fees(amount, admin_op, bearer)
+    phone = req.phone_number
+    if req.country.upper() == "TG":
+        try:
+            phone = paydunya.normalize_togo_phone(phone)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     lp_id = new_id()
     dep_id = new_id()
@@ -2118,66 +2568,111 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
     last = parts[1] if len(parts) > 1 else first
 
     try:
-        tx = await fedapay.create_transaction(
-            amount=int(amount), currency=currency,
+        invoice = await paydunya.create_invoice(
+            cfg, amount=fees["charged_amount"], currency=currency, token=dep_id,
+            customer={"firstname": first, "lastname": last, "email": req.email,
+                      "phone_number": phone},
+            callback_url=f"{os.environ.get('OFFICIAL_DOMAIN', '')}/api/webhooks/paydunya?ref={dep_id}",
             description=f"Lien Biz-transPay {link.get('title') or req.slug}",
-            customer_email=req.email, customer_firstname=first,
-            customer_lastname=last, customer_phone=req.phone_number,
-            customer_country=req.country,
-            metadata={"kind": "link_payment_momo", "link_id": link["id"],
-                      "link_payment_id": lp_id,
-                      "biztranspay_deposit_id": dep_id,
-                      "fee_bearer": req.fee_bearer},
         )
-    except fedapay.FedaPayError as e:
-        raise HTTPException(400 if e.status < 500 else 502,
-                            f"Passerelle Mobile Money: {e.message}")
-    tx_id = tx.get("id")
-    ref = tx.get("reference") or f"BTP-{lp_id[:8]}"
-    try:
-        token_resp = await fedapay.generate_token(tx_id)
-    except fedapay.FedaPayError as e:
-        raise HTTPException(400, f"Passerelle Mobile Money: {e.message}")
-    token = token_resp.get("token") or ""
-    checkout_url = token_resp.get("url")
-    prompt_sent = False
-    try:
-        await fedapay.send_mobile_money(op["mode"], token)
-        prompt_sent = True
-    except fedapay.FedaPayError:
-        pass
+        token = paydunya.invoice_token(invoice)
+        if not token:
+            raise paydunya.PayDunyaError(502, "PayDunya did not return an invoice token")
+    except paydunya.PayDunyaError as exc:
+        raise HTTPException(400 if exc.status < 500 else 502,
+                            f"Passerelle Mobile Money: {exc.message}")
+    ref = invoice.get("reference") or invoice.get("invoice_id")
+    checkout_url = paydunya.checkout_url(invoice)
 
-    # Mirror the deposit → shared credit path via `_credit_momo_deposit`
-    await db.momo_deposits.insert_one({
+    # Persist both local records before triggering SoftPay.  This makes a
+    # callback immediately after the provider request observable locally.
+    momo_doc = {
         "id": dep_id,
         "user_id": link["user_id"],  # credit the merchant
-        "amount": amount, "currency": currency,
+        "amount": fees["requested_amount"], "requested_amount": fees["requested_amount"],
+        "charged_amount": fees["charged_amount"],
+        "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+        "total_fee": fees["total_fee"], "wallet_credit_amount": fees["wallet_credit_amount"],
+        "fee_snapshot": {**fees, "gateway_fee_pct": float(admin_op.get("gateway_fee_pct", admin_op.get("fee_pct", 0))),
+                         "gateway_fee_fixed": float(admin_op.get("gateway_fee_fixed", 0)),
+                         "platform_fee_pct": float(admin_op.get("platform_fee_pct", 0)),
+                         "platform_fee_fixed": float(admin_op.get("platform_fee_fixed", 0))},
+        "operator_snapshot": dict(admin_op),
+        "currency": currency,
         "email": req.email, "full_name": req.full_name,
         "country": req.country, "operator": req.operator,
         "operator_name": admin_op.get("name"),
-        "fee_pct_applied": float(admin_op.get("fee_pct", 1.0)),
-        "mode": op["mode"], "phone_number": req.phone_number,
-        "fee_bearer": req.fee_bearer, "fedapay_id": tx_id,
-        "fedapay_reference": ref, "checkout_url": checkout_url,
-        "status": "pending", "prompt_sent": prompt_sent,
+        "mode": "softpay_direct", "provider": "paydunya",
+        "provider_mode": cfg.get("mode", "test"), "phone_number": phone,
+        "fee_bearer": fees["fee_bearer"], "paydunya_token": token,
+        "paydunya_reference": ref, "checkout_url": checkout_url,
+        "status": "pending", "prompt_sent": False,
         "created_at": now_iso(), "source": "link_payment",
         "link_payment_id": lp_id,
-    })
+    }
     doc = {
         "id": lp_id, "link_id": link["id"], "slug": req.slug,
         "method": "mobile_money",
-        "amount": amount, "currency": currency,
+        "amount": fees["requested_amount"], "charged_amount": fees["charged_amount"],
+        "currency": currency,
         "country": req.country, "operator": req.operator,
         "customer_email": req.email, "customer_name": req.full_name,
-        "customer_phone": req.phone_number,
+        "customer_phone": phone,
         "status": "pending",
         "momo_deposit_id": dep_id,
-        "fedapay_id": tx_id, "fedapay_reference": ref,
+        "paydunya_token": token, "paydunya_reference": ref,
         "checkout_url": checkout_url,
-        "prompt_sent": prompt_sent,
+        "fee_bearer": fees["fee_bearer"],
+        "prompt_sent": False,
         "created_at": now_iso(),
     }
-    await db.link_payments.insert_one(dict(doc))
+    try:
+        await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
+        if await db.momo_deposits.find_one({"paydunya_token": token}, {"_id": 1}):
+            raise HTTPException(409, "Cette facture PayDunya existe déjà")
+        await db.momo_deposits.insert_one(momo_doc)
+        try:
+            await db.link_payments.insert_one(dict(doc))
+        except Exception:
+            await db.momo_deposits.update_one(
+                {"id": dep_id}, {"$set": {"status": "failed",
+                                          "retryable": True,
+                                          "prompt_error": "local link record failed"}})
+            raise
+        softpay = await paydunya.softpay_payment(
+            cfg, invoice_token=token, operator=admin_op, phone=phone,
+            amount=fees["charged_amount"], currency=currency,
+            customer_name=req.full_name, customer_email=req.email)
+        ref = ref or softpay.get("reference")
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"prompt_sent": True, "paydunya_reference": ref}})
+        await db.link_payments.update_one(
+            {"id": lp_id, "status": "pending"},
+            {"$set": {"prompt_sent": True, "paydunya_reference": ref}})
+        doc["prompt_sent"] = True
+    except HTTPException:
+        raise
+    except paydunya.PayDunyaError as exc:
+        safe_error = str(exc.message or "SoftPay provider error")[:240]
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"status": "failed", "retryable": True,
+                      "prompt_error": safe_error, "failed_at": now_iso()}})
+        await db.link_payments.update_one(
+            {"id": lp_id, "status": "pending"},
+            {"$set": {"status": "failed", "prompt_error": safe_error}})
+        raise HTTPException(400 if exc.status < 500 else 502,
+                            f"Passerelle Mobile Money: {exc.message}")
+    except Exception as exc:
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"status": "failed", "retryable": True,
+                      "prompt_error": str(exc)[:240], "failed_at": now_iso()}})
+        await db.link_payments.update_one(
+            {"id": lp_id, "status": "pending"},
+            {"$set": {"status": "failed", "prompt_error": str(exc)[:240]}})
+        raise HTTPException(502, "Échec du déclenchement SoftPay")
     doc.pop("_id", None)
     return doc
 
@@ -6190,6 +6685,118 @@ async def admin_update_deposit_config(req: AdminDepositConfigReq,
     await audit(admin["id"], admin["username"], "update_deposit_config",
                 details=updates)
     return await get_deposit_config()
+
+
+class PayDunyaProviderUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    mode: Optional[Literal["test", "live"]] = None
+    store_name: Optional[str] = None
+    modes: Optional[dict[str, dict[str, bool]]] = None
+    catalog: Optional[list[dict]] = None
+    master_key: Optional[str] = None
+    public_key: Optional[str] = None
+    private_key: Optional[str] = None
+    token: Optional[str] = None
+    clear_master_key: bool = False
+    clear_public_key: bool = False
+    clear_private_key: bool = False
+    clear_token: bool = False
+
+
+def _validate_paydunya_catalog(catalog: list[dict]) -> list[dict]:
+    result = []
+    seen = set()
+    required = ("country", "code", "name", "currency", "endpoint_slug")
+    for raw in catalog:
+        op = dict(raw)
+        if any(not str(op.get(k) or "").strip() for k in required):
+            raise HTTPException(400, "Chaque opérateur doit renseigner pays, code, nom et endpoint")
+        op["country"] = str(op["country"]).upper()
+        op["code"] = str(op["code"]).lower()
+        if op["country"] not in paydunya.COUNTRY_LABELS:
+            raise HTTPException(400, "Pays PayDunya invalide")
+        op["currency"] = str(op["currency"]).upper()
+        if op["currency"] not in PAYDUNYA_WALLET_CURRENCIES:
+            raise HTTPException(400, "Devise PayDunya non prise en charge")
+        if op["code"] in seen:
+            raise HTTPException(400, "Code opérateur PayDunya en double")
+        seen.add(op["code"])
+        op.setdefault("country_label", paydunya.COUNTRY_LABELS[op["country"]])
+        op["active"] = bool(op.get("active", False))
+        op["archived"] = bool(op.get("archived", False))
+        op["hidden"] = bool(op.get("hidden", False))
+        for key in ("fee_pct", "gateway_fee_pct", "gateway_fee_fixed", "platform_fee_pct",
+                    "platform_fee_fixed", "min", "max"):
+            try:
+                op[key] = float(op.get(key, 0))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Valeur invalide pour {key}")
+            if op[key] < 0:
+                raise HTTPException(400, f"Valeur négative interdite pour {key}")
+        if op["max"] and op["max"] < op["min"]:
+            raise HTTPException(400, "La limite maximum doit dépasser la minimum")
+        result.append(op)
+    return result
+
+
+@api.get("/admin/payment-providers/paydunya")
+async def admin_get_paydunya(admin=Depends(get_admin)):
+    return _paydunya_public_config(await get_paydunya_config(), admin=True)
+
+
+@api.put("/admin/payment-providers/paydunya")
+async def admin_update_paydunya(req: PayDunyaProviderUpdate,
+                                admin=Depends(get_admin)):
+    current = await get_paydunya_config()
+    updates: dict = {}
+    unset: dict = {}
+    data = req.model_dump(exclude_none=True)
+    for key in ("enabled", "mode", "store_name"):
+        if key in data:
+            updates[key] = data[key]
+    if req.modes is not None:
+        current_modes = current.get("modes")
+        if not isinstance(current_modes, dict):
+            current_modes = paydunya.default_modes()
+        merged_modes = {
+            name: dict(current_modes.get(name) or {"enabled": False})
+            for name in paydunya.PAY_IN_MODES
+        }
+        for name, patch in req.modes.items():
+            if name not in paydunya.PAY_IN_MODES:
+                raise HTTPException(400, f"Mode PayDunya invalide : {name}")
+            if not isinstance(patch, dict) or set(patch) - {"enabled"}:
+                raise HTTPException(400, f"Configuration invalide pour le mode : {name}")
+            if "enabled" in patch and not isinstance(patch["enabled"], bool):
+                raise HTTPException(400, f"Le mode {name} doit être booléen")
+            merged_modes[name]["enabled"] = bool(
+                patch.get("enabled", merged_modes[name].get("enabled", False)))
+        updates["modes"] = merged_modes
+    if req.catalog is not None:
+        updates["catalog"] = _validate_paydunya_catalog(req.catalog)
+    session_secret = os.environ.get("SESSION_SECRET", "")
+    for key in ("master_key", "public_key", "private_key", "token"):
+        clear = bool(data.get(f"clear_{key}", False))
+        value = data.get(key)
+        # Empty strings intentionally preserve the old value.  Clearing is an
+        # explicit, separate boolean to avoid accidental frontend clears.
+        if clear:
+            unset[f"{key}_encrypted"] = ""
+        elif value is not None and str(value).strip():
+            updates[f"{key}_encrypted"] = paydunya.encrypt_secret(
+                str(value).strip(), session_secret)
+    if not updates and not unset:
+        return _paydunya_public_config(current, admin=True)
+    update_doc = {}
+    if updates:
+        update_doc["$set"] = updates
+    if unset:
+        update_doc["$unset"] = unset
+    await db.settings.update_one({"id": "payment_provider_paydunya"},
+                                 update_doc, upsert=True)
+    await audit(admin["id"], admin["username"], "update_paydunya_provider",
+                details=list(updates.keys()) + list(unset.keys()))
+    return _paydunya_public_config(await get_paydunya_config(), admin=True)
 
 
 @api.get("/users/lookup")
