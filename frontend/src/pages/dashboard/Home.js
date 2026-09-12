@@ -69,7 +69,7 @@ export default function DashboardHome() {
         className="relative isolate overflow-hidden rounded-[1.45rem] bg-gradient-to-br from-[#1672F2] via-[#0754D1] to-[#123AAB] text-white shadow-[0_18px_38px_-18px_rgba(25,83,194,.62)] sm:rounded-[1.7rem]"
       >
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_72%_28%,rgba(65,181,255,.38),transparent_28%),linear-gradient(145deg,rgba(255,255,255,.13),transparent_38%)]" />
-        <div className="relative min-h-[14.5rem] border-b border-white/20 px-4 pt-4 sm:min-h-[17rem] sm:px-7 sm:pt-6">
+        <div className="relative min-h-[12.5rem] border-b border-white/20 px-4 pt-4 sm:min-h-[14.5rem] sm:px-7 sm:pt-6">
           <div className="relative z-10 flex max-w-[58%] items-start gap-2.5 sm:max-w-[56%] sm:gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 shadow-inner ring-1 ring-white/15 sm:h-12 sm:w-12">
               <Wallet className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} />
@@ -79,10 +79,7 @@ export default function DashboardHome() {
               <p className="mt-1 max-w-[19rem] text-[10px] leading-snug text-white/78 sm:text-sm">Gérez tous vos soldes en un seul endroit</p>
             </div>
           </div>
-          <div className="absolute bottom-5 left-4 z-10 flex h-[4.5rem] w-[10rem] items-center justify-center sm:bottom-7 sm:left-8 sm:h-[6.4rem] sm:w-[15rem]">
-            <img src="/wallet-card-logo.png" alt="Biz-transPay" className="h-full w-full object-contain" />
-          </div>
-          <img src="/wallet-card-illustration.png" alt="" aria-hidden="true" className="absolute bottom-0 right-1 z-[1] h-[11.5rem] w-[54%] object-contain object-bottom sm:bottom-[-.35rem] sm:right-3 sm:h-[17rem] sm:w-[49%]" />
+          <img src="/wallet-card-illustration-cfa-transparent.png" alt="" aria-hidden="true" className="absolute bottom-4 right-2 z-[1] h-[9.5rem] w-[48%] object-contain object-bottom sm:bottom-5 sm:right-6 sm:h-[12rem] sm:w-[43%]" />
           <button
             onClick={toggleHidden}
             data-testid="btn-toggle-balance"
@@ -93,20 +90,26 @@ export default function DashboardHome() {
           </button>
         </div>
 
-        <div className="relative grid grid-cols-3 gap-0 bg-[#0A48BE]/55 px-2.5 py-3 sm:px-6 sm:py-4">
+        <div className="relative grid min-h-[5.5rem] grid-cols-3 gap-0 bg-[#0A48BE]/55 px-2.5 py-4 sm:min-h-[7rem] sm:px-6 sm:py-5">
           {wallets.map((b, index) => (
             <div
               key={b.curr}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
-              className={`min-w-0 px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
+              className={`flex min-w-0 items-center px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
             >
-              <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#34B8FF] to-[#1470ED] text-[7px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/20 sm:h-11 sm:w-11 sm:text-[9px]">
+              <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[8px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:h-14 sm:w-14 sm:text-[11px] ${
+                  b.curr === 'XOF'
+                    ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
+                    : b.curr === 'XAF'
+                      ? 'bg-gradient-to-br from-[#B15CFF] to-[#7138E8]'
+                      : 'bg-gradient-to-br from-[#32D6A0] to-[#07966F]'
+                }`}>
                   {b.curr === 'XOF' ? 'FCFA' : b.curr === 'XAF' ? 'CFA' : 'USDT'}
                 </span>
                 <div
                   data-testid={`balance-value-${b.curr.toLowerCase()}`}
-                  className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[clamp(.52rem,2.3vw,1.1rem)] font-bold tracking-[-.045em] text-white sm:text-[clamp(.8rem,1.8vw,1.25rem)]"
+                  className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[clamp(.65rem,2.8vw,1.2rem)] font-extrabold tracking-[-.045em] text-white sm:text-[clamp(1rem,2vw,1.5rem)]"
                   title={`${mask(b.bal)} ${b.curr}`}
                 >
                   {mask(b.bal)} <span className="text-[.72em] font-semibold text-white/80">{b.curr}</span>
