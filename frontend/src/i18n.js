@@ -87,7 +87,7 @@ const resources = {
       security: {
         badge: 'Pensé pour votre activité',
         title: 'Un cadre fiable pour vos ventes en ligne',
-        subtitle: 'Vos données, vos offres et les informations liées à vos ventes sont accompagnées par des contrôles adaptés à une activité numérique.',
+         subtitle: 'Vos données, vos offres et les informations liées à vos ventes bénéficient de contrôles adaptés à votre activité numérique.',
         s1: 'Chiffrement des données',
         s2: 'Vérification KYC',
         s3: 'Authentification 2FA',
@@ -96,7 +96,7 @@ const resources = {
       },
       policy: {
         title: 'Utilisation interdite',
-        body: "Les systèmes Ponzi, les activités frauduleuses, le blanchiment d'argent et toute activité illégale sont strictement interdits.",
+         body: "Les systèmes de Ponzi, les activités frauduleuses, le blanchiment d’argent et toute activité illégale sont strictement interdits.",
         warn: 'Toute violation entraîne le blocage automatique du compte.',
       },
       cta: {
