@@ -63,66 +63,53 @@ export default function DashboardHome() {
         </div>
       )}
 
-      {/* Unified wallet card: balances stay in one compact visual surface. */}
+      {/* Unified wallet card: composition follows the supplied wallet reference. */}
       <section
         data-testid="wallet-balance-card"
-        className="relative isolate overflow-hidden rounded-[1.45rem] bg-gradient-to-br from-[#3184F4] via-[#1760D9] to-[#123DAD] px-4 py-4 text-white shadow-[0_18px_38px_-18px_rgba(25,83,194,.62)] sm:rounded-[1.7rem] sm:px-6 sm:py-5"
+        className="relative isolate overflow-hidden rounded-[1.45rem] bg-gradient-to-br from-[#1672F2] via-[#0754D1] to-[#123AAB] text-white shadow-[0_18px_38px_-18px_rgba(25,83,194,.62)] sm:rounded-[1.7rem]"
       >
-        <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-[#62B5FF]/20 blur-[1px]" />
-        <div className="pointer-events-none absolute -bottom-40 left-1/4 h-72 w-72 rounded-full border border-white/10" />
-        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[.09] to-transparent" />
-
-        <div className="relative flex min-h-[10.5rem] items-start justify-between gap-3 sm:min-h-[11.5rem]">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15 ring-1 ring-white/10 backdrop-blur-sm sm:h-10 sm:w-10">
-                <Wallet className="h-[18px] w-[18px] text-white sm:h-5 sm:w-5" strokeWidth={1.8} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="font-cabinet text-[1.05rem] font-extrabold leading-tight tracking-[-.025em] sm:text-xl">Mon portefeuille</h2>
-                <p className="mt-0.5 max-w-[16rem] text-[10px] leading-snug text-white/72 sm:text-xs">Gérez tous vos soldes en un seul endroit</p>
-              </div>
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_72%_28%,rgba(65,181,255,.38),transparent_28%),linear-gradient(145deg,rgba(255,255,255,.13),transparent_38%)]" />
+        <div className="relative min-h-[14.5rem] border-b border-white/20 px-4 pt-4 sm:min-h-[17rem] sm:px-7 sm:pt-6">
+          <div className="relative z-10 flex max-w-[58%] items-start gap-2.5 sm:max-w-[56%] sm:gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 shadow-inner ring-1 ring-white/15 sm:h-12 sm:w-12">
+              <Wallet className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} />
             </div>
-            <div className="mt-3 flex h-[3.55rem] w-[7.9rem] items-center justify-center overflow-hidden rounded-xl bg-white px-2 shadow-sm sm:mt-4 sm:h-[4.05rem] sm:w-[9.4rem]">
-              <img src="/logo-full.png" alt="Biz-transPay" className="h-full w-full object-contain" />
+            <div className="min-w-0 pt-0.5">
+              <h2 className="whitespace-nowrap font-cabinet text-[1.05rem] font-extrabold leading-tight tracking-[-.035em] sm:text-[1.8rem]">Mon portefeuille</h2>
+              <p className="mt-1 max-w-[19rem] text-[10px] leading-snug text-white/78 sm:text-sm">Gérez tous vos soldes en un seul endroit</p>
             </div>
           </div>
-
-          <div className="flex shrink-0 flex-col items-end gap-2">
-            <button
-              onClick={toggleHidden}
-              data-testid="btn-toggle-balance"
-              aria-label={hidden ? 'Afficher les soldes' : 'Masquer les soldes'}
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/10 backdrop-blur-sm transition-colors hover:bg-white/25 sm:h-10 sm:w-10"
-            >
-              {hidden ? <Eye className="h-[17px] w-[17px]" /> : <EyeOff className="h-[17px] w-[17px]" />}
-            </button>
-            <div className="relative mt-1 h-[4.25rem] w-[6.2rem] opacity-95 sm:h-[4.8rem] sm:w-[7.8rem]" aria-hidden="true">
-              <div className="absolute right-0 top-1 h-10 w-[4.9rem] rotate-[10deg] rounded-lg border border-white/40 bg-[#5DB5FA]/55 shadow-lg sm:h-12 sm:w-[6.1rem]" />
-              <div className="absolute right-1 top-3 h-10 w-[5.4rem] -rotate-[4deg] rounded-lg border border-white/55 bg-[#1661D7] shadow-xl sm:h-12 sm:w-[6.8rem]" />
-              <div className="absolute bottom-0 right-0 flex h-9 w-[5.7rem] items-center justify-center rounded-lg border border-white/55 bg-gradient-to-br from-[#4A9DF2] to-[#1550C5] shadow-xl sm:h-11 sm:w-[7.2rem]">
-                <Wallet className="h-5 w-5 text-white/90 sm:h-6 sm:w-6" strokeWidth={1.5} />
-              </div>
-              <div className="absolute bottom-0 left-0 h-5 w-5 rounded-full border border-white/40 bg-[#36B6F2] shadow-md sm:h-6 sm:w-6" />
-            </div>
+          <div className="absolute bottom-5 left-4 z-10 flex h-[4.5rem] w-[10rem] items-center justify-center sm:bottom-7 sm:left-8 sm:h-[6.4rem] sm:w-[15rem]">
+            <img src="/wallet-card-logo.png" alt="Biz-transPay" className="h-full w-full object-contain" />
           </div>
+          <img src="/wallet-card-illustration.png" alt="" aria-hidden="true" className="absolute bottom-0 right-1 z-[1] h-[11.5rem] w-[54%] object-contain object-bottom sm:bottom-[-.35rem] sm:right-3 sm:h-[17rem] sm:w-[49%]" />
+          <button
+            onClick={toggleHidden}
+            data-testid="btn-toggle-balance"
+            aria-label={hidden ? 'Afficher les soldes' : 'Masquer les soldes'}
+            className="absolute right-3 top-3 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/15 backdrop-blur-sm transition-colors hover:bg-white/25 sm:right-6 sm:top-5 sm:h-11 sm:w-11"
+          >
+            {hidden ? <Eye className="h-[17px] w-[17px] sm:h-5 sm:w-5" /> : <EyeOff className="h-[17px] w-[17px] sm:h-5 sm:w-5" />}
+          </button>
         </div>
 
-        <div className="relative grid grid-cols-3 gap-0 rounded-[1.1rem] border border-white/20 bg-[#0D4ABF]/45 p-2.5 backdrop-blur-[2px] sm:p-3">
+        <div className="relative grid grid-cols-3 gap-0 bg-[#0A48BE]/55 px-2.5 py-3 sm:px-6 sm:py-4">
           {wallets.map((b, index) => (
             <div
               key={b.curr}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
-              className={`min-w-0 px-1 py-1 sm:px-3 sm:py-0 ${index > 0 ? 'border-l border-white/20' : ''}`}
+              className={`min-w-0 px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
             >
-              <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
-                <span className="shrink-0 text-[9px] font-extrabold uppercase tracking-[.12em] text-white/70 sm:text-[10px]">{b.curr}</span>
+              <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#34B8FF] to-[#1470ED] text-[7px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/20 sm:h-11 sm:w-11 sm:text-[9px]">
+                  {b.curr === 'XOF' ? 'FCFA' : b.curr === 'XAF' ? 'CFA' : 'USDT'}
+                </span>
                 <div
                   data-testid={`balance-value-${b.curr.toLowerCase()}`}
-                  className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[clamp(.44rem,2.2vw,1rem)] font-bold tracking-[-.045em] text-white"
+                  className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-[clamp(.52rem,2.3vw,1.1rem)] font-bold tracking-[-.045em] text-white sm:text-[clamp(.8rem,1.8vw,1.25rem)]"
                   title={`${mask(b.bal)} ${b.curr}`}
                 >
-                  {mask(b.bal)} <span className="text-[.72em] font-semibold text-white/72">{b.curr}</span>
+                  {mask(b.bal)} <span className="text-[.72em] font-semibold text-white/80">{b.curr}</span>
                 </div>
               </div>
             </div>
