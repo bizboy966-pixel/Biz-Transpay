@@ -266,6 +266,75 @@ select {
   font-weight: 700;
 }
 
+.bt-bottom-nav {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 40;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: end;
+  min-height: 78px;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(226,232,240,.95);
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 -12px 30px -24px rgba(15,23,42,.48);
+  backdrop-filter: blur(18px);
+}
+.bt-bottom-nav__item {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 62px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 5px 2px 1px;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+  transition: color .2s ease, transform .2s ease;
+}
+.bt-bottom-nav__item:hover,
+.bt-bottom-nav__item.active { color: #2563EB; }
+.bt-bottom-nav__item.active::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  width: 46px;
+  height: 3px;
+  border-radius: 999px;
+  background: #2563EB;
+}
+.bt-bottom-nav__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+.bt-bottom-nav__icon svg { width: 25px; height: 25px; }
+.bt-bottom-nav__item--prominent {
+  min-height: 78px;
+  margin-top: -30px;
+  color: #2563EB;
+}
+.bt-bottom-nav__item--prominent .bt-bottom-nav__icon {
+  width: 58px;
+  height: 58px;
+  margin-bottom: 2px;
+  border: 5px solid #fff;
+  border-radius: 999px;
+  color: #fff;
+  background: linear-gradient(145deg, #3B82F6, #1D4ED8);
+  box-shadow: 0 10px 24px -8px rgba(37,99,235,.65);
+}
+.bt-bottom-nav__item--prominent .bt-bottom-nav__icon svg { width: 27px; height: 27px; }
+
 .bt-auth-form-column {
   display: flex;
   align-items: center;

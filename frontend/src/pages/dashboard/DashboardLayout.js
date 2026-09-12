@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Home, Receipt, Link2, Code2, IdCard, Settings as SettingsIcon, Headphones, Menu, ChevronDown, LogOut, X } from 'lucide-react';
+import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
@@ -35,15 +35,14 @@ export default function DashboardLayout() {
   const linksEnabled = features?.links_enabled !== false;
 
   const nav = [
-    { to: '/dashboard', end: true, i: Home, l: t('dashboard.title') },
-    { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions'), sub: t('dashboard.history') },
-    ...(linksEnabled ? [{ to: '/dashboard/links', i: Link2, l: t('dashboard.payment_link') }] : []),
-    ...(isMerchant && apiEnabled ? [{ to: '/dashboard/api', i: Code2, l: 'API' }] : []),
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
   ];
-  const nav2 = [
-    { to: '/dashboard/settings', i: SettingsIcon, l: t('dashboard.settings') },
-    { to: '/dashboard/support', i: Headphones, l: t('dashboard.support') },
+  const bottomNav = [
+    { to: '/dashboard', end: true, i: Home, l: t('dashboard.bottom_home') },
+    { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions') },
+    { to: '/dashboard/deposit', i: ScanLine, l: t('dashboard.deposit'), prominent: true },
+    { to: '/dashboard/services', i: LayoutGrid, l: t('dashboard.services') },
+    { to: '/dashboard/profile', i: UserRound, l: t('dashboard.profile') },
   ];
 
   return (
@@ -70,29 +69,7 @@ export default function DashboardLayout() {
               </div>
             </NavLink>
           ))}
-          <div className="my-3 border-t border-slate-100" />
-          {nav2.map((n) => (
-            <NavLink key={n.to} to={n.to} data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
-              className={({ isActive }) => `bt-sidebar-link flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
-                isActive ? 'active' : ''
-              }`}>
-              <n.i className="w-4 h-4" strokeWidth={1.75} />
-              {n.l}
-            </NavLink>
-          ))}
         </nav>
-
-        <div className="absolute bottom-0 left-0 right-0 p-4">
-          <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-xl">
-            <div className="w-10 h-10 rounded-xl bg-white shadow-sm flex items-center justify-center">
-              <span className="text-[#2563EB] font-cabinet font-extrabold text-lg">B</span>
-            </div>
-            <div>
-              <div className="font-cabinet font-bold text-sm text-slate-900">Biz-transPay</div>
-              <div className="text-[10px] text-slate-500 font-semibold">Sécurisé. Rapide. Fiable.</div>
-            </div>
-          </div>
-        </div>
       </aside>
 
       {/* Overlay for mobile */}
@@ -109,7 +86,7 @@ export default function DashboardLayout() {
 
           <div className="hidden md:block">
             <div className="font-cabinet font-extrabold text-slate-900 text-sm">
-              {nav.concat(nav2).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Biz-trans'}
+              {bottomNav.concat(nav).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Biz-trans'}
             </div>
             <div className="text-[10px] text-slate-500 font-medium">Passerelle de paiement</div>
           </div>
@@ -140,10 +117,26 @@ export default function DashboardLayout() {
           </div>
         </header>
 
-           <main className="bt-content p-5 sm:p-7">
+            <main className="bt-content p-5 sm:p-7 pb-24 lg:pb-7">
           <Outlet />
         </main>
       </div>
+      <nav className="bt-bottom-nav lg:hidden" aria-label="Navigation principale">
+        {bottomNav.map((n) => (
+          <NavLink
+            key={n.to}
+            to={n.to}
+            end={n.end}
+            data-testid={`bottomnav-${n.l.toLowerCase()}`}
+            className={({ isActive }) => `bt-bottom-nav__item ${n.prominent ? 'bt-bottom-nav__item--prominent' : ''} ${isActive ? 'active' : ''}`}
+          >
+            <span className="bt-bottom-nav__icon">
+              <n.i strokeWidth={n.prominent ? 2 : 1.8} />
+            </span>
+            <span>{n.l}</span>
+          </NavLink>
+        ))}
+      </nav>
       <FloatingSupportButtons />
     </div>
   );

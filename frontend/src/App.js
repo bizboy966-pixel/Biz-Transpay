@@ -19,6 +19,8 @@ import Deposit from '@/pages/dashboard/Deposit';
 import Exchange from '@/pages/dashboard/Exchange';
 import ApiKeys from '@/pages/dashboard/ApiKeys';
 import ApiDocs from '@/pages/dashboard/ApiDocs';
+import Services from '@/pages/dashboard/Services';
+import Profile from '@/pages/dashboard/Profile';
 import AdminLayout from '@/pages/admin/AdminLayout';
 import AdminHome from '@/pages/admin/AdminHome';
 import AdminUsers from '@/pages/admin/AdminUsers';
@@ -75,6 +77,8 @@ function App() {
             <Route path="support" element={<Support />} />
             <Route path="transfer" element={<Transfer />} />
             <Route path="deposit" element={<Deposit />} />
+            <Route path="services" element={<Services />} />
+            <Route path="profile" element={<Profile />} />
             <Route path="exchange" element={<Exchange />} />
             <Route path="api" element={<ApiKeys />} />
             <Route path="api/docs" element={<ApiDocs />} />
