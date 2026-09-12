@@ -6,12 +6,10 @@ import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
 import { useAuth } from '@/context/AuthContext';
-import { useFeatures } from '@/hooks/useFeatures';
 
 export default function DashboardLayout() {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
-  const features = useFeatures();
   // Sidebar closed by default on mobile so the dashboard content is visible
   // immediately after login. Open on desktop for productivity.
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -30,9 +28,6 @@ export default function DashboardLayout() {
   }, [loc.pathname]);
 
   const initials = (user?.full_name || 'U').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
-  const isMerchant = user?.account_type === 'merchant' || user?.role === 'admin' || user?.role === 'super_admin';
-  const apiEnabled = features?.api_enabled !== false;
-  const linksEnabled = features?.links_enabled !== false;
 
   const nav = [
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
