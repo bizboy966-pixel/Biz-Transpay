@@ -1,0 +1,217 @@
+PROMPT — REPOSITIONNEMENT DE LA LANDING PAGE BIZ-TRANSPAY
+
+Je veux modifier le positionnement marketing de la landing page de Biz-transPay.
+
+IMPORTANT :
+Biz-transPay ne doit PAS être présenté sur la landing page comme :
+
+- une banque ;
+- un établissement de paiement ;
+- une plateforme de transfert d'argent ;
+- un service de transfert international ;
+- un opérateur Mobile Money ;
+- un émetteur de monnaie électronique ;
+- une plateforme financière proposant directement des services réglementés.
+
+Le positionnement principal doit être celui d’une PLATEFORME DESTINÉE AUX VENDEURS DE PRODUITS ET SERVICES NUMÉRIQUES.
+
+OBJECTIF DU POSITIONNEMENT
+
+Présenter Biz-transPay comme une solution numérique permettant aux entrepreneurs, créateurs, e-commerçants et vendeurs en ligne de développer leur activité, vendre leurs produits numériques et faciliter la gestion des paiements liés à leurs ventes.
+
+Le message doit être orienté :
+
+« Vendre → partager → encaisser → suivre ses ventes »
+
+et non :
+
+« Transférer de l'argent → envoyer de l'argent → recevoir de l'argent ».
+
+HERO PRINCIPAL
+
+Titre :
+
+« La plateforme pensée pour vendre vos produits numériques »
+
+Sous-titre :
+
+« Créez, vendez et développez votre activité en ligne avec des outils simples pour présenter vos produits, partager vos offres et faciliter l’encaissement de vos ventes. »
+
+CTA principal :
+
+« Commencer à vendre »
+
+CTA secondaire :
+
+« Découvrir Biz-transPay »
+
+AUTRE PROPOSITION DE TITRE À TESTER SI LE DESIGN LE PERMET :
+
+« Vendez vos produits numériques. Simplifiez vos encaissements. »
+
+Sous-titre :
+
+« Une solution moderne pour les créateurs, entrepreneurs, e-commerçants et vendeurs de produits numériques. »
+
+SECTION « CE QUE VOUS POUVEZ VENDRE »
+
+Créer une section présentant les différents types de produits :
+
+- E-books
+- Formations en ligne
+- Cours numériques
+- Logiciels et applications
+- Abonnements numériques
+- Fichiers et ressources numériques
+- Services digitaux
+- Contenus numériques
+- Produits téléchargeables
+
+SECTION « TOUT POUR VOTRE ACTIVITÉ EN LIGNE »
+
+Présenter les fonctionnalités de Biz-transPay sous l’angle du commerce numérique :
+
+1. Vendre en ligne
+« Présentez vos produits numériques et permettez à vos clients de découvrir facilement vos offres. »
+
+2. Créer des liens de vente
+« Créez des liens pour présenter et vendre vos produits directement à vos clients. »
+
+3. Faciliter l’encaissement
+« Proposez à vos clients les moyens de paiement disponibles pour régler leurs achats. »
+
+4. Suivre vos ventes
+« Retrouvez vos transactions et suivez l’activité liée à vos ventes depuis votre espace. »
+
+5. Gérer vos revenus de vente
+« Centralisez les informations relatives aux paiements reçus pour vos produits et services. »
+
+6. Développer votre activité
+« Utilisez des outils numériques conçus pour accompagner la croissance de votre activité en ligne. »
+
+SECTION « POUR QUI ? »
+
+Titre :
+
+« Une solution pour les entrepreneurs numériques »
+
+Texte :
+
+« Biz-transPay s’adresse aux créateurs, formateurs, e-commerçants, prestataires de services, développeurs et entrepreneurs qui souhaitent vendre leurs produits ou services numériques en ligne. »
+
+Ajouter des cartes :
+
+✓ Créateurs de contenu
+✓ Formateurs
+✓ E-commerçants
+✓ Vendeurs d’e-books
+✓ Développeurs
+✓ Prestataires digitaux
+✓ Entrepreneurs
+✓ Créateurs de services en ligne
+
+SECTION « SIMPLIFIEZ VOTRE PARCOURS DE VENTE »
+
+Créer une présentation en 4 étapes :
+
+01 — Créez votre compte
+« Inscrivez-vous et configurez votre espace. »
+
+02 — Présentez votre produit
+« Ajoutez votre produit ou votre offre numérique. »
+
+03 — Partagez votre lien
+« Partagez votre page ou votre lien de vente avec vos clients. »
+
+04 — Recevez et suivez vos ventes
+« Facilitez l’encaissement de vos ventes et suivez vos transactions depuis votre espace. »
+
+IMPORTANT — VOCABULAIRE
+
+Privilégier les expressions :
+
+« vente en ligne »
+« produits numériques »
+« commerce numérique »
+« vendeurs en ligne »
+« entrepreneurs numériques »
+« encaissement des ventes »
+« paiements liés aux ventes »
+« gestion des ventes »
+« liens de vente »
+« liens de paiement liés à une vente »
+« solutions pour les vendeurs »
+
+ÉVITER dans les textes marketing publics :
+
+« transfert d'argent »
+« plateforme de transfert »
+« envoyer de l'argent »
+« recevoir de l'argent »
+« transfert international »
+« portefeuille financier »
+« banque »
+« établissement de paiement »
+« monnaie électronique »
+« service financier »
+« néobanque »
+
+Ne pas utiliser de formulation pouvant donner l'impression que Biz-transPay détient elle-même une licence bancaire ou un agrément d'établissement de paiement.
+
+IMPORTANT POUR LES FONCTIONNALITÉS EXISTANTES
+
+Ne supprime aucune fonctionnalité technique déjà existante.
+
+Les fonctionnalités de paiement, d'encaissement, de décaissement ou d'intégration API peuvent continuer à exister techniquement dans l'application si elles sont déjà configurées.
+
+Cependant, sur la LANDING PAGE, leur présentation doit être rattachée au contexte du commerce et de la vente de produits/services numériques.
+
+Par exemple :
+
+Au lieu de :
+« Effectuez des transferts d'argent partout en Afrique »
+
+Utiliser :
+« Gérez les paiements liés à votre activité en ligne. »
+
+Au lieu de :
+« Envoyez et recevez de l'argent »
+
+Utiliser :
+« Facilitez l'encaissement de vos ventes et suivez vos transactions. »
+
+Au lieu de :
+« Votre solution de transfert d'argent »
+
+Utiliser :
+« Votre solution pour vendre en ligne. »
+
+IMPORTANT — DESIGN
+
+Conserver intégralement :
+
+- le logo Biz-transPay ;
+- la police locale déjà configurée ;
+- les couleurs actuelles ;
+- les composants existants ;
+- les animations existantes ;
+- la responsivité ;
+- la structure technique ;
+- les fonctionnalités backend ;
+- les intégrations de paiement existantes.
+
+Cette modification concerne principalement le POSITIONNEMENT MARKETING ET LE CONTENU DE LA LANDING PAGE.
+
+Ne refais pas toute l'application.
+
+Ne modifie aucune logique de paiement.
+
+Ne modifie aucune API.
+
+Ne modifie aucune base de données.
+
+Ne modifie aucun système d'authentification.
+
+Ne touche pas aux fonctionnalités existantes qui ne sont pas concernées par cette modification.
+
+Après modification, teste la landing page sur desktop et mobile et vérifie que tous les boutons et liens fonctionnent correctement.
