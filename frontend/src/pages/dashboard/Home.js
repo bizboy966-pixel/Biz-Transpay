@@ -69,7 +69,12 @@ export default function DashboardHome() {
         className="relative isolate overflow-hidden rounded-[1.45rem] bg-gradient-to-br from-[#1672F2] via-[#0754D1] to-[#123AAB] text-white shadow-[0_18px_38px_-18px_rgba(25,83,194,.62)] sm:rounded-[1.7rem]"
       >
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_72%_28%,rgba(65,181,255,.38),transparent_28%),linear-gradient(145deg,rgba(255,255,255,.13),transparent_38%)]" />
-        <div className="relative min-h-[12.5rem] border-b border-white/20 px-4 pt-4 sm:min-h-[14.5rem] sm:px-7 sm:pt-6">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 z-0 bg-[length:auto_88%] bg-[position:92%_34%] bg-no-repeat opacity-30 mix-blend-screen sm:bg-[length:auto_105%] sm:bg-[position:88%_36%] sm:opacity-35"
+          style={{ backgroundImage: "url('/wallet-card-illustration-cfa-transparent.png')" }}
+        />
+        <div className="relative min-h-[9rem] border-b border-white/20 px-4 pt-4 sm:min-h-[11rem] sm:px-7 sm:pt-6">
           <div className="relative z-10 flex max-w-[58%] items-start gap-2.5 sm:max-w-[56%] sm:gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15 shadow-inner ring-1 ring-white/15 sm:h-12 sm:w-12">
               <Wallet className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} />
@@ -79,7 +84,6 @@ export default function DashboardHome() {
               <p className="mt-1 max-w-[19rem] text-[10px] leading-snug text-white/78 sm:text-sm">Gérez tous vos soldes en un seul endroit</p>
             </div>
           </div>
-          <img src="/wallet-card-illustration-cfa-transparent.png" alt="" aria-hidden="true" className="absolute bottom-4 right-2 z-[1] h-[9.5rem] w-[48%] object-contain object-bottom sm:bottom-5 sm:right-6 sm:h-[12rem] sm:w-[43%]" />
           <button
             onClick={toggleHidden}
             data-testid="btn-toggle-balance"
