@@ -14,3 +14,15 @@ the Replit environment even though the public Stripe SDK is available.
 **How to apply:** When rebuilding or moving the runtime, check private package
 availability first. Keep payment credentials in Replit Secrets and keep local
 MongoDB attached to the workflow if no shared database connection is configured.
+
+The imported CRA/CRACO setup uses Webpack Dev Server 5. Its proxy must be an
+array configuration, and setting `HOST=0.0.0.0` can trigger schema failures in
+this combination.
+
+**Why:** The older CRA proxy shape and host setting caused the post-merge
+workflow to fail even though the same application code compiled before the
+workflow reconciliation.
+
+**How to apply:** Keep the `/api` proxy in CRACO's final dev-server config as
+an array and let the Replit preview workflow use the frontend's default host
+binding.
