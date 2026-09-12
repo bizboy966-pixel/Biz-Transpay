@@ -18,7 +18,7 @@ export default function Features() {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center max-w-xl mx-auto mb-10">
           <div className="inline-block text-[11px] font-bold uppercase tracking-[0.2em] text-[#2563EB] mb-3">Services</div>
-          <h2 className="font-cabinet text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">{t('features.heading')}</h2>
+          <h2 className="font-cabinet text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">{t('features.title')}</h2>
           <p className="mt-3 text-sm text-slate-600">{t('features.subtitle')}</p>
         </div>
 

@@ -70,7 +70,7 @@ export default function Login() {
           </div>
 
           <div>
-            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('login.identifier')}</label>
+            <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('login.identifier')}</label>
             <div className="relative">
               <Mail className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
               <input data-testid="input-identifier" type="text" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="john@example.com" className="bt-field pl-11 pr-4" />
@@ -78,7 +78,7 @@ export default function Login() {
           </div>
 
           <div className="mt-4">
-            <label className="text-sm font-semibold text-slate-700 mb-2 block">{t('login.password')}</label>
+            <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('login.password')}</label>
             <div className="relative">
               <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
               <input data-testid="input-password" type={showPwd ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" className="bt-field pl-11 pr-11" />

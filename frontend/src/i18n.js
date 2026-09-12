@@ -48,7 +48,6 @@ const resources = {
         point_1: 'Vendre en ligne', point_2: 'Partager vos offres', point_3: 'Suivre vos ventes',
       },
       features: {
-        heading: 'Tout pour votre activité en ligne',
         title: 'Tout pour votre activité en ligne',
         subtitle: 'Des outils simples pour présenter vos offres, encaisser vos ventes et suivre votre activité depuis un seul espace.',
         f1_t: 'Vendre en ligne', f1_d: 'Présentez vos produits numériques et permettez à vos clients de découvrir facilement vos offres.',
@@ -146,9 +145,9 @@ const resources = {
         },
       },
       login: {
-        title: 'Se connecter',
-        subtitle: 'Bon retour ! Connectez-vous à votre compte Biz-transPay.',
-        identifier: "Email ou nom d'utilisateur",
+        title: 'Connexion',
+        subtitle: 'Bon retour parmi nous ! Connectez-vous à votre compte Biz-transPay.',
+        identifier: 'Adresse e-mail ou nom d’utilisateur',
         password: 'Mot de passe',
         submit: 'Se connecter',
         no_account: 'Vous n\'avez pas de compte ?',
@@ -289,7 +288,6 @@ const resources = {
         point_1: 'Sell online', point_2: 'Share your offers', point_3: 'Track your sales',
       },
       features: {
-        heading: 'Everything for your online business',
         title: 'Everything for your online business', subtitle: 'Simple tools to showcase your offers, collect sales and track your activity from one place.',
         f1_t: 'Sell online', f1_d: 'Showcase your digital products and help customers discover your offers easily.',
         f2_t: 'Create sales links', f2_d: 'Create links to present and sell your products directly to customers.',
