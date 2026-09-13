@@ -43,7 +43,7 @@ export default function DashboardLayout() {
   return (
     <div className="bt-shell" data-testid="dashboard-layout">
       {/* Sidebar */}
-      <aside className={`bt-sidebar fixed top-0 left-0 z-40 h-[100dvh] border-r transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64`} data-testid="sidebar">
+      <aside className={`bt-sidebar bt-dashboard-sidebar fixed top-0 left-0 z-40 lg:h-[100dvh] border-r transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} w-64`} data-testid="sidebar">
         <div className="h-16 flex items-center gap-2 px-4 border-b border-slate-100">
           <Logo />
           <button onClick={() => setSidebarOpen(false)} className="ml-auto lg:hidden w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="sidebar-close">

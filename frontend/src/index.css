@@ -354,6 +354,18 @@ select {
   background: #fff;
   border-color: var(--bt-line);
 }
+.bt-dashboard-sidebar {
+  bottom: 0;
+}
+@media (max-width: 1023px) {
+  .bt-dashboard-sidebar {
+    bottom: calc(78px + env(safe-area-inset-bottom));
+    height: auto;
+    max-height: calc(100dvh - 78px - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
 .bt-sidebar-link {
   color: #475569;
   border: 1px solid transparent;
