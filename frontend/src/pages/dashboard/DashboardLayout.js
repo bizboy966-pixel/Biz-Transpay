@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, Menu, ChevronDown, LogOut, X } from 'lucide-react';
+import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, WalletCards, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
@@ -32,6 +32,7 @@ export default function DashboardLayout() {
 
   const nav = [
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
+    { to: '/dashboard/fees', i: WalletCards, l: t('dashboard.fees') },
   ];
   const bottomNav = [
     { to: '/dashboard', end: true, i: Home, l: t('dashboard.bottom_home') },

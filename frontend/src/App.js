@@ -12,6 +12,7 @@ import DashboardHome from '@/pages/dashboard/Home';
 import Transactions from '@/pages/dashboard/Transactions';
 import Links from '@/pages/dashboard/Links';
 import Kyc from '@/pages/dashboard/Kyc';
+import Fees from '@/pages/dashboard/Fees';
 import Settings from '@/pages/dashboard/Settings';
 import Support from '@/pages/dashboard/Support';
 import Transfer from '@/pages/dashboard/Transfer';
@@ -72,6 +73,7 @@ function App() {
             <Route path="transactions" element={<Transactions />} />
             <Route path="links" element={<Links />} />
             <Route path="kyc" element={<Kyc />} />
+            <Route path="fees" element={<Fees />} />
             <Route path="settings" element={<Settings />} />
             <Route path="support" element={<Support />} />
             <Route path="transfer" element={<Transfer />} />

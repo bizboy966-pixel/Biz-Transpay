@@ -905,6 +905,96 @@ async def transfer_config(uid: str = Depends(get_current_user_id)):
     return _public_transfer_config(cfg)
 
 
+def _public_fee_crypto(crypto: dict) -> dict:
+    crypto = crypto or {}
+    hidden = {str(code).upper() for code in (crypto.get("hidden_coins") or [])}
+    fees = crypto.get("fees") or {}
+    gateway = crypto.get("fees_gateway") or {}
+    platform = crypto.get("fees_platform") or {}
+    gateway_fixed = crypto.get("fees_gateway_fixed") or {}
+    platform_fixed = crypto.get("fees_platform_fixed") or {}
+    codes = {
+        str(code).upper()
+        for code in set(fees) | set(gateway) | set(platform)
+        if str(code).upper() not in hidden
+    }
+    assets = []
+    for code in sorted(codes):
+        gateway_pct = float(gateway.get(code, fees.get(code, 0)) or 0)
+        platform_pct = float(platform.get(code, 0) or 0)
+        fixed = float(gateway_fixed.get(code, 0) or 0) + float(platform_fixed.get(code, 0) or 0)
+        assets.append({
+            "code": code,
+            "fee_pct": gateway_pct + platform_pct,
+            "fee_fixed": fixed,
+        })
+    return {
+        "enabled": bool(crypto.get("enabled", False)),
+        "assets": assets,
+    }
+
+
+def _public_fee_mobile_money(mobile_money: dict, withdrawal: bool = False) -> dict:
+    mobile_money = mobile_money or {}
+    operators = []
+    for op in mobile_money.get("operators") or []:
+        if not op.get("active", True) or op.get("archived", False) or op.get("hidden", False):
+            continue
+        if withdrawal and (
+            not op.get("withdraw_mode")
+            or str(op.get("currency") or "").upper() != "XOF"
+        ):
+            continue
+        gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
+        platform_pct = float(op.get("platform_fee_pct", 0) or 0)
+        if gateway_pct == 0 and platform_pct == 0:
+            gateway_pct = float(op.get("fee_pct", 0) or 0)
+        operators.append({
+            "country": op.get("country"),
+            "country_label": op.get("country_label")
+                or paydunya.COUNTRY_LABELS.get(op.get("country"), op.get("country")),
+            "name": op.get("name") or op.get("code"),
+            "currency": op.get("currency") or "XOF",
+            "fee_pct": gateway_pct + platform_pct,
+            "fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0)
+                + float(op.get("platform_fee_fixed", 0) or 0),
+            "min": float(op.get("min", 0) or 0),
+            "max": float(op.get("max", 0) or 0) or None,
+        })
+    return {
+        "enabled": bool(mobile_money.get("enabled", False)),
+        "operators": operators,
+    }
+
+
+@api.get("/fees/config")
+async def public_fees_config(uid: str = Depends(get_current_user_id)):
+    """Customer-facing fee grid built only from administrator settings."""
+    deposit = await get_deposit_config()
+    withdrawal = await get_transfer_config()
+    platform = await get_platform_config()
+    conversion = platform.get("conversion_fee") or {}
+    return {
+        "deposit": {
+            "mobile_money": _public_fee_mobile_money(deposit.get("mobile_money")),
+            "crypto": _public_fee_crypto(deposit.get("crypto")),
+        },
+        "withdrawal": {
+            "mobile_money": _public_fee_mobile_money(
+                withdrawal.get("mobile_money"), withdrawal=True
+            ),
+            "crypto": _public_fee_crypto(withdrawal.get("crypto")),
+        },
+        "conversion": {
+            "enabled": bool(conversion.get("enabled", False)),
+            "type": conversion.get("type", "percent"),
+            "value": float(conversion.get("value", 0) or 0),
+            "min_fee": conversion.get("min_fee"),
+            "max_fee": conversion.get("max_fee"),
+        },
+    }
+
+
 # ==================== TRANSFER ====================
 @api.post("/transfers")
 async def transfer(req: TransferRequest, request: Request,
