@@ -1,0 +1,154 @@
+# PROMPT — CORRECTION CRITIQUE DES INTÉGRATIONS DE PAIEMENT
+
+Il y a actuellement un problème lors du test des différentes intégrations de paiement dans **Biz-transPay**.
+
+J’ai désactivé tous les modes de paiement afin de les tester **un par un**.
+
+J’ai commencé par **PayJunior PSR**.
+
+J’ai activé uniquement cette intégration depuis l’Admin Panel, puis je suis allé dans **Dépôt** côté utilisateur afin de tester le fonctionnement.
+
+Le résultat affiché est :
+
+> **« Impossible de charger l’intégration PayJunior PSR »**
+
+J’ai pourtant renseigné/configuré le lien nécessaire dans l’administration.
+
+## 1. Corriger PayJunior PSR
+
+Il faut analyser complètement pourquoi l’application affiche :
+
+> **Impossible de charger l’intégration PayJunior PSR**
+
+Vérifie notamment :
+
+* la configuration enregistrée dans l’Admin Panel ;
+* le lien/API configuré ;
+* la récupération de la configuration côté serveur ;
+* la communication entre le frontend et le backend ;
+* l’appel vers PayJunior PSR ;
+* les variables d’environnement ;
+* les paramètres obligatoires ;
+* les erreurs HTTP/API ;
+* les éventuels problèmes de CORS ;
+* les erreurs de routage ;
+* les erreurs d’authentification ;
+* la réponse réelle retournée par le prestataire.
+
+**Ne te contente pas de masquer le message d’erreur.**
+
+Il faut trouver **la cause réelle** du problème et la corriger.
+
+---
+
+## 2. Vérifier toute la chaîne de fonctionnement
+
+Lorsque PayJunior PSR est activé, le parcours doit être :
+
+**Utilisateur → Dépôt → PayJunior PSR → création de la requête → paiement → confirmation → vérification → webhook/statut → validation → crédit du wallet**
+
+À chaque étape, vérifie que les données sont correctement transmises.
+
+Si une étape échoue, affiche une erreur technique compréhensible dans les logs afin de pouvoir identifier précisément l'origine du problème.
+
+---
+
+## 3. Tester également les autres intégrations
+
+Cette correction ne doit pas être limitée à PayJunior PSR.
+
+J’ai volontairement désactivé les autres modes de paiement pour pouvoir les tester individuellement.
+
+Il faut donc vérifier **toutes les intégrations disponibles dans Biz-transPay**, une par une.
+
+Pour chaque prestataire :
+
+1. Désactiver tous les autres.
+2. Activer uniquement le prestataire concerné.
+3. Aller dans **Dépôt**.
+4. Sélectionner le moyen de paiement.
+5. Vérifier que l’intégration se charge correctement.
+6. Vérifier que les pays disponibles apparaissent.
+7. Vérifier que les opérateurs apparaissent.
+8. Vérifier que la requête de paiement est correctement créée.
+9. Vérifier que le flux de confirmation fonctionne.
+10. Vérifier la réception du webhook.
+11. Vérifier la validation du statut.
+12. Vérifier que le wallet n'est crédité **qu'après confirmation réelle du paiement**.
+
+---
+
+## 4. Important : ne pas modifier les intégrations qui fonctionnent
+
+Avant de modifier le code, analyse l’architecture actuelle.
+
+Identifie précisément :
+
+* comment les prestataires sont enregistrés ;
+* comment leur statut Activé/Désactivé est géré ;
+* comment la configuration est récupérée ;
+* comment le frontend sélectionne le prestataire ;
+* comment le backend initialise le paiement ;
+* comment les webhooks sont traités.
+
+**Ne recrée pas toute l’architecture si le problème vient simplement d’une mauvaise configuration ou d’un endpoint.**
+
+Corrige uniquement ce qui est nécessaire.
+
+---
+
+## 5. Gestion propre des erreurs
+
+Si une intégration est activée mais mal configurée, l'application doit indiquer clairement la cause.
+
+Par exemple :
+
+> **Configuration du prestataire incomplète. Veuillez vérifier les paramètres API.**
+
+ou :
+
+> **Le prestataire est temporairement indisponible.**
+
+Évite les messages génériques du type :
+
+> « Impossible de charger l'intégration »
+
+lorsqu'une erreur plus précise peut être identifiée.
+
+Cependant, **ne révèle jamais les clés secrètes, tokens ou credentials dans l'interface utilisateur.**
+
+---
+
+## 6. RÈGLE CRITIQUE POUR LES PAIEMENTS
+
+Cette correction ne doit surtout pas reproduire les anciens problèmes rencontrés.
+
+La simple création d'une requête de paiement **ne doit jamais créditer automatiquement le wallet**.
+
+Le système doit attendre :
+
+**Requête créée → paiement réellement confirmé → vérification du statut → webhook/signature validée → transaction SUCCESS → crédit du wallet.**
+
+Si le paiement est :
+
+* refusé ;
+* annulé ;
+* expiré ;
+* non confirmé ;
+* en attente ;
+
+le compte ne doit **pas** être crédité.
+
+Il faut également empêcher tout double crédit si le webhook est reçu plusieurs fois.
+
+---
+
+## OBJECTIF FINAL
+
+Je veux que tu fasses un **diagnostic réel**, que tu identifies la cause du problème PayJunior PSR et que tu corriges également les problèmes similaires susceptibles d'exister dans les autres intégrations.
+
+**Ne te contente pas de rendre le bouton fonctionnel visuellement.**
+
+Je veux que chaque intégration soit réellement connectée au backend, que les requêtes partent correctement vers le prestataire, que les réponses soient correctement traitées et que le système de confirmation/webhook fonctionne correctement.
+
+Commence par **PayJunior PSR**, vérifie complètement son fonctionnement, puis applique la même méthode de diagnostic aux autres prestataires **sans casser ceux qui fonctionnent déjà**.

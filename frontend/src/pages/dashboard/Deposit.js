@@ -46,7 +46,7 @@ function ensurePaydunyaPsrAssets() {
     await loadExternalAsset({
       id: PSR_ASSET_IDS.css,
       tag: 'link',
-      url: 'https://paydunya.com/psr/css/psr.paydunya.css',
+      url: 'https://paydunya.com/assets/psr/css/psr.paydunya.min.css',
       attributes: { rel: 'stylesheet' },
     });
     if (!window.jQuery) {
@@ -60,7 +60,7 @@ function ensurePaydunyaPsrAssets() {
     await loadExternalAsset({
       id: PSR_ASSET_IDS.script,
       tag: 'script',
-      url: 'https://paydunya.com/psr/js/psr.paydunya.min.js',
+      url: 'https://paydunya.com/assets/psr/js/psr.paydunya.min.js',
       attributes: { defer: 'true' },
     });
     if (!window.PayDunya || typeof window.PayDunya.setup !== 'function') {
@@ -90,24 +90,26 @@ function startPaydunyaPsr({ deposit, onTerminate }) {
     onTerminate(...args);
   };
   const options = {
-    selector: '#paydunya-psr',
+    selector: window.jQuery('#paydunya-psr'),
     url: tokenUrl,
     method: 'GET',
     displayMode: PayDunya.DISPLAY_IN_POPUP || 'DISPLAY_IN_POPUP',
     onTerminate: terminate,
+    onError: (error) => {
+      console.error('PayDunya PSR error', error);
+      toast.error('PayDunya PSR a rencontré une erreur. Veuillez réessayer.');
+    },
+    onUnsuccessfulResponse: (response) => {
+      console.error('PayDunya PSR unsuccessful response', response);
+      toast.error('PayDunya PSR a refusé la demande de paiement.');
+    },
   };
-  const initialized = PayDunya.setup(options);
-  if (initialized === false) {
+  const client = PayDunya.setup(options);
+  if (!client || typeof client.requestToken !== 'function') {
     throw new Error('PayDunya n’a pas pu initialiser la fenêtre PSR.');
   }
-  // Some PSR SDK versions obtain the token from `url`; others expose the
-  // token returned by our POST through requestToken. Support both official
-  // contracts without ever implementing a local payment protocol.
-  const token = deposit.token || deposit.psr_token || deposit.checkout_token;
-  if (token && typeof PayDunya.requestToken === 'function') {
-    const requested = PayDunya.requestToken(token);
-    if (requested === false) throw new Error('PayDunya a refusé le token PSR.');
-  }
+  const requested = client.requestToken();
+  if (requested === false) throw new Error('PayDunya a refusé la demande PSR.');
 }
 
 export default function Deposit() {
@@ -508,10 +510,11 @@ function MobileMoneyForm({ onSuccess }) {
         },
       });
       if (psrEnabled) {
-        ensurePaydunyaPsrAssets()
+        return ensurePaydunyaPsrAssets()
           .then(() => setPsrReady(true))
           .catch((error) => setPsrAssetError(error.message || 'Le module officiel PayDunya PSR est indisponible.'));
       }
+      return null;
     }).catch(() => {
       setProvider({ enabled: false, modes: { softpay_direct: false, psr: false, par_redirect: false } });
     }).finally(() => setModeLoading(false));

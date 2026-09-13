@@ -1682,7 +1682,10 @@ async def get_paydunya_psr_token(deposit_id: str, capability: str):
     )
     if claimed.modified_count != 1:
         raise HTTPException(404, "Facture PSR introuvable ou indisponible")
-    return {"success": True, "token": deposit["paydunya_token"]}
+    response = {"success": True, "token": deposit["paydunya_token"]}
+    if cfg.get("mode") != "live":
+        response["mode"] = "test"
+    return response
 
 
 async def _reconcile_momo_deposit(dep_id: str) -> bool:
