@@ -265,7 +265,7 @@ const resources = {
       },
       fees: {
         title: 'Frais de la plateforme',
-        subtitle: 'Frais actuels configurés par l’administrateur de la plateforme.',
+        subtitle: 'Frais actuellement configurés pour la plateforme.',
         deposit: 'Dépôts', withdrawal: 'Retraits', mobile_money: 'Mobile Money',
         crypto: 'Crypto', conversion: 'Conversions', operator: 'Opérateur',
         asset: 'Actif', fee: 'Frais', limits: 'Limites',
@@ -414,7 +414,7 @@ const resources = {
       support: { title: 'Support', subtitle: 'Our team is here to help.',
         new_ticket: 'New ticket', subject: 'Subject', message: 'Message', category: 'Category',
         submit: 'Send', no_tickets: 'No tickets yet', faq_title: 'Frequently asked questions' },
-      fees: { title: 'Platform fees', subtitle: 'Current fees configured by the platform administrator.',
+      fees: { title: 'Platform fees', subtitle: 'Current fees configured for the platform.',
         deposit: 'Deposits', withdrawal: 'Withdrawals', mobile_money: 'Mobile Money',
         crypto: 'Crypto', conversion: 'Conversions', operator: 'Operator',
         asset: 'Asset', fee: 'Fee', limits: 'Limits', no_data: 'No active fee is configured.',

@@ -79,27 +79,23 @@ function MobileMoneyTable({ data, t }) {
         <Smartphone className="w-4 h-4 text-[#2563EB]" /> {t('fees.mobile_money')}
       </div>
       {(data?.operators || []).length ? (
-        <div className="overflow-x-auto rounded-xl border border-slate-100">
-          <table className="w-full text-xs">
-            <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="text-left px-3 py-2">{t('fees.operator')}</th>
-                <th className="text-left px-3 py-2">Pays</th>
-                <th className="text-right px-3 py-2">{t('fees.fee')}</th>
-                <th className="text-right px-3 py-2">{t('fees.limits')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.operators.map((item) => (
-                <tr key={`${item.country}-${item.name}`} className="border-t border-slate-50">
-                  <td className="px-3 py-2.5 font-semibold text-slate-900">{item.name}</td>
-                  <td className="px-3 py-2.5 text-slate-500">{item.country_label || item.country}</td>
-                  <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{formatFee(item, item.currency)}</td>
-                  <td className="px-3 py-2.5 text-right text-slate-500">{formatLimits(item)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-2">
+          {data.operators.map((item) => (
+            <div key={`${item.country}-${item.name}`} className="grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1.4fr)_minmax(120px,.8fr)_minmax(150px,1fr)] items-center gap-x-3 gap-y-1 rounded-xl border border-slate-100 bg-slate-50/50 px-3 py-2.5 text-xs">
+              <div className="min-w-0">
+                <div className="truncate font-semibold text-slate-900">{item.name}</div>
+                <div className="truncate text-[10px] text-slate-500">{item.country_label || item.country}</div>
+              </div>
+              <div className="text-right font-semibold text-slate-900 sm:text-left">
+                <span className="mr-1 text-[9px] font-normal uppercase text-slate-400 sm:hidden">{t('fees.fee')}</span>
+                {formatFee(item, item.currency)}
+              </div>
+              <div className="col-span-2 flex min-w-0 items-center justify-between gap-2 border-t border-slate-100 pt-1.5 text-[10px] text-slate-500 sm:col-span-1 sm:justify-end sm:border-0 sm:pt-0 sm:text-right">
+                <span className="uppercase tracking-wide text-slate-400 sm:hidden">{t('fees.limits')}</span>
+                <span className="break-words">{formatLimits(item)}</span>
+              </div>
+            </div>
+          ))}
         </div>
       ) : <Empty t={t} />}
     </div>
@@ -114,23 +110,13 @@ function CryptoTable({ data, t }) {
         <Bitcoin className="w-4 h-4 text-orange-500" /> {t('fees.crypto')}
       </div>
       {(data?.assets || []).length ? (
-        <div className="overflow-x-auto rounded-xl border border-slate-100">
-          <table className="w-full text-xs">
-            <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="text-left px-3 py-2">{t('fees.asset')}</th>
-                <th className="text-right px-3 py-2">{t('fees.fee')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.assets.map((item) => (
-                <tr key={item.code} className="border-t border-slate-50">
-                  <td className="px-3 py-2.5 font-mono font-semibold text-slate-900">{item.code}</td>
-                  <td className="px-3 py-2.5 text-right font-semibold text-slate-900">{formatFee(item, item.currency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {data.assets.map((item) => (
+            <div key={item.code} className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50/50 px-3 py-2.5 text-xs">
+              <span className="truncate font-mono font-semibold text-slate-900">{item.code}</span>
+              <span className="shrink-0 font-semibold text-slate-900">{formatFee(item, item.currency)}</span>
+            </div>
+          ))}
         </div>
       ) : <Empty t={t} />}
     </div>
