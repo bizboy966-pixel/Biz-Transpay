@@ -105,7 +105,7 @@ export default function DashboardHome() {
               className={`relative flex min-w-0 items-center justify-center px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
               style={{ containerType: 'inline-size' }}
             >
-              <span className={`absolute bottom-[8%] left-[8%] z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[7px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:bottom-[10%] sm:left-[7%] sm:h-14 sm:w-14 sm:text-[11px] ${
+              <span className={`absolute left-[8%] top-[8%] z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[7px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:left-[7%] sm:top-[10%] sm:h-14 sm:w-14 sm:text-[11px] ${
                   b.curr === 'XOF'
                     ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
                     : b.curr === 'XAF'
