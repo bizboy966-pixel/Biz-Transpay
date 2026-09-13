@@ -227,6 +227,7 @@ def user_to_public(u: dict) -> UserPublic:
         language=u.get("language", "fr"),
         default_currency=u.get("default_currency", "XOF"),
         role=u.get("role", "user"),
+        admin_role=u.get("admin_role"),
         is_blocked=u.get("is_blocked", False),
         is_banned=u.get("is_banned", False),
         withdrawals_blocked=u.get("withdrawals_blocked", False),
@@ -6118,7 +6119,22 @@ class AdminUpdateUser(BaseModel):
     phone: Optional[str] = None
     country: Optional[str] = None
     role: Optional[Literal["user", "admin", "super_admin"]] = None
+    admin_role: Optional[Literal[
+        "general", "finance", "operations", "support", "compliance"
+    ]] = None
     account_type: Optional[Literal["personal", "merchant"]] = None
+
+
+class AdminCreateRequest(BaseModel):
+    full_name: str
+    username: str
+    email: str
+    password: str
+    admin_role: Literal[
+        "general", "finance", "operations", "support", "compliance"
+    ] = "general"
+    country: str = "TG"
+    phone: str = ""
 
 
 class AdminKycDecision(BaseModel):
@@ -6566,6 +6582,10 @@ async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(ge
     # only super_admin can change roles
     if "role" in updates and admin.get("role") != "super_admin":
         raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
+    if "admin_role" in updates and admin.get("role") != "super_admin":
+        raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
+    if updates.get("admin_role") and updates.get("role") not in (None, "admin"):
+        raise HTTPException(422, "Un rôle administratif nécessite un compte admin")
     # Enforce uniqueness on username/email if being changed
     if "username" in updates and updates["username"] != target.get("username"):
         exists = await db.users.find_one({"username": updates["username"], "id": {"$ne": user_id}}, {"_id": 0, "id": 1})
@@ -6575,8 +6595,14 @@ async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(ge
         exists = await db.users.find_one({"email": updates["email"], "id": {"$ne": user_id}}, {"_id": 0, "id": 1})
         if exists:
             raise HTTPException(409, "Adresse email déjà utilisée")
+    update_ops = {}
+    if updates.get("role") == "user":
+        updates.pop("admin_role", None)
+        update_ops["$unset"] = {"admin_role": ""}
     if updates:
-        await db.users.update_one({"id": user_id}, {"$set": updates})
+        update_ops["$set"] = updates
+    if update_ops:
+        await db.users.update_one({"id": user_id}, update_ops)
         # If upgrading to merchant, auto-provision API keys idempotently so the
         # user immediately has access to /dashboard/api after promotion.
         if updates.get("account_type") == "merchant":
@@ -7206,7 +7232,56 @@ async def admin_logs(admin=Depends(get_admin), limit: int = Query(200, le=1000))
 async def admin_list_admins(admin=Depends(get_admin)):
     docs = await db.users.find({"role": {"$in": ["admin", "super_admin"]}},
                                 {"_id": 0, "password_hash": 0}).to_list(200)
+    for doc in docs:
+        if doc.get("role") == "admin" and not doc.get("admin_role"):
+            doc["admin_role"] = "general"
     return docs
+
+
+@api.post("/admin/admins")
+async def admin_create_admin(req: AdminCreateRequest, admin=Depends(get_admin)):
+    if admin.get("role") != "super_admin":
+        raise HTTPException(403, "Seul l'administrateur principal peut ajouter un admin")
+    username = req.username.strip().lower()
+    email = req.email.strip().lower()
+    if len(req.full_name.strip()) < 2 or len(username) < 3:
+        raise HTTPException(422, "Nom et identifiant administrateur invalides")
+    if len(req.password) < 6:
+        raise HTTPException(422, "Le mot de passe doit contenir au moins 6 caractères")
+    if await db.users.find_one({"$or": [{"email": email}, {"username": username}]}):
+        raise HTTPException(409, "Cet e-mail ou cet identifiant est déjà utilisé")
+
+    user_doc = {
+        "id": new_id(),
+        "full_name": req.full_name.strip(),
+        "username": username,
+        "account_type": "merchant",
+        "country": req.country.upper(),
+        "phone": req.phone.strip(),
+        "email": email,
+        "password_hash": hash_password(req.password),
+        "kyc_status": "verified",
+        "balance_xof": 0.0,
+        "balance_xaf": 0.0,
+        "balance_usdt": 0.0,
+        "created_at": now_iso(),
+        "two_fa_enabled": False,
+        "language": "fr",
+        "default_currency": "XOF",
+        "role": "admin",
+        "admin_role": req.admin_role,
+        "is_blocked": False,
+        "is_banned": False,
+        "withdrawals_blocked": False,
+    }
+    await db.users.insert_one(user_doc)
+    await _ensure_api_keys(user_doc["id"])
+    await audit(
+        admin["id"], admin["username"], "create_admin",
+        target_user_id=user_doc["id"], target_username=username,
+        details={"admin_role": req.admin_role},
+    )
+    return user_to_public(user_doc)
 
 
 class AdminTransferConfigReq(BaseModel):

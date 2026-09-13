@@ -46,6 +46,7 @@ class UserPublic(BaseModel):
     language: str = "fr"
     default_currency: str = "XOF"
     role: str = "user"
+    admin_role: Optional[str] = None
     is_blocked: bool = False
     is_banned: bool = False
     withdrawals_blocked: bool = False
