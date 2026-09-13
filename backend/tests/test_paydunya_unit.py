@@ -74,6 +74,38 @@ def test_confirmation_rejects_amount_and_accepts_completed():
         amount=1000, currency="XOF")
 
 
+def test_confirmation_uses_signed_custom_currency_and_legacy_xof_identity():
+    master = "test-master"
+    digest = hashlib.sha512(master.encode()).hexdigest()
+    base = {
+        "response_code": "00", "status": "completed", "hash": digest,
+        "invoice": {"token": "invoice-token", "total_amount": 500},
+    }
+    signed = {
+        **base,
+        "custom_data": {
+            "biztranspay_token": "deposit-id",
+            "biztranspay_currency": "XOF",
+            "biztranspay_amount": "500",
+        },
+    }
+    assert paydunya.confirmation_valid(
+        signed, master_key=master, token="invoice-token", amount=500,
+        currency="XOF", deposit_id="deposit-id")
+    assert not paydunya.confirmation_valid(
+        signed, master_key=master, token="invoice-token", amount=500,
+        currency="XAF", deposit_id="deposit-id")
+    legacy = {
+        **base, "custom_data": {"biztranspay_token": "deposit-id"},
+    }
+    assert paydunya.confirmation_valid(
+        legacy, master_key=master, token="invoice-token", amount=500,
+        currency="XOF", deposit_id="deposit-id")
+    assert not paydunya.confirmation_valid(
+        legacy, master_key=master, token="invoice-token", amount=500,
+        currency="XOF", deposit_id="another-deposit")
+
+
 def test_togo_softpay_uses_documented_fields(monkeypatch):
     seen = {}
 

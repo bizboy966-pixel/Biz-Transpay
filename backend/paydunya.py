@@ -248,7 +248,14 @@ async def create_invoice(config: dict, *, amount: float, currency: str,
         "invoice": {"total_amount": amount, "description": description},
         "store": {"name": config.get("store_name") or "Biz-transPay"},
         "actions": {"callback_url": callback_url},
-        "custom_data": {"biztranspay_token": token},
+        # PayDunya's confirmation response does not expose a top-level
+        # currency. Custom data is returned under the provider-signed hash, so
+        # keep the expected currency and amount there for strict reconciliation.
+        "custom_data": {
+            "biztranspay_token": token,
+            "biztranspay_currency": currency.upper(),
+            "biztranspay_amount": str(amount),
+        },
         "customer": customer,
     }
     return await _request("POST", "/sandbox-api/v1/checkout-invoice/create"
@@ -339,9 +346,11 @@ async def confirm_invoice(config: dict, token: str) -> dict:
 
 
 def confirmation_valid(response: dict, *, master_key: str, token: str,
-                       amount: float, currency: str) -> bool:
+                       amount: float, currency: str,
+                       deposit_id: str = "") -> bool:
     data = response.get("response") if isinstance(response.get("response"), dict) else response
     invoice = data.get("invoice") if isinstance(data.get("invoice"), dict) else {}
+    custom = data.get("custom_data") if isinstance(data.get("custom_data"), dict) else {}
     code_value = (data.get("response_code") if "response_code" in data else
                   data.get("responseCode") if "responseCode" in data else
                   response.get("response_code", ""))
@@ -351,19 +360,31 @@ def confirmation_valid(response: dict, *, master_key: str, token: str,
                          or invoice.get("token") or "")
     returned_amount = (data.get("amount") or data.get("total_amount")
                        or invoice.get("total_amount"))
-    currency_value = data.get("currency") or invoice.get("currency") or ""
+    currency_value = (data.get("currency") or invoice.get("currency")
+                      or custom.get("biztranspay_currency") or "")
     if isinstance(currency_value, dict):
         currency_value = (currency_value.get("iso")
                           or currency_value.get("code") or "")
     returned_currency = str(currency_value).upper()
+    returned_deposit_id = str(custom.get("biztranspay_token") or "")
     supplied_hash = data.get("hash") or invoice.get("hash") or response.get("hash")
     try:
         amount_ok = abs(float(returned_amount) - float(amount)) < 0.005
     except (TypeError, ValueError):
         amount_ok = False
+    identity_ok = (not deposit_id or
+                   hmac.compare_digest(returned_deposit_id, str(deposit_id)))
+    # Historical XOF invoices predate the signed currency custom-data field.
+    # PayDunya checkout invoices are denominated in FCFA and their confirmation
+    # endpoint omits currency, so accept those only when the signed custom-data
+    # still identifies the exact local deposit. New invoices validate the
+    # explicit signed currency above.
+    currency_ok = (returned_currency == currency.upper() or
+                   (not returned_currency and currency.upper() == "XOF"
+                    and bool(deposit_id) and identity_ok))
     return (code == "00" and status == "completed" and
             hmac.compare_digest(returned_token, str(token)) and amount_ok and
-            returned_currency == currency.upper() and
+            currency_ok and identity_ok and
             verify_static_hash(supplied_hash, master_key))
 
 

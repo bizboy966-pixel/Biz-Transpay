@@ -1482,8 +1482,20 @@ class PayDunyaInvoiceRequest(BaseModel):
     description: Optional[str] = None
 
 
+def _paydunya_callback_base(request: Request) -> str:
+    """Return the externally reachable origin seen by PayDunya."""
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
+    if forwarded_host:
+        forwarded_proto = (
+            request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+        ).split(",")[0].strip()
+        return f"{forwarded_proto}://{forwarded_host}"
+    return str(request.base_url).rstrip("/")
+
+
 async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
-                                           uid: str, flow: str) -> dict:
+                                           uid: str, flow: str,
+                                           callback_base_url: str = "") -> dict:
     """Create a pending local row plus a PayDunya invoice.
 
     This helper deliberately does not approve or credit anything.  Approval is
@@ -1541,7 +1553,8 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
     dep_id = new_id()
     parts = (req.full_name or "").strip().split(" ", 1)
     first, last = (parts[0] or "Client"), (parts[1] if len(parts) > 1 else (parts[0] or "Client"))
-    callback = f"{os.environ.get('OFFICIAL_DOMAIN', '')}/api/webhooks/paydunya?ref={dep_id}"
+    callback_base = (os.environ.get("OFFICIAL_DOMAIN") or callback_base_url).rstrip("/")
+    callback = f"{callback_base}/api/webhooks/paydunya?ref={dep_id}"
     try:
         invoice = await paydunya.create_invoice(
             cfg, amount=fees["charged_amount"], currency=currency, token=dep_id,
@@ -1627,15 +1640,19 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
 @api.post("/deposits/paydunya/par")
 @api.post("/deposits/paydunya/par-redirect")
 async def create_paydunya_par(req: PayDunyaInvoiceRequest,
+                               request: Request,
                                uid: str = Depends(get_current_user_id)):
-    return await _create_paydunya_invoice_deposit(req, uid, "par_redirect")
+    return await _create_paydunya_invoice_deposit(
+        req, uid, "par_redirect", _paydunya_callback_base(request))
 
 
 @api.post("/deposits/mobile-money/psr")
 @api.post("/deposits/paydunya/psr")
 async def create_paydunya_psr(req: PayDunyaInvoiceRequest,
+                               request: Request,
                                uid: str = Depends(get_current_user_id)):
-    return await _create_paydunya_invoice_deposit(req, uid, "psr")
+    return await _create_paydunya_invoice_deposit(
+        req, uid, "psr", _paydunya_callback_base(request))
 
 
 @api.get("/deposits/paydunya/psr/{deposit_id}/token/{capability}")
@@ -1702,7 +1719,7 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
             if not paydunya.confirmation_valid(
                     response, master_key=(cfg.get("_credentials") or {}).get("master_key", ""),
                     token=d["paydunya_token"], amount=d.get("charged_amount", d.get("amount")),
-                    currency=d.get("currency", "XOF")):
+                    currency=d.get("currency", "XOF"), deposit_id=d["id"]):
                 logger.warning("PayDunya confirmation rejected for %s", dep_id)
                 return False
         except paydunya.PayDunyaError as exc:

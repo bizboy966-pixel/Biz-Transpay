@@ -487,7 +487,12 @@ function MobileMoneyForm({ onSuccess }) {
   const [psrReady, setPsrReady] = useState(false);
   const [psrAssetError, setPsrAssetError] = useState('');
   const [loading, setLoading] = useState(false);
+  const psrPollRef = useRef(null);
   const { user } = useAuth();
+
+  useEffect(() => () => {
+    if (psrPollRef.current) clearInterval(psrPollRef.current);
+  }, []);
 
   useEffect(() => {
     api.get('/deposits/config').then(({ data }) => {
@@ -552,6 +557,29 @@ function MobileMoneyForm({ onSuccess }) {
     : [], [provider, psrReady]);
   const alternatives = useMemo(() => availableModes.filter((mode) => mode !== 'softpay_direct'), [availableModes]);
 
+  const beginPsrStatusPolling = (trackedDeposit) => {
+    if (psrPollRef.current) clearInterval(psrPollRef.current);
+    let checking = false;
+    const check = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const { data } = await api.get(`/deposits/mobile-money/${trackedDeposit.id}`);
+        if (data.status !== 'pending') {
+          clearInterval(psrPollRef.current);
+          psrPollRef.current = null;
+          onSuccess({ ...trackedDeposit, ...data });
+        }
+      } catch {
+        // A transient status failure is retried without changing the payment.
+      } finally {
+        checking = false;
+      }
+    };
+    check();
+    psrPollRef.current = setInterval(check, 4000);
+  };
+
   useEffect(() => {
     if (provider && !provider.modes?.[paymentMode]) {
       setPaymentMode(provider.modes?.softpay_direct ? 'softpay_direct' : (availableModes[0] || 'softpay_direct'));
@@ -591,15 +619,17 @@ function MobileMoneyForm({ onSuccess }) {
         if (!data?.id) {
           throw new Error('PayDunya n’a pas fourni de référence PSR. Aucun suivi local n’est possible.');
         }
+        const trackedDeposit = {
+          ...data,
+          __psr: true,
+          operator_name: selectedOp?.name || selectedOp?.label || operator,
+          fee_bearer: feeBearer,
+        };
         startPaydunyaPsr({
           deposit: data,
-          onTerminate: () => onSuccess({
-            ...data,
-            __psr: true,
-            operator_name: selectedOp?.name || selectedOp?.label || operator,
-            fee_bearer: feeBearer,
-          }),
+          onTerminate: () => onSuccess(trackedDeposit),
         });
+        beginPsrStatusPolling(trackedDeposit);
         toast.success('Fenêtre de paiement PSR ouverte');
         return;
       }

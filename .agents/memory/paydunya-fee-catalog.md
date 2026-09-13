@@ -20,3 +20,9 @@ Wallet credit must be exactly-once and repairable without relying on MongoDB rep
 **Why:** A fast provider callback or process failure must never produce a charged customer without a recoverable local payment, a missing ledger entry, or a duplicate wallet credit.
 
 **How to apply:** Require verified completed server confirmation, use a durable per-deposit credit marker with deterministic ledger identity, and make retries repair status/ledger side effects without incrementing the balance again.
+
+PayDunya checkout confirmation can omit the currency even for a completed invoice. New invoices must carry the expected currency, amount, and local deposit identity in returned custom data; historical currency-less compatibility is limited to XOF with an exact local identity match.
+
+**Why:** Rejecting every currency-less response leaves legitimately paid XOF deposits uncredited, while accepting one without a bound local identity weakens reconciliation safety.
+
+**How to apply:** Validate completed status, provider token, amount, static hash, local deposit identity, and the returned custom-data currency. Keep the narrow XOF compatibility rule only for invoices created before the currency field was added.
