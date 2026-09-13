@@ -89,10 +89,9 @@ export default function Register() {
           <div className="bt-auth-form-column">
         <form onSubmit={onSubmit} className="bt-auth-card bt-auth-card--wide max-w-2xl mx-auto p-7 sm:p-11" data-testid="register-form">
           <div className="text-center mb-9">
-            <div className="mx-auto w-14 h-14 rounded-2xl bg-[#EFF6FF] border border-[#D8E7FF] flex items-center justify-center">
-              <UserPlus className="w-7 h-7 text-[#2563EB]" strokeWidth={1.75} />
+            <div className="flex justify-center">
+              <Logo />
             </div>
-            <div className="bt-kicker mt-5">Biz-transPay</div>
             <h1 className="mt-2 font-cabinet text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">{t('register.title')}</h1>
             <p className="mt-2 text-slate-600">{t('register.subtitle')}</p>
           </div>
