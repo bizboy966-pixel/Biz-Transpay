@@ -36,9 +36,6 @@ export default function Login() {
       <header className="bt-auth-header">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <Logo />
-          <Link to="/register" data-testid="link-to-register" className="text-sm font-semibold text-[#2563EB]">
-            {t('login.no_account')} <span className="underline underline-offset-4">{t('login.register')}</span>
-          </Link>
         </div>
       </header>
 
