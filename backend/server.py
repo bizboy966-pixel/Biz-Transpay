@@ -226,6 +226,7 @@ def user_to_public(u: dict) -> UserPublic:
         two_fa_enabled=u.get("two_fa_enabled", False),
         language=u.get("language", "fr"),
         default_currency=u.get("default_currency", "XOF"),
+        avatar_url=u.get("avatar_url"),
         role=u.get("role", "user"),
         admin_role=u.get("admin_role"),
         is_blocked=u.get("is_blocked", False),
@@ -5876,6 +5877,14 @@ async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
 @api.patch("/settings/profile", response_model=UserPublic)
 async def update_profile(req: UpdateProfile, uid: str = Depends(get_current_user_id)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "avatar_url" in updates:
+        avatar = str(updates["avatar_url"] or "")
+        if avatar and (
+            not avatar.startswith(("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,"))
+            or len(avatar) > 3_000_000
+        ):
+            raise HTTPException(400, "Photo invalide ou trop volumineuse")
+        updates["avatar_url"] = avatar or None
     protected_fields = {"full_name", "phone", "email"}
     if protected_fields.intersection(updates):
         current_user = await get_user(uid)

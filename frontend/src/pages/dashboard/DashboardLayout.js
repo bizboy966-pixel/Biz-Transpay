@@ -98,7 +98,11 @@ export default function DashboardLayout() {
             <LanguageSwitcher compact />
             <div className="relative">
               <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full hover:bg-slate-100 transition-colors">
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>
+                {user?.avatar_url ? (
+                  <img src={user.avatar_url} alt={`Photo de ${user?.full_name || 'profil'}`} className="w-8 h-8 rounded-full object-cover border border-white shadow-sm" />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>
+                )}
                 <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
               </button>
               {profileOpen && (

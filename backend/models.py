@@ -45,6 +45,7 @@ class UserPublic(BaseModel):
     two_fa_enabled: bool = False
     language: str = "fr"
     default_currency: str = "XOF"
+    avatar_url: Optional[str] = None
     role: str = "user"
     admin_role: Optional[str] = None
     is_blocked: bool = False
@@ -214,6 +215,7 @@ class UpdateProfile(BaseModel):
     language: Optional[str] = None
     default_currency: Optional[Literal["XOF", "XAF"]] = None
     two_fa_enabled: Optional[bool] = None
+    avatar_url: Optional[str] = None
 
 
 class ChangePassword(BaseModel):
