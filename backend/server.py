@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Literal
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -1561,6 +1561,8 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
             customer={"firstname": first, "lastname": last, "email": req.email,
                       **({"phone_number": phone} if phone else {})},
             callback_url=callback,
+            return_url=f"{callback_base}/api/deposits/paydunya/return",
+            cancel_url=f"{callback_base}/dashboard/deposit?paydunya=cancelled",
             description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
     except paydunya.PayDunyaError as exc:
@@ -1722,6 +1724,12 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
                     currency=d.get("currency", "XOF"), deposit_id=d["id"]):
                 logger.warning("PayDunya confirmation rejected for %s", dep_id)
                 return False
+            receipt_url = response.get("receipt_url")
+            if isinstance(receipt_url, str) and receipt_url.startswith(
+                    ("https://paydunya.com/", "https://app.paydunya.com/")):
+                d["receipt_url"] = receipt_url
+                await db.momo_deposits.update_one(
+                    {"id": dep_id}, {"$set": {"receipt_url": receipt_url}})
         except paydunya.PayDunyaError as exc:
             # Configuration/credential failures must be visible to operators;
             # transient provider failures simply leave the row pending for retry.
@@ -1798,6 +1806,7 @@ async def _credit_momo_deposit(d: dict) -> None:
         "charged_amount": d.get("charged_amount"), "fee": fee,
         "gateway_fee": gateway_fee, "platform_fee": platform_fee,
         "amount_net": net, "method": "mobile_money",
+        "receipt_url": d.get("receipt_url"),
     }
     if d.get("source") != "link_payment":
         await _upsert_momo_ledger(
@@ -1888,6 +1897,24 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
         await _reconcile_momo_deposit(deposit_id)
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     return d
+
+
+@api.get("/deposits/paydunya/return")
+async def paydunya_payment_return(token: str):
+    """Confirm a hosted payment before returning to the dashboard."""
+    d = await db.momo_deposits.find_one(
+        {"provider": "paydunya", "paydunya_token": token}, {"_id": 0})
+    if not d:
+        return RedirectResponse(
+            url="/dashboard?paydunya=not_found", status_code=303)
+    for attempt in range(3):
+        if await _reconcile_momo_deposit(d["id"]):
+            return RedirectResponse(
+                url="/dashboard?paydunya=completed", status_code=303)
+        if attempt < 2:
+            await asyncio.sleep(1)
+    return RedirectResponse(
+        url="/dashboard?paydunya=pending", status_code=303)
 
 
 @api.post("/webhooks/paydunya")

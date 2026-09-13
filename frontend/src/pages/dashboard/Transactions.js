@@ -86,6 +86,7 @@ export default function Transactions() {
           const coin = meta.coin;
           const network = meta.network;
           const txHash = meta.tx_hash;
+          const receiptUrl = meta.receipt_url;
           const explorer = network && EXPLORER[network];
           return (
           <div key={tx.id} data-testid={`tx-row-${tx.id}`} className="grid grid-cols-[auto_1fr_auto_auto] gap-4 items-center px-6 py-4 border-t border-slate-50 hover:bg-slate-50/50">
@@ -107,6 +108,18 @@ export default function Transactions() {
                     </a>
                   )}
                 </div>
+              )}
+              {receiptUrl && (
+                <a
+                  href={receiptUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-1 inline-flex max-w-full items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-semibold text-[#2563EB] hover:bg-blue-100"
+                  data-testid={`tx-receipt-${tx.id}`}
+                >
+                  <Download className="h-3 w-3 shrink-0" />
+                  <span className="truncate">Télécharger le reçu PayDunya</span>
+                </a>
               )}
               {(meta.amount_gross != null || meta.fee != null) && (
                 <div className="mt-1 text-[10px] text-slate-500">

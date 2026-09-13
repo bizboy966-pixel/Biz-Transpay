@@ -189,3 +189,26 @@ def test_provider_html_error_is_not_exposed(monkeypatch):
             {},
         ))
     assert exc.value.message == "PayDunya returned HTTP 404"
+
+
+def test_checkout_invoice_includes_all_redirect_actions(monkeypatch):
+    seen = {}
+
+    async def fake_request(method, path, config, body=None):
+        seen.update(method=method, path=path, body=body)
+        return {"response_code": "00", "token": "invoice-token"}
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    asyncio.run(paydunya.create_invoice(
+        {"mode": "live", "store_name": "Biz-transPay"},
+        amount=500, currency="XOF", token="deposit-id",
+        customer={"firstname": "Test", "lastname": "Client"},
+        callback_url="https://merchant.example/api/webhooks/paydunya",
+        return_url="https://merchant.example/api/deposits/paydunya/return",
+        cancel_url="https://merchant.example/dashboard/deposit?paydunya=cancelled",
+    ))
+    assert seen["body"]["actions"] == {
+        "callback_url": "https://merchant.example/api/webhooks/paydunya",
+        "return_url": "https://merchant.example/api/deposits/paydunya/return",
+        "cancel_url": "https://merchant.example/dashboard/deposit?paydunya=cancelled",
+    }

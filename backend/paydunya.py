@@ -243,11 +243,17 @@ async def _request(method: str, path: str, config: dict, body: Optional[dict] = 
 
 async def create_invoice(config: dict, *, amount: float, currency: str,
                          token: str, customer: dict, callback_url: str,
-                         description: str = "") -> dict:
+                         description: str = "", return_url: str = "",
+                         cancel_url: str = "") -> dict:
+    actions = {"callback_url": callback_url}
+    if return_url:
+        actions["return_url"] = return_url
+    if cancel_url:
+        actions["cancel_url"] = cancel_url
     body = {
         "invoice": {"total_amount": amount, "description": description},
         "store": {"name": config.get("store_name") or "Biz-transPay"},
-        "actions": {"callback_url": callback_url},
+        "actions": actions,
         # PayDunya's confirmation response does not expose a top-level
         # currency. Custom data is returned under the provider-signed hash, so
         # keep the expected currency and amount there for strict reconciliation.
