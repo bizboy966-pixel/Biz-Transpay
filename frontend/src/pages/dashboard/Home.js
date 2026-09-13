@@ -97,14 +97,14 @@ export default function DashboardHome() {
           </button>
         </div>
 
-        <div className="relative grid min-h-[6.2rem] grid-cols-3 gap-0 bg-gradient-to-b from-[#0759D2] to-[#0844B5] px-2.5 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,.13)] sm:min-h-[8.2rem] sm:px-6 sm:py-5">
+        <div className="relative grid min-h-[6.2rem] grid-cols-3 gap-0 bg-gradient-to-b from-[#0759D2] to-[#0844B5] shadow-[inset_0_1px_0_rgba(255,255,255,.13)] sm:min-h-[8.2rem]">
           {wallets.map((b, index) => (
             <div
               key={b.curr}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
-              className={`relative flex min-w-0 items-center justify-center px-1 py-0.5 sm:px-4 ${
+              className={`relative flex min-w-0 items-center justify-center px-1 py-4 sm:px-4 sm:py-5 ${
                 index > 0
-                  ? 'before:absolute before:bottom-[-1rem] before:left-0 before:top-[-1rem] before:w-px before:bg-white/25 sm:before:bottom-[-1.25rem] sm:before:top-[-1.25rem]'
+                  ? 'before:absolute before:bottom-0 before:left-0 before:top-0 before:w-px before:bg-white/25'
                   : ''
               }`}
               style={{ containerType: 'inline-size' }}
