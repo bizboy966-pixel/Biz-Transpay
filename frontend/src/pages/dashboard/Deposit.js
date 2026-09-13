@@ -16,7 +16,7 @@ const PSR_ASSET_IDS = {
 let psrAssetsPromise;
 
 function loadExternalAsset({ id, tag, url, attributes = {} }) {
-  if (typeof document === 'undefined') return Promise.reject(new Error('Le navigateur est requis pour le paiement PSR.'));
+    if (typeof document === 'undefined') return Promise.reject(new Error('Le paiement est indisponible dans ce navigateur.'));
   if ((id === PSR_ASSET_IDS.jquery && window.jQuery)
       || (id === PSR_ASSET_IDS.script && window.PayDunya?.setup)) {
     const ready = document.getElementById(id);
@@ -34,7 +34,7 @@ function loadExternalAsset({ id, tag, url, attributes = {} }) {
       element.dataset.loaded = 'true';
       resolve();
     }, { once: true });
-    element.addEventListener('error', () => reject(new Error(`Impossible de charger l’intégration PayDunya PSR (${url}).`)), { once: true });
+    element.addEventListener('error', () => reject(new Error('Le paiement sécurisé est temporairement indisponible.')), { once: true });
     if (tag === 'link' && !existing) element.href = url;
     if (tag === 'script' && !existing) element.src = url;
   });
@@ -64,7 +64,7 @@ function ensurePaydunyaPsrAssets() {
       attributes: { defer: 'true' },
     });
     if (!window.PayDunya || typeof window.PayDunya.setup !== 'function') {
-      throw new Error('Le module officiel PayDunya PSR est indisponible.');
+      throw new Error('Le paiement sécurisé est temporairement indisponible.');
     }
   })().catch((error) => {
     psrAssetsPromise = null;
@@ -79,7 +79,7 @@ function startPaydunyaPsr({ deposit, onTerminate }) {
     throw new Error('Le module officiel PayDunya PSR est indisponible.');
   }
   if (!deposit?.psr_token_url) {
-    throw new Error('PayDunya n’a pas fourni l’autorisation PSR.');
+    throw new Error('Le paiement sécurisé n’a pas pu être préparé.');
   }
   const tokenUrl = deposit.psr_token_url;
   let terminated = false;
@@ -96,19 +96,19 @@ function startPaydunyaPsr({ deposit, onTerminate }) {
     onTerminate: terminate,
     onError: (error) => {
       console.error('PayDunya PSR error', error);
-      toast.error('PayDunya PSR a rencontré une erreur. Veuillez réessayer.');
+      toast.error('Le paiement a rencontré une erreur. Veuillez réessayer.');
     },
     onUnsuccessfulResponse: (response) => {
       console.error('PayDunya PSR unsuccessful response', response);
-      toast.error('PayDunya PSR a refusé la demande de paiement.');
+      toast.error('La demande de paiement a été refusée. Veuillez réessayer.');
     },
   };
   const client = PayDunya.setup(options);
   if (!client || typeof client.requestToken !== 'function') {
-    throw new Error('PayDunya n’a pas pu initialiser la fenêtre PSR.');
+    throw new Error('La fenêtre de paiement n’a pas pu être ouverte.');
   }
   const requested = client.requestToken();
-  if (requested === false) throw new Error('PayDunya a refusé la demande PSR.');
+  if (requested === false) throw new Error('La demande de paiement a été refusée.');
 }
 
 export default function Deposit() {
@@ -557,7 +557,6 @@ function MobileMoneyForm({ onSuccess }) {
   const availableModes = useMemo(() => provider?.enabled
     ? ['softpay_direct', 'psr', 'par_redirect'].filter((mode) => provider.modes?.[mode] && (mode !== 'psr' || psrReady))
     : [], [provider, psrReady]);
-  const alternatives = useMemo(() => availableModes.filter((mode) => mode !== 'softpay_direct'), [availableModes]);
 
   const beginPsrStatusPolling = (trackedDeposit) => {
     if (psrPollRef.current) clearInterval(psrPollRef.current);
@@ -619,7 +618,7 @@ function MobileMoneyForm({ onSuccess }) {
         // integration cannot create an orphan invoice.
         const { data } = await api.post('/deposits/mobile-money/psr', request);
         if (!data?.id) {
-          throw new Error('PayDunya n’a pas fourni de référence PSR. Aucun suivi local n’est possible.');
+          throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
         }
         const trackedDeposit = {
           ...data,
@@ -638,7 +637,7 @@ function MobileMoneyForm({ onSuccess }) {
       if (paymentMode === 'par_redirect') {
         const { data } = await api.post('/deposits/mobile-money/par', request);
         if (!data?.checkout_url) {
-          throw new Error('PayDunya n’a pas renvoyé de lien de paiement PAR. Aucun paiement n’a été lancé.');
+          throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
         }
         // Redirect only after the customer explicitly selected PAR above.
         window.location.assign(data.checkout_url);
@@ -667,7 +666,7 @@ function MobileMoneyForm({ onSuccess }) {
     return (
       <div className="bg-white border border-slate-100 rounded-2xl p-6 text-center" data-testid="momo-disabled">
         <h2 className="font-cabinet text-lg font-extrabold text-slate-900">Mobile Money indisponible</h2>
-        <p className="mt-2 text-xs text-slate-500">{psrAssetError || 'Aucun mode PayDunya n’est actuellement disponible. Réessayez plus tard.'}</p>
+        <p className="mt-2 text-xs text-slate-500">Ce moyen de paiement est temporairement indisponible. Réessayez plus tard.</p>
       </div>
     );
   }
@@ -677,7 +676,7 @@ function MobileMoneyForm({ onSuccess }) {
       <div id="paydunya-psr" className="sr-only" aria-hidden="true" />
       {psrAssetError && provider?.modes?.psr && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] text-amber-800" data-testid="momo-psr-unavailable">
-          PSR est masqué car son intégration officielle n’a pas pu être initialisée. {psrAssetError}
+          Le paiement sécurisé est temporairement indisponible. Veuillez réessayer.
         </div>
       )}
       <div>
@@ -739,31 +738,6 @@ function MobileMoneyForm({ onSuccess }) {
           </div>
         )}
       </div>
-      {alternatives.length > 0 && (
-        <section className="rounded-xl border border-violet-100 bg-violet-50/40 p-3" data-testid="momo-provider-modes">
-          <div className="text-xs font-bold text-slate-900">Autres modes PayDunya</div>
-          <p className="mt-1 text-[10px] leading-relaxed text-slate-500">SoftPay direct reste le mode recommandé. Choisissez un autre mode uniquement si vous souhaitez ce parcours.</p>
-          <div className="grid sm:grid-cols-2 gap-2 mt-2">
-            {provider.modes?.softpay_direct && (
-              <button type="button" onClick={() => setPaymentMode('softpay_direct')} data-testid="momo-mode-softpay_direct"
-                className={`text-left px-3 py-2 rounded-lg border text-[11px] font-semibold ${paymentMode === 'softpay_direct' ? 'border-emerald-500 bg-white text-emerald-700' : 'border-violet-100 bg-white/60 text-slate-600'}`}>
-                SoftPay direct · recommandé
-                <span className="block text-[10px] font-normal text-slate-500 mt-0.5">Demande directe sur votre téléphone</span>
-              </button>
-            )}
-            {alternatives.map((mode) => (
-              <button key={mode} type="button" onClick={() => setPaymentMode(mode)} data-testid={`momo-mode-${mode}`}
-                className={`text-left px-3 py-2 rounded-lg border text-[11px] font-semibold ${paymentMode === mode ? 'border-violet-500 bg-white text-violet-700' : 'border-violet-100 bg-white/60 text-slate-600'}`}>
-                {mode === 'psr' ? 'PSR · sans redirection' : 'PAR · avec redirection'}
-                <span className="block text-[10px] font-normal text-slate-500 mt-0.5">{mode === 'psr' ? 'Reste dans Biz-transPay' : 'Ouvre PayDunya après confirmation'}</span>
-              </button>
-            ))}
-          </div>
-          {paymentMode !== 'softpay_direct' && (
-            <p className="mt-2 text-[10px] text-violet-800">Mode sélectionné : <b>{paymentMode === 'psr' ? 'PSR sans redirection' : 'PAR avec redirection'}</b></p>
-          )}
-        </section>
-      )}
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Frais supportés par</label>
         <div className="grid grid-cols-2 gap-2">
@@ -786,7 +760,7 @@ function MobileMoneyForm({ onSuccess }) {
       </div>
       <button type="submit" disabled={loading} data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
-        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>{paymentMode === 'par_redirect' ? 'Continuer vers PayDunya' : paymentMode === 'psr' ? 'Préparer le paiement PSR' : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
+        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>{paymentMode === 'par_redirect' ? 'Continuer le paiement' : paymentMode === 'psr' ? 'Payer maintenant' : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
       </button>
     </form>
   );
