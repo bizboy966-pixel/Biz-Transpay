@@ -31,6 +31,7 @@ export default function DashboardLayout() {
   const initials = (user?.full_name || 'U').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
 
   const nav = [
+    { to: '/dashboard', end: true, i: Home, l: t('dashboard.title') },
     { to: '/dashboard/kyc', i: IdCard, l: t('dashboard.kyc') },
     { to: '/dashboard/fees', i: WalletCards, l: t('dashboard.fees') },
   ];
