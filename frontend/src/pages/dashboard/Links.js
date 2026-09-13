@@ -6,6 +6,25 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
 
+const LINK_COPY = {
+  general: 'Informations générales',
+  logo: 'Logo / image',
+  title: 'Nom du lien',
+  description: 'Description',
+  amount: 'Montant',
+  minimum: 'Montant minimum',
+  maximum: 'Montant maximum',
+  amountConfig: 'Configuration du montant',
+  fixed: 'Montant fixe',
+  fixedDescription: 'Le client paie un montant exact',
+  free: 'Montant libre',
+  freeDescription: 'Le client choisit dans une plage',
+  fees: 'Gestion des frais',
+  options: 'Options du lien',
+  expiresAt: "Date d'expiration",
+  singleUse: 'Lien à usage unique',
+};
+
 export default function Links() {
   const { t } = useTranslation();
   const [links, setLinks] = useState([]);
@@ -204,11 +223,11 @@ function LinkForm({ initial, onClose, onSaved }) {
         </div>
 
         {/* Informations générales */}
-        <Section title="Informations générales">
+        <Section title={LINK_COPY.general}>
           <div className="grid sm:grid-cols-[auto_1fr] gap-4">
             {/* Logo */}
-            <div>
-              <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Logo / image</label>
+            <div className="text-center">
+              <FormLabel>{LINK_COPY.logo}</FormLabel>
               <div className="relative w-24 h-24 rounded-xl border-2 border-dashed border-slate-200 hover:border-[#2563EB] cursor-pointer overflow-hidden group" onClick={() => fileRef.current?.click()}>
                 {form.logo ? (
                   <img src={form.logo} alt="logo" className="w-full h-full object-cover" data-testid="logo-preview" />
@@ -225,11 +244,11 @@ function LinkForm({ initial, onClose, onSaved }) {
             </div>
             <div className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Nom du lien</label>
+                <FormLabel>{LINK_COPY.title}</FormLabel>
                 <input data-testid="link-title" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Ex: Facture #001, Formation Web, T-shirt collector…" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Description</label>
+                <FormLabel>{LINK_COPY.description}</FormLabel>
                 <textarea data-testid="link-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} rows={2} placeholder="Décrivez brièvement le produit ou le service…" className="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm resize-none" />
               </div>
             </div>
@@ -237,11 +256,11 @@ function LinkForm({ initial, onClose, onSaved }) {
         </Section>
 
         {/* Montant */}
-        <Section title="Configuration du montant">
+        <Section title={LINK_COPY.amountConfig}>
           <div className="grid grid-cols-2 gap-2 mb-3">
             {[
-              { v: 'fixed', l: 'Montant fixe', d: 'Le client paie un montant exact' },
-              { v: 'free', l: 'Montant libre', d: 'Le client choisit dans une plage' },
+              { v: 'fixed', l: LINK_COPY.fixed, d: LINK_COPY.fixedDescription },
+              { v: 'free', l: LINK_COPY.free, d: LINK_COPY.freeDescription },
             ].map((o) => (
               <button key={o.v} type="button" onClick={() => setForm({ ...form, amount_type: o.v })} data-testid={`amount-type-${o.v}`} className={`p-3 rounded-xl border-2 text-left transition-colors ${form.amount_type === o.v ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 hover:border-slate-300'}`}>
                 <div className="font-cabinet font-bold text-xs text-slate-900">{o.l}</div>
@@ -252,17 +271,17 @@ function LinkForm({ initial, onClose, onSaved }) {
 
           {form.amount_type === 'fixed' ? (
             <div>
-              <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant</label>
+              <FormLabel>{LINK_COPY.amount}</FormLabel>
               <input data-testid="link-amount" type="number" required min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="5000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant minimum</label>
+                  <FormLabel>{LINK_COPY.minimum}</FormLabel>
                 <input data-testid="link-min" type="number" required min="0.01" step="0.01" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder="500" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Montant maximum</label>
+                  <FormLabel>{LINK_COPY.maximum}</FormLabel>
                 <input data-testid="link-max" type="number" required min="0.01" step="0.01" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder="50000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
             </div>
@@ -274,7 +293,7 @@ function LinkForm({ initial, onClose, onSaved }) {
         </Section>
 
         {/* Fees */}
-        <Section title="Gestion des frais">
+        <Section title={LINK_COPY.fees}>
           <div className="grid grid-cols-2 gap-2">
             {[
               { v: 'customer', l: 'Le client paie', d: 'Les frais s\'ajoutent au montant du client' },
@@ -299,18 +318,21 @@ function LinkForm({ initial, onClose, onSaved }) {
           )}
         </Section>
 
-        {/* Options */}
-        <Section title="Options">
+        {/* Options always remain part of the create/edit form. */}
+        <Section title={LINK_COPY.options} testId="link-options">
           <div className="grid sm:grid-cols-2 gap-3 items-end">
             <div>
-              <label className="text-xs font-semibold text-slate-700 mb-1.5 block">Date d'expiration (optionnel)</label>
+              <FormLabel>{LINK_COPY.expiresAt} <span className="font-normal text-slate-400">(optionnel)</span></FormLabel>
               <input data-testid="link-expires" type="datetime-local" value={form.expires_at} onChange={(e) => setForm({ ...form, expires_at: e.target.value })} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
             </div>
-            <label className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl cursor-pointer">
+            <label className="flex items-center justify-center gap-2 p-3 bg-slate-50 rounded-xl cursor-pointer text-center">
               <input type="checkbox" data-testid="link-single-use" checked={form.single_use} onChange={(e) => setForm({ ...form, single_use: e.target.checked })} className="w-4 h-4 accent-[#2563EB]" />
-              <span className="text-xs font-semibold">Lien à usage unique</span>
+              <span className="text-xs font-semibold">{LINK_COPY.singleUse}</span>
             </label>
           </div>
+          <p className="mt-2 text-center text-[10px] text-slate-500">
+            La date désactive automatiquement le lien à son expiration. Un lien à usage unique devient indisponible après son premier paiement confirmé.
+          </p>
         </Section>
 
         <button type="submit" disabled={pending} data-testid="btn-generate-link" className="mt-4 w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 rounded-xl disabled:opacity-60">
@@ -321,10 +343,14 @@ function LinkForm({ initial, onClose, onSaved }) {
   );
 }
 
-function Section({ title, children }) {
+function FormLabel({ children }) {
+  return <label className="text-xs font-semibold text-slate-700 mb-1.5 block text-center">{children}</label>;
+}
+
+function Section({ title, children, testId }) {
   return (
-    <div className="mt-4">
-      <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">{title}</div>
+    <div className="mt-4" data-testid={testId}>
+      <div className="text-center text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">{title}</div>
       {children}
     </div>
   );
