@@ -7,3 +7,18 @@ uri = "file://screenshots/wallet-centering-draft.png"
 type = "image"
 title = "Ébauche — montants centrés"
 description = "Maquette mobile de la carte portefeuille avec les mêmes colonnes et pastilles dans les coins, mais les montants recentrés sur chaque ligne. Cette ébauche n’a pas encore modifié l’application."
+logical_id = "e1dfe232-b69a-41cc-9c40-25417d721360"
+
+[[outputs]]
+id = "inSElv7GHSn1IBELtda76"
+uri = "file://screenshots/wallet-badges-inline-draft.png"
+type = "image"
+title = "Ébauche — pastilles alignées sur la ligne"
+description = "Nouvelle maquette mobile : les montants restent inchangés, et seules les pastilles sont descendues sur la même ligne horizontale que leurs montants. Rien n’est encore intégré définitivement."
+logical_id = "1a499a16-643d-45eb-8583-d6e9443ae183"
+content_hash = "sha256:fc260bb85d5f2a3de0dabdbf21eae5c559f305a38727424fb6f619dffb70d947"
+size = 156316
+mtime_ms = 1789336600509
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/1a499a16-643d-45eb-8583-d6e9443ae183/fa461b1c-2e40-4190-8cf9-0027a442bd31"
+storage_version_token = "1789336619071725"
+content_type = "image/png"
