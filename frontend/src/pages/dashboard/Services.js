@@ -15,7 +15,7 @@ export default function Services() {
         <button
           type="button"
           data-testid="service-payment-link"
-          onClick={() => navigate('/dashboard/links?create=1')}
+          onClick={() => navigate('/dashboard/links')}
           className="group text-left bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:border-blue-200 hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] transition-all"
         >
           <div className="flex items-start justify-between gap-3">
