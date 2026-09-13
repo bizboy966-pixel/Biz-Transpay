@@ -21,7 +21,6 @@ const NAV = [
   { to: '/admin/fees', i: SettingsIcon, l: 'Frais' },
   { to: '/admin/benefits', i: TrendingUp, l: 'Bénéfice', sub: 'Marge plateforme' },
   { to: '/admin/conversions', i: ArrowLeftRight, l: 'Conversions', sub: 'Suivi' },
-  { to: '/admin/platform', i: SettingsIcon, l: 'Plateforme' },
   { to: '/admin/payment-providers', i: Smartphone, l: 'Prestataire de paiement' },
   { to: '/admin/support', i: MessageCircle, l: 'Support & Chat' },
   { section: 'Administration' },
