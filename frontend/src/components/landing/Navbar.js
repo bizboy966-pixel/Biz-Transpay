@@ -1,31 +1,20 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, LogIn, Menu, X } from 'lucide-react';
+import { LogIn, Menu, X } from 'lucide-react';
 import { Logo } from '../Logo';
-import i18n from '@/i18n';
-
-const LANGS = [{ code: 'fr', label: 'FR' }, { code: 'en', label: 'EN' }];
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 export default function Navbar() {
   const { t } = useTranslation();
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
-  const [lang, setLang] = useState(i18n.language);
-  const [langOpen, setLangOpen] = useState(false);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 20);
     window.addEventListener('scroll', onScroll);
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
-
-  const changeLang = (l) => {
-    i18n.changeLanguage(l);
-    localStorage.setItem('btp_lang', l);
-    setLang(l);
-    setLangOpen(false);
-  };
 
   const items = [
     { to: '/', key: 'home' },
@@ -68,30 +57,7 @@ export default function Navbar() {
         </nav>
 
         <div className="flex items-center gap-3">
-          <div className="relative">
-            <button
-              data-testid="lang-selector"
-              onClick={() => setLangOpen((v) => !v)}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-slate-700 border border-slate-200 rounded-full hover:border-slate-300 transition-colors"
-            >
-              {LANGS.find((l) => l.code === lang)?.label || 'FR'}
-              <ChevronDown className="w-3.5 h-3.5" />
-            </button>
-            {langOpen && (
-              <div className="absolute right-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden min-w-[80px]">
-                {LANGS.map((l) => (
-                  <button
-                    key={l.code}
-                    data-testid={`lang-option-${l.code}`}
-                    onClick={() => changeLang(l.code)}
-                    className="block w-full text-left px-4 py-2 text-sm font-semibold hover:bg-slate-50"
-                  >
-                    {l.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <LanguageSwitcher compact />
 
           <Link
             to="/login"

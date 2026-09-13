@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
 import { useAuth } from '@/context/AuthContext';
 
@@ -88,6 +89,7 @@ export default function DashboardLayout() {
 
           <div className="ml-auto flex items-center gap-2">
             <NotificationBell />
+            <LanguageSwitcher compact />
             <div className="relative">
               <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full hover:bg-slate-100 transition-colors">
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>

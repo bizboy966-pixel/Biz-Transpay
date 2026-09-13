@@ -5,6 +5,7 @@ import { Mail, Lock, Eye, EyeOff, LogIn as LogInIcon } from 'lucide-react';
 import { toast } from 'sonner';
 import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 export default function Login() {
   const { t } = useTranslation();
@@ -36,6 +37,7 @@ export default function Login() {
       <header className="bt-auth-header">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <Logo />
+          <LanguageSwitcher compact />
         </div>
       </header>
 

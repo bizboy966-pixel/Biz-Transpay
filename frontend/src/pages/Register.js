@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
 
 export default function Register() {
   const { t } = useTranslation();
@@ -62,8 +63,9 @@ export default function Register() {
   return (
     <div className="bt-auth-shell flex flex-col" data-testid="register-page">
       <header className="bt-auth-header">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <Logo />
+            <LanguageSwitcher compact />
         </div>
       </header>
 
