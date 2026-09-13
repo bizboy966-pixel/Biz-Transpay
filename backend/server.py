@@ -1837,7 +1837,11 @@ async def _credit_momo_deposit(d: dict) -> None:
         "paydunya_token": d.get("paydunya_token"),
         "paydunya_reference": d.get("paydunya_reference") or d.get("fedapay_reference"),
         "operator": d.get("operator"), "country": d.get("country"),
-        "phone_number": d.get("phone_number"), "amount_gross": gross,
+        "phone_number": d.get("phone_number"),
+        "customer_name": d.get("full_name"),
+        "customer_email": d.get("email"),
+        "provider_reference": d.get("paydunya_reference") or d.get("fedapay_reference"),
+        "amount_gross": gross,
         "charged_amount": d.get("charged_amount"), "fee": fee,
         "gateway_fee": gateway_fee, "platform_fee": platform_fee,
         "amount_net": net, "method": "mobile_money",
@@ -2384,8 +2388,11 @@ async def izipay_webhook(request: Request):
                     await record_tx(mp["merchant_id"], "payment", "in", net, "USDT",
                                     status="completed", description="Paiement API marchand",
                                     metadata={"merchant_payment_id": mp["id"],
+                                              "external_reference": mp.get("reference"),
+                                              "provider_reference": mp.get("izipay_intent_id"),
                                               "izipay_intent_id": intent_id,
                                               "coin": mp.get("coin"), "tx_hash": tx_hash,
+                                              "customer_email": mp.get("customer_email"),
                                               "amount_gross": gross, "fee": fee,
                                               "gateway_fee": gateway_fee, "platform_fee": platform_fee,
                                               "fee_pct": fee_pct, "amount_net": net})
@@ -3945,25 +3952,65 @@ async def list_transactions(
     if status:
         query["status"] = status
     if q:
-        # Escape regex-special chars so user input like "0x..." works verbatim
-        esc = __import__("re").escape(q.strip())
+        # Escape regex-special chars so user input like "0x..." works verbatim.
+        import re
+        needle = q.strip()
+        esc = re.escape(needle)
         rx = {"$regex": esc, "$options": "i"}
-        query["$or"] = [
+        search_terms = [
             {"id": rx}, {"reference": rx}, {"counterparty": rx},
             {"description": rx}, {"currency": rx}, {"type": rx},
-            {"metadata.tx_hash": rx},
-            {"metadata.wallet_address": rx},
-            {"metadata.deposit_address": rx},
-            {"metadata.customer_email": rx},
-            {"metadata.izipay_intent_id": rx},
-            {"metadata.merchant_payment_id": rx},
-            {"metadata.link_id": rx},
-            {"metadata.coin": rx},
-            {"metadata.recipient": rx},
-            {"metadata.recipient_name": rx},
+            {"metadata.tx_hash": rx}, {"metadata.txid": rx}, {"metadata.tx_id": rx},
+            {"metadata.wallet_address": rx}, {"metadata.deposit_address": rx},
+            {"metadata.customer_email": rx}, {"metadata.customer_name": rx},
+            {"metadata.email": rx}, {"metadata.phone_number": rx},
+            {"metadata.customer_phone": rx}, {"metadata.external_id": rx},
+            {"metadata.external_reference": rx}, {"metadata.provider_reference": rx},
+            {"metadata.paydunya_reference": rx}, {"metadata.paydunya_token": rx},
+            {"metadata.izipay_intent_id": rx}, {"metadata.izipay_payout_id": rx},
+            {"metadata.merchant_payment_id": rx}, {"metadata.payment_id": rx},
+            {"metadata.link_id": rx}, {"metadata.link_payment_id": rx},
+            {"metadata.coin": rx}, {"metadata.network": rx},
+            {"metadata.recipient": rx}, {"metadata.recipient_name": rx},
+            {"metadata.reference": rx},
         ]
+        # Amounts are stored as numbers, so a regex cannot find them.
+        numeric = re.sub(r"[^\d.-]", "", needle.replace(",", "."))
+        try:
+            amount_value = float(numeric) if numeric not in ("", "-", ".") else None
+        except ValueError:
+            amount_value = None
+        if amount_value is not None:
+            search_terms.extend([
+                {"amount": amount_value},
+                {"metadata.amount_gross": amount_value},
+                {"metadata.amount_net": amount_value},
+                {"metadata.charged_amount": amount_value},
+                {"metadata.total_debit": amount_value},
+                {"metadata.fee": amount_value},
+                {"metadata.recipient_gets": amount_value},
+            ])
+        # Older rows may not copy the owner's email/phone into metadata.
+        owner = await db.users.find_one(
+            {"id": uid}, {"_id": 0, "email": 1, "phone": 1})
+        owner_values = [
+            str(owner.get(k) or "").lower() for k in ("email", "phone")
+        ] if owner else []
+        if needle.lower() and any(needle.lower() in value for value in owner_values):
+            search_terms.insert(0, {"user_id": uid})
+        query["$or"] = search_terms
     docs = await db.transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return docs
+
+
+@api.get("/transactions/{tx_id}")
+async def get_transaction(tx_id: str, uid: str = Depends(get_current_user_id)):
+    """Return one transaction without exposing another user's ledger."""
+    doc = await db.transactions.find_one(
+        {"id": tx_id, "user_id": uid}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Transaction introuvable")
+    return doc
 
 
 # ==================== KYC ====================
