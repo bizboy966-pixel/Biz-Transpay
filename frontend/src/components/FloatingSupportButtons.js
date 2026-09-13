@@ -7,7 +7,8 @@ import api from '@/api';
  * Floating live-support shortcut visible on authenticated user pages.
  *
  * Each button is only rendered when its underlying feature is enabled in the
- * admin support_config (chat_enabled).
+ * The shortcut opens the user support page where the admin-configured
+ * Telegram, WhatsApp and e-mail channels are displayed.
  * On mobile the two buttons stay at the screen edges and shrink to 48px.
  */
 export default function FloatingSupportButtons() {
