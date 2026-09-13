@@ -8,6 +8,8 @@ import { useFeatures } from '@/hooks/useFeatures';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem from './TransactionListItem';
 
+const RECENT_TRANSACTIONS_LIMIT = 5;
+
 export default function DashboardHome() {
   const { t } = useTranslation();
   const nav = useNavigate();
@@ -20,7 +22,9 @@ export default function DashboardHome() {
   const [hidden, setHidden] = useState(() => localStorage.getItem('btp_balance_hidden') === '1');
 
   useEffect(() => {
-    api.get('/transactions', { params: { limit: 5 } }).then(({ data }) => setTxs(data)).catch(() => {});
+    api.get('/transactions', { params: { limit: RECENT_TRANSACTIONS_LIMIT } })
+      .then(({ data }) => setTxs(Array.isArray(data) ? data.slice(0, RECENT_TRANSACTIONS_LIMIT) : []))
+      .catch(() => setTxs([]));
     refresh();
     // eslint-disable-next-line
   }, []);
