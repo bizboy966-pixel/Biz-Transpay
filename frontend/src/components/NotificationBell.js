@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, CheckCheck, ArrowUpFromLine, ShieldCheck, ShieldAlert, ShieldX } from 'lucide-react';
+import { Bell, CheckCheck, Trash2, ArrowUpFromLine, ShieldCheck, ShieldAlert, ShieldX } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -88,6 +88,26 @@ export default function NotificationBell({ compact = false }) {
     }
   };
 
+  const deleteAll = async () => {
+    if (!items.length) return;
+    const confirmed = window.confirm(
+      'Supprimer toutes les notifications ? Cette action est irréversible.'
+    );
+    if (!confirmed) return;
+
+    const previousItems = items;
+    const previousUnread = unread;
+    setItems([]);
+    setUnread(0);
+    try {
+      await api.delete('/notifications/all');
+    } catch (e) {
+      setItems(previousItems);
+      setUnread(previousUnread);
+      toast.error('Les notifications n’ont pas pu être supprimées.');
+    }
+  };
+
   return (
     <div className="relative" ref={wrapRef}>
       <button
@@ -117,15 +137,29 @@ export default function NotificationBell({ compact = false }) {
               <div className="font-cabinet font-extrabold text-sm text-slate-900">Notifications</div>
               <div className="text-[10px] text-slate-500">{unread} non lue{unread > 1 ? 's' : ''}</div>
             </div>
-            {items.some((n) => !n.read) && (
-              <button
-                data-testid="btn-mark-all-read"
-                onClick={markAll}
-                className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-[#2563EB] hover:underline"
-              >
-                <CheckCheck className="w-3.5 h-3.5" /> Tout marquer lu
-              </button>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {items.some((n) => !n.read) && (
+                <button
+                  data-testid="btn-mark-all-read"
+                  onClick={markAll}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#2563EB] hover:underline"
+                >
+                  <CheckCheck className="w-3.5 h-3.5" /> Tout marquer lu
+                </button>
+              )}
+              {items.length > 0 && (
+                <button
+                  type="button"
+                  data-testid="btn-delete-all-notifications"
+                  onClick={deleteAll}
+                  aria-label="Supprimer toutes les notifications"
+                  title="Supprimer toutes les notifications"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600"
+                >
+                  <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+                </button>
+              )}
+            </div>
           </div>
           <div className="max-h-[calc(100dvh-160px)] overflow-y-auto sm:max-h-[420px]">
             {items.length === 0 && (

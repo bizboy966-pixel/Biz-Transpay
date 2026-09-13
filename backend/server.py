@@ -6013,6 +6013,12 @@ async def notification_mark_all_read(uid: str = Depends(get_current_user_id)):
     return {"ok": True, "updated": r.modified_count}
 
 
+@api.delete("/notifications/all")
+async def notification_delete_all(uid: str = Depends(get_current_user_id)):
+    r = await db.notifications.delete_many({"user_id": uid})
+    return {"ok": True, "deleted": r.deleted_count}
+
+
 @api.get("/notifications/stream")
 async def notifications_stream(request: Request, token: str = Query(...)):
     """Server-Sent Events stream. Since EventSource cannot set Authorization
