@@ -102,10 +102,14 @@ export default function DashboardHome() {
             <div
               key={b.curr}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
-              className={`relative flex min-w-0 items-center justify-center px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
+              className={`relative flex min-w-0 items-center justify-center px-1 py-0.5 sm:px-4 ${
+                index > 0
+                  ? 'before:absolute before:bottom-[-1rem] before:left-0 before:top-[-1rem] before:w-px before:bg-white/25 sm:before:bottom-[-1.25rem] sm:before:top-[-1.25rem]'
+                  : ''
+              }`}
               style={{ containerType: 'inline-size' }}
             >
-              <span className={`absolute left-0 top-0 z-10 m-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[7px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:m-4 sm:h-14 sm:w-14 sm:text-[11px] ${
+              <span className={`absolute left-0 top-0 z-10 m-2 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[6px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:m-3 sm:h-10 sm:w-10 sm:text-[8px] ${
                   b.curr === 'XOF'
                     ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
                     : b.curr === 'XAF'
