@@ -116,7 +116,7 @@ export default function DashboardHome() {
               </span>
               <div
                 data-testid={`balance-value-${b.curr.toLowerCase()}`}
-                className="min-w-0 max-w-full overflow-hidden whitespace-nowrap text-center font-extrabold leading-none tracking-[-.055em] text-white"
+                className="min-w-0 max-w-full overflow-hidden whitespace-nowrap pl-8 text-center font-extrabold leading-none tracking-[-.055em] text-white sm:pl-16"
                 style={{ fontSize: balanceFontSize(b) }}
                 title={`${mask(b.bal)} ${b.curr}`}
               >
