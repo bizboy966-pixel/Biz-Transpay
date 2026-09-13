@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageCircle, Send, Save, Paperclip, X, CheckCheck, Check, ChevronDown } from 'lucide-react';
+import { MessageCircle, Send, Save, Paperclip, X, CheckCheck, Check, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -34,7 +34,10 @@ export default function AdminSupport() {
 
   const saveCfg = async () => {
     try {
-      await api.patch('/admin/support/config', cfg);
+      await api.patch('/admin/support/config', {
+        chat_enabled: cfg.chat_enabled,
+        faqs: cfg.faqs || [],
+      });
       toast.success('Configuration enregistrée');
       setDirty(false);
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
@@ -72,33 +75,89 @@ export default function AdminSupport() {
             <input type="checkbox" checked={cfg.chat_enabled} onChange={(e) => { setCfg({ ...cfg, chat_enabled: e.target.checked }); setDirty(true); }} data-testid="cfg-chat-enabled" className="w-4 h-4 accent-[#2563EB]" />
             <div>
               <div className="font-cabinet font-bold text-xs text-slate-900">Chat en direct</div>
-              <div className="text-[10px] text-slate-500">Activer la messagerie temps réel</div>
+              <div className="text-[10px] text-slate-500">Messagerie interne Biz-transPay</div>
             </div>
           </label>
-          <Field label="Lien Telegram" value={cfg.telegram_url} onChange={(v) => { setCfg({ ...cfg, telegram_url: v }); setDirty(true); }} tid="cfg-telegram" placeholder="https://t.me/…" />
-          <Field label="Lien WhatsApp" value={cfg.whatsapp_url} onChange={(v) => { setCfg({ ...cfg, whatsapp_url: v }); setDirty(true); }} tid="cfg-whatsapp" placeholder="https://wa.me/…" />
-          <Field label="Email de support" value={cfg.email} onChange={(v) => { setCfg({ ...cfg, email: v }); setDirty(true); }} tid="cfg-email" placeholder="support@…" />
         </div>
 
-        {/* Community subsection */}
-        <div className="mt-5 pt-5 border-t border-slate-100">
-          <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-600 flex items-center justify-center text-sm font-bold">C</div>
+        <div className="mt-5 pt-5 border-t border-slate-100" data-testid="support-faq-editor">
+          <div className="flex items-center justify-between mb-3">
             <div>
-              <div className="font-cabinet font-bold text-sm text-slate-900">Community</div>
-              <div className="text-[11px] text-slate-500">Bouton flottant en bas à gauche côté utilisateur — WhatsApp, Telegram, Discord…</div>
+              <h3 className="font-cabinet font-bold text-sm text-slate-900">Questions fréquentes</h3>
+              <p className="text-[11px] text-slate-500">Ces questions et réponses sont celles affichées aux utilisateurs.</p>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setCfg({ ...cfg, faqs: [...(cfg.faqs || []), { id: `faq-${Date.now()}`, question: '', answer: '', active: true }] });
+                setDirty(true);
+              }}
+              data-testid="btn-add-faq"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-[#2563EB] text-xs font-bold"
+            >
+              <Plus className="w-3.5 h-3.5" /> Ajouter
+            </button>
           </div>
-          <div className="grid sm:grid-cols-2 gap-4">
-            <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer">
-              <input type="checkbox" checked={!!cfg.community_enabled} onChange={(e) => { setCfg({ ...cfg, community_enabled: e.target.checked }); setDirty(true); }} data-testid="cfg-community-enabled" className="w-4 h-4 accent-emerald-600" />
-              <div>
-                <div className="font-cabinet font-bold text-xs text-slate-900">Afficher le bouton Community</div>
-                <div className="text-[10px] text-slate-500">Rond flottant vert (icône Users) en bas à gauche</div>
+          <div className="space-y-3">
+            {(cfg.faqs || []).map((faq, index) => (
+              <div key={faq.id || index} className="border border-slate-200 rounded-xl p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="text-[10px] font-bold text-slate-400">FAQ {index + 1}</span>
+                  <label className="ml-auto flex items-center gap-1.5 text-[10px] text-slate-500">
+                    <input
+                      type="checkbox"
+                      checked={faq.active !== false}
+                      onChange={(e) => {
+                        const faqs = [...(cfg.faqs || [])];
+                        faqs[index] = { ...faqs[index], active: e.target.checked };
+                        setCfg({ ...cfg, faqs }); setDirty(true);
+                      }}
+                      data-testid={`faq-active-${index}`}
+                      className="w-3.5 h-3.5 accent-[#2563EB]"
+                    />
+                    Visible
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCfg({ ...cfg, faqs: (cfg.faqs || []).filter((_, i) => i !== index) });
+                      setDirty(true);
+                    }}
+                    data-testid={`btn-delete-faq-${index}`}
+                    className="text-red-500 hover:text-red-700 p-1"
+                    aria-label="Supprimer cette FAQ"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <input
+                  value={faq.question || ''}
+                  onChange={(e) => {
+                    const faqs = [...(cfg.faqs || [])];
+                    faqs[index] = { ...faqs[index], question: e.target.value };
+                    setCfg({ ...cfg, faqs }); setDirty(true);
+                  }}
+                  data-testid={`faq-question-${index}`}
+                  placeholder="Question"
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:border-[#2563EB] text-xs font-semibold"
+                />
+                <textarea
+                  value={faq.answer || ''}
+                  onChange={(e) => {
+                    const faqs = [...(cfg.faqs || [])];
+                    faqs[index] = { ...faqs[index], answer: e.target.value };
+                    setCfg({ ...cfg, faqs }); setDirty(true);
+                  }}
+                  data-testid={`faq-answer-${index}`}
+                  placeholder="Réponse affichée à l'utilisateur"
+                  rows={3}
+                  className="mt-2 w-full px-3 py-2 border border-slate-200 rounded-lg outline-none focus:border-[#2563EB] text-xs resize-y"
+                />
               </div>
-            </label>
-            <Field label="Lien de la communauté" value={cfg.community_url} onChange={(v) => { setCfg({ ...cfg, community_url: v }); setDirty(true); }} tid="cfg-community-url" placeholder="https://chat.whatsapp.com/…" />
-            <Field label="Libellé (tooltip)" value={cfg.community_label} onChange={(v) => { setCfg({ ...cfg, community_label: v }); setDirty(true); }} tid="cfg-community-label" placeholder="Rejoindre la communauté" />
+            ))}
+            {(!cfg.faqs || cfg.faqs.length === 0) && (
+              <p className="text-xs text-slate-400 border border-dashed border-slate-200 rounded-xl p-4 text-center">Aucune FAQ configurée.</p>
+            )}
           </div>
         </div>
       </div>

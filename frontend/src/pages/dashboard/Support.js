@@ -1,16 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageCircle, Send, Paperclip, Mail, HelpCircle, X, CheckCheck, Check, Clock } from 'lucide-react';
+import { MessageCircle, Send, Paperclip, HelpCircle, X, CheckCheck, Check, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
-
-const FAQ = [
-  { q: 'Comment vérifier mon compte ?', a: 'Rendez-vous sur la page Vérification KYC et téléversez vos documents (recto, verso si applicable, et selfie avec le document en main).' },
-  { q: 'Quels sont les frais ?', a: 'Les frais varient selon le type de transaction : 1% pour Mobile Money, 1.5% pour les virements bancaires, 0.5% pour les échanges XOF/XAF. Les transferts Biz-trans → Biz-trans sont gratuits.' },
-  { q: 'Quand puis-je utiliser l\'API ?', a: 'L\'API est disponible pour les comptes marchands après la vérification KYC.' },
-  { q: 'Quel est le montant minimum de dépôt ?', a: 'Le montant minimum de dépôt est de 300 XOF ou XAF.' },
-  { q: 'Comment créer un lien de paiement ?', a: 'Dashboard → Lien de paiement → Créer un lien de paiement. Vous pouvez définir un montant fixe ou libre, ajouter un logo et partager le lien.' },
-];
 
 const WhatsAppIcon = (p) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.966-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.626.712.226 1.36.194 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347zM12.017 2C6.503 2 2.02 6.484 2.02 12c0 1.888.5 3.66 1.371 5.19L2 22l4.902-1.362A9.955 9.955 0 0012.017 22c5.514 0 9.997-4.484 9.997-10s-4.483-10-9.997-10zm0 18.204c-1.75 0-3.408-.463-4.834-1.298l-.347-.207-3.588.997.958-3.5-.226-.359a8.15 8.15 0 01-1.256-4.34c0-4.505 3.665-8.17 8.17-8.17s8.17 3.665 8.17 8.17c0 4.506-3.665 8.17-8.17 8.17z" /></svg>);
 const TelegramIcon = (p) => (<svg viewBox="0 0 24 24" fill="currentColor" {...p}><path d="M9.417 15.181L9.05 20.34c.526 0 .754-.226 1.028-.497l2.464-2.357 5.106 3.74c.937.516 1.598.244 1.85-.867l3.35-15.703h.001c.297-1.386-.502-1.929-1.415-1.593L1.29 9.634c-1.353.526-1.333 1.28-.23 1.622l4.955 1.541L17.5 5.87c.542-.361 1.036-.16.63.2l-8.713 9.111z" /></svg>);
@@ -67,18 +59,9 @@ export default function Support() {
         <p className="text-slate-500 text-xs mt-1">Choisissez votre canal préféré pour contacter notre équipe.</p>
       </div>
 
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid sm:grid-cols-2 gap-3">
         {config.chat_enabled && (
           <ChannelCard onClick={() => setChatOpen(true)} I={MessageCircle} c="bg-blue-500" title="Chat en direct" sub="Réponse en quelques minutes" testid="ch-chat" />
-        )}
-        {config.telegram_url && (
-          <ChannelCard href={config.telegram_url} I={TelegramIcon} c="bg-[#0088CC]" title="Telegram" sub="Contacter sur Telegram" testid="ch-telegram" />
-        )}
-        {config.whatsapp_url && (
-          <ChannelCard href={config.whatsapp_url} I={WhatsAppIcon} c="bg-emerald-500" title="WhatsApp" sub="Chatter sur WhatsApp" testid="ch-whatsapp" />
-        )}
-        {config.email && (
-          <ChannelCard href={`mailto:${config.email}`} I={Mail} c="bg-red-500" title="Email" sub={config.email} testid="ch-email" />
         )}
       </div>
 
@@ -88,14 +71,17 @@ export default function Support() {
           <h2 className="font-cabinet font-bold text-slate-900 text-sm">Questions fréquentes</h2>
         </div>
         <div className="space-y-2">
-          {FAQ.map((f, i) => (
-            <details key={i} className="group border border-slate-100 rounded-xl p-3 open:bg-slate-50">
+          {(config.faqs || []).map((f) => (
+            <details key={f.id || f.question} className="group border border-slate-100 rounded-xl p-3 open:bg-slate-50">
               <summary className="cursor-pointer font-semibold text-slate-900 text-xs list-none flex items-center justify-between">
-                {f.q}<span className="text-[#2563EB] group-open:rotate-180 transition-transform text-xs">▾</span>
+                {f.question}<span className="text-[#2563EB] group-open:rotate-180 transition-transform text-xs">▾</span>
               </summary>
-              <p className="mt-2 text-xs text-slate-600">{f.a}</p>
+              <p className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">{f.answer}</p>
             </details>
           ))}
+          {(!config.faqs || config.faqs.length === 0) && (
+            <p className="text-xs text-slate-500">Aucune question fréquente n’est disponible pour le moment.</p>
+          )}
         </div>
       </div>
 

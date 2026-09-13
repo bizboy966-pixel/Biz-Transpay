@@ -397,6 +397,38 @@ DEFAULT_SUPPORT_CONFIG = {
     "community_enabled": False,
     "community_url": "",
     "community_label": "Rejoindre la communauté",
+    "faqs": [
+        {
+            "id": "verify-account",
+            "question": "Comment vérifier mon compte ?",
+            "answer": "Rendez-vous sur la page Vérification KYC et téléversez vos documents.",
+            "active": True,
+        },
+        {
+            "id": "fees",
+            "question": "Quels sont les frais ?",
+            "answer": "Les frais applicables sont affichés dans le parcours de chaque opération et sont configurés par l'administrateur.",
+            "active": True,
+        },
+        {
+            "id": "api-access",
+            "question": "Quand puis-je utiliser l'API ?",
+            "answer": "L'accès à l'API est disponible pour les comptes marchands éligibles après les vérifications requises.",
+            "active": True,
+        },
+        {
+            "id": "minimum-deposit",
+            "question": "Quel est le montant minimum de dépôt ?",
+            "answer": "Le montant minimum dépend du pays, de l'opérateur et des limites configurées dans la plateforme.",
+            "active": True,
+        },
+        {
+            "id": "payment-link",
+            "question": "Comment créer un lien de paiement ?",
+            "answer": "Ouvrez Dashboard → Liens de paiement → Créer un lien de paiement, puis renseignez les informations demandées.",
+            "active": True,
+        },
+    ],
 }
 
 
@@ -442,12 +474,21 @@ async def get_support_config() -> dict:
     if not doc:
         await db.settings.insert_one(DEFAULT_SUPPORT_CONFIG.copy())
         doc = await db.settings.find_one({"id": "support_config"}, {"_id": 0})
+    for key, value in DEFAULT_SUPPORT_CONFIG.items():
+        doc.setdefault(key, copy.deepcopy(value))
     return doc
 
 
 @api.get("/support/config")
 async def support_config(uid: str = Depends(get_current_user_id)):
-    return await get_support_config()
+    cfg = await get_support_config()
+    return {
+        "chat_enabled": bool(cfg.get("chat_enabled", True)),
+        "faqs": [
+            faq for faq in (cfg.get("faqs") or [])
+            if faq.get("active", True) and faq.get("question") and faq.get("answer")
+        ],
+    }
 
 
 class ChatMessage(BaseModel):
@@ -7370,12 +7411,7 @@ async def admin_update_platform_config(req: AdminPlatformConfigReq, admin=Depend
 
 class AdminSupportConfigReq(BaseModel):
     chat_enabled: Optional[bool] = None
-    telegram_url: Optional[str] = None
-    whatsapp_url: Optional[str] = None
-    email: Optional[str] = None
-    community_enabled: Optional[bool] = None
-    community_url: Optional[str] = None
-    community_label: Optional[str] = None
+    faqs: Optional[List[dict]] = None
 
 
 @api.get("/admin/support/config")
@@ -7386,6 +7422,22 @@ async def admin_get_support_config(admin=Depends(get_admin)):
 @api.patch("/admin/support/config")
 async def admin_update_support_config(req: AdminSupportConfigReq, admin=Depends(get_admin)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "faqs" in updates:
+        if len(updates["faqs"]) > 50:
+            raise HTTPException(422, "50 questions fréquentes maximum")
+        cleaned = []
+        for faq in updates["faqs"]:
+            question = str(faq.get("question") or "").strip()
+            answer = str(faq.get("answer") or "").strip()
+            if not question or not answer:
+                raise HTTPException(422, "Chaque FAQ doit avoir une question et une réponse")
+            cleaned.append({
+                "id": str(faq.get("id") or new_id()),
+                "question": question[:240],
+                "answer": answer[:2000],
+                "active": bool(faq.get("active", True)),
+            })
+        updates["faqs"] = cleaned
     if not updates:
         raise HTTPException(400, "Aucune modification")
     await db.settings.update_one({"id": "support_config"}, {"$set": updates}, upsert=True)
