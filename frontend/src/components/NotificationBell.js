@@ -75,9 +75,17 @@ export default function NotificationBell() {
   };
 
   const markAll = async () => {
-    setItems((prev) => prev.map((n) => ({ ...n, read: true })));
+    const previousItems = items;
+    const previousUnread = unread;
+    setItems([]);
     setUnread(0);
-    try { await api.post('/notifications/read-all'); } catch (e) { /* ignore */ }
+    try {
+      await api.post('/notifications/read-all');
+    } catch (e) {
+      // Restore the local view if the server could not persist the action.
+      setItems(previousItems);
+      setUnread(previousUnread);
+    }
   };
 
   return (
@@ -85,6 +93,7 @@ export default function NotificationBell() {
       <button
         data-testid="btn-notifications"
         onClick={() => { setOpen((v) => !v); if (!open) load(); }}
+        aria-expanded={open}
         className="relative w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors"
       >
         <Bell className="w-4 h-4 text-slate-600" strokeWidth={1.75} />
@@ -101,10 +110,10 @@ export default function NotificationBell() {
       {open && (
         <div
           data-testid="notif-dropdown"
-          className="absolute right-0 mt-2 w-[360px] max-w-[92vw] bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden z-50"
+          className="fixed left-3 right-3 top-[76px] z-50 max-h-[calc(100dvh-88px)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl sm:absolute sm:left-auto sm:right-0 sm:top-auto sm:mt-2 sm:max-h-none sm:w-[360px] sm:max-w-[92vw]"
         >
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-            <div>
+          <div className="flex min-w-0 items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+            <div className="min-w-0">
               <div className="font-cabinet font-extrabold text-sm text-slate-900">Notifications</div>
               <div className="text-[10px] text-slate-500">{unread} non lue{unread > 1 ? 's' : ''}</div>
             </div>
@@ -112,13 +121,13 @@ export default function NotificationBell() {
               <button
                 data-testid="btn-mark-all-read"
                 onClick={markAll}
-                className="text-[11px] font-semibold text-[#2563EB] hover:underline inline-flex items-center gap-1"
+                className="inline-flex shrink-0 items-center gap-1 text-[11px] font-semibold text-[#2563EB] hover:underline"
               >
                 <CheckCheck className="w-3.5 h-3.5" /> Tout marquer lu
               </button>
             )}
           </div>
-          <div className="max-h-[420px] overflow-y-auto">
+          <div className="max-h-[calc(100dvh-160px)] overflow-y-auto sm:max-h-[420px]">
             {items.length === 0 && (
               <div className="p-8 text-center text-xs text-slate-400" data-testid="notif-empty">
                 Vous n&apos;avez encore aucune notification.
@@ -142,7 +151,7 @@ export default function NotificationBell() {
                       <div className="text-xs font-semibold text-slate-900 truncate">{n.title}</div>
                       {!n.read && <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] shrink-0" />}
                     </div>
-                    <div className="text-[11px] text-slate-600 leading-snug mt-0.5 whitespace-pre-line">{n.body}</div>
+                    <div className="mt-0.5 break-words text-[11px] leading-snug text-slate-600 [overflow-wrap:anywhere] whitespace-pre-line">{n.body}</div>
                     <div className="text-[10px] text-slate-400 mt-1">{formatRelative(n.created_at)}</div>
                   </div>
                 </button>
