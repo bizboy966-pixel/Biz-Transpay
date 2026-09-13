@@ -39,7 +39,7 @@ export default function DashboardHome() {
     { to: '/dashboard/transfer', I: ArrowUpRight, bg: 'bg-emerald-50', color: 'text-emerald-600', ring: 'group-hover:bg-emerald-500', label: t('dashboard.transfer'), key: 'transfer' },
     { to: '/dashboard/deposit', I: ArrowDownLeft, bg: 'bg-blue-50', color: 'text-[#2563EB]', ring: 'group-hover:bg-[#2563EB]', label: t('dashboard.deposit'), key: 'deposit' },
     ...(features?.links_enabled !== false
-      ? [{ to: '/dashboard/links', I: Link2, bg: 'bg-violet-50', color: 'text-violet-600', ring: 'group-hover:bg-violet-500', label: t('dashboard.link'), key: 'link' }]
+      ? [{ to: '/dashboard/links?create=1', I: Link2, bg: 'bg-violet-50', color: 'text-violet-600', ring: 'group-hover:bg-violet-500', label: t('dashboard.link'), key: 'link' }]
       : []),
     { to: '/dashboard/exchange', I: Repeat, bg: 'bg-orange-50', color: 'text-orange-600', ring: 'group-hover:bg-orange-500', label: t('dashboard.exchange'), key: 'exchange' },
   ];

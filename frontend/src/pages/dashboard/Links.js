@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Plus, Copy, Trash2, Power, Link2, X, Share2, QrCode, Pencil, Upload, MessageCircle, Send, Mail, ArrowLeft, Info, CheckCircle2 } from 'lucide-react';
+import { Plus, Copy, Trash2, Power, Link2, X, Share2, QrCode, Pencil, Upload, MessageCircle, Send, Mail, ArrowLeft, Info, CheckCircle2, Eye } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -12,9 +13,17 @@ export default function Links() {
   const [editing, setEditing] = useState(null);
   const [showQr, setShowQr] = useState(null);
   const [showShare, setShowShare] = useState(null);
+  const [showDetails, setShowDetails] = useState(null);
+  const [searchParams] = useSearchParams();
 
   const load = () => api.get('/links').then(({ data }) => setLinks(data)).catch(() => {});
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (searchParams.get('create') === '1') {
+      setEditing(null);
+      setShowForm(true);
+    }
+  }, [searchParams]);
 
   // Public share URL — always uses the OFFICIAL domain in production so the
   // preview host never leaks into merchant-facing share/copy actions.
@@ -70,7 +79,7 @@ export default function Links() {
             <div key={l.id} data-testid={`link-card-${l.id}`} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] transition-shadow">
               <div className="flex items-start gap-3">
                 {l.logo ? (
-                  <img src={l.logo} alt={l.title} className="w-12 h-12 rounded-xl object-cover border border-slate-100" />
+                   <img src={l.logo} alt={l.title} className="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-slate-100" />
                 ) : (
                   <div className="w-12 h-12 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Link2 className="w-5 h-5" /></div>
                 )}
@@ -100,8 +109,9 @@ export default function Links() {
                 <span className="text-slate-400">{new Date(l.created_at).toLocaleDateString()}</span>
               </div>
               <div className="mt-3 pt-3 border-t border-slate-50 flex items-center gap-2 text-[11px]">
+                 <button onClick={() => setShowDetails(l)} data-testid={`btn-details-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Eye className="w-3 h-3" /> Détails</button>
                 <button onClick={() => { setEditing(l); setShowForm(true); }} data-testid={`btn-edit-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Pencil className="w-3 h-3" /> Modifier</button>
-                <button onClick={() => toggle(l)} data-testid={`btn-toggle-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Power className="w-3 h-3" /> {l.active ? 'Désactiver' : 'Activer'}</button>
+                 <button onClick={() => toggle(l)} data-testid={`btn-toggle-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Power className="w-3 h-3" /> {l.active ? 'Désactiver' : 'Réactiver'}</button>
                 <button onClick={() => remove(l.id)} data-testid={`btn-delete-${l.id}`} className="ml-auto inline-flex items-center gap-1 font-semibold text-red-600 hover:text-red-700"><Trash2 className="w-3 h-3" /> Supprimer</button>
               </div>
             </div>
@@ -112,6 +122,7 @@ export default function Links() {
       {showForm && <LinkForm initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSaved={() => { setShowForm(false); setEditing(null); load(); }} />}
       {showQr && <QrModal link={showQr} url={publicUrl(showQr.slug)} onClose={() => setShowQr(null)} />}
       {showShare && <ShareModal url={publicUrl(showShare.slug)} title={showShare.title} onClose={() => setShowShare(null)} />}
+      {showDetails && <DetailsModal link={showDetails} url={publicUrl(showDetails.slug)} onClose={() => setShowDetails(null)} />}
     </div>
   );
 }
@@ -317,6 +328,43 @@ function Section({ title, children }) {
       {children}
     </div>
   );
+}
+
+function DetailsModal({ link, url, onClose }) {
+  const amount = link.amount_type === 'free'
+    ? `${(link.min_amount || 0).toLocaleString()} – ${(link.max_amount || 0).toLocaleString()}`
+    : (link.amount || 0).toLocaleString();
+  const currency = link.currency === 'UNIVERSAL' ? 'Devise au choix' : link.currency;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl" data-testid="link-details-modal">
+        <div className="flex items-start gap-3">
+          {link.logo ? <img src={link.logo} alt="" className="w-14 h-14 rounded-xl object-contain bg-white p-1 border border-slate-100" /> : <div className="w-14 h-14 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Link2 className="w-6 h-6" /></div>}
+          <div className="min-w-0 flex-1">
+            <h3 className="font-cabinet font-bold text-base text-slate-900">{link.title}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{link.description || 'Aucune description'}</p>
+          </div>
+          <button type="button" onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="mt-5 grid grid-cols-2 gap-2 text-xs">
+          <Detail label="Montant" value={`${amount} ${currency}`} />
+          <Detail label="Frais" value={link.fee_bearer === 'owner' ? 'Pris en charge par vous' : 'Payés par le client'} />
+          <Detail label="Paiements reçus" value={`${link.payments_received || 0}`} />
+          <Detail label="Total reçu" value={`${(link.total_received || 0).toLocaleString()} ${currency}`} />
+          <Detail label="Usage" value={link.single_use ? 'Usage unique' : 'Réutilisable'} />
+          <Detail label="Statut" value={link.active ? 'Actif' : 'Désactivé'} />
+        </div>
+        {link.expires_at && <div className="mt-2 p-2.5 bg-amber-50 rounded-lg text-xs text-amber-800">Expire le {new Date(link.expires_at).toLocaleString()}</div>}
+        <div className="mt-4 p-2.5 bg-slate-50 rounded-lg text-[10px] font-mono text-slate-600 break-all">{url}</div>
+        <button type="button" onClick={onClose} className="mt-4 w-full bg-[#2563EB] text-white font-bold py-2.5 rounded-xl text-xs">Fermer</button>
+      </div>
+    </div>
+  );
+}
+
+function Detail({ label, value }) {
+  return <div className="p-2.5 bg-slate-50 rounded-lg"><div className="text-[10px] text-slate-400">{label}</div><div className="mt-0.5 font-semibold text-slate-700">{value}</div></div>;
 }
 
 // -------- QR Modal --------

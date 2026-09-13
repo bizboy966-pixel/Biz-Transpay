@@ -2269,9 +2269,14 @@ async def _reconcile_intent(intent_id: str) -> None:
     # 2) Payment link
     lp = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
     if lp:
-        gross = float(lp["amount"])
-        fee_pct = await _crypto_fee_pct(lp.get("coin", "USDT"))
-        fee, net = _apply_fee(gross, fee_pct)
+        gross = float(lp.get("charged_amount", lp["amount"]))
+        if "charged_amount" in lp:
+            fee_pct = float(lp.get("fee_pct", 0))
+            fee = float(lp.get("fee", 0))
+            net = float(lp.get("wallet_credit_amount", lp.get("amount")))
+        else:
+            fee_pct = await _crypto_fee_pct(lp.get("coin", "USDT"))
+            fee, net = _apply_fee(gross, fee_pct)
         gateway_fee, platform_fee = await _crypto_platform_fee(lp.get("coin", "USDT"), "deposit", gross)
         r = await db.link_payments.update_one(
             {"id": merchant_ref, "status": {"$ne": "paid"}},
@@ -2380,9 +2385,14 @@ async def izipay_webhook(request: Request):
                 link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if link_pay:
                     tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
-                    gross = float(link_pay["amount"])
-                    fee_pct = await _crypto_fee_pct(link_pay.get("coin", "USDT"))
-                    fee, net = _apply_fee(gross, fee_pct)
+                    gross = float(link_pay.get("charged_amount", link_pay["amount"]))
+                    if "charged_amount" in link_pay:
+                        fee_pct = float(link_pay.get("fee_pct", 0))
+                        fee = float(link_pay.get("fee", 0))
+                        net = float(link_pay.get("wallet_credit_amount", link_pay.get("amount")))
+                    else:
+                        fee_pct = await _crypto_fee_pct(link_pay.get("coin", "USDT"))
+                        fee, net = _apply_fee(gross, fee_pct)
                     gateway_fee, platform_fee = await _crypto_platform_fee(link_pay.get("coin", "USDT"), "deposit", gross)
                     await db.link_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
@@ -2574,12 +2584,14 @@ async def start_link_payment(req: LinkPayRequest):
     if link.get("currency") not in ("USDT", "UNIVERSAL"):
         raise HTTPException(400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT/UNIVERSAL)")
 
-    if link.get("amount_type") == "fixed":
-        amount = float(link.get("amount") or 0)
-    else:
-        if not req.amount or req.amount <= 0:
-            raise HTTPException(400, "Montant requis pour ce lien")
-        amount = float(req.amount)
+    amount = await _ensure_link_can_be_paid(
+        link, req.amount if link.get("amount_type") == "free" else None
+    )
+    fee_pct = await _crypto_fee_pct(req.asset_code.split(".")[0])
+    fee, fee_net = _apply_fee(amount, fee_pct)
+    customer_pays_fee = link.get("fee_bearer", "customer") != "owner"
+    charged_amount = round(amount + fee, 6) if customer_pays_fee else amount
+    wallet_credit_amount = amount if customer_pays_fee else fee_net
 
     lp_id = new_id()
     parts = (req.full_name or "").strip().split(maxsplit=1)
@@ -2589,7 +2601,7 @@ async def start_link_payment(req: LinkPayRequest):
     try:
         intent = await izipay.create_direct_intent(
             requested_coin=req.asset_code,
-            amount=f"{amount:.6f}",
+            amount=f"{charged_amount:.6f}",
             first_name=first, last_name=last, email=req.email,
             refund_address=req.refund_address.strip(),
             merchant_reference=lp_id,
@@ -2606,7 +2618,10 @@ async def start_link_payment(req: LinkPayRequest):
 
     doc = {
         "id": lp_id, "link_id": link["id"], "slug": req.slug,
-        "amount": amount, "asset_code": req.asset_code,
+        "amount": amount, "charged_amount": charged_amount,
+        "wallet_credit_amount": wallet_credit_amount, "fee": fee,
+        "fee_pct": fee_pct, "fee_bearer": "client" if customer_pays_fee else "merchant",
+        "asset_code": req.asset_code,
         "coin": req.asset_code.split(".")[0],
         "network": req.asset_code.split(".")[1] if "." in req.asset_code else None,
         "customer_email": req.email, "customer_name": req.full_name,
@@ -2685,12 +2700,9 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
     if not link:
         raise HTTPException(404, "Lien introuvable ou inactif")
 
-    if link.get("amount_type") == "fixed":
-        amount = float(link.get("amount") or 0)
-    else:
-        if not req.amount or req.amount <= 0:
-            raise HTTPException(400, "Montant requis pour ce lien")
-        amount = float(req.amount)
+    amount = await _ensure_link_can_be_paid(
+        link, req.amount if link.get("amount_type") == "free" else None
+    )
 
     admin_op = next((op for op in cfg.get("catalog", [])
                      if op.get("country", "").upper() == req.country.upper()
@@ -2709,7 +2721,9 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
         raise HTTPException(400, f"Montant minimum : {int(min_amt)} {currency}")
     if max_amt and amount > max_amt:
         raise HTTPException(400, f"Montant maximum : {int(max_amt)} {currency}")
-    bearer = "merchant" if req.fee_bearer in ("receiver", "merchant") else "client"
+    # The payment link owner chooses who bears the fees when creating the
+    # link. Never trust a public checkout request to override that setting.
+    bearer = "merchant" if link.get("fee_bearer") == "owner" else "client"
     fees = paydunya.calculate_fees(amount, admin_op, bearer)
     phone = req.phone_number
     if req.country.upper() == "TG":
@@ -3923,6 +3937,49 @@ async def do_exchange(req: ExchangeRequest, uid: str = Depends(get_current_user_
 
 
 # ==================== PAYMENT LINKS ====================
+def _payment_link_amount(link: dict, requested: Optional[float] = None) -> float:
+    """Validate and return the amount requested for a payment link."""
+    if link.get("amount_type", "fixed") == "fixed":
+        amount = float(link.get("amount") or 0)
+        if amount <= 0:
+            raise HTTPException(400, "Le montant fixe du lien est invalide")
+        return amount
+    if requested is None or requested <= 0:
+        raise HTTPException(400, "Montant requis pour ce lien")
+    minimum = float(link.get("min_amount") or 0)
+    maximum = float(link.get("max_amount") or 0)
+    if minimum <= 0 or maximum < minimum:
+        raise HTTPException(400, "La plage de montant du lien est invalide")
+    if requested < minimum:
+        raise HTTPException(400, f"Montant minimum : {minimum:g}")
+    if requested > maximum:
+        raise HTTPException(400, f"Montant maximum : {maximum:g}")
+    return float(requested)
+
+
+def _payment_link_is_expired(link: dict) -> bool:
+    expires_at = link.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        value = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value <= datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+
+
+async def _ensure_link_can_be_paid(link: dict, requested: Optional[float] = None) -> float:
+    if _payment_link_is_expired(link):
+        raise HTTPException(410, "Ce lien de paiement a expiré")
+    if link.get("single_use"):
+        paid = await db.link_payments.find_one({"link_id": link["id"], "status": "paid"}, {"_id": 1})
+        if paid:
+            raise HTTPException(409, "Ce lien à usage unique a déjà été utilisé")
+    return _payment_link_amount(link, requested)
+
+
 @api.get("/links", response_model=List[PaymentLink])
 async def list_links(uid: str = Depends(get_current_user_id)):
     docs = await db.payment_links.find({"user_id": uid}, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -3931,6 +3988,10 @@ async def list_links(uid: str = Depends(get_current_user_id)):
 
 @api.post("/links", response_model=PaymentLink)
 async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_user_id)):
+    if not req.title.strip():
+        raise HTTPException(400, "Le nom du lien est requis")
+    if req.amount_type == "fixed" and req.amount <= 0:
+        raise HTTPException(400, "Le montant fixe doit être supérieur à zéro")
     if req.amount_type == "free":
         if req.min_amount is None or req.max_amount is None:
             raise HTTPException(400, "Montants minimum et maximum requis pour un montant libre")
@@ -3940,7 +4001,7 @@ async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_use
         id=new_id(),
         user_id=uid,
         slug=secrets.token_urlsafe(8),
-        title=req.title,
+        title=req.title.strip(),
         amount=req.amount if req.amount_type == "fixed" else 0,
         currency=req.currency,
         description=req.description or "",
@@ -3963,15 +4024,39 @@ async def get_public_link(slug: str):
     doc = await db.payment_links.find_one({"slug": slug}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Lien introuvable")
-    owner = await db.users.find_one({"id": doc["user_id"]}, {"_id": 0, "full_name": 1, "username": 1})
-    return {**doc, "merchant": owner}
+    # Never expose the owner's identity from a public payment page.
+    return doc
 
 
 @api.patch("/links/{link_id}", response_model=PaymentLink)
 async def update_link(link_id: str, req: PaymentLinkUpdate, uid: str = Depends(get_current_user_id)):
-    update = {k: v for k, v in req.model_dump().items() if v is not None}
+    update = req.model_dump(exclude_unset=True)
+    current = await db.payment_links.find_one({"id": link_id, "user_id": uid}, {"_id": 0})
+    if not current:
+        raise HTTPException(404, "Lien introuvable")
     if not update:
         raise HTTPException(400, "Aucune modification")
+    candidate = {**current, **update}
+    if not str(candidate.get("title") or "").strip():
+        raise HTTPException(400, "Le nom du lien est requis")
+    if candidate.get("amount_type", "fixed") == "fixed":
+        if float(candidate.get("amount") or 0) <= 0:
+            raise HTTPException(400, "Le montant fixe doit être supérieur à zéro")
+        candidate["amount"] = float(candidate["amount"])
+        candidate["min_amount"] = None
+        candidate["max_amount"] = None
+    else:
+        minimum = candidate.get("min_amount")
+        maximum = candidate.get("max_amount")
+        if minimum is None or maximum is None or float(minimum) <= 0 or float(maximum) <= float(minimum):
+            raise HTTPException(400, "Montant maximum doit être supérieur au minimum")
+        candidate["amount"] = 0
+        candidate["min_amount"] = float(minimum)
+        candidate["max_amount"] = float(maximum)
+    candidate["title"] = str(candidate["title"]).strip()
+    for key in ("amount", "min_amount", "max_amount"):
+        if key in update or key in ("amount", "min_amount", "max_amount"):
+            update[key] = candidate.get(key)
     r = await db.payment_links.update_one({"id": link_id, "user_id": uid}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(404, "Lien introuvable")

@@ -54,18 +54,26 @@ export default function PublicLink() {
           </div>
 
            <div className="bt-public-card bt-panel p-4 sm:p-6">
-            {/* Header - merchant info */}
+             {/* Header - link information. The owner's identity is intentionally
+                 not exposed on the public checkout page. */}
             <div className="text-center">
               {link.logo ? (
-                <img src={link.logo} alt={link.title} className="mx-auto w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border border-slate-100" />
+                <img src={link.logo} alt={link.title} className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-contain bg-white p-1 border border-slate-100" />
               ) : (
-                <div className="mx-auto w-10 h-10 sm:w-12 sm:h-12 rounded-2xl bg-blue-50 flex items-center justify-center">
+                <div className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-blue-50 flex items-center justify-center">
                   <Link2 className="w-4 h-4 sm:w-5 sm:h-5 text-[#2563EB]" />
                 </div>
               )}
-              <div className="mt-2 text-[9px] sm:text-[10px] uppercase tracking-widest text-slate-500 font-bold">Paiement à</div>
-              <div className="font-cabinet font-extrabold text-base sm:text-lg text-slate-900 mt-0.5">{link.merchant?.full_name}</div>
-              <div className="text-[10px] sm:text-[11px] text-slate-500">@{link.merchant?.username}</div>
+              <h1 className="font-cabinet font-extrabold text-base sm:text-lg text-slate-900 mt-3">{link.title}</h1>
+              {link.description && <p className="text-[11px] sm:text-xs text-slate-500 mt-1 leading-relaxed">{link.description}</p>}
+              <div className="mt-3 inline-flex items-center justify-center px-3 py-1.5 rounded-full bg-blue-50 text-[#2563EB] text-xs font-bold">
+                {link.amount_type === 'free'
+                  ? `${Number(link.min_amount || 0).toLocaleString()} – ${Number(link.max_amount || 0).toLocaleString()}`
+                  : Number(link.amount || 0).toLocaleString()}
+                <span className="ml-1.5 text-[10px] font-semibold">
+                  {link.currency === 'UNIVERSAL' ? 'Devise au choix' : link.currency}
+                </span>
+              </div>
             </div>
 
             {step === 1 && (() => {
@@ -329,7 +337,7 @@ function MoMoLinkForm({ link, onSuccess }) {
   const [fullName, setFullName] = useState('');
   // Keep the business meaning independent from the legacy transport values:
   // client pays vs Biz-transPay/merchant pays.
-  const [feeBearer, setFeeBearer] = useState('client');
+  const feeBearer = link.fee_bearer === 'owner' ? 'merchant' : 'client';
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -442,21 +450,11 @@ function MoMoLinkForm({ link, onSuccess }) {
           </div>
         </div>
       )}
-      <Field label="Frais supportés par">
-        <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => setFeeBearer('client')}
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'client' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Client</button>
-          <button type="button" onClick={() => setFeeBearer('merchant')}
-            className={`px-3 py-2 rounded-xl border text-xs font-semibold ${feeBearer === 'merchant' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>Marchand / Biz-transPay</button>
-        </div>
-        {selectedOp && amount && (
-          <p className="mt-2 text-[11px] text-slate-500">
-            {feeBearer === 'client'
-              ? 'Le client paie le montant du dépôt et les frais. Le marchand reçoit le montant de base.'
-              : 'Les frais sont déduits du paiement. Le marchand reçoit le montant net.'}
-          </p>
-        )}
-      </Field>
+      <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-100 text-[11px] text-blue-800">
+        {feeBearer === 'client'
+          ? 'Les frais sont ajoutés au montant payé. Le marchand reçoit le montant demandé.'
+          : 'Les frais sont déduits du paiement. Le marchand reçoit le montant net.'}
+      </div>
       {error && <div className="p-2 rounded-lg bg-red-50 text-red-700 text-[11px]">{error}</div>}
       <button type="submit" disabled={loading} data-testid="momo-link-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-2.5 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
