@@ -56,7 +56,11 @@ export default function DashboardLayout() {
 
         <nav className="p-3 space-y-0.5">
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} end={n.end} data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
+            <NavLink key={n.to} to={n.to} end={n.end}
+              onClick={() => {
+                if (typeof window !== 'undefined' && window.innerWidth < 1024) setSidebarOpen(false);
+              }}
+              data-testid={`sidenav-${n.to.replace(/\//g, '-')}`}
               className={({ isActive }) => `bt-sidebar-link flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
                 isActive ? 'active' : ''
               }`}>
