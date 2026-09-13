@@ -55,7 +55,7 @@ export default function DashboardHome() {
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
   const balanceFontSize = (wallet) => {
     const characterCount = `${mask(wallet.bal)} ${wallet.curr}`.length;
-    return `clamp(0.9rem, ${Math.min(28, 180 / characterCount)}cqw, 2.75rem)`;
+    return `clamp(0.9rem, ${Math.min(24, 165 / characterCount)}cqw, 2.75rem)`;
   };
 
   return (
@@ -120,7 +120,7 @@ export default function DashboardHome() {
               </span>
               <div
                 data-testid={`balance-value-${b.curr.toLowerCase()}`}
-                className="min-w-0 max-w-full overflow-hidden whitespace-nowrap pl-8 text-center font-extrabold leading-none tracking-[-.055em] text-white sm:pl-16"
+                className="min-w-0 max-w-full overflow-hidden whitespace-nowrap text-center font-extrabold leading-none tracking-[-.055em] text-white"
                 style={{ fontSize: balanceFontSize(b) }}
                 title={`${mask(b.bal)} ${b.curr}`}
               >
