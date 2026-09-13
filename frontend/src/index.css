@@ -391,7 +391,7 @@ select {
   display: flex;
   align-items: center;
   min-width: 0;
-  width: min(100%, 420px);
+  width: min(100%, 360px);
   height: 38px;
   padding: 0 9px;
   gap: 9px;
