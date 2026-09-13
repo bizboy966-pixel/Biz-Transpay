@@ -2,11 +2,11 @@ import { useState } from 'react';
 import { COUNTRIES } from '@/constants/countries';
 
 const BRANDS = [
-  // These are the operators' public brand assets. PayDunya supplies the
-  // operator codes and names, while it does not expose logo URLs in its
-  // catalogue response.
-  { key: 'tmoney', aliases: ['t-money', 'tmoney', 'togocel', 'togocom'], src: 'https://togocom.tg/favicon.ico', label: 'T-Money' },
-  { key: 'moov', aliases: ['moov', 'flooz'], src: 'https://www.moov-africa.com/favicon.ico', label: 'Moov / Flooz' },
+  // PayDunya supplies the operator codes and names. These two logos were
+  // supplied by the project owner and are served locally for reliable history
+  // and transaction-detail rendering.
+  { key: 'tmoney', aliases: ['t-money', 'tmoney', 'togocel', 'togocom'], src: '/operator-logos/tmoney.jpeg', label: 'T-Money' },
+  { key: 'moov', aliases: ['moov', 'flooz'], src: '/operator-logos/flooz.jpeg', label: 'Moov / Flooz' },
   { key: 'mtn', aliases: ['mtn'], src: 'https://www.mtn.com/wp-content/themes/mtn-refresh/public/img/mtn-logo.svg', label: 'MTN' },
   { key: 'wave', aliases: ['wave'], src: 'https://www.wave.com/img/nav-logo.png', label: 'Wave' },
   { key: 'orange', aliases: ['orange'], src: 'https://www.orange.com/favicon.ico', label: 'Orange Money' },
