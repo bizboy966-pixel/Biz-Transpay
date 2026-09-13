@@ -20,9 +20,6 @@ const LINK_COPY = {
   free: 'Montant libre',
   freeDescription: 'Le client choisit dans une plage',
   fees: 'Gestion des frais',
-  options: 'Options du lien',
-  expiresAt: "Date d'expiration",
-  singleUse: 'Lien à usage unique',
 };
 
 export default function Links() {
@@ -67,7 +64,6 @@ export default function Links() {
 
   const statusOf = (l) => {
     if (!l.active) return 'disabled';
-    if (l.expires_at && new Date(l.expires_at) < new Date()) return 'expired';
     return 'active';
   };
 
@@ -164,21 +160,8 @@ function LinkForm({ initial, onClose, onSaved }) {
     max_amount: initial?.max_amount || '',
     currency: initial?.currency || 'UNIVERSAL',
     fee_bearer: initial?.fee_bearer || 'customer',
-    expires_at: initial?.expires_at?.slice(0, 16) || '',
-    single_use: initial?.single_use || false,
   });
   const [pending, setPending] = useState(false);
-  const fileRef = useRef();
-
-  const onLogo = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { toast.error('Format non supporté (JPG, PNG, WebP uniquement)'); return; }
-    if (file.size > 1_500_000) { toast.error('Image trop grande (max 1.5 Mo)'); return; }
-    const reader = new FileReader();
-    reader.onload = (ev) => setForm((f) => ({ ...f, logo: ev.target.result }));
-    reader.readAsDataURL(file);
-  };
 
   const previewAmount = form.amount_type === 'fixed' ? parseFloat(form.amount) || 0 : parseFloat(form.max_amount) || 0;
 
@@ -196,8 +179,6 @@ function LinkForm({ initial, onClose, onSaved }) {
         min_amount: form.amount_type === 'free' ? parseFloat(form.min_amount) : null,
         max_amount: form.amount_type === 'free' ? parseFloat(form.max_amount) : null,
         fee_bearer: form.fee_bearer,
-        expires_at: form.expires_at || null,
-        single_use: form.single_use,
       };
       if (isEdit) {
         await api.patch(`/links/${initial.id}`, payload);
@@ -225,23 +206,7 @@ function LinkForm({ initial, onClose, onSaved }) {
         {/* Informations générales */}
         <Section title={LINK_COPY.general}>
           <div className="grid sm:grid-cols-[auto_1fr] gap-4">
-            {/* Logo */}
-            <div className="text-center">
-              <FormLabel>{LINK_COPY.logo}</FormLabel>
-              <div className="relative w-24 h-24 rounded-xl border-2 border-dashed border-slate-200 hover:border-[#2563EB] cursor-pointer overflow-hidden group" onClick={() => fileRef.current?.click()}>
-                {form.logo ? (
-                  <img src={form.logo} alt="logo" className="w-full h-full object-cover" data-testid="logo-preview" />
-                ) : (
-                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-400">
-                    <Upload className="w-5 h-5" />
-                    <span className="text-[10px] mt-1">Téléverser</span>
-                  </div>
-                )}
-                {form.logo && <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] font-semibold transition-opacity">Modifier</div>}
-              </div>
-              {form.logo && <button type="button" onClick={() => setForm({ ...form, logo: '' })} className="mt-2 text-[10px] text-red-500 font-semibold">Retirer</button>}
-              <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onLogo} className="hidden" data-testid="logo-input" />
-            </div>
+            <LogoUploader value={form.logo} onChange={(logo) => setForm((current) => ({ ...current, logo }))} />
             <div className="space-y-3">
               <div>
                 <FormLabel>{LINK_COPY.title}</FormLabel>
@@ -318,23 +283,6 @@ function LinkForm({ initial, onClose, onSaved }) {
           )}
         </Section>
 
-        {/* Options always remain part of the create/edit form. */}
-        <Section title={LINK_COPY.options} testId="link-options">
-          <div className="grid sm:grid-cols-2 gap-3 items-end">
-            <div>
-              <FormLabel>{LINK_COPY.expiresAt} <span className="font-normal text-slate-400">(optionnel)</span></FormLabel>
-              <input data-testid="link-expires" type="datetime-local" value={form.expires_at} onChange={(e) => setForm({ ...form, expires_at: e.target.value })} className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
-            </div>
-            <label className="flex items-center justify-center gap-2 p-3 bg-slate-50 rounded-xl cursor-pointer text-center">
-              <input type="checkbox" data-testid="link-single-use" checked={form.single_use} onChange={(e) => setForm({ ...form, single_use: e.target.checked })} className="w-4 h-4 accent-[#2563EB]" />
-              <span className="text-xs font-semibold">{LINK_COPY.singleUse}</span>
-            </label>
-          </div>
-          <p className="mt-2 text-center text-[10px] text-slate-500">
-            La date désactive automatiquement le lien à son expiration. Un lien à usage unique devient indisponible après son premier paiement confirmé.
-          </p>
-        </Section>
-
         <button type="submit" disabled={pending} data-testid="btn-generate-link" className="mt-4 w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 rounded-xl disabled:opacity-60">
           {pending ? '…' : isEdit ? 'Enregistrer les modifications' : 'Créer le lien de paiement'}
         </button>
@@ -345,6 +293,50 @@ function LinkForm({ initial, onClose, onSaved }) {
 
 function FormLabel({ children }) {
   return <label className="text-xs font-semibold text-slate-700 mb-1.5 block text-center">{children}</label>;
+}
+
+function LogoUploader({ value, onChange }) {
+  const fileRef = useRef();
+
+  const onFile = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      toast.error('Format non supporté (JPG, PNG, WebP uniquement)');
+      return;
+    }
+    if (file.size > 1_500_000) {
+      toast.error('Image trop grande (max 1.5 Mo)');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (result) => onChange(result.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <div className="text-center">
+      <FormLabel>{LINK_COPY.logo}</FormLabel>
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        className="relative mx-auto block w-24 h-24 rounded-xl border-2 border-dashed border-slate-200 hover:border-[#2563EB] cursor-pointer overflow-hidden group"
+        data-testid="logo-uploader"
+      >
+        {value ? (
+          <img src={value} alt="Aperçu du logo" className="w-full h-full object-contain bg-white p-1" data-testid="logo-preview" />
+        ) : (
+          <span className="w-full h-full flex flex-col items-center justify-center text-slate-400">
+            <Upload className="w-5 h-5" />
+            <span className="text-[10px] mt-1">Téléverser</span>
+          </span>
+        )}
+        {value && <span className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center text-white text-[10px] font-semibold transition-opacity">Modifier</span>}
+      </button>
+      {value && <button type="button" onClick={() => onChange('')} className="mt-2 text-[10px] text-red-500 font-semibold">Retirer</button>}
+      <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" onChange={onFile} className="hidden" data-testid="logo-input" />
+    </div>
+  );
 }
 
 function Section({ title, children, testId }) {
@@ -378,10 +370,8 @@ function DetailsModal({ link, url, onClose }) {
           <Detail label="Frais" value={link.fee_bearer === 'owner' ? 'Pris en charge par vous' : 'Payés par le client'} />
           <Detail label="Paiements reçus" value={`${link.payments_received || 0}`} />
           <Detail label="Total reçu" value={`${(link.total_received || 0).toLocaleString()} ${currency}`} />
-          <Detail label="Usage" value={link.single_use ? 'Usage unique' : 'Réutilisable'} />
           <Detail label="Statut" value={link.active ? 'Actif' : 'Désactivé'} />
         </div>
-        {link.expires_at && <div className="mt-2 p-2.5 bg-amber-50 rounded-lg text-xs text-amber-800">Expire le {new Date(link.expires_at).toLocaleString()}</div>}
         <div className="mt-4 p-2.5 bg-slate-50 rounded-lg text-[10px] font-mono text-slate-600 break-all">{url}</div>
         <button type="button" onClick={onClose} className="mt-4 w-full bg-[#2563EB] text-white font-bold py-2.5 rounded-xl text-xs">Fermer</button>
       </div>
