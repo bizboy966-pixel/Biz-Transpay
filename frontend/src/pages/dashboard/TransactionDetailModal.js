@@ -186,7 +186,7 @@ export default function TransactionDetailModal({ tx, onClose }) {
           <div className={`my-4 rounded-2xl border p-5 text-center ${detail.incoming ? 'border-emerald-100 bg-emerald-50/60' : 'border-blue-100 bg-blue-50/60'}`}>
             <div className={`mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full ${detail.incoming ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
               {detail.operatorName
-                ? <OperatorLogo operator={detail.operator} name={detail.operatorName} size="lg" />
+                ? <OperatorLogo operator={detail.operator} name={detail.operatorName} logoUrl={meta.operator_logo || meta.logo_url} size="lg" />
                 : detail.countryCode
                   ? <CountryBadge code={detail.countryCode} />
                   : (detail.incoming ? <ArrowDownLeft className="h-6 w-6" /> : <ArrowUpRight className="h-6 w-6" />)}
@@ -219,7 +219,7 @@ export default function TransactionDetailModal({ tx, onClose }) {
             <InfoRow icon={MapPin} label="Pays" value={detail.country} content={<CountryBadge code={detail.countryCode} label={detail.country} />} />
             <InfoRow icon={FileText} label="Opérateur" value={detail.operatorName} content={detail.operatorName && (
               <span className="inline-flex items-center justify-end gap-2">
-                <OperatorLogo operator={detail.operator} name={detail.operatorName} size="sm" />
+                <OperatorLogo operator={detail.operator} name={detail.operatorName} logoUrl={meta.operator_logo || meta.logo_url} size="sm" />
                 <span>{detail.operatorName}</span>
               </span>
             )} />

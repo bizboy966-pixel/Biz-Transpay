@@ -7,7 +7,6 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { COUNTRIES } from '@/constants/countries';
-import { OperatorLogo } from '@/components/PaymentBrand';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -309,13 +308,6 @@ function BizToMobileForm({ config, onDone, balance }) {
               </select>
               <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             </div>
-            {op && (
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
-                <OperatorLogo operator={op.code} name={op.name} size="sm" />
-                <span className="font-semibold text-slate-700">{op.name}</span>
-                <span>{op.fee_pct}%{Number(op.fee_fixed) > 0 ? ` + ${op.fee_fixed} fixe` : ''} de frais</span>
-              </div>
-            )}
           </>
         )}
       </Field>

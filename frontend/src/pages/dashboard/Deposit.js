@@ -7,7 +7,6 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import ComingSoon from '@/components/ComingSoon';
-import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 import { COUNTRIES } from '@/constants/countries';
 
 const PSR_ASSET_IDS = {
@@ -644,11 +643,10 @@ function MobileMoneyForm({ onSuccess }) {
           <div className="relative">
             <select data-testid="momo-country" value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); }} required
               className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-sm outline-none focus:border-[#2563EB]">
-              <option value="">— Sélectionnez un pays —</option>
+              <option value="">Sélectionnez un pays</option>
               {catalog.map((c) => <option key={c.country} value={c.country}>{COUNTRIES.find((item) => item.code === c.country)?.flag || ''} {c.country_label}</option>)}
             </select>
             <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            {country && <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500"><CountryBadge code={country} label={countryEntry?.country_label} /></div>}
           </div>
         </div>
         <div>
@@ -656,16 +654,10 @@ function MobileMoneyForm({ onSuccess }) {
           <div className="relative">
             <select data-testid="momo-operator" value={operator} onChange={(e) => setOperator(e.target.value)} required disabled={!country}
               className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-sm outline-none focus:border-[#2563EB] disabled:bg-slate-50">
-              <option value="">— Sélectionnez un opérateur —</option>
+              <option value="">Sélectionnez un opérateur</option>
               {operators.map((o) => <option key={o.code} value={o.code}>{o.name || o.label}</option>)}
             </select>
             <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            {selectedOp && (
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
-                <OperatorLogo operator={selectedOp.code} name={selectedOp.name || selectedOp.label} size="sm" />
-                <span className="font-semibold text-slate-700">{selectedOp.name || selectedOp.label}</span>
-              </div>
-            )}
           </div>
         </div>
       </div>

@@ -1193,6 +1193,10 @@ async def transfer(req: TransferRequest, request: Request,
 
         metadata = {
             "transfer_type": "biz_to_mobile",
+            "country": op.get("country"),
+            "country_code": op.get("country"),
+            "country_label": op.get("country_label"),
+            "operator": op.get("code"),
             "operator_name": op["name"],
             "fee_bearer": req.fee_bearer,
             "fee": fee, "gateway_fee": gateway_fee,
@@ -2362,7 +2366,13 @@ async def _credit_momo_deposit(d: dict) -> None:
         "provider": d.get("provider") or ("fedapay" if d.get("fedapay_id") else "paydunya"),
         "paydunya_token": d.get("paydunya_token"),
         "paydunya_reference": d.get("paydunya_reference") or d.get("fedapay_reference"),
-        "operator": d.get("operator"), "country": d.get("country"),
+        "operator": d.get("operator"),
+        "operator_name": d.get("operator_name")
+            or (d.get("operator_snapshot") or {}).get("name"),
+        "country": d.get("country"),
+        "country_code": d.get("country"),
+        "country_label": d.get("country_label")
+            or (d.get("operator_snapshot") or {}).get("country_label"),
         "phone_number": d.get("phone_number"),
         "customer_name": d.get("full_name"),
         "customer_email": d.get("email"),

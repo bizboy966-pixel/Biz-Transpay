@@ -5,3 +5,4 @@
 - [Customer payment routing](paydunya-public-surface.md) — payment-provider route selection stays server-side; the client receives only a generic payment action.
 - [PayDunya callback hosting](paydunya-callback-hosting.md) — PUSH rejects temporary Replit preview callbacks; use a public production deployment accepting GET, POST, and HEAD.
 - [Social channel visibility](social-channel-visibility.md) — social links are validated and filtered server-side before reaching the authenticated user interface.
+- [PayDunya operator logos](paydunya-operator-logos.md) — PayDunya’s operator catalogue provides identifiers, not logo URLs; resolve display assets from official operator brand sources.

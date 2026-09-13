@@ -79,7 +79,12 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
     <>
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${incoming ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
         {operator
-          ? <OperatorLogo operator={meta.operator} name={meta.operator_name || meta.operator} size="md" />
+          ? <OperatorLogo
+              operator={meta.operator}
+              name={meta.operator_name || meta.operator}
+              logoUrl={meta.operator_logo || meta.logo_url}
+              size="md"
+            />
           : country
             ? <CountryBadge code={country.code} />
             : (incoming ? <ArrowDownLeft className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />)}
