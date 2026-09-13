@@ -91,14 +91,14 @@ export default function Links() {
         {links.map((l) => {
           const st = statusOf(l);
           return (
-            <div key={l.id} data-testid={`link-card-${l.id}`} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] transition-shadow">
-              <div className="flex items-start gap-3">
+            <div key={l.id} data-testid={`link-card-${l.id}`} className="min-w-0 w-full bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] transition-shadow">
+              <div className="flex min-w-0 items-start gap-3">
                 {l.logo ? (
                    <img src={l.logo} alt={l.title} className="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-slate-100" />
                 ) : (
                   <div className="w-12 h-12 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Link2 className="w-5 h-5" /></div>
                 )}
-                <div className="flex-1 min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="font-cabinet font-bold text-sm text-slate-900 truncate">{l.title}</div>
                   <div className="mt-0.5 font-cabinet font-extrabold text-lg text-[#2563EB]">
                     {l.amount_type === 'free' ? (
@@ -108,26 +108,26 @@ export default function Links() {
                     )}
                   </div>
                 </div>
-                <StatusBadge s={st} />
+                <div className="shrink-0"><StatusBadge s={st} /></div>
               </div>
               {l.description && <p className="mt-2 text-xs text-slate-500 line-clamp-2">{l.description}</p>}
 
-              <div className="mt-3 flex items-center gap-2 p-2 bg-slate-50 rounded-lg">
-                <div className="text-[10px] text-slate-500 truncate flex-1 font-mono">{publicUrl(l.slug)}</div>
-                <button onClick={() => copy(l.slug)} data-testid={`btn-copy-link-${l.id}`} title="Copier" className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Copy className="w-3 h-3" /></button>
-                <button onClick={() => setShowShare(l)} data-testid={`btn-share-link-${l.id}`} title="Partager" className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Share2 className="w-3 h-3" /></button>
-                <button onClick={() => setShowQr(l)} data-testid={`btn-qr-link-${l.id}`} title="QR Code" className="w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><QrCode className="w-3 h-3" /></button>
+              <div className="mt-3 flex min-w-0 items-center gap-2 p-2 bg-slate-50 rounded-lg">
+                <div className="min-w-0 flex-1 truncate text-[10px] text-slate-500 font-mono">{publicUrl(l.slug)}</div>
+                <button onClick={() => copy(l.slug)} data-testid={`btn-copy-link-${l.id}`} title="Copier" className="shrink-0 w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Copy className="w-3 h-3" /></button>
+                <button onClick={() => setShowShare(l)} data-testid={`btn-share-link-${l.id}`} title="Partager" className="shrink-0 w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><Share2 className="w-3 h-3" /></button>
+                <button onClick={() => setShowQr(l)} data-testid={`btn-qr-link-${l.id}`} title="QR Code" className="shrink-0 w-7 h-7 rounded-md bg-white hover:bg-blue-50 flex items-center justify-center text-slate-600 hover:text-[#2563EB]"><QrCode className="w-3 h-3" /></button>
               </div>
 
-              <div className="mt-3 flex items-center justify-between text-[11px] text-slate-500">
-                <span>{l.payments_received} paiements · {(l.total_received || 0).toLocaleString()} {l.currency} reçus</span>
-                <span className="text-slate-400">{new Date(l.created_at).toLocaleDateString()}</span>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                <span className="min-w-0 break-words">{l.payments_received} paiements · {(l.total_received || 0).toLocaleString()} {l.currency} reçus</span>
+                <span className="shrink-0 text-slate-400">{new Date(l.created_at).toLocaleDateString()}</span>
               </div>
-              <div className="mt-3 pt-3 border-t border-slate-50 flex items-center gap-2 text-[11px]">
-                 <button onClick={() => setShowDetails(l)} data-testid={`btn-details-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Eye className="w-3 h-3" /> Détails</button>
-                <button onClick={() => { setEditing(l); setShowForm(true); }} data-testid={`btn-edit-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Pencil className="w-3 h-3" /> Modifier</button>
-                 <button onClick={() => toggle(l)} data-testid={`btn-toggle-${l.id}`} className="inline-flex items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Power className="w-3 h-3" /> {l.active ? 'Désactiver' : 'Réactiver'}</button>
-                <button onClick={() => remove(l.id)} data-testid={`btn-delete-${l.id}`} className="ml-auto inline-flex items-center gap-1 font-semibold text-red-600 hover:text-red-700"><Trash2 className="w-3 h-3" /> Supprimer</button>
+              <div className="mt-3 pt-3 border-t border-slate-50 flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px]">
+                <button onClick={() => setShowDetails(l)} data-testid={`btn-details-${l.id}`} className="inline-flex shrink-0 items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Eye className="w-3 h-3" /> Détails</button>
+                <button onClick={() => { setEditing(l); setShowForm(true); }} data-testid={`btn-edit-${l.id}`} className="inline-flex shrink-0 items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Pencil className="w-3 h-3" /> Modifier</button>
+                <button onClick={() => toggle(l)} data-testid={`btn-toggle-${l.id}`} className="inline-flex shrink-0 items-center gap-1 font-semibold text-slate-700 hover:text-[#2563EB]"><Power className="w-3 h-3" /> {l.active ? 'Désactiver' : 'Réactiver'}</button>
+                <button onClick={() => remove(l.id)} data-testid={`btn-delete-${l.id}`} className="inline-flex shrink-0 items-center gap-1 font-semibold text-red-600 hover:text-red-700 sm:ml-auto"><Trash2 className="w-3 h-3" /> Supprimer</button>
               </div>
             </div>
           );
