@@ -497,11 +497,6 @@ function MoMoLinkTracker({ payment }) {
         {ok && `Merci ! Le paiement a été confirmé.`}
         {failed && `La transaction a été refusée ou a expiré.`}
       </p>
-      {p.checkout_url && pending && (
-        <a href={p.checkout_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11px] font-bold text-[#2563EB] hover:underline">
-          Ouvrir le lien de paiement <ArrowRight className="w-3 h-3" />
-        </a>
-      )}
     </div>
   );
 }
