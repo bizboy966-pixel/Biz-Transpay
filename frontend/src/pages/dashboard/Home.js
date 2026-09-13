@@ -5,6 +5,8 @@ import { ArrowUpRight, ArrowDownLeft, Link2, Repeat, Search, Filter, ShieldAlert
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
+import TransactionDetailModal from './TransactionDetailModal';
+import TransactionListItem from './TransactionListItem';
 
 export default function DashboardHome() {
   const { t } = useTranslation();
@@ -12,6 +14,7 @@ export default function DashboardHome() {
   const { user, refresh } = useAuth();
   const features = useFeatures();
   const [txs, setTxs] = useState([]);
+  const [selectedTx, setSelectedTx] = useState(null);
   const [query, setQuery] = useState('');
   const [showKycBanner, setShowKycBanner] = useState(true);
   const [hidden, setHidden] = useState(() => localStorage.getItem('btp_balance_hidden') === '1');
@@ -166,21 +169,17 @@ export default function DashboardHome() {
         <div className="divide-y divide-slate-50">
           {txs.length === 0 && <div className="p-8 sm:p-10 text-center text-slate-400 text-xs sm:text-sm">{t('dashboard.no_tx')}</div>}
           {txs.map((tx) => (
-            <div key={tx.id} className="p-3 sm:p-5 flex items-center gap-3 sm:gap-4">
-              <div className={`w-9 h-9 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center shrink-0 ${tx.direction === 'in' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-700'}`}>
-                {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 sm:w-5 sm:h-5" /> : <ArrowUpRight className="w-4 h-4 sm:w-5 sm:h-5" />}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="font-semibold text-slate-900 text-xs sm:text-sm truncate">{tx.type} {tx.counterparty && `→ ${tx.counterparty}`}</div>
-                <div className="text-[10px] sm:text-xs text-slate-500">{new Date(tx.created_at).toLocaleString()}</div>
-              </div>
-              <div className={`font-bold text-xs sm:text-sm whitespace-nowrap ${tx.direction === 'in' ? 'text-emerald-600' : 'text-slate-900'}`}>
-                {tx.direction === 'in' ? '+' : '-'}{hidden ? '•••' : tx.amount.toLocaleString()} <span className="text-[10px] sm:text-xs opacity-70">{tx.currency}</span>
-              </div>
-            </div>
+            <TransactionListItem
+              key={tx.id}
+              tx={tx}
+              hidden={hidden}
+              onClick={() => setSelectedTx(tx)}
+              testId={`home-tx-row-${tx.id}`}
+            />
           ))}
         </div>
       </div>
+      {selectedTx && <TransactionDetailModal tx={selectedTx} onClose={() => setSelectedTx(null)} />}
     </div>
   );
 }
