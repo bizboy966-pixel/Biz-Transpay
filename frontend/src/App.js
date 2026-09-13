@@ -35,7 +35,6 @@ import AdminDepositConfig from '@/pages/admin/AdminDepositConfig';
 import AdminSupport from '@/pages/admin/AdminSupport';
 import AdminFeatures from '@/pages/admin/AdminFeatures';
 import AdminRates from '@/pages/admin/AdminRates';
-import AdminConversions from '@/pages/admin/AdminConversions';
 import AdminFees from '@/pages/admin/AdminFees';
 import AdminBenefits from '@/pages/admin/AdminBenefits';
 import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
@@ -99,7 +98,6 @@ function App() {
             <Route path="support" element={<AdminSupport />} />
             <Route path="features" element={<AdminFeatures />} />
             <Route path="rates" element={<AdminRates />} />
-            <Route path="conversions" element={<AdminConversions />} />
             <Route path="fees" element={<AdminFees />} />
             <Route path="benefits" element={<AdminBenefits />} />
              <Route path="payment-providers" element={<AdminPaymentProviders />} />
