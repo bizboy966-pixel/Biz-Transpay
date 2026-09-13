@@ -107,7 +107,7 @@ def test_disbursement_business_error_is_not_reported_as_missing_token(monkeypatc
             {}, amount=1000, currency="XOF",
             withdraw_mode="t-money-togo", account_alias="90123456",
             callback_url="https://merchant.test/callback"))
-    assert exc.value.message == "the callback is not accessible"
+    assert "application publiée" in exc.value.message
 
 
 def test_xof_fees_are_whole_units():

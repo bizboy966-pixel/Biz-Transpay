@@ -10,6 +10,7 @@ import copy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
@@ -969,6 +970,16 @@ async def transfer(req: TransferRequest, request: Request,
 
     # -------- BIZ TO MOBILE --------
     if req.transfer_type == "biz_to_mobile":
+        callback_base = (os.environ.get("OFFICIAL_DOMAIN")
+                         or _paydunya_callback_base(request)).rstrip("/")
+        callback_host = (urlparse(callback_base).hostname or "").lower()
+        if (callback_host.endswith(".replit.dev")
+                or callback_host in {"localhost", "127.0.0.1"}):
+            raise HTTPException(
+                503,
+                "Le retrait automatique Mobile Money nécessite l'application "
+                "publiée. PayDunya refuse les callbacks de prévisualisation.")
+
         mm_cfg = cfg.get("mobile_money", {})
         if not mm_cfg.get("enabled"):
             raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
@@ -1070,8 +1081,6 @@ async def transfer(req: TransferRequest, request: Request,
                       "metadata.debit_applied_at": now_iso()}})
 
         withdraw_mode = op.get("withdraw_mode")
-        callback_base = (os.environ.get("OFFICIAL_DOMAIN")
-                         or _paydunya_callback_base(request)).rstrip("/")
         callback_url = f"{callback_base}/api/webhooks/paydunya/disbursement?ref={tx_out.reference}"
         try:
             account_alias = paydunya.normalize_disbursement_account_alias(

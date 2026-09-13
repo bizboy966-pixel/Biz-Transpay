@@ -439,10 +439,15 @@ async def get_disbursement_invoice(config: dict, *, amount: float,
         "POST", "/api/v2/disburse/get-invoice", config, body)
     code = str(response.get("response_code", "")).zfill(2)
     if code != "00":
+        message = str(response.get("response_text") or response.get("message")
+                      or "PayDunya a refusé la création du retrait")
+        if code == "4002":
+            message = (
+                "L’URL de callback n’est pas accessible par PayDunya. "
+                "Utilisez l’application publiée, pas la prévisualisation.")
         raise PayDunyaError(
             400,
-            str(response.get("response_text") or response.get("message")
-                or "PayDunya a refusé la création du retrait"),
+            message,
             response,
         )
     return response
