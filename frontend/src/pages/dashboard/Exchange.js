@@ -92,15 +92,15 @@ export default function Exchange() {
 
   if (done) {
     return (
-      <div className="max-w-lg mx-auto p-6 rounded-2xl bg-emerald-50 border border-emerald-200 text-center" data-testid="exchange-success">
+       <div className="w-full min-w-0 max-w-lg mx-auto p-6 rounded-2xl bg-emerald-50 border border-emerald-200 text-center overflow-hidden" data-testid="exchange-success">
         <div className="mx-auto w-14 h-14 rounded-full bg-emerald-500 text-white flex items-center justify-center"><CheckCircle2 className="w-7 h-7" /></div>
         <h2 className="mt-4 font-cabinet font-extrabold text-emerald-900 text-xl">Conversion réussie</h2>
-        <div className="mt-3 font-mono text-sm text-slate-700">
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 font-mono text-sm text-slate-700 break-words">
           {parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}
-          <span className="text-slate-400 mx-2">→</span>
-          <span className="font-bold text-emerald-700">+{Number(done.received).toLocaleString(undefined, { maximumFractionDigits: CUR[toCur].maxFrac })} {toCur}</span>
+          <span className="text-slate-400">→</span>
+          <span className="font-bold text-emerald-700 break-words">+{Number(done.received).toLocaleString(undefined, { maximumFractionDigits: CUR[toCur].maxFrac })} {toCur}</span>
         </div>
-        <div className="mt-1 text-[11px] text-slate-500">Taux : 1 {fromCur} = {done.rate} {toCur} · Frais : {Number(done.fee).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}</div>
+        <div className="mt-1 text-[11px] text-slate-500 break-words">Taux : 1 {fromCur} = {done.rate} {toCur} · Frais : {Number(done.fee).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}</div>
         <button onClick={() => { setDone(null); setAmount(''); setQuote(null); }} data-testid="btn-new-conversion" className="mt-4 px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-semibold">Nouvelle conversion</button>
       </div>
     );
@@ -110,9 +110,9 @@ export default function Exchange() {
   const canSubmit = quote && !quote.error && parseFloat(amount) <= balance && !busy;
 
   return (
-    <div className="max-w-lg mx-auto space-y-4" data-testid="user-exchange-page">
-      <div className="bg-white border border-slate-100 rounded-2xl p-5">
-        <div className="flex items-center gap-2 mb-4">
+    <div className="w-full min-w-0 max-w-lg mx-auto space-y-4 overflow-x-clip" data-testid="user-exchange-page">
+      <div className="w-full min-w-0 bg-white border border-slate-100 rounded-2xl p-5">
+        <div className="flex min-w-0 items-center gap-2 mb-4">
           <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center"><ArrowLeftRight className="w-4 h-4" /></div>
           <div>
             <h1 className="font-cabinet font-extrabold text-slate-900">Conversion</h1>
@@ -126,12 +126,12 @@ export default function Exchange() {
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">De</span>
             <span className="text-[10px] text-slate-500">Solde : <b className="text-slate-800">{balance.toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}</b></span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <input type="number" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)}
               data-testid="input-amount"
-              className="flex-1 bg-transparent focus:outline-none text-2xl font-cabinet font-extrabold text-slate-900" />
+              className="min-w-0 w-full flex-1 bg-transparent focus:outline-none text-2xl font-cabinet font-extrabold text-slate-900" />
             <select value={fromCur} onChange={(e) => setFromCur(e.target.value)} data-testid="select-from"
-              className="bg-white px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
+              className="shrink-0 max-w-[42%] bg-white px-2 sm:px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
               {availableCurrencies.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
@@ -151,12 +151,12 @@ export default function Exchange() {
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Vers</span>
             <span className="text-[10px] text-slate-500">Vous recevez</span>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 text-2xl font-cabinet font-extrabold text-emerald-700" data-testid="output-received">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="min-w-0 w-full flex-1 break-words text-2xl font-cabinet font-extrabold text-emerald-700" data-testid="output-received">
               {quote && !quote.error ? `+${Number(quote.received).toLocaleString(undefined, { maximumFractionDigits: CUR[toCur].maxFrac })}` : '0'}
             </div>
             <select value={toCur} onChange={(e) => setToCur(e.target.value)} data-testid="select-to"
-              className="bg-white px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
+              className="shrink-0 max-w-[42%] bg-white px-2 sm:px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
               {destOptions.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
@@ -185,9 +185,9 @@ export default function Exchange() {
 function Row({ label, value, tone, bold }) {
   const c = tone === 'red' ? 'text-red-700' : tone === 'green' ? 'text-emerald-700' : 'text-slate-800';
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-slate-600">{label}</span>
-      <span className={`${bold ? 'font-cabinet font-extrabold' : 'font-semibold'} ${c}`}>{value}</span>
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-x-3">
+      <span className="min-w-0 text-slate-600">{label}</span>
+      <span className={`min-w-0 max-w-full break-words text-right ${bold ? 'font-cabinet font-extrabold' : 'font-semibold'} ${c}`}>{value}</span>
     </div>
   );
 }
