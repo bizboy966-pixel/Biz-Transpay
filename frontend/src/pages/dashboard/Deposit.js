@@ -78,11 +78,10 @@ function startPaydunyaPsr({ deposit, onTerminate }) {
   if (!PayDunya || typeof PayDunya.setup !== 'function') {
     throw new Error('Le module officiel PayDunya PSR est indisponible.');
   }
-  if (!deposit?.id && !deposit?.psr_token_url) {
-    throw new Error('PayDunya n’a pas fourni de référence PSR.');
+  if (!deposit?.psr_token_url) {
+    throw new Error('PayDunya n’a pas fourni l’autorisation PSR.');
   }
-  const tokenUrl = deposit.psr_token_url
-    || `${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/paydunya/psr/${encodeURIComponent(deposit.id)}/token`;
+  const tokenUrl = deposit.psr_token_url;
   let terminated = false;
   const terminate = (...args) => {
     if (terminated) return;

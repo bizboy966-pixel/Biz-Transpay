@@ -1618,8 +1618,7 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
         result["checkout_url"] = doc["checkout_url"]
     else:
         result["psr_token_url"] = (
-            f"/api/deposits/paydunya/psr/{dep_id}/token"
-            f"?capability={psr_capability}")
+            f"/api/deposits/paydunya/psr/{dep_id}/token/{psr_capability}")
     return result
 
 
@@ -1639,7 +1638,7 @@ async def create_paydunya_psr(req: PayDunyaInvoiceRequest,
     return await _create_paydunya_invoice_deposit(req, uid, "psr")
 
 
-@api.get("/deposits/paydunya/psr/{deposit_id}/token")
+@api.get("/deposits/paydunya/psr/{deposit_id}/token/{capability}")
 async def get_paydunya_psr_token(deposit_id: str, capability: str):
     """Return the server-created invoice token to the official PSR SDK.
 
