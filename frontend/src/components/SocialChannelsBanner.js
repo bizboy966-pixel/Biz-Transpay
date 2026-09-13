@@ -6,7 +6,7 @@ function SocialIcon({ channel }) {
   const [failed, setFailed] = useState(false);
   if (failed) {
     return (
-      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[9px] font-extrabold text-slate-500" aria-hidden="true">
+      <span className="bt-social-banner__icon inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-extrabold text-slate-500" aria-hidden="true">
         {channel.label.slice(0, 1)}
       </span>
     );
@@ -15,20 +15,21 @@ function SocialIcon({ channel }) {
     <img
       src={channel.iconSrc}
       alt=""
-      className="h-5 w-5 shrink-0 object-contain"
+      className="bt-social-banner__icon h-6 w-6 shrink-0 object-contain"
       onError={() => setFailed(true)}
     />
   );
 }
 
-function ChannelLink({ channel, url, decorative = false }) {
+function ChannelLink({ channel, url, active }) {
   return (
     <a
       href={url}
       target="_blank"
       rel="noreferrer"
-      tabIndex={decorative ? -1 : undefined}
-      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-[10px] font-bold text-slate-700 transition-colors hover:bg-white/80"
+      tabIndex={active ? 0 : -1}
+      aria-hidden={!active}
+      className="bt-social-banner__slide inline-flex shrink-0 items-center gap-2 rounded-lg px-2 py-1 text-xs font-bold text-slate-700 transition-colors hover:bg-white/80"
       aria-label={`Ouvrir ${channel.label}`}
     >
       <SocialIcon channel={channel} />
@@ -39,6 +40,7 @@ function ChannelLink({ channel, url, decorative = false }) {
 
 export default function SocialChannelsBanner() {
   const [channels, setChannels] = useState([]);
+  const [activeIndex, setActiveIndex] = useState(0);
 
   useEffect(() => {
     api.get('/support/config')
@@ -54,11 +56,19 @@ export default function SocialChannelsBanner() {
       .catch(() => setChannels([]));
   }, []);
 
-  if (channels.length === 0) return null;
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [channels.length]);
 
-  const items = channels.map(({ definition, url }) => (
-    <ChannelLink key={definition.key} channel={definition} url={url} />
-  ));
+  useEffect(() => {
+    if (channels.length < 2) return undefined;
+    const interval = window.setInterval(() => {
+      setActiveIndex((index) => (index + 1) % channels.length);
+    }, 3500);
+    return () => window.clearInterval(interval);
+  }, [channels.length]);
+
+  if (channels.length === 0) return null;
 
   return (
     <div
@@ -68,15 +78,19 @@ export default function SocialChannelsBanner() {
     >
       <span className="bt-social-banner__subtitle">Rejoignez-nous sur</span>
       <div className="bt-social-banner__viewport">
-        <div className={`bt-social-banner__track ${channels.length > 1 ? 'bt-social-banner__track--moving' : ''}`}>
-          {items}
-          {channels.length > 1 && (
-            <div className="inline-flex shrink-0 items-center gap-1.5" aria-hidden="true">
-              {channels.map(({ definition, url }) => (
-                <ChannelLink key={`duplicate-${definition.key}`} channel={definition} url={url} decorative />
-              ))}
-            </div>
-          )}
+        <div
+          className="bt-social-banner__track"
+          style={{ transform: `translateX(-${activeIndex * 100}%)` }}
+          aria-live="polite"
+        >
+          {channels.map(({ definition, url }, index) => (
+            <ChannelLink
+              key={definition.key}
+              channel={definition}
+              url={url}
+              active={index === activeIndex}
+            />
+          ))}
         </div>
       </div>
     </div>

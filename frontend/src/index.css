@@ -390,10 +390,10 @@ select {
   display: flex;
   align-items: center;
   min-width: 0;
-  width: min(100%, 250px);
-  height: 42px;
-  padding: 0 8px;
-  gap: 7px;
+  width: min(100%, 360px);
+  height: 48px;
+  padding: 0 11px;
+  gap: 10px;
   overflow: hidden;
   border: 1px solid #DCE5F2;
   border-radius: 12px;
@@ -403,7 +403,7 @@ select {
 .bt-social-banner__subtitle {
   flex: 0 0 auto;
   color: #64748B;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   line-height: 1.1;
   white-space: nowrap;
@@ -414,33 +414,33 @@ select {
 }
 .bt-social-banner__track {
   display: flex;
-  width: max-content;
+  width: 100%;
   align-items: center;
-  gap: 4px;
+  transition: transform .7s cubic-bezier(.22,.61,.36,1);
+  will-change: transform;
 }
-.bt-social-banner__track--moving {
-  animation: bt-social-marquee 18s linear infinite;
+.bt-social-banner__slide {
+  min-width: 100%;
+  width: 100%;
+  font-size: 13px;
 }
-.bt-social-banner:hover .bt-social-banner__track--moving,
-.bt-social-banner:focus-within .bt-social-banner__track--moving {
-  animation-play-state: paused;
-}
-@keyframes bt-social-marquee {
-  from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
+.bt-social-banner__icon {
+  height: 24px;
+  width: 24px;
 }
 @media (max-width: 639px) {
   .bt-social-banner {
-    width: min(100%, 190px);
-    height: 40px;
-    gap: 5px;
-    padding: 0 6px;
+    width: min(100%, 260px);
+    height: 44px;
+    gap: 6px;
+    padding: 0 7px;
   }
-  .bt-social-banner__subtitle { font-size: 8px; }
-  .bt-social-banner__track a {
-    padding-left: 4px;
-    padding-right: 4px;
-  }
+  .bt-social-banner__subtitle { font-size: 9px; }
+  .bt-social-banner__slide { font-size: 11px; }
+  .bt-social-banner__icon { height: 20px; width: 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bt-social-banner__track { transition: none; }
 }
 .bt-content {
   width: min(100%, 1180px);

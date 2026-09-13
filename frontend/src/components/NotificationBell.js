@@ -20,7 +20,7 @@ function formatRelative(iso) {
   return d.toLocaleDateString();
 }
 
-export default function NotificationBell() {
+export default function NotificationBell({ compact = false }) {
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
   const [unread, setUnread] = useState(0);
@@ -94,9 +94,9 @@ export default function NotificationBell() {
         data-testid="btn-notifications"
         onClick={() => { setOpen((v) => !v); if (!open) load(); }}
         aria-expanded={open}
-        className="relative w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors"
+        className={`relative rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors ${compact ? 'h-8 w-8' : 'h-10 w-10'}`}
       >
-        <Bell className="w-4 h-4 text-slate-600" strokeWidth={1.75} />
+        <Bell className={`${compact ? 'h-3.5 w-3.5' : 'h-4 w-4'} text-slate-600`} strokeWidth={1.75} />
         {unread > 0 && (
           <span
             data-testid="notif-badge"

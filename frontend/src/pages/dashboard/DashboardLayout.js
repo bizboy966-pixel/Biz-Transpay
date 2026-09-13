@@ -82,8 +82,8 @@ export default function DashboardLayout() {
 
       {/* Topbar */}
       <div className={`transition-[padding] duration-300 ${sidebarOpen ? 'lg:pl-64' : 'lg:pl-0'}`}>
-        <header className="bt-topbar sticky top-0 z-30 border-b h-[72px] flex items-center px-5 gap-3" data-testid="dashboard-topbar">
-          <button onClick={() => setSidebarOpen((v) => !v)} data-testid="btn-toggle-sidebar" className="w-10 h-10 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
+        <header className="bt-topbar sticky top-0 z-30 border-b h-[72px] flex items-center px-3 sm:px-5 gap-2 sm:gap-3" data-testid="dashboard-topbar">
+          <button onClick={() => setSidebarOpen((v) => !v)} data-testid="btn-toggle-sidebar" className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
             <Menu className="w-4 h-4" />
           </button>
 
@@ -94,21 +94,21 @@ export default function DashboardLayout() {
             <div className="text-[10px] text-slate-500 font-medium">Passerelle de paiement</div>
           </div>
 
-          <div className="min-w-0 flex-1 flex justify-center px-1 sm:px-3">
+          <div className="min-w-0 flex-1 flex justify-center px-0 sm:px-2">
             <SocialChannelsBanner />
           </div>
 
-          <div className="ml-auto flex items-center gap-2">
-            <NotificationBell />
-            <LanguageSwitcher compact />
+          <div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
+            <NotificationBell compact />
+            <LanguageSwitcher compact className="bt-topbar-language" />
             <div className="relative">
-              <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1.5 pl-1 pr-2.5 py-1 rounded-full hover:bg-slate-100 transition-colors">
+              <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1 pl-0.5 pr-1.5 py-1 sm:gap-1.5 sm:pl-1 sm:pr-2.5 rounded-full hover:bg-slate-100 transition-colors">
                 {user?.avatar_url ? (
-                  <img src={user.avatar_url} alt={`Photo de ${user?.full_name || 'profil'}`} className="w-8 h-8 rounded-full object-cover border border-white shadow-sm" />
+                  <img src={user.avatar_url} alt={`Photo de ${user?.full_name || 'profil'}`} className="h-7 w-7 sm:h-8 sm:w-8 rounded-full object-cover border border-white shadow-sm" />
                 ) : (
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>
+                  <div className="h-7 w-7 sm:h-8 sm:w-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>
                 )}
-                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                <ChevronDown className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-slate-500" />
               </button>
               {profileOpen && (
                 <div className="absolute right-0 mt-2 min-w-[200px] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
