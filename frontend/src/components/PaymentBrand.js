@@ -63,7 +63,7 @@ export function OperatorLogo({ operator, name, logoUrl, size = 'md', className =
   }
   return (
     <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden bg-white shadow-sm ${sizes[size] || sizes.md} ${className}`} title={name || brand.label} aria-label={name || brand.label}>
-       <img src={src} alt="" onError={() => setFailed(true)} className="h-full w-full object-contain p-1" />
+       <img src={src} alt="" onError={() => setFailed(true)} className="h-full w-full object-cover p-0" />
     </span>
   );
 }
