@@ -435,7 +435,17 @@ async def get_disbursement_invoice(config: dict, *, amount: float,
         "withdraw_mode": withdraw_mode,
         "callback_url": callback_url,
     }
-    return await _request("POST", "/api/v2/disburse/get-invoice", config, body)
+    response = await _request(
+        "POST", "/api/v2/disburse/get-invoice", config, body)
+    code = str(response.get("response_code", "")).zfill(2)
+    if code != "00":
+        raise PayDunyaError(
+            400,
+            str(response.get("response_text") or response.get("message")
+                or "PayDunya a refusé la création du retrait"),
+            response,
+        )
+    return response
 
 
 async def submit_disbursement_invoice(config: dict, *, invoice_token: str,
@@ -448,7 +458,17 @@ async def submit_disbursement_invoice(config: dict, *, invoice_token: str,
     body = {"disburse_invoice": invoice_token}
     if reference:
         body["disburse_id"] = reference
-    return await _request("POST", "/api/v2/disburse/submit-invoice", config, body)
+    response = await _request(
+        "POST", "/api/v2/disburse/submit-invoice", config, body)
+    code = str(response.get("response_code", "")).zfill(2)
+    if code != "00":
+        raise PayDunyaError(
+            400,
+            str(response.get("response_text") or response.get("message")
+                or "PayDunya a refusé le retrait"),
+            response,
+        )
+    return response
 
 
 async def check_disbursement_status(config: dict, *, invoice_token: str = "",
@@ -456,7 +476,17 @@ async def check_disbursement_status(config: dict, *, invoice_token: str = "",
     if not invoice_token:
         raise PayDunyaError(400, "Référence PayDunya de retrait manquante")
     body = {"disburse_invoice": invoice_token}
-    return await _request("POST", "/api/v2/disburse/check-status", config, body)
+    response = await _request(
+        "POST", "/api/v2/disburse/check-status", config, body)
+    code = str(response.get("response_code", "")).zfill(2)
+    if code != "00":
+        raise PayDunyaError(
+            400,
+            str(response.get("response_text") or response.get("message")
+                or "Statut PayDunya indisponible"),
+            response,
+        )
+    return response
 
 
 # Short aliases make the provider API convenient to use from reconciliation

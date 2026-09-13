@@ -2359,6 +2359,8 @@ async def paydunya_webhook(request: Request):
     return {"received": True}
 
 
+@api.head("/webhooks/paydunya/disbursement")
+@api.get("/webhooks/paydunya/disbursement")
 @api.post("/webhooks/paydunya/disbursement")
 async def paydunya_disbursement_webhook(request: Request, ref: str = Query("")):
     """Receive a payout notification, then verify it with PayDunya.

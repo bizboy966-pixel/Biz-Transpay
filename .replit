@@ -55,3 +55,7 @@ externalPort = 8000
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "scripts/start-replit.sh"]

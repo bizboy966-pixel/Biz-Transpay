@@ -54,8 +54,8 @@ def test_disbursement_client_calls_v2_endpoints(monkeypatch):
 
     async def fake_request(method, path, config, body=None):
         calls.append((method, path, body))
-        return {"disburse_token": "invoice-token"} if path.endswith("get-invoice") else {
-            "id": "provider-id", "status": "pending"
+        return {"response_code": "00", "disburse_token": "invoice-token"} if path.endswith("get-invoice") else {
+            "response_code": "00", "id": "provider-id", "status": "pending"
         }
 
     monkeypatch.setattr(paydunya, "_request", fake_request)
@@ -92,6 +92,22 @@ def test_disbursement_phone_is_sent_without_country_code():
         "+228 90 12 34 56", "TG") == "90123456"
     assert paydunya.normalize_disbursement_account_alias(
         "00221 77 111 22 33", "SN") == "771112233"
+
+
+def test_disbursement_business_error_is_not_reported_as_missing_token(monkeypatch):
+    async def fake_request(method, path, config, body=None):
+        return {
+            "response_code": "4002",
+            "response_text": "the callback is not accessible",
+        }
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    with pytest.raises(paydunya.PayDunyaError) as exc:
+        asyncio.run(paydunya.get_disbursement_invoice(
+            {}, amount=1000, currency="XOF",
+            withdraw_mode="t-money-togo", account_alias="90123456",
+            callback_url="https://merchant.test/callback"))
+    assert exc.value.message == "the callback is not accessible"
 
 
 def test_xof_fees_are_whole_units():
