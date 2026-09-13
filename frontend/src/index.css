@@ -391,11 +391,12 @@ select {
   display: flex;
   align-items: center;
   min-width: 0;
-  width: min(100%, 360px);
-  height: 48px;
+  width: min(100%, 520px);
+  min-height: 48px;
+  height: auto;
   padding: 0 11px;
   gap: 10px;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid #93C5FD;
   border-radius: 12px;
   background: linear-gradient(135deg, #EFF6FF, #DBEAFE);
@@ -410,26 +411,23 @@ select {
   line-height: 1.1;
   white-space: normal;
 }
-.bt-social-banner__viewport {
-  flex: 1 1 auto;
-  min-width: 0;
-  width: 0;
-  overflow: hidden;
-}
-.bt-social-banner__track {
+.bt-social-banner__channels {
   display: flex;
-  width: 100%;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
-  transition: transform .7s cubic-bezier(.22,.61,.36,1);
-  will-change: transform;
+  justify-content: flex-start;
+  gap: 4px 8px;
+  min-width: 0;
 }
 .bt-social-banner__slide {
-  flex: 0 0 100%;
-  min-width: 100%;
-  width: 100%;
+  flex: 0 0 auto;
+  min-width: max-content;
+  width: auto;
   font-size: 13px;
   color: #1D4ED8;
   white-space: nowrap;
+  animation: bt-social-channel-in .55s ease-out both;
 }
 .bt-social-banner__icon {
   height: 24px;
@@ -437,36 +435,26 @@ select {
 }
 @media (max-width: 639px) {
   .bt-social-banner {
-    width: min(100%, 260px);
-    height: 44px;
+    width: 100%;
+    min-height: 48px;
     gap: 6px;
-    padding: 0 7px;
+    padding: 7px 8px;
+    align-items: flex-start;
   }
   .bt-social-banner__subtitle {
-    flex-basis: 92px;
-    width: 92px;
+    flex-basis: 90px;
+    width: 90px;
     font-size: 9px;
   }
   .bt-social-banner__slide { font-size: 11px; }
   .bt-social-banner__icon { height: 20px; width: 20px; }
 }
-.bt-social-banner__progress {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  height: 2px;
-  width: 100%;
-  background: #2563EB;
-  transform-origin: left center;
-  animation: bt-social-progress 3.5s linear both;
-}
-@keyframes bt-social-progress {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
+@keyframes bt-social-channel-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to { opacity: 1; transform: translateX(0); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .bt-social-banner__track { transition: none; }
-  .bt-social-banner__progress { animation: none; }
+  .bt-social-banner__slide { animation: none; }
 }
 .bt-content {
   width: min(100%, 1180px);

@@ -82,7 +82,7 @@ export default function DashboardLayout() {
 
       {/* Topbar */}
       <div className={`transition-[padding] duration-300 ${sidebarOpen ? 'lg:pl-64' : 'lg:pl-0'}`}>
-        <header className="bt-topbar sticky top-0 z-30 border-b h-[72px] flex items-center px-3 sm:px-5 gap-2 sm:gap-3" data-testid="dashboard-topbar">
+        <header className="bt-topbar sticky top-0 z-30 border-b min-h-[72px] flex flex-wrap items-center px-3 sm:px-5 gap-2 sm:gap-3" data-testid="dashboard-topbar">
           <button onClick={() => setSidebarOpen((v) => !v)} data-testid="btn-toggle-sidebar" className="h-9 w-9 sm:h-10 sm:w-10 shrink-0 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
             <Menu className="w-4 h-4" />
           </button>
@@ -94,7 +94,7 @@ export default function DashboardLayout() {
             <div className="text-[10px] text-slate-500 font-medium">Passerelle de paiement</div>
           </div>
 
-          <div className="min-w-0 flex-1 flex justify-center px-0 sm:px-2">
+          <div className="order-last basis-full min-w-0 flex flex-1 justify-center border-t border-blue-100 pt-2 sm:order-none sm:basis-auto sm:border-t-0 sm:pt-0 px-0 sm:px-2">
             <SocialChannelsBanner />
           </div>
 
