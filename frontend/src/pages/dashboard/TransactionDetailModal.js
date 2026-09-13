@@ -4,6 +4,7 @@ import {
   ExternalLink, FileText, Hash, Mail, MapPin, Phone, Receipt,
   UserRound, WalletCards, X,
 } from 'lucide-react';
+import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 
 const EXPLORER = {
   TRC20: 'https://tronscan.org/#/transaction/',
@@ -77,13 +78,15 @@ function Party({ icon: Icon, label, name, phone, email }) {
   );
 }
 
-function InfoRow({ icon: Icon, label, value, copyable = false, external = false, onCopy }) {
-  if (value === null || value === undefined || value === '') return null;
+function InfoRow({ icon: Icon, label, value, content, copyable = false, external = false, onCopy }) {
+  if (value === null || value === undefined || value === '') {
+    if (content === null || content === undefined) return null;
+  }
   return (
     <div className="flex min-w-0 items-start gap-3 border-b border-slate-100 py-3 last:border-b-0">
       {Icon && <Icon className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" />}
       <span className="w-32 shrink-0 text-xs text-slate-500 sm:w-40">{label}</span>
-      <span className="min-w-0 flex-1 break-words text-right text-xs font-semibold text-slate-800">{value}</span>
+      <span className="min-w-0 flex-1 break-words text-right text-xs font-semibold text-slate-800">{content !== undefined ? content : value}</span>
       {copyable && <button type="button" onClick={() => onCopy(value)} className="shrink-0 text-slate-400 hover:text-[#2563EB]" aria-label={`Copier ${label}`}><Copy className="h-3.5 w-3.5" /></button>}
       {external && <a href={external} target="_blank" rel="noreferrer" className="shrink-0 text-[#2563EB]" aria-label={`Ouvrir ${label}`}><ExternalLink className="h-3.5 w-3.5" /></a>}
     </div>
@@ -132,12 +135,17 @@ export default function TransactionDetailModal({ tx, onClose }) {
     ]);
     const txid = first(meta, ['tx_hash', 'txid', 'tx_id']);
     const explorer = meta.network && EXPLORER[String(meta.network).toUpperCase()];
-    const country = first(meta, ['country', 'country_code']);
+    const countryCode = first(meta, ['country_code', 'country']);
+    const operator = first(meta, ['operator', 'operator_code']);
+    const operatorName = first(meta, ['operator_name', 'operator_label', 'operator']);
     return {
       incoming, senderName, recipientName, senderPhone, recipientPhone,
       senderEmail, recipientEmail, fee, gross, net, providerReference,
       externalReference, txid, explorer: explorer && txid ? `${explorer}${txid}` : null,
-      country: COUNTRIES[String(country || '').toUpperCase()] || country,
+      countryCode,
+      country: COUNTRIES[String(countryCode || '').toUpperCase()] || countryCode,
+      operator,
+      operatorName,
     };
   })();
 
@@ -177,7 +185,11 @@ export default function TransactionDetailModal({ tx, onClose }) {
         <div className="min-h-0 overflow-y-auto px-4 pb-6 sm:px-6">
           <div className={`my-4 rounded-2xl border p-5 text-center ${detail.incoming ? 'border-emerald-100 bg-emerald-50/60' : 'border-blue-100 bg-blue-50/60'}`}>
             <div className={`mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-full ${detail.incoming ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
-              {detail.incoming ? <ArrowDownLeft className="h-6 w-6" /> : <ArrowUpRight className="h-6 w-6" />}
+              {detail.operatorName
+                ? <OperatorLogo operator={detail.operator} name={detail.operatorName} size="lg" />
+                : detail.countryCode
+                  ? <CountryBadge code={detail.countryCode} />
+                  : (detail.incoming ? <ArrowDownLeft className="h-6 w-6" /> : <ArrowUpRight className="h-6 w-6" />)}
             </div>
             <div className="text-sm font-semibold text-slate-600">{typeLabel(tx)}</div>
             <div className={`mt-1 text-3xl font-extrabold tracking-tight ${detail.incoming ? 'text-emerald-600' : 'text-slate-900'}`}>
@@ -204,8 +216,13 @@ export default function TransactionDetailModal({ tx, onClose }) {
             <InfoRow icon={Receipt} label="Statut" value={statusLabel} />
             <InfoRow icon={FileText} label="Type" value={typeLabel(tx)} />
             <InfoRow icon={WalletCards} label="Méthode" value={methodLabel(meta)} />
-            <InfoRow icon={MapPin} label="Pays" value={detail.country} />
-            <InfoRow icon={FileText} label="Opérateur" value={meta.operator_name || meta.operator} />
+            <InfoRow icon={MapPin} label="Pays" value={detail.country} content={<CountryBadge code={detail.countryCode} label={detail.country} />} />
+            <InfoRow icon={FileText} label="Opérateur" value={detail.operatorName} content={detail.operatorName && (
+              <span className="inline-flex items-center justify-end gap-2">
+                <OperatorLogo operator={detail.operator} name={detail.operatorName} size="sm" />
+                <span>{detail.operatorName}</span>
+              </span>
+            )} />
           </div>
 
           <div className="mt-3 rounded-2xl border border-slate-100 bg-white px-4">

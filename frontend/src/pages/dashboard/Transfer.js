@@ -7,6 +7,7 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { COUNTRIES } from '@/constants/countries';
+import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -284,13 +285,22 @@ function BizToMobileForm({ config, onDone, balance }) {
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
       <Field label="Pays">
-        <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} className="sr-only">
+            {countries.map((countryCode) => <option key={countryCode} value={countryCode}>{countryCode}</option>)}
+          </select>
           {countries.map((countryCode) => {
             const configured = operators.find((o) => o.country === countryCode);
             const known = COUNTRIES.find((c) => c.code === countryCode);
-            return <option key={countryCode} value={countryCode}>{known?.flag || ''} {configured?.country_label || known?.name || countryCode}</option>;
+            return (
+              <button key={countryCode} type="button" data-testid={`mm-country-${countryCode}`} onClick={() => setCountry(countryCode)}
+                className={`flex min-w-0 items-center gap-2 rounded-xl border p-2.5 text-left transition-colors ${country === countryCode ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
+                <CountryBadge code={countryCode} />
+                <span className="truncate text-xs font-semibold text-slate-800">{configured?.country_label || known?.name || countryCode}</span>
+              </button>
+            );
           })}
-        </select>
+        </div>
       </Field>
 
       <Field label="Opérateur Mobile Money">
@@ -301,7 +311,10 @@ function BizToMobileForm({ config, onDone, balance }) {
             {countryOps.map((o) => (
               <button key={o.code} type="button" onClick={() => setOperator(o.code)} data-testid={`mm-op-${o.code}`}
                 className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${operator === o.code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 truncate">{o.name}</div>
+                <div className="flex items-center gap-2">
+                  <OperatorLogo operator={o.code} name={o.name} size="sm" />
+                  <div className="min-w-0 font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 truncate">{o.name}</div>
+                </div>
                 <div className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">
                   {o.fee_pct}%{Number(o.fee_fixed) > 0 ? ` + ${o.fee_fixed} fixe` : ''} de frais
                 </div>

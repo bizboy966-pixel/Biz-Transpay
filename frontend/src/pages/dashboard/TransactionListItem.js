@@ -1,4 +1,5 @@
 import { ArrowDownLeft, ArrowUpRight } from 'lucide-react';
+import { CountryBadge, findCountry, OperatorLogo } from '@/components/PaymentBrand';
 
 export const TYPE_LABELS = {
   deposit: 'Dépôt',
@@ -71,10 +72,17 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
   const incoming = tx.direction === 'in';
   const meta = tx.metadata || {};
   const contact = partyContact(tx);
+  const operator = meta.operator_name || meta.operator;
+  const countryCode = meta.country_code || meta.country;
+  const country = findCountry(countryCode);
   const row = (
     <>
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${incoming ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
-        {incoming ? <ArrowDownLeft className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />}
+        {operator
+          ? <OperatorLogo operator={meta.operator} name={meta.operator_name || meta.operator} size="md" />
+          : country
+            ? <CountryBadge code={country.code} />
+            : (incoming ? <ArrowDownLeft className="h-5 w-5" /> : <ArrowUpRight className="h-5 w-5" />)}
       </span>
       <span className="min-w-0">
         <span className="flex min-w-0 items-center gap-2">
@@ -84,9 +92,10 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
         <span className="mt-0.5 block truncate text-xs text-slate-600" title={`${incoming ? 'From' : 'To'}: ${partyLabel(tx)}${contact ? ` · ${contact}` : ''}`}>
           <span className="font-semibold text-slate-400">{incoming ? 'From' : 'To'}:</span> {partyLabel(tx)}{contact ? ` · ${contact}` : ''}
         </span>
-        <span className="mt-0.5 block truncate text-[10px] text-slate-400">
+        <span className="mt-0.5 flex min-w-0 items-center gap-1.5 truncate text-[10px] text-slate-400">
           {tx.reference || tx.id}
-          {meta.operator_name || meta.operator ? ` · ${meta.operator_name || meta.operator}` : ''}
+           {country && <CountryBadge code={country.code} className="ml-1" />}
+           {operator && <span className="truncate">· {operator}</span>}
         </span>
         <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold sm:hidden ${statusColor(tx.status)}`}>{STATUS_LABELS[tx.status] || tx.status}</span>
       </span>
