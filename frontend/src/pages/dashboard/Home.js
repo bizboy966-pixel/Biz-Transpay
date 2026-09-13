@@ -109,7 +109,7 @@ export default function DashboardHome() {
               }`}
               style={{ containerType: 'inline-size' }}
             >
-              <span className={`absolute left-0 top-1/2 z-10 m-1 flex h-6 w-6 -translate-y-1/2 shrink-0 items-center justify-center rounded-full text-[6px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:m-2 sm:h-10 sm:w-10 sm:text-[8px] ${
+              <span className={`absolute left-1/2 top-2 z-10 flex h-6 w-6 -translate-x-1/2 shrink-0 items-center justify-center rounded-full text-[6px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:top-4 sm:h-10 sm:w-10 sm:text-[8px] ${
                   b.curr === 'XOF'
                     ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
                     : b.curr === 'XAF'
