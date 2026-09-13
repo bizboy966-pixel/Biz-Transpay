@@ -4,3 +4,4 @@
 - [PayDunya fee catalog](paydunya-fee-catalog.md) — PayDunya pay-in uses an admin-managed country/operator catalog and lets the payer choose who bears the fees.
 - [Customer payment routing](paydunya-public-surface.md) — payment-provider route selection stays server-side; the client receives only a generic payment action.
 - [PayDunya callback hosting](paydunya-callback-hosting.md) — PUSH rejects temporary Replit preview callbacks; use a public production deployment accepting GET, POST, and HEAD.
+- [Social channel visibility](social-channel-visibility.md) — social links are validated and filtered server-side before reaching the authenticated user interface.

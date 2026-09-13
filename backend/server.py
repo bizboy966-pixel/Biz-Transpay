@@ -395,6 +395,12 @@ DEFAULT_SUPPORT_CONFIG = {
     "telegram_url": "https://t.me/biztranspay",
     "whatsapp_url": "https://wa.me/22890000000",
     "email": "support@biz-transpay.com",
+    "social_channels": {
+        "facebook": {"url": "", "active": False},
+        "tiktok": {"url": "", "active": False},
+        "instagram": {"url": "", "active": False},
+        "whatsapp": {"url": "", "active": False},
+    },
     "community_enabled": False,
     "community_url": "",
     "community_label": "Rejoindre la communauté",
@@ -431,6 +437,27 @@ DEFAULT_SUPPORT_CONFIG = {
         },
     ],
 }
+
+SOCIAL_CHANNEL_KEYS = ("facebook", "tiktok", "instagram", "whatsapp")
+
+
+def normalize_social_channels(value: Optional[dict]) -> dict:
+    """Keep admin-configured social links safe and predictable for clients."""
+    source = value if isinstance(value, dict) else {}
+    normalized = {}
+    for key in SOCIAL_CHANNEL_KEYS:
+        channel = source.get(key) if isinstance(source.get(key), dict) else {}
+        url = str(channel.get("url") or "").strip()
+        if url:
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise HTTPException(422, f"Le lien {key} doit être une URL HTTP ou HTTPS valide")
+            url = url[:500]
+        normalized[key] = {
+            "url": url,
+            "active": bool(channel.get("active", False)),
+        }
+    return normalized
 
 
 DEFAULT_APP_FEATURES = {
@@ -487,6 +514,14 @@ async def support_config(uid: str = Depends(get_current_user_id)):
         "telegram_url": cfg.get("telegram_url", ""),
         "whatsapp_url": cfg.get("whatsapp_url", ""),
         "email": cfg.get("email", ""),
+        "social_channels": [
+            {
+                "key": key,
+                "url": channel.get("url", ""),
+            }
+            for key, channel in normalize_social_channels(cfg.get("social_channels")).items()
+            if channel.get("active") and channel.get("url")
+        ],
         "faqs": [
             faq for faq in (cfg.get("faqs") or [])
             if faq.get("active", True) and faq.get("question") and faq.get("answer")
@@ -7514,6 +7549,7 @@ class AdminSupportConfigReq(BaseModel):
     telegram_url: Optional[str] = None
     whatsapp_url: Optional[str] = None
     email: Optional[str] = None
+    social_channels: Optional[dict] = None
     faqs: Optional[List[dict]] = None
 
 
@@ -7525,6 +7561,8 @@ async def admin_get_support_config(admin=Depends(get_admin)):
 @api.patch("/admin/support/config")
 async def admin_update_support_config(req: AdminSupportConfigReq, admin=Depends(get_admin)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "social_channels" in updates:
+        updates["social_channels"] = normalize_social_channels(updates["social_channels"])
     if "faqs" in updates:
         if len(updates["faqs"]) > 50:
             raise HTTPException(422, "50 questions fréquentes maximum")

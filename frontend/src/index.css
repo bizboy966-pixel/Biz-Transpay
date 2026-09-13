@@ -386,6 +386,62 @@ select {
   border-color: var(--bt-line);
   backdrop-filter: blur(16px);
 }
+.bt-social-banner {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  width: min(100%, 250px);
+  height: 42px;
+  padding: 0 8px;
+  gap: 7px;
+  overflow: hidden;
+  border: 1px solid #DCE5F2;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #F8FBFF, #EFF6FF);
+  box-shadow: 0 8px 20px -18px rgba(37,99,235,.6);
+}
+.bt-social-banner__subtitle {
+  flex: 0 0 auto;
+  color: #64748B;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.bt-social-banner__viewport {
+  min-width: 0;
+  overflow: hidden;
+}
+.bt-social-banner__track {
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: 4px;
+}
+.bt-social-banner__track--moving {
+  animation: bt-social-marquee 18s linear infinite;
+}
+.bt-social-banner:hover .bt-social-banner__track--moving,
+.bt-social-banner:focus-within .bt-social-banner__track--moving {
+  animation-play-state: paused;
+}
+@keyframes bt-social-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@media (max-width: 639px) {
+  .bt-social-banner {
+    width: min(100%, 190px);
+    height: 40px;
+    gap: 5px;
+    padding: 0 6px;
+  }
+  .bt-social-banner__subtitle { font-size: 8px; }
+  .bt-social-banner__track a {
+    padding-left: 4px;
+    padding-right: 4px;
+  }
+}
 .bt-content {
   width: min(100%, 1180px);
   margin: 0 auto;

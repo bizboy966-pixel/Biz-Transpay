@@ -6,6 +6,7 @@ import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
+import SocialChannelsBanner from '@/components/SocialChannelsBanner';
 import { useAuth } from '@/context/AuthContext';
 
 export default function DashboardLayout() {
@@ -91,6 +92,10 @@ export default function DashboardLayout() {
               {bottomNav.concat(nav).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Biz-trans'}
             </div>
             <div className="text-[10px] text-slate-500 font-medium">Passerelle de paiement</div>
+          </div>
+
+          <div className="min-w-0 flex-1 flex justify-center px-1 sm:px-3">
+            <SocialChannelsBanner />
           </div>
 
           <div className="ml-auto flex items-center gap-2">

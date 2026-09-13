@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { MessageCircle, Send, Save, Paperclip, X, CheckCheck, Check, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
+import { SOCIAL_CHANNELS } from '@/components/socialChannels';
 
 export default function AdminSupport() {
   const [cfg, setCfg] = useState(null);
@@ -38,6 +39,7 @@ export default function AdminSupport() {
         telegram_url: cfg.telegram_url,
         whatsapp_url: cfg.whatsapp_url,
         email: cfg.email,
+        social_channels: cfg.social_channels || {},
         faqs: cfg.faqs || [],
       });
       toast.success('Configuration enregistrée');
@@ -76,6 +78,63 @@ export default function AdminSupport() {
           <Field label="Lien Telegram" value={cfg.telegram_url} onChange={(v) => { setCfg({ ...cfg, telegram_url: v }); setDirty(true); }} tid="cfg-telegram" placeholder="https://t.me/…" />
           <Field label="Lien WhatsApp" value={cfg.whatsapp_url} onChange={(v) => { setCfg({ ...cfg, whatsapp_url: v }); setDirty(true); }} tid="cfg-whatsapp" placeholder="https://wa.me/…" />
           <Field label="E-mail du service client" value={cfg.email} onChange={(v) => { setCfg({ ...cfg, email: v }); setDirty(true); }} tid="cfg-email" placeholder="support@…" />
+        </div>
+
+        <div className="mt-5 pt-5 border-t border-slate-100" data-testid="social-channel-editor">
+          <div className="mb-3">
+            <h3 className="font-cabinet font-bold text-sm text-slate-900">Réseaux sociaux</h3>
+            <p className="text-[11px] text-slate-500">Un réseau est visible dans l’en-tête uniquement s’il est actif et possède un lien valide.</p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            {SOCIAL_CHANNELS.map((channel) => {
+              const value = cfg.social_channels?.[channel.key] || { url: '', active: false };
+              return (
+                <div key={channel.key} className="rounded-xl border border-slate-200 p-3">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <img src={channel.iconSrc} alt="" className="h-5 w-5 shrink-0 object-contain" />
+                      <span className="text-xs font-bold text-slate-800">{channel.label}</span>
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[10px] text-slate-500 shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={value.active === true}
+                        onChange={(e) => {
+                          setCfg({
+                            ...cfg,
+                            social_channels: {
+                              ...(cfg.social_channels || {}),
+                              [channel.key]: { ...value, active: e.target.checked },
+                            },
+                          });
+                          setDirty(true);
+                        }}
+                        data-testid={`social-${channel.key}-active`}
+                        className="w-3.5 h-3.5 accent-[#2563EB]"
+                      />
+                      Actif
+                    </label>
+                  </div>
+                  <Field
+                    label={`Lien ${channel.label}`}
+                    value={value.url}
+                    onChange={(url) => {
+                      setCfg({
+                        ...cfg,
+                        social_channels: {
+                          ...(cfg.social_channels || {}),
+                          [channel.key]: { ...value, url },
+                        },
+                      });
+                      setDirty(true);
+                    }}
+                    tid={`social-${channel.key}-url`}
+                    placeholder={`https://${channel.key}.com/…`}
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="mt-5 pt-5 border-t border-slate-100" data-testid="support-faq-editor">
