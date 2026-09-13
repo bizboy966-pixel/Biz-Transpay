@@ -359,9 +359,14 @@ select {
 }
 @media (max-width: 1023px) {
   .bt-dashboard-sidebar {
-    bottom: calc(78px + env(safe-area-inset-bottom));
+    /*
+     * The center deposit action rises above the bottom nav by about 30px.
+     * Reserve that visual area too, otherwise the open drawer appears behind
+     * the raised action button.
+     */
+    bottom: calc(108px + env(safe-area-inset-bottom));
     height: auto;
-    max-height: calc(100dvh - 78px - env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 108px - env(safe-area-inset-bottom));
     overflow-y: auto;
     overscroll-behavior: contain;
   }
