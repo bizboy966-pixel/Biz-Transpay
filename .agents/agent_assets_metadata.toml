@@ -1,0 +1,9 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "BtPInl6ZBwpZztQulEQjN"
+uri = "file://screenshots/wallet-centering-draft.png"
+type = "image"
+title = "Ébauche — montants centrés"
+description = "Maquette mobile de la carte portefeuille avec les mêmes colonnes et pastilles dans les coins, mais les montants recentrés sur chaque ligne. Cette ébauche n’a pas encore modifié l’application."
