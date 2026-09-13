@@ -58,6 +58,7 @@ logger = logging.getLogger("biz-transpay")
 # App start time for uptime reporting on /v1/health
 _APP_STARTED_AT = datetime.now(timezone.utc)
 API_VERSION = "1.0.0"
+_paydunya_reconcile_task = None
 
 # ==================== V1 PUBLIC API HELPERS ====================
 # Normalized error format + error codes (IziChangePay-inspired).
@@ -1316,6 +1317,7 @@ class MobileMoneyDepositRequest(BaseModel):
 
 @api.post("/deposits/mobile-money")
 async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
+                                      request: Request,
                                       uid: str = Depends(get_current_user_id)):
     """Create a PayDunya invoice and trigger SoftPay; never credits here."""
     cfg = await get_paydunya_config(decrypt=True)
@@ -1353,7 +1355,9 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
     parts = (req.full_name or "").strip().split(" ", 1)
     first = parts[0] or "Client"
     last = parts[1] if len(parts) > 1 else first
-    callback = f"{os.environ.get('OFFICIAL_DOMAIN', '')}/api/webhooks/paydunya?ref={dep_id}"
+    callback_base = (os.environ.get("OFFICIAL_DOMAIN")
+                     or _paydunya_callback_base(request)).rstrip("/")
+    callback = f"{callback_base}/api/webhooks/paydunya?ref={dep_id}"
     try:
         invoice = await paydunya.create_invoice(
             cfg, amount=fees["charged_amount"], currency=currency, token=dep_id,
@@ -1740,6 +1744,37 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
             return False
     await _credit_momo_deposit(d)
     return True
+
+
+async def _paydunya_reconcile_loop() -> None:
+    """Repair paid deposits even when the browser and provider callback vanish."""
+    while True:
+        try:
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+            cursor = db.momo_deposits.find(
+                {
+                    "provider": "paydunya",
+                    "created_at": {"$gt": cutoff},
+                    "$or": [
+                        {"status": "pending"},
+                        {"status": "failed", "retryable": True},
+                    ],
+                },
+                {"_id": 0, "id": 1},
+            ).sort("created_at", -1).limit(50)
+            async for deposit in cursor:
+                try:
+                    await _reconcile_momo_deposit(deposit["id"])
+                except Exception:
+                    logger.exception(
+                        "PayDunya background reconciliation failed for %s",
+                        deposit.get("id"),
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("PayDunya background reconciliation cycle failed")
+        await asyncio.sleep(30)
 
 
 async def _claim_momo_flag(dep_id: str, flag: str) -> bool:
@@ -7024,10 +7059,14 @@ async def api_log_middleware(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup_db_client():
+    global _paydunya_reconcile_task
     try:
         await db.webhook_events.create_index("event_id", unique=True)
     except Exception:
         pass
+    if not _paydunya_reconcile_task or _paydunya_reconcile_task.done():
+        _paydunya_reconcile_task = asyncio.create_task(
+            _paydunya_reconcile_loop())
     try:
         # Idempotency-Key uniqueness per (user_id, key)
         await db.idempotency_keys.create_index(
@@ -7038,4 +7077,8 @@ async def startup_db_client():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    global _paydunya_reconcile_task
+    if _paydunya_reconcile_task:
+        _paydunya_reconcile_task.cancel()
+        _paydunya_reconcile_task = None
     mongo_client.close()
