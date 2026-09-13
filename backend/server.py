@@ -6300,7 +6300,9 @@ class AdminUserAction(BaseModel):
 
 
 class AdminBalanceAction(BaseModel):
-    currency: Literal["XOF", "XAF"]
+    # The product labels the dollar-denominated wallet as USDT. Accept USD as
+    # an admin API alias as well, but persist it consistently as USDT.
+    currency: Literal["XOF", "XAF", "USDT", "USD"]
     amount: float
     reason: Optional[str] = ""
 
@@ -6737,14 +6739,19 @@ async def admin_credit(user_id: str, req: AdminBalanceAction, admin=Depends(get_
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    field = "balance_xof" if req.currency == "XOF" else "balance_xaf"
+    currency = "USDT" if req.currency in ("USDT", "USD") else req.currency
+    field = {
+        "XOF": "balance_xof",
+        "XAF": "balance_xaf",
+        "USDT": "balance_usdt",
+    }[currency]
     await db.users.update_one({"id": user_id}, {"$inc": {field: req.amount}})
-    await record_tx(user_id, "deposit", "in", req.amount, req.currency,
+    await record_tx(user_id, "deposit", "in", req.amount, currency,
                     description=f"Crédit administrateur ({req.reason or 'manuel'})",
                     metadata={"admin_id": admin["id"], "admin_username": admin["username"]})
     await audit(admin["id"], admin["username"], "credit",
                 target_user_id=user_id, target_username=target["username"],
-                details={"amount": req.amount, "currency": req.currency, "reason": req.reason})
+                details={"amount": req.amount, "currency": currency, "reason": req.reason})
     return {"ok": True}
 
 
@@ -6753,16 +6760,21 @@ async def admin_debit(user_id: str, req: AdminBalanceAction, admin=Depends(get_a
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    field = "balance_xof" if req.currency == "XOF" else "balance_xaf"
+    currency = "USDT" if req.currency in ("USDT", "USD") else req.currency
+    field = {
+        "XOF": "balance_xof",
+        "XAF": "balance_xaf",
+        "USDT": "balance_usdt",
+    }[currency]
     if target.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde utilisateur insuffisant")
     await db.users.update_one({"id": user_id}, {"$inc": {field: -req.amount}})
-    await record_tx(user_id, "withdrawal", "out", req.amount, req.currency,
+    await record_tx(user_id, "withdrawal", "out", req.amount, currency,
                     description=f"Débit administrateur ({req.reason or 'manuel'})",
                     metadata={"admin_id": admin["id"], "admin_username": admin["username"]})
     await audit(admin["id"], admin["username"], "debit",
                 target_user_id=user_id, target_username=target["username"],
-                details={"amount": req.amount, "currency": req.currency, "reason": req.reason})
+                details={"amount": req.amount, "currency": currency, "reason": req.reason})
     return {"ok": True}
 
 

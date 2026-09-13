@@ -91,12 +91,12 @@ export default function AdminUserDetail() {
       </div>
 
       {/* Balances */}
-      <div className="grid sm:grid-cols-2 gap-4">
-        {[{ c: 'XOF', v: u.balance_xof }, { c: 'XAF', v: u.balance_xaf }].map((b) => (
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {[{ c: 'XOF', v: u.balance_xof }, { c: 'XAF', v: u.balance_xaf }, { c: 'USDT', label: 'USD / USDT', v: u.balance_usdt }].map((b) => (
           <div key={b.c} className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] p-5 text-white">
             <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-white/10" />
             <div className="relative">
-              <div className="text-[10px] uppercase tracking-widest text-white/80 font-semibold">Solde {b.c}</div>
+              <div className="text-[10px] uppercase tracking-widest text-white/80 font-semibold">Solde {b.label || b.c}</div>
               <div className="mt-1 font-cabinet font-extrabold text-2xl">{(b.v || 0).toLocaleString()} <span className="text-xs opacity-80">{b.c}</span></div>
             </div>
           </div>
@@ -187,7 +187,7 @@ export default function AdminUserDetail() {
                   <div className="grid grid-cols-[1fr_auto] gap-2">
                     <input type="number" data-testid="modal-amount" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Montant" className="px-3 py-2.5 border border-slate-200 rounded-xl outline-none" />
                     <select value={currency} onChange={(e) => setCurrency(e.target.value)} data-testid="modal-currency" className="px-3 py-2.5 border border-slate-200 rounded-xl font-semibold text-sm">
-                      <option value="XOF">XOF</option><option value="XAF">XAF</option>
+                      <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USD / USDT</option>
                     </select>
                   </div>
                   <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Raison" rows={3} className="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none" />
