@@ -170,9 +170,10 @@ def normalize_togo_phone(phone: str) -> str:
 def calculate_fees(amount: float, operator: dict, bearer: str) -> dict:
     """Return an immutable fee snapshot.
 
-    ``client``/``sender`` means the invoice is grossed up; merchant
-    ``receiver``/``merchant`` means the requested amount is charged and the
-    platform absorbs fees.
+    ``client``/``sender`` means the invoice is grossed up and the wallet
+    receives the requested amount. ``receiver``/``merchant`` means the invoice
+    stays at the requested amount and the fees are deducted from the wallet
+    credit.
     """
     currency = str(operator.get("currency") or "XOF").upper()
     places = Decimal("1") if currency in {"XOF", "XAF", "GNF"} else Decimal("0.01")
@@ -194,11 +195,15 @@ def calculate_fees(amount: float, operator: dict, bearer: str) -> dict:
     total = quantize(gateway + platform)
     client_pays = bearer in ("client", "sender")
     charged = quantize(amount_d + total) if client_pays else amount_d
+    wallet_credit = amount_d if client_pays else quantize(amount_d - total)
+    if wallet_credit <= 0:
+        raise PayDunyaError(
+            400, "Les frais doivent être inférieurs au montant du dépôt")
     return {
         "requested_amount": float(amount_d), "charged_amount": float(charged),
         "gateway_fee": float(gateway), "platform_fee": float(platform),
         "total_fee": float(total), "fee_bearer": "client" if client_pays else "merchant",
-        "wallet_credit_amount": float(amount_d),
+        "wallet_credit_amount": float(wallet_credit),
     }
 
 

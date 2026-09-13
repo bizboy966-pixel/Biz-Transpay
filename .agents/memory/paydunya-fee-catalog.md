@@ -5,7 +5,7 @@ description: Durable product rules for PayDunya countries, operators, fee alloca
 
 PayDunya pay-in must use a configurable tariff grid per country and operator. Admins can add supported countries/operators, disable or reactivate them, remove them from user-facing availability, and edit gateway and platform fees.
 
-At payment time, the user chooses whether the client or Biz-transPay bears the fees. If the client bears them, fees are added to the amount charged. If Biz-transPay bears them, the client pays only the requested amount and the wallet still receives the requested amount.
+At payment time, the user chooses whether the client or Biz-transPay bears the fees. If the client bears them, fees are added to the amount charged and the wallet receives the requested amount. If Biz-transPay bears them, the client pays the requested amount and the wallet receives that amount minus all fees.
 
 “Delete” must preserve historical transaction references and therefore means a reversible soft deletion or archival state, not physical removal of records that past transactions depend on.
 

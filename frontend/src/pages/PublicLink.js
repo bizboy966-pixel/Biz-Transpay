@@ -360,7 +360,9 @@ function MoMoLinkForm({ link, onSuccess }) {
   const platformFee = roundMoney(previewBase * platformPct / 100 + platformFixed);
   const totalFee = roundMoney(gatewayFee + platformFee);
   const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
-  const creditedAmount = previewBase;
+  const creditedAmount = feeBearer === 'client'
+    ? previewBase
+    : Math.max(0, roundMoney(previewBase - totalFee));
 
   const submit = async (e) => {
     e.preventDefault();
@@ -463,7 +465,7 @@ function MoMoLinkForm({ link, onSuccess }) {
           <p className="mt-2 text-[11px] text-slate-500">
             {feeBearer === 'client'
               ? 'Le client paie le montant du dépôt et les frais. Le marchand reçoit le montant de base.'
-              : 'Marchand / Biz-transPay prend les frais à sa charge. Le client paie uniquement le montant du dépôt.'}
+              : 'Les frais sont déduits du paiement. Le marchand reçoit le montant net.'}
           </p>
         )}
       </Field>

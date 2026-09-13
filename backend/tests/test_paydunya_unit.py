@@ -22,6 +22,7 @@ def test_fee_snapshot_client_and_merchant():
     merchant = paydunya.calculate_fees(1000, operator, "receiver")
     assert merchant["charged_amount"] == 1000
     assert merchant["total_fee"] == 45
+    assert merchant["wallet_credit_amount"] == 955
 
 
 def test_modes_and_hosted_url_are_safe_defaults():
@@ -44,6 +45,12 @@ def test_xof_fees_are_whole_units():
     legacy = paydunya.calculate_fees(
         1000, {"currency": "XOF", "fee_pct": 1.5}, "client")
     assert legacy["total_fee"] == 15
+
+
+def test_merchant_fees_cannot_consume_the_entire_deposit():
+    with pytest.raises(paydunya.PayDunyaError):
+        paydunya.calculate_fees(
+            100, {"currency": "XOF", "gateway_fee_fixed": 100}, "merchant")
 
 
 def test_empty_session_secret_is_rejected():

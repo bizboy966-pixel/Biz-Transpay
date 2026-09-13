@@ -551,7 +551,9 @@ function MobileMoneyForm({ onSuccess }) {
   const platformFee = roundMoney(previewBase * platformPct / 100 + platformFixed);
   const totalFee = roundMoney(gatewayFee + platformFee);
   const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
-  const creditedAmount = previewBase;
+  const creditedAmount = feeBearer === 'client'
+    ? previewBase
+    : Math.max(0, roundMoney(previewBase - totalFee));
   const availableModes = useMemo(() => provider?.enabled
     ? ['softpay_direct', 'psr', 'par_redirect'].filter((mode) => provider.modes?.[mode] && (mode !== 'psr' || psrReady))
     : [], [provider, psrReady]);
@@ -778,7 +780,7 @@ function MobileMoneyForm({ onSuccess }) {
            <p className="mt-2 text-[11px] text-slate-500">
              {feeBearer === 'client'
                ? 'Le client paie le montant du dépôt et les frais. Le portefeuille est crédité du montant de base.'
-               : 'Biz-transPay prend les frais à sa charge. Le client paie uniquement le montant du dépôt.'}
+                : 'Les frais sont déduits du dépôt. Le portefeuille reçoit le montant net.'}
            </p>
          )}
       </div>
