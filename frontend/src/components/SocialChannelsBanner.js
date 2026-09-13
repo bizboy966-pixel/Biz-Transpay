@@ -93,6 +93,9 @@ export default function SocialChannelsBanner() {
           ))}
         </div>
       </div>
+      {channels.length > 1 && (
+        <span key={activeIndex} className="bt-social-banner__progress" aria-hidden="true" />
+      )}
     </div>
   );
 }

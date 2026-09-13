@@ -2,21 +2,21 @@ export const SOCIAL_CHANNELS = [
   {
     key: 'facebook',
     label: 'Facebook',
-    iconSrc: 'https://cdn.simpleicons.org/facebook/1877F2',
+    iconSrc: '/social-icons/facebook.svg',
   },
   {
     key: 'tiktok',
     label: 'TikTok',
-    iconSrc: 'https://cdn.simpleicons.org/tiktok/111827',
+    iconSrc: '/social-icons/tiktok.svg',
   },
   {
     key: 'instagram',
     label: 'Instagram',
-    iconSrc: 'https://cdn.simpleicons.org/instagram/E4405F',
+    iconSrc: '/social-icons/instagram.svg',
   },
   {
     key: 'whatsapp',
     label: 'WhatsApp',
-    iconSrc: 'https://cdn.simpleicons.org/whatsapp/25D366',
+    iconSrc: '/social-icons/whatsapp.svg',
   },
 ];
