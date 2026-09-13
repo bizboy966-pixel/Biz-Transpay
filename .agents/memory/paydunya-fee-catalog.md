@@ -26,3 +26,9 @@ PayDunya checkout confirmation can omit the currency even for a completed invoic
 **Why:** Rejecting every currency-less response leaves legitimately paid XOF deposits uncredited, while accepting one without a bound local identity weakens reconciliation safety.
 
 **How to apply:** Validate completed status, provider token, amount, static hash, local deposit identity, and the returned custom-data currency. Keep the narrow XOF compatibility rule only for invoices created before the currency field was added.
+
+PayDunya withdrawals use a separate Mobile Money catalog under Admin → Fees → Withdrawals. Provider credentials remain only in the payment-provider configuration; customer responses never expose `withdraw_mode` or fee splits. Automatic PUSH withdrawals stay XOF-only until PayDunya documents a currency-safe XAF contract.
+
+**Why:** Deposit and withdrawal availability and pricing must evolve independently, while one server-side credential source prevents duplicated secrets. PayDunya PUSH v2 documents its amount as XOF even though an operator list mentions Cameroon.
+
+**How to apply:** Snapshot gateway/platform fees at withdrawal creation, select the provider route only on the server, require request idempotency, debit conditionally, and use repairable exactly-once markers for refunds and terminal reconciliation.

@@ -139,6 +139,7 @@ class TransferRequest(BaseModel):
     amount: float
     currency: Literal["XOF", "XAF", "USDT"]
     description: Optional[str] = ""
+    idempotency_key: Optional[str] = None
     # Crypto/Binance fields
     crypto: Optional[str] = None       # e.g. "USDT", "BTC", "ETH"
     network: Optional[str] = None      # e.g. "TRC20", "BEP20", "ERC20", "SOLANA"

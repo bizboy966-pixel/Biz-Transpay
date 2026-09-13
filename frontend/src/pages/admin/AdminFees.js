@@ -6,7 +6,7 @@ import AdminRates from './AdminRates';
 
 const TABS = [
   { key: 'deposit', label: 'Dépôts', desc: 'Frais Easy Change Pay', I: ArrowDownToLine, color: 'bg-emerald-500', C: AdminDepositConfig },
-  { key: 'withdrawal', label: 'Retraits', desc: 'Frais Easy Change Pay', I: ArrowUpFromLine, color: 'bg-red-500', C: AdminTransferConfig },
+  { key: 'withdrawal', label: 'Retraits', desc: 'Frais Mobile Money + Easy Change Pay', I: ArrowUpFromLine, color: 'bg-red-500', C: AdminTransferConfig },
   { key: 'conversion', label: 'Conversions', desc: 'Taux + frais des paires USDT ↔ FCFA', I: ArrowLeftRight, color: 'bg-blue-500', C: AdminRates },
 ];
 

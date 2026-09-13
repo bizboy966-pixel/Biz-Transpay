@@ -6,6 +6,7 @@ import hashlib
 import uuid
 import asyncio
 import json
+import copy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 from stripe_checkout import (
     StripeCheckout, CheckoutSessionRequest, CheckoutSessionResponse,
 )
@@ -690,34 +692,7 @@ DEFAULT_TRANSFER_CONFIG = {
     "id": "transfer_config",
     "mobile_money": {
         "enabled": True,
-        "operators": [
-            # TG
-            {"country": "TG", "code": "flooz", "name": "Flooz", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "TG", "code": "tmoney", "name": "TMoney", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "TG", "code": "wave", "name": "Wave", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
-            # SN
-            {"country": "SN", "code": "wave", "name": "Wave", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
-            {"country": "SN", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "SN", "code": "free", "name": "Free Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            # CI
-            {"country": "CI", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "CI", "code": "mtn", "name": "MTN Mobile Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "CI", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "CI", "code": "wave", "name": "Wave", "fee_pct": 1.0, "min": 100, "max": 1000000, "active": True},
-            # ML
-            {"country": "ML", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "ML", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            # BF
-            {"country": "BF", "code": "orange", "name": "Orange Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "BF", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            # CM
-            {"country": "CM", "code": "mtn", "name": "MTN Mobile Money", "fee_pct": 2.0, "min": 100, "max": 500000, "active": True},
-            {"country": "CM", "code": "orange", "name": "Orange Money", "fee_pct": 2.0, "min": 100, "max": 500000, "active": True},
-            # BJ
-            {"country": "BJ", "code": "mtn", "name": "MTN Mobile Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "BJ", "code": "moov", "name": "Moov Money", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-            {"country": "BJ", "code": "celtiis", "name": "Celtiis Cash", "fee_pct": 1.5, "min": 100, "max": 500000, "active": True},
-        ],
+        "operators": paydunya.default_withdrawal_catalog(),
     },
     "bank": {
         "enabled": False,
@@ -761,28 +736,179 @@ DEFAULT_TRANSFER_CONFIG = {
 }
 
 
+_LEGACY_WITHDRAW_MODES = {
+    ("TG", "tmoney"): "t-money-togo",
+    ("TG", "flooz"): "moov-togo",
+    ("SN", "orange"): "orange-money-senegal",
+    ("SN", "free"): "free-money-senegal",
+    ("SN", "wave"): "wave-senegal",
+    ("CI", "orange"): "orange-money-ci",
+    ("CI", "mtn"): "mtn-ci",
+    ("CI", "moov"): "moov-ci",
+    ("CI", "wave"): "wave-ci",
+    ("ML", "orange"): "orange-money-mali",
+    ("BF", "orange"): "orange-money-burkina",
+    ("BF", "moov"): "moov-burkina-faso",
+    ("CM", "mtn"): "mtn-cameroun",
+    ("BJ", "mtn"): "mtn-benin",
+    ("BJ", "moov"): "moov-benin",
+    ("BJ", "celtiis"): "celtiis-cash",
+}
+
+
+def _merged_mobile_money(defaults: dict, current: dict) -> dict:
+    """Merge the payout catalogue without replacing administrator choices.
+
+    Existing entries are keyed by country+code and win over defaults.  Legacy
+    entries are enriched only with non-destructive display/provider fields so
+    old transfer configurations remain usable after the payout migration.
+    """
+    out = copy.deepcopy(current or {})
+    base = copy.deepcopy(defaults.get("mobile_money") or {})
+    for key, value in base.items():
+        if key != "operators" and key not in out:
+            out[key] = value
+    had_operators = "operators" in out
+    existing = list(out.get("operators") or [])
+    for item in existing:
+        country = str(item.get("country") or "").upper()
+        code = str(item.get("code") or "").lower()
+        item.setdefault("country", country)
+        item.setdefault("country_label", paydunya.COUNTRY_LABELS.get(country, country))
+        item.setdefault("currency", "XAF" if country == "CM" else "XOF")
+        item.setdefault("archived", False)
+        item.setdefault("hidden", False)
+        if not item.get("withdraw_mode"):
+            mode = _LEGACY_WITHDRAW_MODES.get((country, code))
+            if mode:
+                item["withdraw_mode"] = mode
+            else:
+                # Historical rows not supported by PayDunya PUSH must never
+                # remain selectable as an automatic withdrawal route.
+                item["active"] = False
+                item["archived"] = True
+        if item.get("currency") == "XAF":
+            # PUSH v2 currently documents amount as XOF only.
+            item["active"] = False
+    by_key = {(str(item.get("country") or "").upper(),
+               str(item.get("code") or "").lower()) for item in existing}
+    by_mode = {str(item.get("withdraw_mode") or "").lower()
+               for item in existing if item.get("withdraw_mode")}
+    # An explicitly empty catalogue is an administrator choice (for example
+    # a temporary global shutdown), not an invitation to repopulate defaults.
+    if not had_operators:
+        existing.extend(copy.deepcopy(paydunya.default_withdrawal_catalog()))
+    else:
+        for item in paydunya.default_withdrawal_catalog():
+            key = (item["country"], item["code"].lower())
+            if key not in by_key and item["withdraw_mode"].lower() not in by_mode:
+                existing.append(copy.deepcopy(item))
+    out["operators"] = existing
+    return out
+
+
 async def get_transfer_config() -> dict:
     doc = await db.settings.find_one({"id": "transfer_config"}, {"_id": 0})
     if not doc:
-        await db.settings.insert_one(DEFAULT_TRANSFER_CONFIG.copy())
+        await db.settings.insert_one(copy.deepcopy(DEFAULT_TRANSFER_CONFIG))
         doc = await db.settings.find_one({"id": "transfer_config"}, {"_id": 0})
-    return doc
+    # This read-time migration is intentionally not a replacement write.  It
+    # preserves admin edits and makes adding a future default non-destructive.
+    merged = dict(doc)
+    merged["mobile_money"] = _merged_mobile_money(
+        DEFAULT_TRANSFER_CONFIG, doc.get("mobile_money") or {})
+    return merged
+
+
+def _public_transfer_config(cfg: dict) -> dict:
+    result = copy.deepcopy(cfg)
+    mm = result.get("mobile_money") or {}
+    public_ops = []
+    for op in mm.get("operators") or []:
+        if not op.get("active", True) or op.get("archived", False) or op.get("hidden", False):
+            continue
+        if not op.get("withdraw_mode") or str(op.get("currency") or "").upper() != "XOF":
+            continue
+        gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
+        platform_pct = float(op.get("platform_fee_pct", 0) or 0)
+        if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
+            gateway_pct = float(op.get("fee_pct") or 0)
+        public_ops.append({
+            "country": op.get("country"),
+            "country_label": op.get("country_label")
+                or paydunya.COUNTRY_LABELS.get(op.get("country"), op.get("country")),
+            "code": op.get("code"),
+            "name": op.get("name") or op.get("code"),
+            "currency": op.get("currency") or "XOF",
+            "min": float(op.get("min", 0) or 0),
+            "max": float(op.get("max", 0) or 0) or None,
+            "fee_pct": gateway_pct + platform_pct,
+            "fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0)
+                + float(op.get("platform_fee_fixed", 0) or 0),
+            "active": True,
+        })
+    result["mobile_money"] = {
+        "enabled": bool(mm.get("enabled", False)),
+        "operators": public_ops,
+    }
+    return result
 
 
 @api.get("/transfer/config")
 async def transfer_config(uid: str = Depends(get_current_user_id)):
     cfg = await get_transfer_config()
-    return cfg
+    return _public_transfer_config(cfg)
 
 
 # ==================== TRANSFER ====================
 @api.post("/transfers")
-async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)):
+async def transfer(req: TransferRequest, request: Request,
+                   uid: str = Depends(get_current_user_id)):
     u = await get_user(uid)
     if u.get("is_banned") or u.get("is_blocked"):
         raise HTTPException(403, "Compte suspendu")
     if u.get("withdrawals_blocked") and req.transfer_type != "biz_to_biz":
         raise HTTPException(403, "Retraits bloqués pour votre compte")
+
+    mobile_idempotency_key = ""
+    mobile_request_fingerprint = ""
+    if req.transfer_type == "biz_to_mobile":
+        mobile_idempotency_key = str(req.idempotency_key or "").strip()
+        if not mobile_idempotency_key or len(mobile_idempotency_key) > 120:
+            raise HTTPException(400, "Clé d'idempotence de retrait requise")
+        fingerprint_data = {
+            "transfer_type": req.transfer_type,
+            "recipient": req.recipient,
+            "country": (req.country or "").upper(),
+            "operator": (req.operator or "").lower(),
+            "fee_bearer": req.fee_bearer,
+            "amount": req.amount,
+            "currency": req.currency,
+        }
+        mobile_request_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_data, sort_keys=True,
+                       separators=(",", ":")).encode()).hexdigest()
+        existing_tx = await db.transactions.find_one(
+            {"user_id": uid,
+             "metadata.idempotency_key": mobile_idempotency_key},
+            {"_id": 0})
+        if existing_tx:
+            meta = existing_tx.get("metadata") or {}
+            if meta.get("request_fingerprint") != mobile_request_fingerprint:
+                raise HTTPException(
+                    409, "Cette clé d'idempotence appartient à un autre retrait")
+            if existing_tx.get("status") == "failed":
+                raise HTTPException(409, "Cette tentative de retrait a déjà échoué")
+            return {
+                "transaction": existing_tx,
+                "fee": meta.get("fee", 0),
+                "total_debit": meta.get(
+                    "total_debit", existing_tx.get("amount", 0)),
+                "recipient_gets": meta.get(
+                    "recipient_gets", existing_tx.get("amount", 0)),
+                "operator": meta.get("operator_name", req.operator),
+                "idempotent_replay": True,
+            }
 
     # Biz-transfer bank is permanently removed from the platform.
     if req.transfer_type == "biz_to_bank":
@@ -796,6 +922,9 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
     if req.transfer_type in ("biz_to_mobile", "biz_to_bank", "biz_to_crypto"):
         pcfg = await get_platform_config()
         if pcfg.get("auto_withdrawals_disabled"):
+            if req.transfer_type == "biz_to_mobile":
+                raise HTTPException(
+                    503, "Les retraits automatiques sont temporairement désactivés")
             # keep the request as "pending" without debiting
             pending_tx = await record_tx(uid, "transfer", "out", req.amount, req.currency,
                                          status="pending", counterparty=req.recipient,
@@ -846,93 +975,190 @@ async def transfer(req: TransferRequest, uid: str = Depends(get_current_user_id)
         if not req.country or not req.operator:
             raise HTTPException(400, "Pays et opérateur requis")
         op = next((o for o in mm_cfg.get("operators", [])
-                   if o.get("country") == req.country and o.get("code") == req.operator and o.get("active", True)), None)
+                   if str(o.get("country", "")).upper() == str(req.country).upper()
+                   and str(o.get("code", "")).lower() == str(req.operator).lower()
+                   and o.get("active", True) and not o.get("archived", False)
+                   and not o.get("hidden", False)), None)
         if not op:
             raise HTTPException(400, "Opérateur non disponible pour ce pays")
-        if req.amount < op.get("min", 0) or req.amount > op.get("max", 10**12):
+        operator_currency = str(op.get("currency") or "").upper()
+        if operator_currency and operator_currency != req.currency.upper():
+            raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
+        if req.amount < float(op.get("min", 0) or 0) or req.amount > float(op.get("max", 10**12) or 10**12):
             raise HTTPException(400, f"Montant hors des limites autorisées ({op['min']} - {op['max']} {req.currency})")
 
-        fee_pct = op.get("fee_pct", 0) / 100.0
-        fee = req.amount * fee_pct
-        gateway_fee, platform_fee = _momo_platform_fee(op, req.amount)
-        if req.fee_bearer == "sender":
-            total_debit = req.amount + fee
-            recipient_gets = req.amount
-        else:  # receiver pays
-            total_debit = req.amount
-            recipient_gets = req.amount - fee
+        fee_snapshot = paydunya.calculate_fees(req.amount, op, req.fee_bearer or "sender")
+        effective_gateway_pct = op.get("gateway_fee_pct")
+        if effective_gateway_pct is None or (
+                float(effective_gateway_pct or 0) == 0
+                and float(op.get("platform_fee_pct", 0) or 0) == 0
+                and op.get("fee_pct") is not None):
+            effective_gateway_pct = op.get("fee_pct", 0)
+        fee_snapshot = {
+            **fee_snapshot,
+            "gateway_fee_pct": float(effective_gateway_pct or 0),
+            "gateway_fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0),
+            "platform_fee_pct": float(op.get("platform_fee_pct", 0) or 0),
+            "platform_fee_fixed": float(op.get("platform_fee_fixed", 0) or 0),
+        }
+        fee = fee_snapshot["total_fee"]
+        gateway_fee = fee_snapshot["gateway_fee"]
+        platform_fee = fee_snapshot["platform_fee"]
+        total_debit = fee_snapshot["charged_amount"]
+        recipient_gets = fee_snapshot["wallet_credit_amount"]
 
         if u.get(field, 0) < total_debit:
             raise HTTPException(400, "Solde insuffisant (frais inclus)")
 
-        # Pessimistic debit — refund on payout failure via webhook
-        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
-        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
-                                 status="pending",
-                                 counterparty=req.recipient, description=req.description,
-                                 metadata={"transfer_type": "biz_to_mobile", "operator": op["name"],
-                                           "country": req.country, "fee": fee, "fee_bearer": req.fee_bearer,
-                                           "gateway_fee": gateway_fee,
-                                           "platform_fee": platform_fee,
-                                           "recipient_gets": recipient_gets, "recipient_name": req.recipient_name,
-                                           "total_debit": total_debit})
+        metadata = {
+            "transfer_type": "biz_to_mobile",
+            "operator_name": op["name"],
+            "fee_bearer": req.fee_bearer,
+            "fee": fee, "gateway_fee": gateway_fee,
+            "platform_fee": platform_fee,
+            "recipient_gets": recipient_gets,
+            "total_debit": total_debit,
+            "fee_snapshot": fee_snapshot,
+            "paydunya_status": "created",
+            "idempotency_key": mobile_idempotency_key,
+            "request_fingerprint": mobile_request_fingerprint,
+            "debit_phase": "pending",
+            "debit_pending_at": now_iso(),
+            "debit_applied": False,
+        }
+        try:
+            tx_out = await record_tx(
+                uid, "transfer", "out", req.amount, req.currency,
+                status="pending", counterparty=req.recipient,
+                description=req.description, metadata=metadata)
+        except DuplicateKeyError:
+            existing_tx = await db.transactions.find_one(
+                {"user_id": uid,
+                 "metadata.idempotency_key": mobile_idempotency_key},
+                {"_id": 0})
+            if existing_tx:
+                meta = existing_tx.get("metadata") or {}
+                if meta.get("request_fingerprint") != mobile_request_fingerprint:
+                    raise HTTPException(
+                        409, "Cette clé d'idempotence appartient à un autre retrait")
+                return {
+                    "transaction": existing_tx, "fee": meta.get("fee", 0),
+                    "total_debit": meta.get("total_debit", existing_tx.get("amount", 0)),
+                    "recipient_gets": meta.get("recipient_gets", existing_tx.get("amount", 0)),
+                    "operator": meta.get("operator_name", op["name"]),
+                    "idempotent_replay": True,
+                }
+            raise
 
-        # Attempt to execute the payout via FedaPay. If FedaPay is not
-        # configured (or the operator is not payout-capable), keep the
-        # transaction in "pending" so an admin can process it manually.
-        fp_op = fedapay.operator_for(req.country, req.operator)
-        # Fallback lookup: the frontend may send "mtn"/"moov" style codes;
-        # match by legacy code within the target country.
-        if fp_op is None:
-            code_needle = (req.operator or "").lower()
-            for cand in fedapay.OPERATORS.get(req.country.upper(), []):
-                if code_needle in cand["code"].lower() or code_needle in cand["mode"].lower():
-                    fp_op = cand
-                    break
-        if fedapay.is_configured() and fp_op and fp_op.get("kind") in ("payout", "both"):
-            recipient_name = req.recipient_name or req.recipient or "Client"
-            parts = recipient_name.strip().split(" ", 1)
-            first = parts[0] or "Client"
-            last = parts[1] if len(parts) > 1 else first
+        # Conditional debit prevents concurrent withdrawals from overdrawing
+        # the wallet. The transaction ID also makes the debit idempotent.
+        debit = await db.users.update_one(
+            {"id": uid, field: {"$gte": total_debit},
+             "withdrawal_debit_ids": {"$ne": tx_out.id}},
+            {"$inc": {field: -total_debit},
+             "$addToSet": {"withdrawal_debit_ids": tx_out.id}})
+        if not debit.modified_count:
+            await db.transactions.update_one(
+                {"id": tx_out.id, "status": "pending"},
+                {"$set": {"status": "failed",
+                          "metadata.failure_reason": "insufficient_balance"}})
+            raise HTTPException(400, "Solde insuffisant (frais inclus)")
+        await db.transactions.update_one(
+            {"id": tx_out.id},
+            {"$set": {"metadata.debit_applied": True,
+                      "metadata.debit_phase": "applied",
+                      "metadata.debit_applied_at": now_iso()}})
+
+        withdraw_mode = op.get("withdraw_mode")
+        callback_base = (os.environ.get("OFFICIAL_DOMAIN")
+                         or _paydunya_callback_base(request)).rstrip("/")
+        callback_url = f"{callback_base}/api/webhooks/paydunya/disbursement?ref={tx_out.reference}"
+        try:
+            account_alias = paydunya.normalize_disbursement_account_alias(
+                req.recipient or "", req.country or "")
+        except ValueError as exc:
+            await _refund_mobile_withdrawal(tx_out.id, str(exc))
+            raise HTTPException(400, str(exc))
+
+        # Creating the token is the only stage where a provider failure proves
+        # that no payout can have been submitted, so a refund is safe here.
+        try:
+            pcfg = await get_paydunya_config(decrypt=True)
+            if not pcfg.get("enabled") or not withdraw_mode:
+                raise paydunya.PayDunyaError(503, "PayDunya disbursement is not configured")
+            invoice = await paydunya.get_disbursement_invoice(
+                pcfg, amount=recipient_gets, currency=req.currency,
+                withdraw_mode=withdraw_mode, account_alias=account_alias,
+                callback_url=callback_url,
+                description=req.description or f"Retrait Biz-transPay {tx_out.reference}",
+                reference=tx_out.reference)
+            invoice_token = paydunya.disbursement_token(invoice)
+            if not invoice_token:
+                raise paydunya.PayDunyaError(502, "PayDunya n'a pas retourné de référence de retrait")
+        except paydunya.PayDunyaError as exc:
+            await _refund_mobile_withdrawal(tx_out.id, exc.message)
+            raise HTTPException(400 if exc.status < 500 else 502,
+                                f"Passerelle Mobile Money: {exc.message}")
+        except Exception as exc:
+            await _refund_mobile_withdrawal(tx_out.id, str(exc))
+            raise HTTPException(502, "Passerelle Mobile Money indisponible")
+
+        # Persist the token before submit. If submit times out, refunding would
+        # risk paying the beneficiary and crediting the wallet simultaneously.
+        await db.transactions.update_one(
+            {"id": tx_out.id},
+            {"$set": {"metadata.paydunya_invoice_token": invoice_token,
+                      "metadata.paydunya_withdraw_mode": withdraw_mode,
+                      "metadata.paydunya_status": "created",
+                      "metadata.next_reconcile_at": now_iso()}}
+        )
+        try:
+            submitted = await paydunya.submit_disbursement_invoice(
+                pcfg, invoice_token=invoice_token, withdraw_mode=withdraw_mode,
+                account_alias=account_alias, amount=recipient_gets,
+                currency=req.currency, callback_url=callback_url,
+                reference=tx_out.reference)
+            provider_id = paydunya.disbursement_provider_id(submitted) or \
+                paydunya.disbursement_provider_id(invoice)
+            submit_status = _disbursement_status(submitted)
+            await db.transactions.update_one(
+                {"id": tx_out.id},
+                {"$set": {"metadata.paydunya_disbursement_id": provider_id,
+                          "metadata.paydunya_status": submit_status or "submitted"}}
+            )
+            if submit_status in {"failed", "failure", "cancelled", "canceled",
+                                 "rejected", "declined", "error"}:
+                await _refund_mobile_withdrawal(tx_out.id, submit_status)
+                raise HTTPException(400, "Le retrait Mobile Money a été refusé")
+            if submit_status in {"success", "successful", "completed", "sent",
+                                 "paid", "succeeded"}:
+                fresh = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
+                await _reconcile_mobile_withdrawal(fresh)
+        except paydunya.PayDunyaError as exc:
+            # Submission may have reached PayDunya even when its response was
+            # lost. Verify by token; otherwise keep the debit pending for the
+            # callback instead of creating a double-spend refund.
             try:
-                payout = await fedapay.create_payout(
-                    amount=int(recipient_gets),
-                    currency=req.currency,
-                    description=req.description or f"Retrait Biz-transPay {tx_out.reference}",
-                    mode=fp_op["mode"],
-                    merchant_reference=tx_out.id,
-                    beneficiary_firstname=first,
-                    beneficiary_lastname=last,
-                    beneficiary_email=None,
-                    beneficiary_phone=req.recipient or "",
-                    beneficiary_country=req.country,
-                )
-                fp_id = payout.get("id")
-                await fedapay.start_payout(fp_id)
-                await db.transactions.update_one(
-                    {"id": tx_out.id},
-                    {"$set": {"metadata.fedapay_payout_id": fp_id,
-                              "metadata.fedapay_status": "started"}}
-                )
-            except fedapay.FedaPayError as e:
-                # Refund on synchronous failure
-                await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
-                await db.transactions.update_one(
-                    {"id": tx_out.id},
-                    {"$set": {"status": "failed",
-                              "metadata.fedapay_error": e.message,
-                              "metadata.refunded": True}}
-                )
-                raise HTTPException(400 if e.status < 500 else 502,
-                                    f"Passerelle Mobile Money: {e.message}")
+                fresh = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
+                await _reconcile_mobile_withdrawal(fresh)
+            except Exception:
+                logger.warning("PayDunya payout submit uncertain for %s: %s",
+                               tx_out.reference, exc.message)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("PayDunya payout submit uncertain for %s: %s",
+                           tx_out.reference, exc)
 
-        await notify(uid, "withdrawal_success",
-                     "Retrait Mobile Money en cours",
-                     f"Votre retrait de {req.amount:,.0f} {req.currency} vers {req.recipient} ({op['name']}) est en cours de traitement.",
-                     data={"transaction_id": tx_out.id, "reference": tx_out.reference,
-                           "amount": req.amount, "currency": req.currency,
-                           "transfer_type": "biz_to_mobile"})
-        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
+        latest_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0}) or tx_out.model_dump()
+        if latest_tx.get("status") == "pending":
+            await notify(uid, "withdrawal_success",
+                         "Retrait Mobile Money en cours",
+                         f"Votre retrait de {req.amount:,.0f} {req.currency} vers {req.recipient} ({op['name']}) est en cours de traitement.",
+                         data={"transaction_id": tx_out.id, "reference": tx_out.reference,
+                               "amount": req.amount, "currency": req.currency,
+                               "transfer_type": "biz_to_mobile"})
+        return {"transaction": latest_tx, "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "operator": op["name"]}
 
     # -------- BIZ TO BANK --------
@@ -1820,6 +2046,77 @@ async def _paydunya_reconcile_loop() -> None:
                         "PayDunya background reconciliation failed for %s",
                         deposit.get("id"),
                     )
+            due = now_iso()
+            tokenless_grace = (
+                datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            withdrawal_cursor = db.transactions.find(
+                {
+                    "type": "transfer",
+                    "metadata.transfer_type": "biz_to_mobile",
+                    "status": {"$in": ["pending", "refund_pending"]},
+                    "$or": [
+                        {"status": "refund_pending"},
+                        {"metadata.next_reconcile_at": {"$exists": False}},
+                        {"metadata.next_reconcile_at": {"$lte": due}},
+                    ],
+                },
+                {"_id": 0},
+            ).sort("created_at", 1).limit(100)
+            async for withdrawal in withdrawal_cursor:
+                try:
+                    withdrawal_meta = withdrawal.get("metadata") or {}
+                    if withdrawal.get("status") == "refund_pending":
+                        await _refund_mobile_withdrawal(
+                            withdrawal["id"],
+                            withdrawal_meta.get("failure_reason", ""))
+                    elif withdrawal_meta.get("paydunya_invoice_token"):
+                        await _reconcile_mobile_withdrawal(withdrawal)
+                    else:
+                        debit_marker = await db.users.find_one(
+                            {"id": withdrawal["user_id"],
+                             "withdrawal_debit_ids": withdrawal["id"]},
+                            {"_id": 0, "id": 1})
+                        phase_at = (withdrawal_meta.get("debit_applied_at")
+                                    or withdrawal_meta.get("debit_pending_at")
+                                    or withdrawal.get("created_at", ""))
+                        if debit_marker:
+                            await db.transactions.update_one(
+                                {"id": withdrawal["id"], "status": "pending"},
+                                {"$set": {
+                                    "metadata.debit_applied": True,
+                                    "metadata.debit_phase": "applied",
+                                    "metadata.debit_applied_at": phase_at,
+                                }})
+                            if phase_at and phase_at <= tokenless_grace:
+                                await _refund_mobile_withdrawal(
+                                    withdrawal["id"],
+                                    "provider_token_not_created")
+                        elif phase_at and phase_at <= tokenless_grace:
+                            await db.transactions.update_one(
+                                {"id": withdrawal["id"], "status": "pending"},
+                                {"$set": {
+                                    "status": "failed",
+                                    "metadata.debit_phase": "not_applied",
+                                    "metadata.failure_reason":
+                                        "wallet_debit_not_applied",
+                                }})
+                except Exception:
+                    attempts = int((withdrawal.get("metadata") or {}).get(
+                        "reconcile_attempts", 0)) + 1
+                    delay = min(30 * (2 ** min(attempts - 1, 5)), 900)
+                    await db.transactions.update_one(
+                        {"id": withdrawal["id"],
+                         "status": {"$in": ["pending", "refund_pending"]}},
+                        {"$set": {
+                            "metadata.next_reconcile_at": (
+                                datetime.now(timezone.utc)
+                                + timedelta(seconds=delay)).isoformat(),
+                            "metadata.reconcile_attempts": attempts,
+                        }})
+                    logger.exception(
+                        "PayDunya withdrawal reconciliation failed for %s",
+                        withdrawal.get("id"),
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2062,6 +2359,34 @@ async def paydunya_webhook(request: Request):
     return {"received": True}
 
 
+@api.post("/webhooks/paydunya/disbursement")
+async def paydunya_disbursement_webhook(request: Request, ref: str = Query("")):
+    """Receive a payout notification, then verify it with PayDunya.
+
+    Callback fields are deliberately ignored for settlement.  PayDunya's
+    status endpoint is the source of truth, which prevents a forged callback
+    from completing a withdrawal.
+    """
+    if not ref:
+        raise HTTPException(400, "Missing withdrawal reference")
+    tx = await db.transactions.find_one(
+        {"reference": ref, "type": "transfer",
+         "metadata.transfer_type": "biz_to_mobile"}, {"_id": 0})
+    if not tx:
+        raise HTTPException(404, "Withdrawal not found")
+    if tx.get("status") in ("completed", "failed"):
+        return {"received": True, "status": tx["status"]}
+    try:
+        outcome = await _reconcile_mobile_withdrawal(tx)
+    except paydunya.PayDunyaError:
+        # A callback is a notification; a temporary verification outage must
+        # be retried rather than treated as a provider failure.
+        raise HTTPException(503, "PayDunya status verification unavailable")
+    except Exception:
+        raise HTTPException(503, "PayDunya status verification unavailable")
+    return {"received": True, "status": outcome}
+
+
 @api.post("/webhooks/fedapay")
 async def fedapay_webhook(request: Request):
     """Receive signed webhooks from FedaPay."""
@@ -2215,6 +2540,135 @@ def _momo_platform_fee(op_cfg: dict, gross: float) -> tuple[float, float]:
     gateway_fee = round(float(gross) * (gw_pct / 100.0), 2)
     platform_fee = round(float(gross) * (pf_pct / 100.0), 2)
     return gateway_fee, platform_fee
+
+
+async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
+    """Mark a mobile payout failed and refund its debit exactly once."""
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx or tx.get("type") != "transfer":
+        return False
+    meta = tx.get("metadata") or {}
+    if tx.get("status") in ("completed", "failed") or meta.get("refunded"):
+        return False
+    if tx.get("status") == "pending":
+        claimed = await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {"status": "refund_pending",
+                      "metadata.paydunya_status": "failed",
+                      "metadata.failure_reason": reason[:300]}})
+        if not claimed.modified_count:
+            tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+            if not tx or tx.get("status") != "refund_pending":
+                return False
+    elif tx.get("status") != "refund_pending":
+        return False
+    currency = str(tx.get("currency") or "XOF").upper()
+    field = "balance_xof" if currency == "XOF" else (
+        "balance_xaf" if currency == "XAF" else "balance_usdt")
+    credited = await db.users.update_one(
+        {"id": tx["user_id"], "withdrawal_refund_ids": {"$ne": tx_id}},
+        {"$inc": {field: float(meta.get("total_debit", tx.get("amount", 0)))},
+         "$addToSet": {"withdrawal_refund_ids": tx_id}})
+    await db.transactions.update_one(
+        {"id": tx_id, "status": "refund_pending"},
+        {"$set": {"status": "failed", "metadata.refunded": True,
+                  "metadata.refunded_at": now_iso()}})
+    if credited.modified_count:
+        await notify(tx["user_id"], "withdrawal_failed",
+                     "Retrait Mobile Money échoué",
+                     "Votre retrait a échoué. Le montant a été remboursé sur votre portefeuille.",
+                     data={"transaction_id": tx_id, "reference": tx.get("reference")})
+    return True
+
+
+def _disbursement_status(payload: dict) -> str:
+    """Normalize a status from any documented PayDunya response envelope."""
+    if not isinstance(payload, dict):
+        return ""
+    for key in ("status", "disbursement_status", "transaction_status"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower().replace("-", "_").replace(" ", "_")
+    for value in payload.values():
+        if isinstance(value, dict):
+            found = _disbursement_status(value)
+            if found:
+                return found
+    return ""
+
+
+def _disbursement_value(payload: dict, *keys):
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        if payload.get(key) not in (None, ""):
+            return payload[key]
+    for value in payload.values():
+        if isinstance(value, dict):
+            found = _disbursement_value(value, *keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
+async def _reconcile_mobile_withdrawal(tx: dict) -> str:
+    """Verify payout state server-to-server and apply an idempotent outcome."""
+    if not tx:
+        return ""
+    meta = tx.get("metadata") or {}
+    token = str(meta.get("paydunya_invoice_token") or "")
+    provider_id = str(meta.get("paydunya_disbursement_id") or "")
+    if not token and not provider_id:
+        return "pending"
+    cfg = await get_paydunya_config(decrypt=True)
+    response = await paydunya.check_disbursement_status(
+        cfg, invoice_token=token, provider_id=provider_id)
+    returned_token = paydunya.disbursement_token(response)
+    returned_amount = _disbursement_value(response, "amount")
+    returned_mode = str(_disbursement_value(
+        response, "withdraw_mode") or "")
+    returned_reference = str(_disbursement_value(
+        response, "disburse_id") or "")
+    response_code = str(_disbursement_value(
+        response, "response_code") or "").zfill(2)
+    expected_amount = float(meta.get("recipient_gets", tx.get("amount", 0)))
+    expected_mode = str(meta.get("paydunya_withdraw_mode") or "")
+    try:
+        amount_matches = abs(float(returned_amount) - expected_amount) < 0.005
+    except (TypeError, ValueError):
+        amount_matches = False
+    if (response_code != "00" or not returned_token
+            or not hmac.compare_digest(returned_token, token)
+            or not amount_matches or returned_mode != expected_mode
+            or not returned_reference
+            or not hmac.compare_digest(returned_reference, str(tx["reference"]))):
+        raise paydunya.PayDunyaError(502, "Référence de retrait PayDunya incohérente")
+    status = _disbursement_status(response)
+    if status in {"completed", "complete", "success", "successful", "sent",
+                  "paid", "succeeded"}:
+        changed = await db.transactions.update_one(
+            {"id": tx["id"], "status": "pending"},
+            {"$set": {"status": "completed",
+                      "metadata.paydunya_status": status}})
+        if changed.modified_count:
+            await notify(tx["user_id"], "withdrawal_success",
+                         "Retrait Mobile Money confirmé",
+                         f"Votre retrait de {tx['amount']:,.0f} {tx.get('currency', '')} a été envoyé au bénéficiaire.",
+                         data={"transaction_id": tx["id"], "reference": tx.get("reference"),
+                               "amount": tx["amount"], "transfer_type": "biz_to_mobile"})
+        return "completed"
+    if status in {"failed", "failure", "cancelled", "canceled", "rejected",
+                  "declined", "error", "refunded"}:
+        await _refund_mobile_withdrawal(tx["id"], status)
+        return "failed"
+    await db.transactions.update_one(
+        {"id": tx["id"], "status": "pending"},
+        {"$set": {
+            "metadata.paydunya_status": status or "pending",
+            "metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+        }})
+    return "pending"
 
 
 async def _reconcile_intent(intent_id: str) -> None:
@@ -6750,6 +7204,59 @@ class AdminTransferConfigReq(BaseModel):
     crypto: Optional[dict] = None
 
 
+def _validate_withdrawal_catalog(section: dict) -> None:
+    if not isinstance(section, dict):
+        raise HTTPException(422, "mobile_money doit être un objet")
+    operators = section.get("operators")
+    if operators is None:
+        return
+    if not isinstance(operators, list):
+        raise HTTPException(422, "Le catalogue Mobile Money doit être une liste")
+    seen = set()
+    valid_countries = set(paydunya.COUNTRY_LABELS)
+    currencies = {"XOF", "XAF"}
+    for op in operators:
+        if not isinstance(op, dict):
+            raise HTTPException(422, "Chaque opérateur doit être un objet")
+        country = str(op.get("country") or "").upper()
+        currency = str(op.get("currency") or "").upper()
+        code = str(op.get("code") or "").strip()
+        mode = str(op.get("withdraw_mode") or "").strip()
+        if country not in valid_countries or currency not in currencies:
+            raise HTTPException(422, "Pays ou devise Mobile Money invalide")
+        if (country, code.lower()) in seen or not code:
+            raise HTTPException(422, "Les opérateurs doivent avoir un couple pays/code unique")
+        seen.add((country, code.lower()))
+        expected_currency = "XAF" if country == "CM" else "XOF"
+        if currency != expected_currency:
+            raise HTTPException(422, "La devise ne correspond pas au pays")
+        # A small set of pre-catalogue legacy operators (notably Wave Togo)
+        # has no PayDunya disbursement mode.  Keep those rows editable for
+        # migration, but they will fail explicitly if selected for payout.
+        legacy_without_mode = not mode and (
+            (country, code.lower()) in _LEGACY_WITHDRAW_MODES
+            or (country, code.lower()) == ("TG", "wave"))
+        executable = op.get("active", True) and not op.get("archived", False) \
+            and not op.get("hidden", False)
+        if executable and mode not in paydunya.WITHDRAWAL_MODES:
+            raise HTTPException(422, "Mode de retrait PayDunya invalide")
+        if executable and currency != "XOF":
+            raise HTTPException(
+                422, "PayDunya PUSH ne garantit actuellement que les retraits XOF")
+        for key in ("fee_pct", "gateway_fee_pct", "gateway_fee_fixed",
+                    "platform_fee_pct", "platform_fee_fixed", "min", "max"):
+            if key in op and op[key] is not None:
+                try:
+                    value = float(op[key])
+                except (TypeError, ValueError):
+                    raise HTTPException(422, f"{key} doit être numérique")
+                if value < 0:
+                    raise HTTPException(422, f"{key} ne peut pas être négatif")
+        if op.get("min") is not None and op.get("max") is not None:
+            if float(op["max"]) < float(op["min"]):
+                raise HTTPException(422, "La limite maximale doit être supérieure à la minimale")
+
+
 @api.get("/admin/transfer/config")
 async def admin_get_transfer_config(admin=Depends(get_admin)):
     return await get_transfer_config()
@@ -6920,6 +7427,8 @@ async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depend
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "Aucune modification")
+    if isinstance(updates.get("mobile_money"), dict):
+        _validate_withdrawal_catalog(updates["mobile_money"])
     # Deep-merge sub-dicts so partial toggles (e.g. {"crypto": {"enabled": true}})
     # don't wipe cryptos/networks/operators lists.
     current = await get_transfer_config()
@@ -7255,6 +7764,16 @@ async def startup_db_client():
             [("user_id", 1), ("key", 1)], unique=True)
     except Exception:
         pass
+    # This barrier is mandatory for financial requests. A partial index avoids
+    # indexing historical transactions that do not carry an idempotency key.
+    await db.transactions.create_index(
+        [("user_id", 1), ("metadata.idempotency_key", 1)],
+        name="uniq_mobile_withdrawal_idempotency",
+        unique=True,
+        partialFilterExpression={
+            "metadata.idempotency_key": {"$type": "string"},
+            "metadata.transfer_type": "biz_to_mobile",
+        })
 
 
 @app.on_event("shutdown")

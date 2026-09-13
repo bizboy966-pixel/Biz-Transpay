@@ -54,6 +54,33 @@ OPERATORS = [
     ("TG", "moov_tg", "Moov Togo", "moov-togo", "XOF"),
 ]
 
+# PayDunya disbursement modes are deliberately separate from the historical
+# SoftPay catalogue above.  The value is sent verbatim as ``withdraw_mode``;
+# it is not a FedaPay mode and must not be inferred from a frontend label.
+WITHDRAWAL_OPERATORS = [
+    ("SN", "orange-money-senegal", "Orange Money Sénégal", "XOF"),
+    ("SN", "free-money-senegal", "Free Money Sénégal", "XOF"),
+    ("SN", "wave-senegal", "Wave Sénégal", "XOF"),
+    ("BJ", "mtn-benin", "MTN Bénin", "XOF"),
+    ("BJ", "moov-benin", "Moov Bénin", "XOF"),
+    ("BJ", "celtiis-cash", "Celtiis Cash", "XOF"),
+    ("CI", "mtn-ci", "MTN Côte d'Ivoire", "XOF"),
+    ("CI", "orange-money-ci", "Orange Money Côte d'Ivoire", "XOF"),
+    ("CI", "moov-ci", "Moov Côte d'Ivoire", "XOF"),
+    ("CI", "wave-ci", "Wave Côte d'Ivoire", "XOF"),
+    ("TG", "t-money-togo", "T-Money Togo", "XOF"),
+    ("TG", "moov-togo", "Moov Togo", "XOF"),
+    ("ML", "orange-money-mali", "Orange Money Mali", "XOF"),
+    ("BF", "orange-money-burkina", "Orange Money Burkina Faso", "XOF"),
+    ("BF", "moov-burkina-faso", "Moov Burkina Faso", "XOF"),
+    ("CM", "mtn-cameroun", "MTN Cameroun", "XAF"),
+]
+WITHDRAWAL_MODES = tuple(item[1] for item in WITHDRAWAL_OPERATORS)
+COUNTRY_DIAL_CODES = {
+    "BJ": "229", "BF": "226", "CI": "225", "CM": "237",
+    "ML": "223", "SN": "221", "TG": "228",
+}
+
 
 class PayDunyaError(Exception):
     def __init__(self, status: int, message: str, raw: Optional[dict] = None):
@@ -81,6 +108,33 @@ def default_catalog() -> list[dict]:
         "max": 500000 if currency == "XOF" else 5000000,
     } for country, code, name, slug, currency in OPERATORS
       if currency in {"XOF", "XAF"}]
+
+
+def default_withdrawal_catalog() -> list[dict]:
+    """Return the server-side PayDunya payout operator catalogue.
+
+    This is intentionally a new catalogue rather than a mutation of the
+    pay-in catalogue.  Deployments can therefore change collection operators
+    without accidentally changing where withdrawals are sent.
+    """
+    return [{
+        "country": country,
+        "country_label": COUNTRY_LABELS[country],
+        "code": mode,
+        "name": name,
+        "currency": currency,
+        "withdraw_mode": mode,
+        "active": country == "TG",
+        "archived": False,
+        "hidden": False,
+        "gateway_fee_pct": 0.0,
+        "gateway_fee_fixed": 0.0,
+        "platform_fee_pct": 0.0,
+        "platform_fee_fixed": 0.0,
+        "fee_pct": 0.0,
+        "min": 100 if currency == "XOF" else 1000,
+        "max": 500000 if currency == "XOF" else 5000000,
+    } for country, mode, name, currency in WITHDRAWAL_OPERATORS]
 
 
 PAY_IN_MODES = ("softpay_direct", "psr", "par_redirect")
@@ -164,6 +218,19 @@ def normalize_togo_phone(phone: str) -> str:
             digits = digits[3:]
     if len(digits) != 8 or not digits.startswith(("7", "9")):
         raise ValueError("Numéro Togo invalide (8 chiffres attendus)")
+    return digits
+
+
+def normalize_disbursement_account_alias(phone: str, country: str) -> str:
+    """Return the local Mobile Money number expected by PayDunya PUSH."""
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if digits.startswith("00"):
+        digits = digits[2:]
+    dial = COUNTRY_DIAL_CODES.get((country or "").upper(), "")
+    if dial and digits.startswith(dial):
+        digits = digits[len(dial):]
+    if not 6 <= len(digits) <= 12:
+        raise ValueError("Numéro Mobile Money invalide")
     return digits
 
 
@@ -347,6 +414,88 @@ async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
     else:
         body = {"invoice_token": invoice_token, "phone_number": phone}
     return await _request("POST", f"/api/v1/softpay/{slug}", config, body)
+
+
+async def get_disbursement_invoice(config: dict, *, amount: float,
+                                   currency: str, withdraw_mode: str,
+                                   account_alias: str, callback_url: str,
+                                   description: str = "",
+                                   reference: str = "") -> dict:
+    """Create a PayDunya v2 disbursement invoice.
+
+    Credentials are taken from the same provider configuration as pay-ins.
+    No transfer configuration field is read here other than the operator
+    mode and the limits/fees already resolved by the caller.
+    """
+    # PayDunya PUSH v2 expects these fields at the root. Currency,
+    # description and merchant reference are not accepted by get-invoice.
+    body = {
+        "account_alias": account_alias,
+        "amount": int(Decimal(str(amount)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)),
+        "withdraw_mode": withdraw_mode,
+        "callback_url": callback_url,
+    }
+    return await _request("POST", "/api/v2/disburse/get-invoice", config, body)
+
+
+async def submit_disbursement_invoice(config: dict, *, invoice_token: str,
+                                      withdraw_mode: str,
+                                      account_alias: str,
+                                      amount: float,
+                                      currency: str,
+                                      callback_url: str = "",
+                                      reference: str = "") -> dict:
+    body = {"disburse_invoice": invoice_token}
+    if reference:
+        body["disburse_id"] = reference
+    return await _request("POST", "/api/v2/disburse/submit-invoice", config, body)
+
+
+async def check_disbursement_status(config: dict, *, invoice_token: str = "",
+                                    provider_id: str = "") -> dict:
+    if not invoice_token:
+        raise PayDunyaError(400, "Référence PayDunya de retrait manquante")
+    body = {"disburse_invoice": invoice_token}
+    return await _request("POST", "/api/v2/disburse/check-status", config, body)
+
+
+# Short aliases make the provider API convenient to use from reconciliation
+# jobs while retaining the explicit names above for callers and tests.
+create_disbursement_invoice = get_disbursement_invoice
+submit_disbursement = submit_disbursement_invoice
+check_status = check_disbursement_status
+get_disburse_invoice = get_disbursement_invoice
+submit_invoice = submit_disbursement_invoice
+
+
+def disbursement_token(response: dict) -> str:
+    """Extract the invoice token from PayDunya's varied response envelopes."""
+    if not isinstance(response, dict):
+        return ""
+    for key in ("token", "invoice_token", "disburse_token", "disbursement_token"):
+        if response.get(key):
+            return str(response[key])
+    for value in response.values():
+        if isinstance(value, dict):
+            found = disbursement_token(value)
+            if found:
+                return found
+    return ""
+
+
+def disbursement_provider_id(response: dict) -> str:
+    if not isinstance(response, dict):
+        return ""
+    for key in ("id", "invoice_id", "disburse_id", "disburse_tx_id",
+                "disbursement_id", "transaction_id"):
+        if response.get(key) is not None:
+            return str(response[key])
+    for value in response.values():
+        if isinstance(value, dict):
+            found = disbursement_provider_id(value)
+            if found:
+                return found
+    return ""
 
 
 async def confirm_invoice(config: dict, token: str) -> dict:

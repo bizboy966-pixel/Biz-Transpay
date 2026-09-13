@@ -215,29 +215,49 @@ function BizToBizForm({ onDone, balance }) {
 
 // ------- BIZ TO MOBILE -------
 function BizToMobileForm({ config, onDone, balance }) {
-  const mmEnabled = config?.mobile_money?.enabled;
-  const operators = config?.mobile_money?.operators || [];
-  const [country, setCountry] = useState('TG');
+  const operators = useMemo(
+    () => (config?.mobile_money?.operators || []).filter((operator) => operator.active === true),
+    [config],
+  );
+  const countries = useMemo(() => Array.from(new Set(operators.map((operator) => operator.country).filter(Boolean))), [operators]);
+  const mmEnabled = config?.mobile_money?.enabled === true && operators.length > 0;
+  const [country, setCountry] = useState('');
   const [operator, setOperator] = useState('');
   const [phone, setPhone] = useState('');
   const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('XOF');
   const [feeBearer, setFeeBearer] = useState('sender');
   const [description, setDescription] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState(
+    () => window.crypto?.randomUUID?.()
+      || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
 
-  const countryOps = operators.filter((o) => o.country === country && o.active);
-  useEffect(() => { setOperator(countryOps[0]?.code || ''); /* eslint-disable-next-line */ }, [country]);
+  useEffect(() => {
+    if (!country || !countries.includes(country)) setCountry(countries[0] || '');
+  }, [countries, country]);
+  const countryOps = useMemo(
+    () => operators.filter((o) => o.country === country),
+    [operators, country],
+  );
+  useEffect(() => { setOperator(countryOps[0]?.code || ''); }, [countryOps]);
   const op = countryOps.find((o) => o.code === operator);
 
   const amt = parseFloat(amount) || 0;
-  const feePct = op?.fee_pct || 0;
-  const fee = amt * feePct / 100;
+  // Currency is a property of the configured operator. It must not be
+  // user-selectable because XOF and XAF balances are not interchangeable.
+  const currency = op?.currency || '';
+  const feePct = Number(op?.fee_pct) || 0;
+  const feeFixed = Number(op?.fee_fixed) || 0;
+  const fee = Math.round(amt * feePct / 100 + feeFixed);
   const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
   const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
   const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
-  const canSubmit = op && phone && amt >= (op?.min || 100) && amt <= (op?.max || 10 ** 12) && totalDebit <= bal;
+  const min = Number(op?.min) || 100;
+  const max = op?.max === '' || op?.max == null ? 10 ** 12 : (Number(op.max) || 10 ** 12);
+  const canSubmit = op && currency && phone && amt >= min && amt <= max
+    && recipientGets > 0 && totalDebit <= bal;
 
   const submit = async () => {
     setPending(true);
@@ -245,9 +265,17 @@ function BizToMobileForm({ config, onDone, balance }) {
       const { data } = await api.post('/transfers', {
         transfer_type: 'biz_to_mobile', recipient: phone, country, operator,
         fee_bearer: feeBearer, amount: amt, currency, description,
+        idempotency_key: idempotencyKey,
       });
       onDone(data, { type: 'biz_to_mobile' });
-    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+    } catch (err) {
+      const status = err.response?.status;
+      if (status >= 400 && status < 500 && status !== 408) {
+        setIdempotencyKey(window.crypto?.randomUUID?.()
+          || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      }
+      toast.error(err.response?.data?.detail || 'Erreur');
+    }
     finally { setPending(false); }
   };
 
@@ -257,7 +285,11 @@ function BizToMobileForm({ config, onDone, balance }) {
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
       <Field label="Pays">
         <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
-          {COUNTRIES.map((c) => <option key={c.code} value={c.code}>{c.flag} {c.name}</option>)}
+          {countries.map((countryCode) => {
+            const configured = operators.find((o) => o.country === countryCode);
+            const known = COUNTRIES.find((c) => c.code === countryCode);
+            return <option key={countryCode} value={countryCode}>{known?.flag || ''} {configured?.country_label || known?.name || countryCode}</option>;
+          })}
         </select>
       </Field>
 
@@ -270,7 +302,9 @@ function BizToMobileForm({ config, onDone, balance }) {
               <button key={o.code} type="button" onClick={() => setOperator(o.code)} data-testid={`mm-op-${o.code}`}
                 className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${operator === o.code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
                 <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 truncate">{o.name}</div>
-                <div className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">{o.fee_pct}% de frais</div>
+                <div className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">
+                  {o.fee_pct}%{Number(o.fee_fixed) > 0 ? ` + ${o.fee_fixed} fixe` : ''} de frais
+                </div>
               </button>
             ))}
           </div>
@@ -281,23 +315,23 @@ function BizToMobileForm({ config, onDone, balance }) {
         <input data-testid="mm-phone" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder={COUNTRIES.find((c) => c.code === country)?.dial + ' 90 00 00 00'} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
       </Field>
 
-      <div className="grid grid-cols-[1fr_auto] gap-2 sm:gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:gap-3">
         <Field label="Montant">
-          <input data-testid="mm-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="5000" min={op?.min || 100} max={op?.max || 1000000} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-          {op && <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {op.min.toLocaleString()} · Max {op.max.toLocaleString()} · Solde : {bal.toLocaleString()} {currency}</div>}
+          <input data-testid="mm-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="5000" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+          {op && <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min.toLocaleString()} · Max {op.max === '' || op.max == null ? 'illimité' : max.toLocaleString()} · Solde : {bal.toLocaleString()} {currency}</div>}
         </Field>
-        <Field label="Devise">
-          <select data-testid="mm-currency" value={currency} onChange={(e) => setCurrency(e.target.value)} className="px-2.5 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
-            <option value="XOF">XOF</option><option value="XAF">XAF</option>
-          </select>
-        </Field>
+        <div className="flex items-end">
+          <div className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl bg-slate-50 text-xs sm:text-sm font-semibold text-slate-700" data-testid="mm-currency">
+            Devise : {currency || '—'}
+          </div>
+        </div>
       </div>
 
       <FeeBearerSwitch value={feeBearer} onChange={setFeeBearer} />
 
       {op && amt > 0 && (
         <div className="p-3 sm:p-4 bg-slate-50 rounded-xl space-y-1 sm:space-y-1.5 text-xs sm:text-sm" data-testid="mm-summary">
-          <Row l="Frais" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency} (${feePct}%)`} />
+          <Row l="Frais" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency} (${feePct}%${feeFixed > 0 ? ` + ${feeFixed} fixe` : ''})`} />
           <Row l="Total débité" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`} strong />
           <Row l="Le bénéficiaire reçoit" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`} green />
         </div>
@@ -312,7 +346,7 @@ function BizToMobileForm({ config, onDone, balance }) {
           ['Opérateur', op?.name],
           ['Numéro', phone],
           ['Montant envoyé', `${amt.toLocaleString()} ${currency}`, 'strong'],
-          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`],
+          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency} (${feePct}%${feeFixed > 0 ? ` + ${feeFixed} fixe` : ''})`],
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
           ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`, 'green'],

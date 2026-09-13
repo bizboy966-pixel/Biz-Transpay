@@ -37,6 +37,63 @@ def test_modes_and_hosted_url_are_safe_defaults():
                for op in paydunya.default_catalog())
 
 
+def test_withdrawal_catalog_has_documented_modes_and_togo_defaults():
+    catalog = paydunya.default_withdrawal_catalog()
+    assert {op["withdraw_mode"] for op in catalog} == {
+        "orange-money-senegal", "free-money-senegal", "wave-senegal",
+        "mtn-benin", "moov-benin", "celtiis-cash", "mtn-ci",
+        "orange-money-ci", "moov-ci", "wave-ci", "t-money-togo",
+        "moov-togo", "orange-money-mali", "orange-money-burkina",
+        "moov-burkina-faso", "mtn-cameroun",
+    }
+    assert all(op["active"] is (op["country"] == "TG") for op in catalog)
+
+
+def test_disbursement_client_calls_v2_endpoints(monkeypatch):
+    calls = []
+
+    async def fake_request(method, path, config, body=None):
+        calls.append((method, path, body))
+        return {"disburse_token": "invoice-token"} if path.endswith("get-invoice") else {
+            "id": "provider-id", "status": "pending"
+        }
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    config = {"mode": "test"}
+    asyncio.run(paydunya.get_disbursement_invoice(
+        config, amount=1000, currency="XOF",
+        withdraw_mode="t-money-togo", account_alias="90123456",
+        callback_url="https://merchant.test/callback", reference="BTP-1"))
+    asyncio.run(paydunya.submit_disbursement_invoice(
+        config, invoice_token="invoice-token",
+        withdraw_mode="t-money-togo", account_alias="90123456",
+        amount=1000, currency="XOF", reference="BTP-1"))
+    asyncio.run(paydunya.check_disbursement_status(
+        config, invoice_token="invoice-token"))
+    assert [call[1] for call in calls] == [
+        "/api/v2/disburse/get-invoice",
+        "/api/v2/disburse/submit-invoice",
+        "/api/v2/disburse/check-status",
+    ]
+    assert calls[0][2] == {
+        "account_alias": "90123456", "amount": 1000,
+        "withdraw_mode": "t-money-togo",
+        "callback_url": "https://merchant.test/callback",
+    }
+    assert calls[1][2] == {
+        "disburse_invoice": "invoice-token", "disburse_id": "BTP-1",
+    }
+    assert calls[2][2] == {"disburse_invoice": "invoice-token"}
+    assert paydunya.disbursement_token({"disburse_token": "invoice-token"}) == "invoice-token"
+
+
+def test_disbursement_phone_is_sent_without_country_code():
+    assert paydunya.normalize_disbursement_account_alias(
+        "+228 90 12 34 56", "TG") == "90123456"
+    assert paydunya.normalize_disbursement_account_alias(
+        "00221 77 111 22 33", "SN") == "771112233"
+
+
 def test_xof_fees_are_whole_units():
     result = paydunya.calculate_fees(
         1001, {"currency": "XOF", "gateway_fee_pct": 1.5}, "client")
