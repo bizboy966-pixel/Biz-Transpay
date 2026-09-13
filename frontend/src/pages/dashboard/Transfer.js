@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin } from 'lucide-react';
+import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin, ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { COUNTRIES } from '@/constants/countries';
-import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
+import { OperatorLogo } from '@/components/PaymentBrand';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -285,21 +285,15 @@ function BizToMobileForm({ config, onDone, balance }) {
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
       <Field label="Pays">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} className="sr-only">
-            {countries.map((countryCode) => <option key={countryCode} value={countryCode}>{countryCode}</option>)}
+        <div className="relative">
+          <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-xs font-semibold outline-none focus:border-[#2563EB] sm:px-4 sm:py-3 sm:text-sm">
+            {countries.map((countryCode) => {
+              const configured = operators.find((o) => o.country === countryCode);
+              const known = COUNTRIES.find((c) => c.code === countryCode);
+              return <option key={countryCode} value={countryCode}>{known?.flag || ''} {configured?.country_label || known?.name || countryCode}</option>;
+            })}
           </select>
-          {countries.map((countryCode) => {
-            const configured = operators.find((o) => o.country === countryCode);
-            const known = COUNTRIES.find((c) => c.code === countryCode);
-            return (
-              <button key={countryCode} type="button" data-testid={`mm-country-${countryCode}`} onClick={() => setCountry(countryCode)}
-                className={`flex min-w-0 items-center gap-2 rounded-xl border p-2.5 text-left transition-colors ${country === countryCode ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                <CountryBadge code={countryCode} />
-                <span className="truncate text-xs font-semibold text-slate-800">{configured?.country_label || known?.name || countryCode}</span>
-              </button>
-            );
-          })}
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
         </div>
       </Field>
 
@@ -307,20 +301,22 @@ function BizToMobileForm({ config, onDone, balance }) {
         {countryOps.length === 0 ? (
           <div className="p-2.5 sm:p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] sm:text-xs text-amber-800">Aucun opérateur disponible pour ce pays pour l&apos;instant.</div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {countryOps.map((o) => (
-              <button key={o.code} type="button" onClick={() => setOperator(o.code)} data-testid={`mm-op-${o.code}`}
-                className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${operator === o.code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
-                <div className="flex items-center gap-2">
-                  <OperatorLogo operator={o.code} name={o.name} size="sm" />
-                  <div className="min-w-0 font-cabinet font-bold text-[11px] sm:text-xs text-slate-900 truncate">{o.name}</div>
-                </div>
-                <div className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5">
-                  {o.fee_pct}%{Number(o.fee_fixed) > 0 ? ` + ${o.fee_fixed} fixe` : ''} de frais
-                </div>
-              </button>
-            ))}
-          </div>
+          <>
+            <div className="relative">
+              <select data-testid="mm-operator" value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!country || countryOps.length === 0}
+                className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-xs font-semibold outline-none focus:border-[#2563EB] disabled:bg-slate-50 sm:px-4 sm:py-3 sm:text-sm">
+                {countryOps.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            </div>
+            {op && (
+              <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+                <OperatorLogo operator={op.code} name={op.name} size="sm" />
+                <span className="font-semibold text-slate-700">{op.name}</span>
+                <span>{op.fee_pct}%{Number(op.fee_fixed) > 0 ? ` + ${op.fee_fixed} fixe` : ''} de frais</span>
+              </div>
+            )}
+          </>
         )}
       </Field>
 

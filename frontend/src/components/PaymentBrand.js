@@ -1,15 +1,16 @@
+import { useState } from 'react';
 import { COUNTRIES } from '@/constants/countries';
 
 const BRANDS = [
-  { key: 'tmoney', aliases: ['t-money', 'tmoney', 'togocel', 'togocom'], label: 'T', sub: 'money', bg: '#E30613', fg: '#fff' },
-  { key: 'moov', aliases: ['moov', 'flooz'], label: 'moov', sub: 'AFRICA', bg: '#0068B7', fg: '#fff' },
-  { key: 'mtn', aliases: ['mtn'], label: 'MTN', sub: '', bg: '#FFCC00', fg: '#003B4F' },
-  { key: 'wave', aliases: ['wave'], label: 'wave', sub: '', bg: '#1DC8CD', fg: '#fff' },
-  { key: 'orange', aliases: ['orange'], label: 'orange', sub: '', bg: '#FF7900', fg: '#fff' },
-  { key: 'airtel', aliases: ['airtel'], label: 'airtel', sub: '', bg: '#E4002B', fg: '#fff' },
-  { key: 'free', aliases: ['free'], label: 'free', sub: '', bg: '#111827', fg: '#fff' },
-  { key: 'celtiis', aliases: ['celtiis'], label: 'celtiis', sub: '', bg: '#5B2D90', fg: '#fff' },
-  { key: 'yas', aliases: ['yas', 'mixx'], label: 'Yas', sub: '', bg: '#111827', fg: '#fff' },
+  { key: 'tmoney', aliases: ['t-money', 'tmoney', 'togocel', 'togocom'], src: 'https://togocom.tg/favicon.ico', label: 'T-Money' },
+  { key: 'moov', aliases: ['moov', 'flooz'], src: 'https://www.moov-africa.com/favicon.ico', label: 'Moov' },
+  { key: 'mtn', aliases: ['mtn'], src: 'https://www.mtn.com/wp-content/themes/mtn-refresh/public/img/mtn-logo.svg', label: 'MTN' },
+  { key: 'wave', aliases: ['wave'], src: 'https://www.wave.com/img/nav-logo.png', label: 'Wave' },
+  { key: 'orange', aliases: ['orange'], src: 'https://www.orange.com/favicon.ico', label: 'Orange' },
+  { key: 'airtel', aliases: ['airtel'], src: 'https://www.airtel.com/favicon.ico', label: 'Airtel' },
+  { key: 'free', aliases: ['free'], src: 'https://www.free.sn/favicon.ico', label: 'Free' },
+  { key: 'celtiis', aliases: ['celtiis'], src: 'https://celtiis.bj/favicon.ico', label: 'Celtiis' },
+  { key: 'yas', aliases: ['yas', 'mixx'], src: 'https://www.yas.tg/favicon.ico', label: 'Yas' },
 ];
 
 function normalized(value) {
@@ -40,27 +41,22 @@ export function CountryBadge({ code, label, className = '' }) {
 export function OperatorLogo({ operator, name, size = 'md', className = '' }) {
   const brand = findBrand(operator, name);
   const text = name || operator || 'Mobile Money';
+  const [failed, setFailed] = useState(false);
   const sizes = {
-    sm: 'h-7 w-7 rounded-lg text-[8px]',
-    md: 'h-9 w-9 rounded-xl text-[10px]',
-    lg: 'h-12 w-12 rounded-2xl text-xs',
+    sm: 'h-7 w-7 rounded-lg',
+    md: 'h-9 w-9 rounded-xl',
+    lg: 'h-12 w-12 rounded-2xl',
   };
-  if (!brand) {
+  if (!brand || failed) {
     return (
-      <span className={`inline-flex shrink-0 items-center justify-center bg-slate-100 font-extrabold text-slate-600 ${sizes[size] || sizes.md} ${className}`} title={text} aria-label={text}>
-        {text.slice(0, 2).toUpperCase()}
+      <span className={`inline-flex shrink-0 items-center justify-center bg-slate-100 text-[10px] font-bold text-slate-400 ${sizes[size] || sizes.md} ${className}`} title={text} aria-label={text}>
+        <span aria-hidden="true">•••</span>
       </span>
     );
   }
   return (
-    <span
-      className={`inline-flex shrink-0 flex-col items-center justify-center font-extrabold leading-none shadow-sm ${sizes[size] || sizes.md} ${className}`}
-      style={{ backgroundColor: brand.bg, color: brand.fg }}
-      title={name || brand.label}
-      aria-label={name || brand.label}
-    >
-      <span className="tracking-[-0.06em]">{brand.label}</span>
-      {brand.sub && <span className="mt-0.5 text-[5px] font-bold tracking-[-0.02em]">{brand.sub}</span>}
+    <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden bg-white shadow-sm ${sizes[size] || sizes.md} ${className}`} title={name || brand.label} aria-label={name || brand.label}>
+      <img src={brand.src} alt="" onError={() => setFailed(true)} className="h-full w-full object-contain p-1" />
     </span>
   );
 }
