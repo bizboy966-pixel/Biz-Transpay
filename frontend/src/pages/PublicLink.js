@@ -346,19 +346,9 @@ function MoMoLinkForm({ link, onSuccess }) {
     ? Math.round(value)
     : Math.round(value * 100) / 100;
   const previewBase = roundMoney(baseAmount);
-  const gatewayPctValue = Number(selectedOp?.gateway_fee_pct ?? 0);
-  const legacyFeePct = selectedOp?.fee_pct == null ? null : Number(selectedOp.fee_pct);
-  const useLegacyFee = legacyFeePct != null && (
-    selectedOp?.gateway_fee_pct == null
-    || (gatewayPctValue === 0 && Number(selectedOp?.platform_fee_pct || 0) === 0)
-  );
-  const gatewayPct = useLegacyFee ? legacyFeePct : gatewayPctValue;
-  const gatewayFixed = Number(selectedOp?.gateway_fee_fixed || 0);
-  const platformPct = Number(selectedOp?.platform_fee_pct || 0);
-  const platformFixed = Number(selectedOp?.platform_fee_fixed || 0);
-  const gatewayFee = roundMoney(previewBase * gatewayPct / 100 + gatewayFixed);
-  const platformFee = roundMoney(previewBase * platformPct / 100 + platformFixed);
-  const totalFee = roundMoney(gatewayFee + platformFee);
+  const feePct = Number(selectedOp?.fee_pct || 0);
+  const feeFixed = Number(selectedOp?.fee_fixed || 0);
+  const totalFee = roundMoney(previewBase * feePct / 100 + feeFixed);
   const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
   const creditedAmount = feeBearer === 'client'
     ? previewBase
@@ -441,10 +431,8 @@ function MoMoLinkForm({ link, onSuccess }) {
       {selectedOp && amount && (
         <div className="rounded-xl bg-slate-50 border border-slate-100 p-2.5 text-[11px] text-slate-600">
           <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-            <span>Frais gateway ({gatewayPct}% + {gatewayFixed})</span>
-            <b className="text-right">{gatewayFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
-            <span>Frais plateforme ({platformPct}% + {platformFixed})</span>
-            <b className="text-right">{platformFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
+             <span>Frais de paiement</span>
+             <b className="text-right">{totalFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
             <span className="border-t border-slate-200 pt-1 font-bold">Total des frais</span>
             <b className="border-t border-slate-200 pt-1 text-right text-red-600">{totalFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {currency}</b>
             <span className="font-semibold">Total à payer</span>

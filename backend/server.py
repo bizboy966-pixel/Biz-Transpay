@@ -615,14 +615,16 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
         }
     result = {
         "enabled": bool(cfg.get("enabled", False)),
-        "mode": cfg.get("mode", "test"),
-        "store_name": cfg.get("store_name") or "Biz-transPay",
-        "configured": configured,
-        "modes": public_modes,
-        "mode_availability": {name: value["available"]
-                             for name, value in public_modes.items()},
     }
     if admin:
+        result.update({
+            "mode": cfg.get("mode", "test"),
+            "store_name": cfg.get("store_name") or "Biz-transPay",
+            "configured": configured,
+            "modes": public_modes,
+            "mode_availability": {name: value["available"]
+                                  for name, value in public_modes.items()},
+        })
         for key in ("master_key", "public_key", "private_key", "token"):
             encrypted = cfg.get(f"{key}_encrypted")
             result[f"{key}_configured"] = bool(
@@ -632,12 +634,41 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
             if str(op.get("currency") or "").upper() in PAYDUNYA_WALLET_CURRENCIES
         ]
     else:
+        def customer_fee(op: dict) -> tuple[float, float]:
+            gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
+            platform_pct = float(op.get("platform_fee_pct", 0) or 0)
+            if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
+                gateway_pct = float(op.get("fee_pct", 0) or 0)
+            return (
+                gateway_pct + platform_pct,
+                float(op.get("gateway_fee_fixed", 0) or 0)
+                + float(op.get("platform_fee_fixed", 0) or 0),
+            )
+
         result["catalog"] = [
-            op for op in (cfg.get("catalog") or [])
+            {
+                "country": op.get("country"),
+                "country_label": op.get("country_label")
+                    or paydunya.COUNTRY_LABELS.get(op.get("country"), op.get("country")),
+                "code": op.get("code"),
+                "name": op.get("name") or op.get("code"),
+                "currency": op.get("currency") or "XOF",
+                "min": float(op.get("min", 100)),
+                "max": float(op.get("max", 0)) or None,
+                # One customer-facing fee preview; gateway/platform split is
+                # intentionally kept out of the public response.
+                "fee_pct": customer_fee(op)[0],
+                "fee_fixed": customer_fee(op)[1],
+            }
+            for op in (cfg.get("catalog") or [])
             if op.get("active", True) and not op.get("archived", False)
             and not op.get("hidden", False)
             and str(op.get("currency") or "").upper() in PAYDUNYA_WALLET_CURRENCIES
         ]
+        result["mobile_money_enabled"] = (
+            any(item["available"] for item in public_modes.values())
+            and bool(result["catalog"])
+        )
     return result
 
 
@@ -1276,26 +1307,12 @@ async def deposits_config_public():
                 or paydunya.COUNTRY_LABELS.get(country, country),
             "operators": [],
         })
-        gateway_pct = float(op.get("gateway_fee_pct", 0))
-        platform_pct = float(op.get("platform_fee_pct", 0))
-        if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
-            gateway_pct = float(op.get("fee_pct", 0))
-        gateway_fixed = float(op.get("gateway_fee_fixed", 0))
-        platform_fixed = float(op.get("platform_fee_fixed", 0))
         entry["operators"].append({
             "code": op["code"], "name": op.get("name") or op["code"],
             "label": op.get("name") or op["code"],
             "currency": op.get("currency") or "XOF",
-            "endpoint_slug": op.get("endpoint_slug"),
-            "gateway_fee_pct": gateway_pct, "gateway_fee_fixed": gateway_fixed,
-            "platform_fee_pct": platform_pct, "platform_fee_fixed": platform_fixed,
-            "fee_pct": gateway_pct + platform_pct,
-            "total_fee_pct": gateway_pct + platform_pct,
-            "fee_preview": {
-                "gateway_fee": gateway_fixed, "platform_fee": platform_fixed,
-                "total_fee": gateway_fixed + platform_fixed,
-                "formula": "amount * (gateway_fee_pct + platform_fee_pct) / 100 + fixed_fees",
-            },
+            "fee_pct": float(op.get("fee_pct", 0) or 0),
+            "fee_fixed": float(op.get("fee_fixed", 0) or 0),
             "min": float(op.get("min", 100)),
             "max": float(op.get("max", 0)) or None,
         })
@@ -1313,6 +1330,39 @@ class MobileMoneyDepositRequest(BaseModel):
     phone_number: str       # e.g. "97000001"
     fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "client"
     description: Optional[str] = None
+
+
+@api.post("/deposits/mobile-money/start")
+async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
+                                     request: Request,
+                                     uid: str = Depends(get_current_user_id)):
+    """Start the customer-facing payment using the admin-selected route.
+
+    The route name is deliberately kept server-side. The browser receives only
+    the UX action it must perform: phone confirmation, popup, or redirect.
+    """
+    cfg = await get_paydunya_config()
+    public = _paydunya_public_config(cfg)
+    if not public.get("enabled") or not public.get("mobile_money_enabled"):
+        raise HTTPException(503, "Mobile Money temporairement indisponible")
+
+    modes = cfg.get("modes") if isinstance(cfg.get("modes"), dict) else {}
+    enabled = lambda key: bool(
+        (modes.get(key) or {}).get("enabled", False)
+        if isinstance(modes.get(key), dict) else modes.get(key, False)
+    )
+    if not modes or enabled("softpay_direct") or enabled("softpay"):
+        result = await create_mobile_money_deposit(req, request, uid)
+        return {**result, "payment_kind": "phone"}
+    if enabled("psr"):
+        result = await _create_paydunya_invoice_deposit(
+            req, uid, "psr", _paydunya_callback_base(request))
+        return {**result, "payment_kind": "popup"}
+    if enabled("par_redirect"):
+        result = await _create_paydunya_invoice_deposit(
+            req, uid, "par_redirect", _paydunya_callback_base(request))
+        return {**result, "payment_kind": "redirect"}
+    raise HTTPException(503, "Mobile Money temporairement indisponible")
 
 
 @api.post("/deposits/mobile-money")

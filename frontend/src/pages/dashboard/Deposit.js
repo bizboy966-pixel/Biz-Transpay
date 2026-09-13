@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, Rocket } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -76,7 +76,7 @@ function ensurePaydunyaPsrAssets() {
 function startPaydunyaPsr({ deposit, onTerminate }) {
   const PayDunya = window.PayDunya;
   if (!PayDunya || typeof PayDunya.setup !== 'function') {
-    throw new Error('Le module officiel PayDunya PSR est indisponible.');
+    throw new Error('Le paiement sécurisé est temporairement indisponible.');
   }
   if (!deposit?.psr_token_url) {
     throw new Error('Le paiement sécurisé n’a pas pu être préparé.');
@@ -191,12 +191,7 @@ function MethodPicker({ features, onPick }) {
   const [providerAvailable, setProviderAvailable] = useState(true);
   useEffect(() => {
     api.get('/deposits/config').then(({ data }) => {
-      const modes = data.modes || data.provider_modes || data.paydunya?.modes;
-      const hasModeConfig = modes && typeof modes === 'object' && Object.keys(modes).length > 0;
-      const hasMode = !hasModeConfig || Object.values(modes).some((entry) => (
-        typeof entry === 'object' ? entry.enabled !== false && entry.available !== false : entry !== false
-      ));
-      setProviderAvailable(data.enabled !== false && hasMode);
+      setProviderAvailable(data.enabled !== false && data.mobile_money_enabled === true);
     }).catch(() => setProviderAvailable(false));
   }, []);
   const methods = [
@@ -482,9 +477,7 @@ function MobileMoneyForm({ onSuccess }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [feeBearer, setFeeBearer] = useState('merchant');
-  const [paymentMode, setPaymentMode] = useState('softpay_direct');
   const [modeLoading, setModeLoading] = useState(true);
-  const [psrReady, setPsrReady] = useState(false);
   const [psrAssetError, setPsrAssetError] = useState('');
   const [loading, setLoading] = useState(false);
   const psrPollRef = useRef(null);
@@ -497,30 +490,13 @@ function MobileMoneyForm({ onSuccess }) {
   useEffect(() => {
     api.get('/deposits/config').then(({ data }) => {
       setCatalog(data.catalog || []);
-      const rawModes = data.modes || data.provider_modes || data.paydunya?.modes || {};
-      const enabled = (key, fallback = false) => {
-        const value = rawModes[key] ?? data[`${key}_enabled`];
-        if (typeof value === 'object' && value !== null) return value.enabled !== false && value.available !== false;
-        return value === undefined ? fallback : value !== false;
-      };
-      const psrEnabled = enabled('psr');
       setProvider({
         enabled: data.enabled !== false,
-        modes: {
-          softpay_direct: enabled('softpay_direct', enabled('softpay', true)),
-          // PSR is advertised only after the official browser SDK is ready.
-          psr: psrEnabled,
-          par_redirect: enabled('par_redirect', enabled('par')),
-        },
+        mobile_money_enabled: data.mobile_money_enabled === true,
       });
-      if (psrEnabled) {
-        return ensurePaydunyaPsrAssets()
-          .then(() => setPsrReady(true))
-          .catch((error) => setPsrAssetError(error.message || 'Le module officiel PayDunya PSR est indisponible.'));
-      }
       return null;
     }).catch(() => {
-      setProvider({ enabled: false, modes: { softpay_direct: false, psr: false, par_redirect: false } });
+      setProvider({ enabled: false, mobile_money_enabled: false });
     }).finally(() => setModeLoading(false));
     if (user?.email) setEmail(user.email);
     if (user?.full_name) setFullName(user.full_name);
@@ -535,30 +511,14 @@ function MobileMoneyForm({ onSuccess }) {
     ? Math.round(value)
     : Math.round(value * 100) / 100;
   const previewBase = roundMoney(baseAmount);
-  const gatewayPctValue = Number(selectedOp?.gateway_fee_pct ?? 0);
-  const legacyFeePct = selectedOp?.fee_pct == null ? null : Number(selectedOp.fee_pct);
-  // Match the server's legacy compatibility rule: old catalog rows with only
-  // fee_pct still apply that rate as the gateway fee.
-  const useLegacyFee = legacyFeePct != null && (
-    selectedOp?.gateway_fee_pct == null
-    || (gatewayPctValue === 0 && Number(selectedOp?.platform_fee_pct || 0) === 0)
-  );
-  const gatewayPct = useLegacyFee ? legacyFeePct : gatewayPctValue;
-  const gatewayFixed = Number(selectedOp?.gateway_fee_fixed || 0);
-  const platformPct = Number(selectedOp?.platform_fee_pct || 0);
-  const platformFixed = Number(selectedOp?.platform_fee_fixed || 0);
-  const gatewayFee = roundMoney(previewBase * gatewayPct / 100 + gatewayFixed);
-  const platformFee = roundMoney(previewBase * platformPct / 100 + platformFixed);
-  const totalFee = roundMoney(gatewayFee + platformFee);
+  const feePct = Number(selectedOp?.fee_pct || 0);
+  const feeFixed = Number(selectedOp?.fee_fixed || 0);
+  const totalFee = roundMoney(previewBase * feePct / 100 + feeFixed);
   const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
   const creditedAmount = feeBearer === 'client'
     ? previewBase
     : Math.max(0, roundMoney(previewBase - totalFee));
-  const availableModes = useMemo(() => provider?.enabled
-    ? ['softpay_direct', 'psr', 'par_redirect'].filter((mode) => provider.modes?.[mode] && (mode !== 'psr' || psrReady))
-    : [], [provider, psrReady]);
-
-  const beginPsrStatusPolling = (trackedDeposit) => {
+  const beginPaymentStatusPolling = (trackedDeposit) => {
     if (psrPollRef.current) clearInterval(psrPollRef.current);
     let checking = false;
     const check = async () => {
@@ -580,12 +540,6 @@ function MobileMoneyForm({ onSuccess }) {
     check();
     psrPollRef.current = setInterval(check, 4000);
   };
-
-  useEffect(() => {
-    if (provider && !provider.modes?.[paymentMode]) {
-      setPaymentMode(provider.modes?.softpay_direct ? 'softpay_direct' : (availableModes[0] || 'softpay_direct'));
-    }
-  }, [provider, paymentMode, availableModes]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -613,45 +567,38 @@ function MobileMoneyForm({ onSuccess }) {
         phone_number: phone.trim(),
         fee_bearer: feeBearer,
       };
-      if (paymentMode === 'psr') {
-        // The SDK is loaded before this request, so a failed browser
-        // integration cannot create an orphan invoice.
-        const { data } = await api.post('/deposits/mobile-money/psr', request);
-        if (!data?.id) {
-          throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
-        }
+      const { data } = await api.post('/deposits/mobile-money/start', request);
+      if (data.payment_kind === 'popup') {
+        if (!data?.id) throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
         const trackedDeposit = {
           ...data,
-          __psr: true,
+          __popup: true,
           operator_name: selectedOp?.name || selectedOp?.label || operator,
           fee_bearer: feeBearer,
         };
+        try {
+          await ensurePaydunyaPsrAssets();
+        } catch (error) {
+          setPsrAssetError(error.message || 'Le paiement sécurisé est temporairement indisponible.');
+          throw error;
+        }
         startPaydunyaPsr({
           deposit: data,
           onTerminate: () => onSuccess(trackedDeposit),
         });
-        beginPsrStatusPolling(trackedDeposit);
-        toast.success('Fenêtre de paiement PSR ouverte');
+        beginPaymentStatusPolling(trackedDeposit);
+        toast.success('Fenêtre de paiement ouverte');
         return;
       }
-      if (paymentMode === 'par_redirect') {
-        const { data } = await api.post('/deposits/mobile-money/par', request);
-        if (!data?.checkout_url) {
-          throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
-        }
-        // Redirect only after the customer explicitly selected PAR above.
+      if (data.payment_kind === 'redirect') {
+        if (!data?.checkout_url) throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
         window.location.assign(data.checkout_url);
         return;
       }
-      const { data } = await api.post('/deposits/mobile-money', request);
       toast.success(data.message || 'Vérifiez votre téléphone');
       onSuccess({
         ...data,
         operator_name: selectedOp?.name || selectedOp?.label || operator,
-        // The API snapshot is authoritative; the local values are only the
-        // pre-submit preview (including legacy fee_pct catalogs).
-        gateway_fee: data.gateway_fee ?? gatewayFee,
-        platform_fee: data.platform_fee ?? platformFee,
         total_fee: data.total_fee ?? totalFee,
         amount_to_pay: data.charged_amount ?? totalToPay,
         amount_credited: data.wallet_credit_amount ?? data.amount_net ?? creditedAmount,
@@ -662,7 +609,7 @@ function MobileMoneyForm({ onSuccess }) {
     } finally { setLoading(false); }
   };
 
-  if (!modeLoading && (!provider?.enabled || availableModes.length === 0)) {
+  if (!modeLoading && (!provider?.enabled || !provider?.mobile_money_enabled)) {
     return (
       <div className="bg-white border border-slate-100 rounded-2xl p-6 text-center" data-testid="momo-disabled">
         <h2 className="font-cabinet text-lg font-extrabold text-slate-900">Mobile Money indisponible</h2>
@@ -674,7 +621,7 @@ function MobileMoneyForm({ onSuccess }) {
   return (
     <form onSubmit={submit} className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-4" data-testid="momo-deposit-form">
       <div id="paydunya-psr" className="sr-only" aria-hidden="true" />
-      {psrAssetError && provider?.modes?.psr && (
+      {psrAssetError && (
         <div className="rounded-xl border border-amber-100 bg-amber-50 p-3 text-[11px] text-amber-800" data-testid="momo-psr-unavailable">
           Le paiement sécurisé est temporairement indisponible. Veuillez réessayer.
         </div>
@@ -724,10 +671,8 @@ function MobileMoneyForm({ onSuccess }) {
         {selectedOp && amount && (
           <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-600">
              <div className="w-full grid grid-cols-2 gap-x-3 gap-y-1">
-               <span>Frais gateway ({gatewayPct}% + {gatewayFixed})</span>
-               <span className="font-mono font-semibold text-slate-900 text-right">{gatewayFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
-               <span>Frais plateforme ({platformPct}% + {platformFixed})</span>
-               <span className="font-mono font-semibold text-slate-900 text-right">{platformFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
+                <span>Frais de paiement</span>
+                <span className="font-mono font-semibold text-slate-900 text-right">{totalFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
                <span className="font-bold text-slate-700 border-t border-slate-200 pt-1">Total des frais</span>
                <span className="font-mono font-bold text-red-600 text-right border-t border-slate-200 pt-1">{totalFee.toLocaleString(undefined, { maximumFractionDigits: 2 })} {selectedOp.currency}</span>
                <span className="font-semibold text-slate-700">Total à payer</span>
@@ -760,7 +705,7 @@ function MobileMoneyForm({ onSuccess }) {
       </div>
       <button type="submit" disabled={loading} data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
-        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>{paymentMode === 'par_redirect' ? 'Continuer le paiement' : paymentMode === 'psr' ? 'Payer maintenant' : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
+        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
       </button>
     </form>
   );

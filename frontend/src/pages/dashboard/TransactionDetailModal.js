@@ -55,7 +55,7 @@ function methodLabel(meta) {
     return `Crypto${meta.coin ? ` · ${meta.coin}` : ''}${meta.network ? ` · ${meta.network}` : ''}`;
   }
   if (meta?.method === 'mobile_money' || meta?.operator || meta?.phone_number) return 'Mobile Money';
-  if (meta?.provider === 'paydunya') return `PayDunya${meta.paydunya_flow ? ` · ${meta.paydunya_flow}` : ''}`;
+  if (meta?.provider === 'paydunya') return 'Paiement mobile';
   if (meta?.provider === 'izipay' || meta?.izipay_intent_id) return 'IziChangePay';
   if (meta?.link_id || meta?.link_payment_id) return 'Lien de paiement';
   return 'Solde Biz-transPay';
