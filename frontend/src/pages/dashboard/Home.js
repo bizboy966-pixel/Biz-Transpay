@@ -55,7 +55,7 @@ export default function DashboardHome() {
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
   const balanceFontSize = (wallet) => {
     const characterCount = `${mask(wallet.bal)} ${wallet.curr}`.length;
-    return `clamp(0.41rem, ${Math.min(18, 100 / characterCount)}cqw, 1.5rem)`;
+    return `clamp(0.9rem, ${Math.min(28, 180 / characterCount)}cqw, 2.75rem)`;
   };
 
   return (
@@ -102,27 +102,25 @@ export default function DashboardHome() {
             <div
               key={b.curr}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
-              className={`flex min-w-0 items-center px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
+              className={`relative flex min-w-0 items-center justify-center px-1 py-0.5 sm:px-4 ${index > 0 ? 'border-l border-white/25' : ''}`}
               style={{ containerType: 'inline-size' }}
             >
-              <div className="flex min-w-0 items-center gap-1 sm:gap-3">
-                <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[8px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:h-14 sm:w-14 sm:text-[11px] ${
+              <span className={`absolute bottom-[8%] left-[8%] z-10 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[7px] font-extrabold uppercase tracking-[-.04em] shadow-inner ring-1 ring-white/25 sm:bottom-[10%] sm:left-[7%] sm:h-14 sm:w-14 sm:text-[11px] ${
                   b.curr === 'XOF'
                     ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
                     : b.curr === 'XAF'
                       ? 'bg-gradient-to-br from-[#B15CFF] to-[#7138E8]'
                       : 'bg-gradient-to-br from-[#32D6A0] to-[#07966F]'
                 }`}>
-                  {b.curr === 'XOF' ? 'FCFA' : b.curr === 'XAF' ? 'CFA' : 'USDT'}
-                </span>
-                <div
-                  data-testid={`balance-value-${b.curr.toLowerCase()}`}
-                  className="min-w-0 max-w-full overflow-hidden whitespace-nowrap text-center font-extrabold tracking-[-.045em] text-white sm:flex-1 sm:text-left"
-                  style={{ fontSize: balanceFontSize(b) }}
-                  title={`${mask(b.bal)} ${b.curr}`}
-                >
-                  {mask(b.bal)} <span className="text-[.72em] font-semibold text-white/80">{b.curr}</span>
-                </div>
+                {b.curr === 'XOF' ? 'FCFA' : b.curr === 'XAF' ? 'CFA' : 'USDT'}
+              </span>
+              <div
+                data-testid={`balance-value-${b.curr.toLowerCase()}`}
+                className="min-w-0 max-w-full overflow-hidden whitespace-nowrap text-center font-extrabold leading-none tracking-[-.055em] text-white"
+                style={{ fontSize: balanceFontSize(b) }}
+                title={`${mask(b.bal)} ${b.curr}`}
+              >
+                {mask(b.bal)} <span className="text-[.58em] font-semibold tracking-[-.02em] text-white/80">{b.curr}</span>
               </div>
             </div>
           ))}
