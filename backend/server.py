@@ -483,7 +483,9 @@ async def get_support_config() -> dict:
 async def support_config(uid: str = Depends(get_current_user_id)):
     cfg = await get_support_config()
     return {
-        "chat_enabled": bool(cfg.get("chat_enabled", True)),
+        "telegram_url": cfg.get("telegram_url", ""),
+        "whatsapp_url": cfg.get("whatsapp_url", ""),
+        "email": cfg.get("email", ""),
         "faqs": [
             faq for faq in (cfg.get("faqs") or [])
             if faq.get("active", True) and faq.get("question") and faq.get("answer")
@@ -7410,7 +7412,9 @@ async def admin_update_platform_config(req: AdminPlatformConfigReq, admin=Depend
 
 
 class AdminSupportConfigReq(BaseModel):
-    chat_enabled: Optional[bool] = None
+    telegram_url: Optional[str] = None
+    whatsapp_url: Optional[str] = None
+    email: Optional[str] = None
     faqs: Optional[List[dict]] = None
 
 

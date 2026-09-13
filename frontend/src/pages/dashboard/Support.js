@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MessageCircle, Send, Paperclip, HelpCircle, X, CheckCheck, Check, Clock } from 'lucide-react';
+import { MessageCircle, Send, Paperclip, Mail, HelpCircle, X, CheckCheck, Check, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
@@ -56,12 +56,18 @@ export default function Support() {
     <div className="space-y-5" data-testid="page-support">
       <div>
         <h1 className="font-cabinet text-2xl font-extrabold tracking-tighter text-slate-900">Support</h1>
-        <p className="text-slate-500 text-xs mt-1">Choisissez votre canal préféré pour contacter notre équipe.</p>
+        <p className="text-slate-500 text-xs mt-1">Contactez notre service client via Telegram, WhatsApp ou e-mail.</p>
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-3">
-        {config.chat_enabled && (
-          <ChannelCard onClick={() => setChatOpen(true)} I={MessageCircle} c="bg-blue-500" title="Chat en direct" sub="Réponse en quelques minutes" testid="ch-chat" />
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {config.telegram_url && (
+          <ChannelCard href={config.telegram_url} I={TelegramIcon} c="bg-[#0088CC]" title="Telegram" sub="Contacter sur Telegram" testid="ch-telegram" />
+        )}
+        {config.whatsapp_url && (
+          <ChannelCard href={config.whatsapp_url} I={WhatsAppIcon} c="bg-emerald-500" title="WhatsApp" sub="Chatter sur WhatsApp" testid="ch-whatsapp" />
+        )}
+        {config.email && (
+          <ChannelCard href={`mailto:${config.email}`} I={Mail} c="bg-red-500" title="E-mail" sub={config.email} testid="ch-email" />
         )}
       </div>
 

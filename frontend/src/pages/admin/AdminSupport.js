@@ -35,7 +35,9 @@ export default function AdminSupport() {
   const saveCfg = async () => {
     try {
       await api.patch('/admin/support/config', {
-        chat_enabled: cfg.chat_enabled,
+        telegram_url: cfg.telegram_url,
+        whatsapp_url: cfg.whatsapp_url,
+        email: cfg.email,
         faqs: cfg.faqs || [],
       });
       toast.success('Configuration enregistrée');
@@ -71,13 +73,9 @@ export default function AdminSupport() {
         </div>
 
         <div className="grid sm:grid-cols-2 gap-4">
-          <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer">
-            <input type="checkbox" checked={cfg.chat_enabled} onChange={(e) => { setCfg({ ...cfg, chat_enabled: e.target.checked }); setDirty(true); }} data-testid="cfg-chat-enabled" className="w-4 h-4 accent-[#2563EB]" />
-            <div>
-              <div className="font-cabinet font-bold text-xs text-slate-900">Chat en direct</div>
-              <div className="text-[10px] text-slate-500">Messagerie interne Biz-transPay</div>
-            </div>
-          </label>
+          <Field label="Lien Telegram" value={cfg.telegram_url} onChange={(v) => { setCfg({ ...cfg, telegram_url: v }); setDirty(true); }} tid="cfg-telegram" placeholder="https://t.me/…" />
+          <Field label="Lien WhatsApp" value={cfg.whatsapp_url} onChange={(v) => { setCfg({ ...cfg, whatsapp_url: v }); setDirty(true); }} tid="cfg-whatsapp" placeholder="https://wa.me/…" />
+          <Field label="E-mail du service client" value={cfg.email} onChange={(v) => { setCfg({ ...cfg, email: v }); setDirty(true); }} tid="cfg-email" placeholder="support@…" />
         </div>
 
         <div className="mt-5 pt-5 border-t border-slate-100" data-testid="support-faq-editor">
