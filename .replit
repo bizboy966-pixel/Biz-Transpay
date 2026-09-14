@@ -11,6 +11,7 @@ expertMode = true
 
 [userenv.shared]
 DB_NAME = "biz_transpay"
+TELEGRAM_CHAT_ID = "7838456636"
 
 [env]
 MONGO_URL = "mongodb://127.0.0.1:27017"
