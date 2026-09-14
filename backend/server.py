@@ -61,6 +61,17 @@ ADMIN_ALLOWED_IPS = tuple(
 ADMIN_TRUST_PROXY_HEADERS = os.environ.get(
     "ADMIN_TRUST_PROXY_HEADERS", ""
 ).lower() in {"1", "true", "yes"}
+EDGE_BLOCKED_IPS = tuple(
+    value.strip() for value in os.environ.get("EDGE_BLOCKED_IPS", "").split(",")
+    if value.strip()
+)
+EDGE_TRUST_PROXY_HEADERS = os.environ.get(
+    "EDGE_TRUST_PROXY_HEADERS", ""
+).lower() in {"1", "true", "yes"}
+MAX_REQUEST_BYTES = int(os.environ.get("MAX_REQUEST_BYTES", str(12 * 1024 * 1024)))
+MAX_WEBHOOK_BYTES = int(
+    os.environ.get("MAX_WEBHOOK_BYTES", str(2 * 1024 * 1024))
+)
 
 
 def _session_token_hash(token: str) -> str:
@@ -386,7 +397,11 @@ def _global_rate_profile(path: str, method: str) -> str:
 
 async def _global_rate_identity(request: Request) -> dict:
     """Resolve a stable per-user/per-merchant key without trusting user input."""
-    identity = {"ip": _auth_ip(request), "user_id": None, "merchant_id": None}
+    identity = {
+        "ip": _edge_request_ip(request),
+        "user_id": None,
+        "merchant_id": None,
+    }
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         try:
@@ -468,6 +483,24 @@ def _global_rate_response(profile: str, blocked: dict) -> JSONResponse:
             "X-RateLimit-Reset": str(blocked["reset"]),
         },
     )
+
+
+def _apply_edge_security_headers(response: JSONResponse, request: Request) -> None:
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
+    if request.url.scheme == "https" or (
+        EDGE_TRUST_PROXY_HEADERS and forwarded_proto == "https"
+    ):
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
 
 
 def _format_amount(amount: float) -> str:
@@ -636,6 +669,35 @@ def _admin_ip_allowed(request: Request) -> bool:
         except ValueError:
             logging.getLogger(__name__).warning(
                 "Ignoring invalid ADMIN_ALLOWED_IPS entry: %s", rule
+            )
+    return False
+
+
+def _edge_request_ip(request: Request) -> str:
+    if EDGE_TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
+    return _auth_ip(request)
+
+
+def _edge_ip_blocked(request: Request) -> bool:
+    if not EDGE_BLOCKED_IPS:
+        return False
+    try:
+        candidate = ipaddress.ip_address(_edge_request_ip(request))
+    except ValueError:
+        return False
+    for rule in EDGE_BLOCKED_IPS:
+        try:
+            if candidate in ipaddress.ip_network(rule, strict=False):
+                return True
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Ignoring invalid EDGE_BLOCKED_IPS entry: %s", rule
             )
     return False
 
@@ -9755,14 +9817,53 @@ async def api_log_middleware(request: Request, call_next):
         })
     is_v1 = _is_v1_path(p)
     is_admin = p == "/api/admin" or p.startswith("/api/admin/")
+    if p.startswith("/api/") and _edge_ip_blocked(request):
+        response = JSONResponse(
+            status_code=403,
+            content={
+                "detail": {
+                    "message": "Accès refusé.",
+                    "code": "EDGE_IP_BLOCKED",
+                }
+            },
+        )
+        _apply_edge_security_headers(response, request)
+        return response
+    if p.startswith("/api/"):
+        raw_length = request.headers.get("content-length")
+        try:
+            content_length = int(raw_length) if raw_length else 0
+        except ValueError:
+            content_length = 0
+        max_bytes = (
+            MAX_WEBHOOK_BYTES
+            if p.startswith("/api/webhook") or p.startswith("/api/webhooks/")
+            else MAX_REQUEST_BYTES
+        )
+        if content_length > max_bytes:
+            response = JSONResponse(
+                status_code=413,
+                content={
+                    "detail": {
+                        "message": "Requête trop volumineuse.",
+                        "code": "REQUEST_ENTITY_TOO_LARGE",
+                        "max_bytes": max_bytes,
+                    }
+                },
+            )
+            _apply_edge_security_headers(response, request)
+            return response
     if p.startswith("/api/") and request.method.upper() != "OPTIONS":
         profile = _global_rate_profile(p, request.method)
         identity = await _global_rate_identity(request)
         blocked = await _global_rate_consume(profile, identity)
         if blocked:
-            return _global_rate_response(profile, blocked)
+            response = _global_rate_response(profile, blocked)
+            _apply_edge_security_headers(response, request)
+            return response
     start = datetime.now(timezone.utc)
     response = await call_next(request)
+    _apply_edge_security_headers(response, request)
     if is_admin:
         await _record_admin_request(request, response.status_code)
     if is_v1:
