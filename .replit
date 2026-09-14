@@ -2,7 +2,7 @@ modules = ["nodejs-20", "python-3.12", "web", "bash"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["mongodb"]
+packages = ["freetype", "gumbo", "harfbuzz", "jbig2dec", "libjpeg_turbo", "mongodb", "mupdf", "openjpeg", "swig", "xcbuild"]
 
 [agent]
 expertMode = true
