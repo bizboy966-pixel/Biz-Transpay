@@ -52,7 +52,7 @@ def default_catalog() -> list[dict]:
                 "country_label": COUNTRY_LABELS[country],
                 "code": f"mbiyo_{network}_{country.lower()}",
                 "network": network, "name": network.upper(),
-                "currency": currency, "active": False, "archived": False,
+                "currency": currency, "active": True, "archived": False,
                 "hidden": False, "gateway_fee_pct": 0.0,
                 "gateway_fee_fixed": 0.0, "platform_fee_pct": 0.0,
                 "platform_fee_fixed": 0.0, "fee_pct": 0.0,
@@ -63,7 +63,8 @@ def default_catalog() -> list[dict]:
 
 def default_config() -> dict:
     return {
-        "id": "payment_provider_mbiyo", "enabled": False, "mode": "test",
+        "id": "payment_provider_mbiyo", "enabled": True, "mode": "test",
+        "setup_version": 2,
         "base_url": BASE_URL, "catalog": default_catalog(),
     }
 

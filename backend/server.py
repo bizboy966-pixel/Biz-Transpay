@@ -683,43 +683,73 @@ async def get_mbiyo_config(decrypt: bool = False) -> dict:
     if not doc:
         await db.settings.insert_one(copy.deepcopy(MBIYO_DEFAULT_CONFIG))
         doc = await db.settings.find_one({"id": "payment_provider_mbiyo"}, {"_id": 0})
+    elif int(doc.get("setup_version", 0) or 0) < 2:
+        # One-time migration from the first draft, whose generated catalogue
+        # was entirely disabled.  After this marker is written, every future
+        # administrator activation/deactivation is preserved exactly.
+        catalog = copy.deepcopy(doc.get("catalog") or mbiyo.default_catalog())
+        for op in catalog:
+            if not op.get("archived", False):
+                op["active"] = True
+        await db.settings.update_one(
+            {"id": "payment_provider_mbiyo"},
+            {"$set": {"enabled": True, "catalog": catalog, "setup_version": 2}})
+        doc = await db.settings.find_one({"id": "payment_provider_mbiyo"}, {"_id": 0})
     if decrypt:
         doc = dict(doc)
-        api_key = ""
-        encrypted = doc.get("api_key_encrypted")
-        if encrypted:
+        decrypted = {}
+        for key in ("public_key", "secret_key", "webhook_secret"):
+            encrypted = doc.get(f"{key}_encrypted")
+            if not encrypted:
+                continue
             try:
-                api_key = mbiyo.decrypt_secret(encrypted, os.environ.get("SESSION_SECRET", ""))
+                decrypted[key] = mbiyo.decrypt_secret(
+                    encrypted, os.environ.get("SESSION_SECRET", ""))
             except Exception as exc:
-                logger.warning("Mbiyo credential decryption failed: %s", exc)
-        doc["_api_key"] = api_key or os.environ.get("MBIYO_API_KEY", "")
-        webhook_secret = ""
-        if doc.get("webhook_secret_encrypted"):
+                logger.warning("Mbiyo %s decryption failed: %s", key, exc)
+        # api_key_encrypted/MBIYO_API_KEY are retained as a compatibility
+        # bridge for settings saved by the first integration draft.
+        legacy_api_key = ""
+        if doc.get("api_key_encrypted"):
             try:
-                webhook_secret = mbiyo.decrypt_secret(
-                    doc["webhook_secret_encrypted"], os.environ.get("SESSION_SECRET", ""))
-            except Exception as exc:
-                logger.warning("Mbiyo webhook secret decryption failed: %s", exc)
-        doc["_webhook_secret"] = webhook_secret or os.environ.get("MBIYO_WEBHOOK_SECRET", "")
+                legacy_api_key = mbiyo.decrypt_secret(
+                    doc["api_key_encrypted"], os.environ.get("SESSION_SECRET", ""))
+            except Exception:
+                pass
+        doc["_public_key"] = decrypted.get("public_key") or os.environ.get("MBIYO_PUBLIC_KEY", "")
+        doc["_secret_key"] = (decrypted.get("secret_key") or legacy_api_key
+                              or os.environ.get("MBIYO_SECRET_KEY")
+                              or os.environ.get("MBIYO_API_KEY", ""))
+        doc["_api_key"] = doc["_secret_key"]
+        doc["_webhook_secret"] = (decrypted.get("webhook_secret")
+                                  or os.environ.get("MBIYO_WEBHOOK_SECRET", ""))
     return doc
 
 
 def _mbiyo_public_config(cfg: dict, admin: bool = False) -> dict:
+    secret_configured = bool(
+        cfg.get("secret_key_encrypted") or cfg.get("api_key_encrypted")
+        or os.environ.get("MBIYO_SECRET_KEY") or os.environ.get("MBIYO_API_KEY"))
     result = {
         "enabled": bool(cfg.get("enabled", False)),
         "mode": cfg.get("mode", "test"),
-        "configured": bool(cfg.get("api_key_encrypted") or os.environ.get("MBIYO_API_KEY")),
+        "configured": secret_configured,
     }
     if admin:
+        result["public_key_configured"] = bool(
+            cfg.get("public_key_encrypted") or os.environ.get("MBIYO_PUBLIC_KEY"))
+        result["secret_key_configured"] = secret_configured
         result["webhook_secret_configured"] = bool(
             cfg.get("webhook_secret_encrypted") or os.environ.get("MBIYO_WEBHOOK_SECRET"))
         result["catalog"] = cfg.get("catalog") or mbiyo.default_catalog()
     else:
+        active_catalog = (cfg.get("catalog") or []) if (
+            result["enabled"] and result["configured"]) else []
         result["catalog"] = [{
             k: op.get(k) for k in ("provider", "country", "country_label", "code",
                                    "network", "name", "currency", "min", "max",
                                    "fee_pct", "fee_fixed")
-        } for op in (cfg.get("catalog") or [])
+        } for op in active_catalog
           if op.get("active", True) and not op.get("archived", False)
           and not op.get("hidden", False)]
         result["mobile_money_enabled"] = bool(result["enabled"] and result["configured"]
@@ -953,8 +983,9 @@ async def get_transfer_config() -> dict:
         DEFAULT_TRANSFER_CONFIG, doc.get("mobile_money") or {})
     mb_cfg = await get_mbiyo_config()
     merged["mbiyo"] = {
-        "enabled": bool(mb_cfg.get("enabled") and
-                        (mb_cfg.get("api_key_encrypted") or os.environ.get("MBIYO_API_KEY"))),
+        "enabled": bool(mb_cfg.get("enabled") and (
+            mb_cfg.get("secret_key_encrypted") or mb_cfg.get("api_key_encrypted")
+            or os.environ.get("MBIYO_SECRET_KEY") or os.environ.get("MBIYO_API_KEY"))),
         "operators": copy.deepcopy(mb_cfg.get("catalog") or []),
     }
     return merged
@@ -1283,10 +1314,14 @@ async def transfer(req: TransferRequest, request: Request,
                 response = await mbiyo.MbiyoClient(
                     mb_cfg["_api_key"], mb_cfg.get("base_url", mbiyo.BASE_URL)).payout(
                     amount=fees["wallet_credit_amount"], currency=req.currency.upper(),
-                    network=op.get("network"), phone_number=req.recipient,
-                    country=req.country.upper(), reference=tx_out.id,
+                    payment_method="mobile_money", order_id=tx_out.id,
                     callback_url=f"{callback_base}/api/webhooks/mbiyo?ref={tx_out.id}",
-                    beneficiary_name=req.recipient_name or u.get("full_name") or req.recipient)
+                    metadata={"network": op.get("network"),
+                              "phone_number": req.recipient,
+                              "country_code": req.country.upper(),
+                              "beneficiary": (req.recipient_name
+                                              or u.get("full_name")
+                                              or req.recipient)})
                 data = response.get("data") if isinstance(response.get("data"), dict) else response
                 provider_id = data.get("transaction_id") or data.get("id") or data.get("reference")
                 await db.transactions.update_one(
@@ -1935,11 +1970,11 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         response = await mbiyo.MbiyoClient(
             cfg["_api_key"], cfg.get("base_url", mbiyo.BASE_URL)).payin(
                 amount=fees["charged_amount"], currency=currency,
-                network=op.get("network"), phone_number=req.phone_number,
-                country=req.country.upper(), reference=dep_id,
-                callback_url=callback, first_name=parts[0],
-                last_name=parts[1] if len(parts) > 1 else parts[0],
-                email=req.email)
+                payment_method="mobile_money", order_id=dep_id,
+                callback_url=callback,
+                metadata={"network": op.get("network"),
+                          "phone_number": req.phone_number,
+                          "country_code": req.country.upper()})
     except mbiyo.MbiyoError as exc:
         raise HTTPException(400 if exc.status < 500 else 502,
                             f"Mbiyo : {exc.message}")
@@ -8159,9 +8194,11 @@ class MbiyoProviderUpdate(BaseModel):
     enabled: Optional[bool] = None
     mode: Optional[Literal["test", "live"]] = None
     catalog: Optional[list[dict]] = None
-    api_key: Optional[str] = None
+    public_key: Optional[str] = None
+    secret_key: Optional[str] = None
     webhook_secret: Optional[str] = None
-    clear_api_key: bool = False
+    clear_public_key: bool = False
+    clear_secret_key: bool = False
     clear_webhook_secret: bool = False
 
 
@@ -8214,7 +8251,7 @@ async def admin_update_mbiyo(req: MbiyoProviderUpdate, admin=Depends(get_admin))
     if req.catalog is not None:
         updates["catalog"] = _validate_mbiyo_catalog(req.catalog)
     secret = os.environ.get("SESSION_SECRET", "")
-    for key in ("api_key", "webhook_secret"):
+    for key in ("public_key", "secret_key", "webhook_secret"):
         if data.get(f"clear_{key}"):
             unset[f"{key}_encrypted"] = ""
         elif data.get(key) and str(data[key]).strip():
