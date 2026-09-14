@@ -1604,7 +1604,7 @@ async def transfer(req: TransferRequest, request: Request,
         if latest_tx.get("status") == "pending":
             await notify(uid, "withdrawal_success",
                          "Retrait Mobile Money en cours",
-                         f"Votre retrait de {req.amount:,.0f} {req.currency} vers {req.recipient} ({op['name']}) est en cours de traitement.",
+                         f"Votre retrait de {req.amount:,.0f} {req.currency} est en cours de traitement.",
                          data={"transaction_id": tx_out.id, "reference": tx_out.reference,
                                "amount": req.amount, "currency": req.currency,
                                "transfer_type": "biz_to_mobile"})
