@@ -2920,7 +2920,15 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
     except Exception:
         raise HTTPException(400, "Payload Mbiyo invalide")
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    provider_id = str(data.get("transaction_id") or data.get("id") or ref or "")
+    provider_id = str(
+        data.get("transaction_id")
+        or data.get("transactionId")
+        or data.get("provider_transaction_id")
+        or data.get("providerTransactionId")
+        or data.get("reference")
+        or ref
+        or ""
+    )
     if not provider_id:
         return {"received": True}
     event_id = f"mbiyo:{provider_id}:{mbiyo.status_value(payload)}"
@@ -3191,6 +3199,14 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
 
 async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:
     """Complete a verified Mbiyo payout exactly once."""
+    current = await db.transactions.find_one({"id": tx_id}, {"_id": 0, "status": 1})
+    if current and current.get("status") == "completed":
+        await db.transactions.update_one(
+            {"id": tx_id},
+            {"$set": {"metadata.mbiyo_status": provider_status},
+             "$unset": {"metadata.next_reconcile_at": ""}},
+        )
+        return True
     changed = await db.transactions.update_one(
         {"id": tx_id, "status": "pending"},
         {"$set": {
