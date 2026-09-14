@@ -36,11 +36,12 @@ function makeDevServerV5Compatible(devServerConfig) {
     "Content-Security-Policy":
       "default-src 'self'; base-uri 'self'; object-src 'none'; " +
       "frame-ancestors 'none'; form-action 'self' https:; " +
-      "script-src 'self' 'sha256-QFPQVbeyXKIeV46k93WqgNMtAwxoOZLcuCifQkdouYY=' " +
+      "script-src 'self' https://challenges.cloudflare.com 'sha256-QFPQVbeyXKIeV46k93WqgNMtAwxoOZLcuCifQkdouYY=' " +
       "'sha256-bv3BJQ9HDRPWREafa7OTAYZEHepHMGBDm7yX52R8CKE='; " +
       "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
-      "font-src 'self' data: https:; connect-src 'self' https:; " +
-      "frame-src 'self' https:; worker-src 'self' blob:; media-src 'self' blob: https:",
+      "font-src 'self' data: https:; connect-src 'self' https://challenges.cloudflare.com; " +
+      "frame-src 'self' https://challenges.cloudflare.com; worker-src 'self' blob:; " +
+      "media-src 'self' blob: https:",
   };
 
   if (onBeforeSetupMiddleware || setupMiddlewares) {

@@ -62,6 +62,7 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
   const widgetIdRef = useRef(null);
   const onTokenRef = useRef(onToken);
   const [loadError, setLoadError] = useState(false);
+  const [errorCode, setErrorCode] = useState('');
 
   useEffect(() => {
     onTokenRef.current = onToken;
@@ -85,6 +86,7 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
 
     containerRef.current.replaceChildren();
     setLoadError(false);
+    setErrorCode('');
     loadTurnstileScript()
       .then((turnstile) => {
         if (cancelled || !turnstile || !containerRef.current) return;
@@ -94,8 +96,9 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
           callback: (token) => onTokenRef.current?.(token),
           'expired-callback': () => onTokenRef.current?.(''),
           'timeout-callback': () => onTokenRef.current?.(''),
-          'error-callback': () => {
+          'error-callback': (code) => {
             onTokenRef.current?.('');
+            setErrorCode(String(code || ''));
             setLoadError(true);
           },
         });
@@ -129,7 +132,9 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
       <div ref={containerRef} aria-label="Vérification anti-bot" />
       {loadError && (
         <p className="mt-1 text-xs text-red-600">
-          Impossible de charger la vérification anti-bot.
+          {errorCode === '110200'
+            ? 'Ce domaine n’est pas autorisé dans Cloudflare Turnstile. Ajoutez le domaine Preview/production dans Hostname Management.'
+            : 'Impossible de charger la vérification anti-bot. Réessayez.'}
         </p>
       )}
     </div>
