@@ -101,7 +101,6 @@ async def _reset(db) -> dict:
     ).to_list(None)
     preserved_ids = [str(u["_id"]) for u in preserved_users_docs]
     preserved_emails_found = [u["email"] for u in preserved_users_docs]
-    print(f"[users] Preserving: {preserved_emails_found} (ids={preserved_ids})")
 
     del_users = await db.users.delete_many(
         {"email": {"$nin": preserved_lower}}
