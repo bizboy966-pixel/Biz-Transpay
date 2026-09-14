@@ -121,17 +121,19 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
 
   if (!siteKey || disabled) {
     return (
-      <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      <p className="turnstile-widget__notice mt-3 rounded-lg bg-amber-50 px-3 py-2 text-center text-xs text-amber-800">
         Vérification anti-bot indisponible. Réessayez plus tard.
       </p>
     );
   }
 
   return (
-    <div className="mt-3">
-      <div ref={containerRef} aria-label="Vérification anti-bot" />
+    <div className="turnstile-widget mt-3" data-testid="turnstile-widget">
+      <div className="turnstile-widget__canvas">
+        <div ref={containerRef} aria-label="Vérification anti-bot" />
+      </div>
       {loadError && (
-        <p className="mt-1 text-xs text-red-600">
+        <p className="turnstile-widget__error mt-1 text-xs leading-4 text-center text-red-600">
           {errorCode === '110200'
             ? 'Ce domaine n’est pas autorisé dans Cloudflare Turnstile. Ajoutez le domaine Preview/production dans Hostname Management.'
             : 'Impossible de charger la vérification anti-bot. Réessayez.'}

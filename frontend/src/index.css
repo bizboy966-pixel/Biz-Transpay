@@ -175,6 +175,39 @@ select {
   width: min(100%, 680px);
 }
 
+.turnstile-widget {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.turnstile-widget__canvas {
+  width: 100%;
+  max-width: 340px;
+  min-height: 60px;
+  display: flex;
+  justify-content: center;
+  overflow: visible;
+}
+
+.turnstile-widget__canvas > div {
+  max-width: 100%;
+  transform: scale(0.9);
+  transform-origin: center top;
+}
+
+.turnstile-widget__notice,
+.turnstile-widget__error {
+  width: min(100%, 320px);
+}
+
+@media (max-width: 480px) {
+  .turnstile-widget__canvas > div {
+    transform: scale(0.84);
+  }
+}
+
 .bt-auth-main {
   position: relative;
   z-index: 1;
