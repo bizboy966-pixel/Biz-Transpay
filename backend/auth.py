@@ -12,7 +12,11 @@ from typing import Optional
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-SECRET = os.environ.get("JWT_SECRET") or os.environ.get("SESSION_SECRET") or "dev-secret"
+SECRET = os.environ.get("JWT_SECRET") or os.environ.get("SESSION_SECRET")
+if not SECRET:
+    raise RuntimeError(
+        "JWT_SECRET or SESSION_SECRET must be configured; refusing to use a development JWT secret"
+    )
 ALGO = os.environ.get("JWT_ALGORITHM", "HS256")
 EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "168"))
 

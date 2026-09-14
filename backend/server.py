@@ -327,6 +327,80 @@ async def _idempotency_store(user_id: str, key: str, method: str, path: str,
     )
 
 
+async def _idempotency_claim(user_id: str, key: str, method: str, path: str,
+                             fingerprint: str = "") -> Optional[dict]:
+    """Atomically reserve an idempotency key before any money-moving work.
+
+    A read followed by an insert is not sufficient here: two concurrent
+    requests can both pass the read.  The unique index is the reservation
+    barrier.  A second request receives the completed response when available,
+    otherwise it gets a conflict instead of creating a second upstream intent.
+    """
+    if not key:
+        return None
+    existing = await _idempotency_lookup(user_id, key)
+    if existing:
+        if fingerprint and existing.get("fingerprint") not in (None, fingerprint):
+            raise BizAPIError(409, "Idempotency-Key was already used for another request.",
+                              "IDEMPOTENCY_KEY_REUSED")
+        if existing.get("body") is not None:
+            return existing
+        raise BizAPIError(409, "An identical request is already being processed.",
+                          "IDEMPOTENCY_IN_PROGRESS")
+    exp = datetime.now(timezone.utc) + timedelta(hours=_IDEMPOTENCY_TTL_HOURS)
+    try:
+        await db.idempotency_keys.insert_one({
+            "user_id": user_id, "key": key, "method": method, "path": path,
+            "fingerprint": fingerprint, "status": "processing",
+            "expires_at": exp.isoformat(), "created_at": now_iso(),
+        })
+    except DuplicateKeyError:
+        existing = await _idempotency_lookup(user_id, key)
+        if existing and existing.get("body") is not None:
+            return existing
+        raise BizAPIError(409, "An identical request is already being processed.",
+                          "IDEMPOTENCY_IN_PROGRESS")
+    return None
+
+
+def _request_fingerprint(payload: BaseModel) -> str:
+    raw = json.dumps(payload.model_dump(), sort_keys=True, separators=(",", ":"),
+                     default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _credit_wallet_once(user_id: str, field: str, amount: float,
+                              operation_id: str) -> bool:
+    """Atomically credit a wallet once, using the operation id as the barrier."""
+    if not operation_id or amount == 0:
+        return False
+    result = await db.users.update_one(
+        {"id": user_id, "wallet_credit_operation_ids": {"$ne": operation_id}},
+        {"$inc": {field: float(amount)},
+         "$addToSet": {"wallet_credit_operation_ids": operation_id}},
+    )
+    return result.modified_count == 1
+
+
+async def _refund_wallet_once(user_id: str, field: str, amount: float,
+                              operation_id: str) -> bool:
+    """Atomically refund a wallet once, even if webhook and polling race."""
+    return await _credit_wallet_once(user_id, field, amount,
+                                     f"refund:{operation_id}")
+
+
+async def _debit_wallet_once(user_id: str, field: str, amount: float,
+                             operation_id: str) -> bool:
+    """Atomically debit only available funds and never apply one operation twice."""
+    result = await db.users.update_one(
+        {"id": user_id, field: {"$gte": float(amount)},
+         "wallet_debit_operation_ids": {"$ne": operation_id}},
+        {"$inc": {field: -float(amount)},
+         "$addToSet": {"wallet_debit_operation_ids": operation_id}},
+    )
+    return result.modified_count == 1
+
+
 # ---------- Rate limiter (informative + soft cap 100 req/min per key) ----------
 # In-memory sliding window per merchant_id. Fine for a single-pod deployment;
 # a Redis-backed store would be needed once we run multiple replicas.
@@ -603,7 +677,17 @@ async def require_merchant_account(
 async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
                     currency: str, status: str = "completed",
                     counterparty: Optional[str] = None, description: str = "",
-                    metadata: Optional[dict] = None) -> Transaction:
+                    metadata: Optional[dict] = None,
+                    operation_id: Optional[str] = None) -> Transaction:
+    metadata = dict(metadata or {})
+    if operation_id:
+        metadata["operation_id"] = operation_id
+        existing = await db.transactions.find_one(
+            {"user_id": user_id, "metadata.operation_id": operation_id},
+            {"_id": 0},
+        )
+        if existing:
+            return Transaction(**existing)
     tx = Transaction(
         id=new_id(),
         user_id=user_id,
@@ -616,9 +700,19 @@ async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
         reference=f"BTP-{secrets.token_hex(5).upper()}",
         description=description,
         created_at=now_iso(),
-        metadata=metadata or {},
+        metadata=metadata,
     )
-    await db.transactions.insert_one(tx.model_dump())
+    try:
+        await db.transactions.insert_one(tx.model_dump())
+    except DuplicateKeyError:
+        if operation_id:
+            existing = await db.transactions.find_one(
+                {"user_id": user_id, "metadata.operation_id": operation_id},
+                {"_id": 0},
+            )
+            if existing:
+                return Transaction(**existing)
+        raise
     return tx
 
 
@@ -2414,14 +2508,24 @@ async def transfer(req: TransferRequest, request: Request,
         if recip["id"] == uid:
             raise HTTPException(400, "Impossible de vous transférer à vous-même")
 
-        await db.users.update_one({"id": uid}, {"$inc": {field: -req.amount}})
-        await db.users.update_one({"id": recip["id"]}, {"$inc": {field: req.amount}})
+        transfer_operation_id = new_id()
+        if not await _debit_wallet_once(
+                uid, field, req.amount,
+                f"biz-to-biz:{transfer_operation_id}"):
+            raise HTTPException(400, "Solde insuffisant")
+        await _credit_wallet_once(
+            recip["id"], field, req.amount,
+            f"biz-to-biz:{transfer_operation_id}")
         await record_tx(recip["id"], "transfer", "in", req.amount, req.currency,
-                        counterparty=u["username"], description=req.description)
+                        counterparty=u["username"], description=req.description,
+                        metadata={"transfer_operation_id": transfer_operation_id},
+                        operation_id=f"biz-to-biz:{transfer_operation_id}:in")
         tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
                                  counterparty=recip["username"], description=req.description,
                                  metadata={"transfer_type": "biz_to_biz", "fee": 0,
-                                           "recipient_name": recip.get("full_name")})
+                                            "recipient_name": recip.get("full_name"),
+                                            "transfer_operation_id": transfer_operation_id},
+                                  operation_id=f"biz-to-biz:{transfer_operation_id}:out")
         return {"transaction": tx_out.model_dump(), "fee": 0,
                 "recipient": {"username": recip["username"], "full_name": recip.get("full_name")}}
 
@@ -2781,11 +2885,12 @@ async def transfer(req: TransferRequest, request: Request,
         fee = round(req.amount * (fee_pct / 100.0) + gw_fixed, 6)
         total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
         recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
-        if u.get(field, 0) < total_debit:
+        # Debit user balance atomically.  The read above is only informative;
+        # this conditional update is the concurrency barrier.
+        transfer_operation_id = new_id()
+        if not await _debit_wallet_once(uid, field, total_debit,
+                                        f"crypto-transfer:{transfer_operation_id}"):
             raise HTTPException(400, "Solde insuffisant (frais inclus)")
-
-        # Debit user balance FIRST (pessimistic). We refund if the payout call fails.
-        await db.users.update_one({"id": uid}, {"$inc": {field: -total_debit}})
         tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
                                  status="pending",
                                  counterparty=req.wallet_address, description=req.description,
@@ -2801,12 +2906,15 @@ async def transfer(req: TransferRequest, request: Request,
                                            "amount_net": recipient_gets,
                                            "fee_bearer": req.fee_bearer,
                                            "recipient_gets": recipient_gets, "total_debit": total_debit,
-                                           "recipient_name": req.recipient_name})
+                                            "recipient_name": req.recipient_name,
+                                            "operation_id": transfer_operation_id},
+                                  operation_id=f"crypto-transfer:{transfer_operation_id}")
 
         # Call IzichangePay to actually send the crypto on-chain
         if not izipay.is_configured():
             # Refund and fail
-            await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+            await _refund_wallet_once(uid, field, total_debit,
+                                      f"crypto-transfer:{transfer_operation_id}")
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
             raise HTTPException(503, "Passerelle crypto non configurée")
         coin_code = asset_code  # e.g. USDT.TRC20
@@ -2823,7 +2931,8 @@ async def transfer(req: TransferRequest, request: Request,
             log_msg = f"IziPay payout rejected [{e.code}] {e.message}"
             print(log_msg)  # picked up by supervisor logs
             # Refund on gateway rejection
-            await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+            await _refund_wallet_once(uid, field, total_debit,
+                                      f"crypto-transfer:{transfer_operation_id}")
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed",
                                                                           "metadata.error_code": e.code,
                                                                           "metadata.error_internal": e.message}})
@@ -2850,7 +2959,9 @@ async def transfer(req: TransferRequest, request: Request,
             tx_update["metadata.tx_hash"] = payout.get("txHash") or payout.get("txhash") or payout.get("transactionHash")
         elif upstream_status in ("failed", "rejected", "error"):
             # Refund immediately on sync failure.
-            await db.users.update_one({"id": uid}, {"$inc": {field: total_debit}})
+            await _refund_wallet_once(
+                uid, field, total_debit,
+                f"crypto-transfer:{transfer_operation_id}")
             tx_update["status"] = "failed"
         await db.transactions.update_one({"id": tx_out.id}, {"$set": tx_update})
         return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
@@ -2920,17 +3031,20 @@ async def payment_status(session_id: str, request: Request,
             s = await checkout.get_checkout_status(session_id)
             if s.payment_status == "paid" or s.status == "complete":
                 field = "balance_xof" if record["currency"] == "XOF" else "balance_xaf"
+                operation_id = f"stripe:deposit:{session_id}"
+                await _credit_wallet_once(uid, field, record["amount"], operation_id)
                 r = await db.payment_transactions.update_one(
                     {"session_id": session_id, "user_id": uid,
                      "payment_status": {"$ne": "paid"}},
                     {"$set": {"status": "completed", "payment_status": "paid",
-                              "updated_at": now_iso()}}
+                              "updated_at": now_iso(),
+                              "credit_operation_id": operation_id}}
                 )
                 if r.modified_count > 0:
-                    await db.users.update_one({"id": uid}, {"$inc": {field: record["amount"]}})
                     await record_tx(uid, "deposit", "in", record["amount"], record["currency"],
                                     description="Dépôt Stripe",
-                                    metadata={"stripe_session_id": session_id})
+                                    metadata={"stripe_session_id": session_id},
+                                    operation_id=operation_id)
                 record = await db.payment_transactions.find_one(
                     {"session_id": session_id, "user_id": uid}, {"_id": 0})
         except Exception:
@@ -2961,15 +3075,22 @@ async def stripe_webhook(request: Request):
         if record and record.get("payment_status") != "paid":
             uid = record["user_id"]
             field = "balance_xof" if record["currency"] == "XOF" else "balance_xaf"
-            await db.payment_transactions.update_one(
-                {"session_id": event.session_id, "payment_status": {"$ne": "paid"}},
+            operation_id = f"stripe:deposit:{event.session_id}"
+            await _credit_wallet_once(uid, field, record["amount"], operation_id)
+            changed = await db.payment_transactions.update_one(
+                {"session_id": event.session_id,
+                 "payment_status": {"$ne": "paid"}},
                 {"$set": {"status": "completed", "payment_status": "paid",
-                          "updated_at": now_iso()}}
+                          "updated_at": now_iso(),
+                          "credit_operation_id": operation_id}}
             )
-            await db.users.update_one({"id": uid}, {"$inc": {field: record["amount"]}})
-            await record_tx(uid, "deposit", "in", record["amount"], record["currency"],
-                            description="Dépôt Stripe",
-                            metadata={"stripe_session_id": event.session_id})
+            if changed.modified_count or record.get("payment_status") == "paid":
+                await record_tx(
+                    uid, "deposit", "in", record["amount"], record["currency"],
+                    description="Dépôt Stripe",
+                    metadata={"stripe_session_id": event.session_id},
+                    operation_id=operation_id,
+                )
     return {"status": "ok"}
 
 
@@ -4224,7 +4345,7 @@ async def fedapay_webhook(request: Request):
             "received_at": now_iso(),
             "processed": False,
         })
-    except Exception:
+    except DuplicateKeyError:
         return {"received": True, "duplicate": True}
 
     try:
@@ -4275,7 +4396,9 @@ async def fedapay_webhook(request: Request):
                 total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
                 currency = tx.get("currency", "XOF")
                 field = f"balance_{currency.lower()}"
-                await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: total_debit}})
+                await _refund_wallet_once(
+                    tx["user_id"], field, total_debit,
+                    f"fedapay-payout:{tx['id']}")
                 await db.transactions.update_one(
                     {"id": tx["id"]},
                     {"$set": {"status": "failed",
@@ -4585,26 +4708,26 @@ async def _reconcile_intent(intent_id: str) -> None:
         fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
         fee, net = _apply_fee(gross, fee_pct)
         gateway_fee, platform_fee = await _crypto_platform_fee(d.get("coin", "USDT"), "deposit", gross)
-        r = await db.crypto_deposits.update_one(
+        operation_id = f"izipay:deposit:{merchant_ref}"
+        await _credit_wallet_once(d["user_id"], "balance_usdt", net, operation_id)
+        await db.crypto_deposits.update_one(
             {"id": merchant_ref, "status": {"$ne": "confirmed"}},
             {"$set": {"status": "confirmed", "updated_at": now_iso(),
                       "izipay_intent_id": intent_id, "tx_hash": tx_hash,
                       "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                      "amount_net": net}}
+                      "amount_net": net, "credit_operation_id": operation_id}}
         )
-        if r.modified_count > 0:
-            await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": net}})
-            await record_tx(d["user_id"], "deposit", "in", net, "USDT",
-                            status="completed",
-                            description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
-                            metadata={"izipay_intent_id": intent_id,
-                                      "coin": d.get("coin"), "network": d.get("network"),
-                                      "asset_code": d.get("asset_code"), "tx_hash": tx_hash,
-                                      "deposit_address": d.get("deposit_address"),
-                                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                                      "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                                      "amount_net": net,
-                                      "source": "reconcile"})
+        await record_tx(d["user_id"], "deposit", "in", net, "USDT",
+                        status="completed",
+                        description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
+                        metadata={"izipay_intent_id": intent_id,
+                                  "coin": d.get("coin"), "network": d.get("network"),
+                                  "asset_code": d.get("asset_code"), "tx_hash": tx_hash,
+                                  "deposit_address": d.get("deposit_address"),
+                                  "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                                  "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                                  "amount_net": net, "source": "reconcile"},
+                        operation_id=operation_id)
         return
 
     # 2) Payment link
@@ -4619,34 +4742,34 @@ async def _reconcile_intent(intent_id: str) -> None:
             fee_pct = await _crypto_fee_pct(lp.get("coin", "USDT"))
             fee, net = _apply_fee(gross, fee_pct)
         gateway_fee, platform_fee = await _crypto_platform_fee(lp.get("coin", "USDT"), "deposit", gross)
-        r = await db.link_payments.update_one(
-            {"id": merchant_ref, "status": {"$ne": "paid"}},
-            {"$set": {"status": "paid", "paid_at": now_iso(),
-                      "izipay_intent_id": intent_id, "tx_hash": tx_hash,
-                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                      "amount_net": net}}
-        )
-        if r.modified_count > 0:
-            link = await db.payment_links.find_one({"id": lp["link_id"]})
-            if link:
-                await db.users.update_one({"id": link["user_id"]},
-                                          {"$inc": {"balance_usdt": net}})
-                await db.payment_links.update_one(
-                    {"id": link["id"]},
-                    {"$inc": {"payments_received": 1, "total_received": net}}
-                )
-                await record_tx(link["user_id"], "link_payment", "in",
-                                net, "USDT", status="completed",
-                                description=f"Paiement lien: {link.get('title','')} · {lp.get('coin','')} {lp.get('network','')}",
-                                counterparty=lp.get("customer_email") or "client",
-                                metadata={"link_id": link["id"],
-                                          "izipay_intent_id": intent_id,
-                                          "coin": lp.get("coin"), "network": lp.get("network"),
-                                          "asset_code": lp.get("asset_code"), "tx_hash": tx_hash,
-                                          "deposit_address": lp.get("deposit_address"),
-                                          "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                                          "amount_net": net,
-                                          "source": "reconcile"})
+        link = await db.payment_links.find_one({"id": lp["link_id"]})
+        if link:
+            operation_id = f"izipay:link:{merchant_ref}"
+            await _credit_wallet_once(link["user_id"], "balance_usdt", net, operation_id)
+            await db.link_payments.update_one(
+                {"id": merchant_ref, "status": {"$ne": "paid"}},
+                {"$set": {"status": "paid", "paid_at": now_iso(),
+                          "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                          "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                          "amount_net": net, "credit_operation_id": operation_id}}
+            )
+            await db.payment_links.update_one(
+                {"id": link["id"], "link_payment_operation_ids": {"$ne": merchant_ref}},
+                {"$inc": {"payments_received": 1, "total_received": net},
+                 "$addToSet": {"link_payment_operation_ids": merchant_ref}}
+            )
+            await record_tx(link["user_id"], "link_payment", "in",
+                            net, "USDT", status="completed",
+                            description=f"Paiement lien: {link.get('title','')} · {lp.get('coin','')} {lp.get('network','')}",
+                            counterparty=lp.get("customer_email") or "client",
+                            metadata={"link_id": link["id"],
+                                      "izipay_intent_id": intent_id,
+                                      "coin": lp.get("coin"), "network": lp.get("network"),
+                                      "asset_code": lp.get("asset_code"), "tx_hash": tx_hash,
+                                      "deposit_address": lp.get("deposit_address"),
+                                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
+                                      "amount_net": net, "source": "reconcile"},
+                            operation_id=operation_id)
 
 
 @api.post("/webhooks/izipay")
@@ -4699,16 +4822,17 @@ async def izipay_webhook(request: Request):
                     fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
                     fee, net = _apply_fee(gross, fee_pct)
                     gateway_fee, platform_fee = await _crypto_platform_fee(d.get("coin", "USDT"), "deposit", gross)
+                    operation_id = f"izipay:deposit:{merchant_ref}"
+                    await _credit_wallet_once(d["user_id"], "balance_usdt", net, operation_id)
                     await db.crypto_deposits.update_one(
                         {"id": merchant_ref, "status": {"$ne": "confirmed"}},
                         {"$set": {"status": "confirmed", "updated_at": now_iso(),
                                   "izipay_intent_id": intent_id,
                                   "tx_hash": tx_hash,
                                   "amount_gross": gross, "fee": fee,
-                                  "fee_pct": fee_pct, "amount_net": net}}
+                                  "fee_pct": fee_pct, "amount_net": net,
+                                  "credit_operation_id": operation_id}}
                     )
-                    # Credit NET amount (after fee) to user's USDT balance
-                    await db.users.update_one({"id": d["user_id"]}, {"$inc": {"balance_usdt": net}})
                     await record_tx(d["user_id"], "deposit", "in", net, "USDT",
                                     status="completed",
                                     description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
@@ -4721,7 +4845,8 @@ async def izipay_webhook(request: Request):
                                               "amount_gross": gross,
                                               "fee": fee, "fee_pct": fee_pct,
                                               "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                                              "amount_net": net})
+                                              "amount_net": net},
+                                    operation_id=operation_id)
                 # 2) Payment link payment?
                 link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if link_pay:
@@ -4735,22 +4860,26 @@ async def izipay_webhook(request: Request):
                         fee_pct = await _crypto_fee_pct(link_pay.get("coin", "USDT"))
                         fee, net = _apply_fee(gross, fee_pct)
                     gateway_fee, platform_fee = await _crypto_platform_fee(link_pay.get("coin", "USDT"), "deposit", gross)
+                    link = await db.payment_links.find_one({"id": link_pay["link_id"]})
+                    operation_id = f"izipay:link:{merchant_ref}"
+                    if link:
+                        await _credit_wallet_once(link["user_id"], "balance_usdt", net, operation_id)
                     await db.link_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
                         {"$set": {"status": "paid", "paid_at": now_iso(),
                                   "izipay_intent_id": intent_id,
                                   "tx_hash": tx_hash,
                                   "amount_gross": gross, "fee": fee,
-                                  "fee_pct": fee_pct, "amount_net": net}}
+                                  "fee_pct": fee_pct, "amount_net": net,
+                                  "credit_operation_id": operation_id}}
                     )
                     # Credit merchant NET amount
-                    link = await db.payment_links.find_one({"id": link_pay["link_id"]})
                     if link:
-                        await db.users.update_one({"id": link["user_id"]},
-                                                  {"$inc": {"balance_usdt": net}})
                         await db.payment_links.update_one(
-                            {"id": link["id"]},
-                            {"$inc": {"payments_received": 1, "total_received": net}}
+                            {"id": link["id"],
+                             "link_payment_operation_ids": {"$ne": merchant_ref}},
+                            {"$inc": {"payments_received": 1, "total_received": net},
+                             "$addToSet": {"link_payment_operation_ids": merchant_ref}}
                         )
                         await record_tx(link["user_id"], "link_payment", "in",
                                         net, "USDT", status="completed",
@@ -4766,8 +4895,9 @@ async def izipay_webhook(request: Request):
                                                   "platform_fee": platform_fee,
                                                   "deposit_address": link_pay.get("deposit_address"),
                                                   "amount_gross": gross,
-                                                  "fee": fee, "fee_pct": fee_pct,
-                                                  "amount_net": net})
+                                                   "fee": fee, "fee_pct": fee_pct,
+                                                   "amount_net": net},
+                                         operation_id=operation_id)
                 # 3) Merchant API payment?
                 mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if mp:
@@ -4776,16 +4906,17 @@ async def izipay_webhook(request: Request):
                     fee, net = _apply_fee(gross, fee_pct)
                     gateway_fee, platform_fee = await _crypto_platform_fee(mp.get("coin", "USDT"), "deposit", gross)
                     tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
+                    operation_id = f"izipay:merchant-payment:{merchant_ref}"
+                    await _credit_wallet_once(mp["merchant_id"], "balance_usdt", net, operation_id)
                     await db.merchant_payments.update_one(
                         {"id": merchant_ref, "status": {"$ne": "paid"}},
                         {"$set": {"status": "paid", "paid_at": now_iso(),
                                   "izipay_intent_id": intent_id,
                                   "tx_hash": tx_hash,
                                   "amount_gross": gross, "fee": fee,
-                                  "fee_pct": fee_pct, "amount_net": net}}
+                                  "fee_pct": fee_pct, "amount_net": net,
+                                  "credit_operation_id": operation_id}}
                     )
-                    await db.users.update_one({"id": mp["merchant_id"]},
-                                              {"$inc": {"balance_usdt": net}})
                     await record_tx(mp["merchant_id"], "payment", "in", net, "USDT",
                                     status="completed", description="Paiement API marchand",
                                     metadata={"merchant_payment_id": mp["id"],
@@ -4796,7 +4927,8 @@ async def izipay_webhook(request: Request):
                                               "customer_email": mp.get("customer_email"),
                                               "amount_gross": gross, "fee": fee,
                                               "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                                              "fee_pct": fee_pct, "amount_net": net})
+                                               "fee_pct": fee_pct, "amount_net": net},
+                                     operation_id=operation_id)
                     # Deliver HMAC-signed webhook to merchant
                     await _deliver_webhook(mp["merchant_id"], "payment.completed", {
                         "payment_id": mp["id"],
@@ -4893,7 +5025,9 @@ async def izipay_webhook(request: Request):
                     total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
                     currency = tx.get("currency", "USDT")
                     field = f"balance_{currency.lower()}"
-                    await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: total_debit}})
+                    await _refund_wallet_once(
+                        tx["user_id"], field, total_debit,
+                        f"izipay-payout:{tx['id']}")
                     await db.transactions.update_one({"id": merchant_ref},
                                                      {"$set": {"status": "failed",
                                                                "metadata.izipay_status": ev_type.split(".")[1],
@@ -5363,7 +5497,9 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         if len(idem_key) > 255:
             raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
                               "IDEMPOTENCY_KEY_TOO_LONG")
-        cached = await _idempotency_lookup(merchant["id"], idem_key)
+        cached = await _idempotency_claim(
+            merchant["id"], idem_key, "POST", "/api/v1/payments",
+            _request_fingerprint(payload))
         if cached and cached.get("body") is not None:
             return JSONResponse(status_code=cached.get("status_code", 200),
                                 content=cached["body"])
@@ -5715,11 +5851,11 @@ async def _reconcile_payout(izipay_payout_id: str) -> None:
             updates["error_code"] = data.get("errorCode") or data.get("code")
             updates["error_message"] = data.get("errorMessage") or data.get("message")
             # Refund on newly discovered terminal failure.
-            if not po.get("refunded_at"):
-                await db.users.update_one(
-                    {"id": po["merchant_id"]},
-                    {"$inc": {"balance_usdt": float(po.get("total_debit") or 0)}},
-                )
+            refund_id = f"merchant-payout:{po['id']}"
+            refunded = await _refund_wallet_once(
+                po["merchant_id"], "balance_usdt",
+                float(po.get("total_debit") or 0), refund_id)
+            if refunded:
                 updates["refunded_at"] = now_iso()
     await db.merchant_payouts.update_one({"id": po["id"]}, {"$set": updates})
 
@@ -5746,7 +5882,10 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     if idem_key and len(idem_key) > 255:
         raise BizAPIError(400, "Idempotency-Key too long (max 255 chars).",
                           "IDEMPOTENCY_KEY_TOO_LONG")
-    cached = await _idempotency_lookup(uid, idem_key) if idem_key else None
+    if idem_key:
+        cached = await _idempotency_claim(
+            uid, idem_key, "POST", "/api/v1/payouts",
+            _request_fingerprint(payload))
     if cached is not None:
         return cached.get("body") if isinstance(cached, dict) else cached
 
@@ -5850,12 +5989,10 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         "izipay_status": None,
         "created_at": now,
     }
-    # Debit balance atomically (only if funds still available).
-    upd = await db.users.update_one(
-        {"id": uid, "balance_usdt": {"$gte": total_debit}},
-        {"$inc": {"balance_usdt": -total_debit}},
-    )
-    if upd.modified_count == 0:
+    # Debit balance atomically (only if funds still available).  The payout
+    # id is also a durable debit barrier for retries and reconciliation.
+    if not await _debit_wallet_once(
+            uid, "balance_usdt", total_debit, f"merchant-payout:{po_id}"):
         raise BizAPIError(400, "Insufficient balance (concurrent debit).",
                           "INSUFFICIENT_BALANCE")
 
@@ -5874,7 +6011,8 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         )
     except izipay.IziPayError as e:
         # Refund merchant balance on gateway rejection.
-        await db.users.update_one({"id": uid}, {"$inc": {"balance_usdt": total_debit}})
+        await _refund_wallet_once(uid, "balance_usdt", total_debit,
+                                  f"merchant-payout:{po_id}")
         await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
             "status": "failed",
             "failed_at": now_iso(),
@@ -5898,7 +6036,8 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
                           details={"gateway_code": e.code, "gateway_message": e.message})
     except Exception as e:  # noqa: BLE001
         # Network / unknown error — refund and 502.
-        await db.users.update_one({"id": uid}, {"$inc": {"balance_usdt": total_debit}})
+        await _refund_wallet_once(uid, "balance_usdt", total_debit,
+                                  f"merchant-payout:{po_id}")
         await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
             "status": "failed",
             "failed_at": now_iso(),
@@ -6232,6 +6371,14 @@ async def do_exchange(req: ExchangeRequest,
     if not from_field or not to_field:
         raise HTTPException(400, "Devise invalide")
 
+    exchange_key = (req.idempotency_key or "").strip()
+    if exchange_key:
+        cached = await _idempotency_claim(
+            uid, exchange_key, "POST", "/api/exchange",
+            _request_fingerprint(req))
+        if cached and cached.get("body") is not None:
+            return cached["body"]
+
     cfg = await get_platform_config()
     key = f"{fc}_{tc}"
     if not (cfg.get("conversion_pairs_enabled") or {}).get(key, True):
@@ -6253,17 +6400,21 @@ async def do_exchange(req: ExchangeRequest,
     rate = float((cfg.get("conversion_rates") or {}).get(key, 1.0))
     fee = _compute_fee(cfg.get("conversion_fee") or {}, req.amount)
 
-    # Atomic pessimistic debit — refuses concurrent overdraft.
-    u = await db.users.find_one_and_update(
-        {"id": uid, from_field: {"$gte": req.amount}},
-        {"$inc": {from_field: -req.amount}},
-        return_document=False,
-    )
-    if not u:
-        raise HTTPException(400, "Solde insuffisant")
-
     received = round((req.amount - fee) * rate, 6)
-    await db.users.update_one({"id": uid}, {"$inc": {to_field: received}})
+    operation_id = f"exchange:{uid}:{exchange_key or new_id()}"
+    # Both legs and their operation markers are changed in one Mongo update.
+    # This prevents a crash between debit and credit from destroying value.
+    debited = await db.users.update_one(
+        {"id": uid, from_field: {"$gte": req.amount},
+         "wallet_debit_operation_ids": {"$ne": operation_id}},
+        {"$inc": {from_field: -req.amount, to_field: received},
+         "$addToSet": {
+             "wallet_debit_operation_ids": operation_id,
+             "wallet_credit_operation_ids": operation_id,
+         }},
+    )
+    if not debited.modified_count:
+        raise HTTPException(400, "Solde insuffisant ou opération déjà appliquée")
 
     tx_out = await record_tx(
         uid, "exchange", "out", req.amount, fc,
@@ -6275,13 +6426,18 @@ async def do_exchange(req: ExchangeRequest,
             # Conversion fees are pure platform revenue (no external gateway).
             "gateway_fee": 0.0,
             "platform_fee": float(fee),
+            "operation_id": operation_id,
         },
+        operation_id=f"{operation_id}:out",
     )
-    return {
+    result = {
         "received": received, "fee": fee, "rate": rate,
         "from_currency": fc, "to_currency": tc,
         "transaction": tx_out.model_dump(),
     }
+    if exchange_key:
+        await _idempotency_store(uid, exchange_key, "POST", "/api/exchange", 200, result)
+    return result
 
 
 # ==================== PAYMENT LINKS ====================
@@ -8267,9 +8423,10 @@ class AdminBalanceAction(BaseModel):
     # The product labels the dollar-denominated wallet as USDT. Accept USD as
     # an admin API alias as well, but persist it consistently as USDT.
     currency: Literal["XOF", "XAF", "USDT", "USD"]
-    amount: float
+    amount: float = Field(..., gt=0)
     reason: Optional[str] = ""
     confirmation: Optional[str] = None
+    action_id: Optional[str] = Field(None, min_length=8, max_length=120)
 
 
 class AdminUpdateUser(BaseModel):
@@ -8724,14 +8881,16 @@ async def admin_credit(
         "XAF": "balance_xaf",
         "USDT": "balance_usdt",
     }[currency]
-    await db.users.update_one({"id": user_id}, {"$inc": {field: req.amount}})
+    operation_id = f"admin-balance:{req.action_id or new_id()}"
+    credited = await _credit_wallet_once(user_id, field, req.amount, operation_id)
     await record_tx(user_id, "deposit", "in", req.amount, currency,
                     description=f"Crédit administrateur ({req.reason or 'manuel'})",
-                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]})
+                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]},
+                    operation_id=operation_id)
     await audit(admin["id"], admin["username"], "credit",
                 target_user_id=user_id, target_username=target["username"],
                 details={"amount": req.amount, "currency": currency, "reason": req.reason})
-    return {"ok": True}
+    return {"ok": True, "applied": credited}
 
 
 @api.post("/admin/users/{user_id}/debit")
@@ -8751,16 +8910,23 @@ async def admin_debit(
         "XAF": "balance_xaf",
         "USDT": "balance_usdt",
     }[currency]
-    if target.get(field, 0) < req.amount:
-        raise HTTPException(400, "Solde utilisateur insuffisant")
-    await db.users.update_one({"id": user_id}, {"$inc": {field: -req.amount}})
+    operation_id = f"admin-balance:{req.action_id or new_id()}"
+    debited = await _debit_wallet_once(user_id, field, req.amount, operation_id)
+    if not debited:
+        # A replay of an already-applied action is safe and should remain
+        # idempotent; a new action with no funds is rejected.
+        existing = await db.transactions.find_one(
+            {"user_id": user_id, "metadata.operation_id": operation_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(400, "Solde utilisateur insuffisant")
     await record_tx(user_id, "withdrawal", "out", req.amount, currency,
                     description=f"Débit administrateur ({req.reason or 'manuel'})",
-                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]})
+                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]},
+                    operation_id=operation_id)
     await audit(admin["id"], admin["username"], "debit",
                 target_user_id=user_id, target_username=target["username"],
                 details={"amount": req.amount, "currency": currency, "reason": req.reason})
-    return {"ok": True}
+    return {"ok": True, "applied": debited}
 
 
 @api.patch("/admin/users/{user_id}")
@@ -9183,7 +9349,8 @@ async def admin_refresh_transaction(tx_id: str, admin=Depends(get_admin)):
         total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
         currency = tx.get("currency", "USDT")
         field = f"balance_{currency.lower()}"
-        await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: total_debit}})
+        await _refund_wallet_once(
+            tx["user_id"], field, total_debit, f"transaction:{tx_id}")
         await audit(admin["id"], admin["username"], "tx_refresh_failed",
                     target_user_id=tx["user_id"],
                     details={"tx_id": tx_id, "payout_id": payout_id, "upstream": upstream_status})
@@ -9226,14 +9393,19 @@ async def admin_approve_transaction(
     if typ == "deposit":
         # Credit user's balance now.
         field = "balance_usdt" if is_crypto else "balance_xof"
-        await db.users.update_one({"id": uid}, {"$inc": {field: credit_amount}})
+        balance_applied = await _credit_wallet_once(
+            uid, field, credit_amount, f"manual-approve:{tx_id}")
 
-    await db.transactions.update_one({"id": tx_id}, {"$set": {
+    changed = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"}, {"$set": {
         "status": "completed",
         "approved_at": now_iso(),
         "approved_by": admin["username"],
         "manual_action": "approved",
-    }})
+        }})
+    if not changed.modified_count and not balance_applied:
+        return {"ok": True, "already_applied": True,
+                "tx": await db.transactions.find_one({"id": tx_id}, {"_id": 0})}
 
     await audit(admin["id"], admin["username"], "tx_approve",
                 target_user_id=uid, details={"type": typ, "amount": amt, "tx_id": tx_id})
@@ -9286,16 +9458,23 @@ async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
             or amt
         )
         field = "balance_usdt" if is_crypto else "balance_xof"
-        await db.users.update_one({"id": uid}, {"$inc": {field: refund_amount}})
+        refund_applied = await _refund_wallet_once(
+            uid, field, refund_amount, f"manual-reject:{tx_id}")
+    else:
+        refund_applied = False
 
-    await db.transactions.update_one({"id": tx_id}, {"$set": {
+    changed = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"}, {"$set": {
         "status": "failed",
         "rejected_at": now_iso(),
         "rejected_by": admin["username"],
         "manual_action": "rejected",
         "rejection_reason": body.reason,
         "refunded_amount": refund_amount if refund_amount > 0 else None,
-    }})
+        }})
+    if not changed.modified_count and not refund_applied:
+        return {"ok": True, "already_applied": True,
+                "tx": await db.transactions.find_one({"id": tx_id}, {"_id": 0})}
 
     await audit(admin["id"], admin["username"], "tx_reject",
                 target_user_id=uid, details={"type": typ, "reason": body.reason,
@@ -10257,6 +10436,13 @@ async def startup_db_client():
         partialFilterExpression={
             "metadata.idempotency_key": {"$type": "string"},
             "metadata.transfer_type": "biz_to_mobile",
+        })
+    await db.transactions.create_index(
+        [("user_id", 1), ("metadata.operation_id", 1)],
+        name="uniq_wallet_operation",
+        unique=True,
+        partialFilterExpression={
+            "metadata.operation_id": {"$type": "string"},
         })
 
 

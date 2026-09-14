@@ -208,6 +208,7 @@ class ExchangeRequest(BaseModel):
     from_currency: Literal["USDT", "XOF", "XAF"]
     to_currency: Literal["USDT", "XOF", "XAF"]
     amount: float
+    idempotency_key: Optional[str] = Field(None, min_length=8, max_length=120)
 
 
 # ---------- KYC ----------

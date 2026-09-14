@@ -14,6 +14,7 @@ export default function AdminUserDetail() {
   const [reason, setReason] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [pending, setPending] = useState(false);
+  const [balanceActionId, setBalanceActionId] = useState(null);
 
   const load = () => api.get(`/admin/users/${id}`).then(({ data }) => setData(data)).catch(() => {});
   // `load` is intentionally recreated when the route id changes.
@@ -42,9 +43,12 @@ export default function AdminUserDetail() {
     if (!confirmCriticalAction(dir === 'credit' ? 'Confirmer le crédit administrateur ?' : 'Confirmer le débit administrateur ?')) return;
     setPending(true);
     try {
-      await api.post(`/admin/users/${id}/${dir}`, { amount: parseFloat(amount), currency, reason, confirmation: 'CONFIRMER' });
+      await api.post(`/admin/users/${id}/${dir}`, {
+        amount: parseFloat(amount), currency, reason,
+        confirmation: 'CONFIRMER', action_id: balanceActionId,
+      });
       toast.success(dir === 'credit' ? 'Compte crédité' : 'Compte débité');
-      setModal(null); setAmount(''); setReason('');
+      setModal(null); setAmount(''); setReason(''); setBalanceActionId(null);
       load();
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
     finally { setPending(false); }
@@ -130,11 +134,11 @@ export default function AdminUserDetail() {
               <div className="text-xs font-semibold text-slate-800">{a.l}</div>
             </button>
           ))}
-          <button onClick={() => { setModal({ type: 'credit' }); }} data-testid="user-action-credit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
+           <button onClick={() => { setBalanceActionId(crypto.randomUUID()); setModal({ type: 'credit' }); }} data-testid="user-action-credit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
             <div className="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
             <div className="text-xs font-semibold text-slate-800">Créditer le compte</div>
           </button>
-          <button onClick={() => { setModal({ type: 'debit' }); }} data-testid="user-action-debit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
+           <button onClick={() => { setBalanceActionId(crypto.randomUUID()); setModal({ type: 'debit' }); }} data-testid="user-action-debit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
             <div className="w-9 h-9 rounded-lg bg-red-50 text-red-600 flex items-center justify-center"><Minus className="w-4 h-4" /></div>
             <div className="text-xs font-semibold text-slate-800">Débiter le compte</div>
           </button>
