@@ -8,6 +8,7 @@ import asyncio
 import json
 import copy
 import ipaddress
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -704,6 +705,16 @@ def _edge_ip_blocked(request: Request) -> bool:
 
 def _auth_hash(value: str) -> str:
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
+
+
+def _literal_regex_term(value: str, *, field_name: str = "valeur") -> str:
+    """Build a bounded literal regex, never a client-controlled pattern."""
+    term = str(value or "").strip()
+    if not term:
+        raise HTTPException(422, f"{field_name} requis")
+    if len(term) > 100:
+        raise HTTPException(422, f"{field_name} trop long")
+    return re.escape(term)
 
 
 async def _issue_login_challenge(identifier: str, ip: str) -> dict:
