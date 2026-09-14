@@ -26,3 +26,15 @@ workflow reconciliation.
 **How to apply:** Keep the `/api` proxy in CRACO's final dev-server config as
 an array and let the Replit preview workflow use the frontend's default host
 binding.
+
+The multi-process workflow launcher must remain the parent supervisor for both
+FastAPI and CRACO; it must not replace itself with the frontend process while
+the backend runs in the background.
+
+**Why:** Replacing the launcher disabled its exit cleanup and left orphaned
+FastAPI processes holding port 8000, causing later workflow restarts to fail
+intermittently.
+
+**How to apply:** Track both child PIDs, wait for either service to exit, and
+terminate both children from signal and exit traps. Verify lifecycle changes
+with two consecutive workflow restarts, not only a first successful start.

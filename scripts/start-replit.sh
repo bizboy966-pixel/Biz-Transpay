@@ -20,8 +20,22 @@ if ! pgrep -x mongod >/dev/null 2>&1; then
   MONGO_STARTED_BY_SCRIPT=1
 fi
 
+BACKEND_PID=""
+FRONTEND_PID=""
+CLEANED_UP=0
+
 cleanup() {
-  if [[ -n "${BACKEND_PID:-}" ]]; then
+  if [[ "$CLEANED_UP" -eq 1 ]]; then
+    return
+  fi
+  CLEANED_UP=1
+  if [[ -n "$FRONTEND_PID" ]]; then
+    pkill -TERM -P "$FRONTEND_PID" 2>/dev/null || true
+    kill "$FRONTEND_PID" 2>/dev/null || true
+    wait "$FRONTEND_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$BACKEND_PID" ]]; then
+    pkill -TERM -P "$BACKEND_PID" 2>/dev/null || true
     kill "$BACKEND_PID" 2>/dev/null || true
     wait "$BACKEND_PID" 2>/dev/null || true
   fi
@@ -29,7 +43,26 @@ cleanup() {
     mongod --dbpath "$MONGO_DATA_DIR" --shutdown >/dev/null 2>&1 || true
   fi
 }
-trap cleanup EXIT INT TERM
+
+shutdown() {
+  trap - EXIT INT TERM
+  cleanup
+  exit "${1:-0}"
+}
+
+trap cleanup EXIT
+trap 'shutdown 130' INT
+trap 'shutdown 143' TERM
+
+# Older versions of this launcher could leave FastAPI orphaned after a
+# workflow restart. Remove only this project's exact stale server command.
+pkill -TERM -f '[u]vicorn server:app --host 0.0.0.0 --port 8000' 2>/dev/null || true
+for _ in {1..20}; do
+  if ! pgrep -f '[u]vicorn server:app --host 0.0.0.0 --port 8000' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.1
+done
 
 (
   cd "$ROOT_DIR/backend"
@@ -57,4 +90,18 @@ cd "$ROOT_DIR/frontend"
 export BROWSER=none
 export PORT=5000
 export REACT_APP_BACKEND_URL="${REACT_APP_BACKEND_URL:-}"
-exec yarn start
+yarn start &
+FRONTEND_PID=$!
+
+set +e
+wait -n "$BACKEND_PID" "$FRONTEND_PID"
+EXIT_STATUS=$?
+set -e
+
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+  echo "Backend process exited unexpectedly" >&2
+elif ! kill -0 "$FRONTEND_PID" 2>/dev/null; then
+  echo "Frontend process exited unexpectedly" >&2
+fi
+
+exit "$EXIT_STATUS"
