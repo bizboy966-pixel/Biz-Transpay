@@ -35,5 +35,6 @@ non-Error value when a solved widget is detached during navigation.
 **Why:** Successful login navigation previously reached the backend but could
 still trigger the frontend error page while the login widget unmounted.
 
-**How to apply:** Guard widget reset/remove cleanup so a third-party SDK cleanup
-failure cannot interrupt routing or authentication state changes.
+**How to apply:** Never pass a React-owned host node directly to the SDK. Render
+Turnstile into an imperative child inside a stable React wrapper, guard reset
+calls, and defer widget removal until after React finishes its deletion commit.

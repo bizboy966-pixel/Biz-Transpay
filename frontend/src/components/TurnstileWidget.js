@@ -99,7 +99,12 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
     loadTurnstileScript()
       .then((turnstile) => {
         if (cancelled || !turnstile || !containerRef.current) return;
-        widgetIdRef.current = turnstile.render(containerRef.current, {
+        // Turnstile may replace or detach the node passed to render(). Keep
+        // React's host node untouched and give the SDK an imperative child
+        // that React does not track.
+        const mountNode = document.createElement('div');
+        containerRef.current.replaceChildren(mountNode);
+        widgetIdRef.current = turnstile.render(mountNode, {
           sitekey: siteKey,
           action,
           callback: (token) => onTokenRef.current?.(token),
@@ -124,7 +129,16 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
       if (widgetIdRef.current !== null && window.turnstile) {
         const widgetId = widgetIdRef.current;
         widgetIdRef.current = null;
-        safelyRunTurnstile(() => window.turnstile.remove(widgetId));
+        // React still owns the host node during effect cleanup. Cloudflare may
+        // remove that node synchronously, causing React's following
+        // commitDeletionEffects pass to throw a removeChild NotFoundError.
+        // Let React finish the DOM removal before clearing Cloudflare's
+        // internal widget registry.
+        window.setTimeout(() => {
+          if (window.turnstile) {
+            safelyRunTurnstile(() => window.turnstile.remove(widgetId));
+          }
+        }, 0);
       }
     };
   }, [action, disabled, siteKey]);
