@@ -192,9 +192,19 @@ select {
 }
 
 .turnstile-widget__canvas > div {
+  width: fit-content !important;
   max-width: 100%;
+  margin-inline: auto !important;
+  display: flex !important;
+  justify-content: center;
+  align-items: flex-start;
   transform: scale(0.9);
   transform-origin: center top;
+}
+
+.turnstile-widget__canvas iframe {
+  display: block;
+  margin-inline: auto !important;
 }
 
 .turnstile-widget__notice,
