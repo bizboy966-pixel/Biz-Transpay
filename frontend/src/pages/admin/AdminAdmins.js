@@ -163,7 +163,7 @@ export default function AdminAdmins() {
             </div>
             <div className="mt-4 flex gap-2 justify-end">
               <button onClick={closeModal} className="px-4 py-2 rounded-full border border-slate-200 font-semibold text-sm">Annuler</button>
-        <button onClick={saveAdmin} data-testid="btn-confirm-promote" disabled={editingAdmin ? !username.trim() : mode === 'existing' ? !username.trim() : !fullName.trim() || !newUsername.trim() || !email.trim() || password.length < 12} className="px-4 py-2 rounded-full bg-[#2563EB] text-white font-semibold text-sm disabled:opacity-60">{editingAdmin ? 'Enregistrer' : 'Ajouter'}</button>
+        <button onClick={saveAdmin} data-testid="btn-confirm-promote" disabled={editingAdmin ? !username.trim() : mode === 'existing' ? !username.trim() : !fullName.trim() || !newUsername.trim() || !email.trim() || password.length < 10} className="px-4 py-2 rounded-full bg-[#2563EB] text-white font-semibold text-sm disabled:opacity-60">{editingAdmin ? 'Enregistrer' : 'Ajouter'}</button>
             </div>
           </div>
         </div>

@@ -30,7 +30,7 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
-PASSWORD_MIN_LENGTH = 12
+PASSWORD_MIN_LENGTH = 10
 
 
 def password_policy_errors(password: str) -> list[str]:

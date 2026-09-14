@@ -17,10 +17,10 @@ export default function RecoverAccount() {
       toast.error('Les mots de passe ne correspondent pas.');
       return;
     }
-    if (form.new_password.length < 12 || !/[a-z]/.test(form.new_password)
+    if (form.new_password.length < 10 || !/[a-z]/.test(form.new_password)
       || !/[A-Z]/.test(form.new_password) || !/\d/.test(form.new_password)
       || !/[^A-Za-z0-9\s]/.test(form.new_password) || /\s/.test(form.new_password)) {
-      toast.error('Le nouveau mot de passe doit être fort : 12 caractères, majuscule, minuscule, chiffre et caractère spécial.');
+      toast.error('Le nouveau mot de passe doit être fort : 10 caractères, majuscule, minuscule, chiffre et caractère spécial.');
       return;
     }
     setLoading(true);

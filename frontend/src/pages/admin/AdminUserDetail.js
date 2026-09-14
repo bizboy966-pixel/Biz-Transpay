@@ -204,7 +204,7 @@ export default function AdminUserDetail() {
                 <input type="text" data-testid="modal-new-pwd" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} placeholder="Nouveau mot de passe" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none" />
                 <div className="mt-4 flex gap-2 justify-end">
                   <button onClick={() => setModal(null)} className="px-4 py-2 rounded-full border border-slate-200 font-semibold text-sm">Annuler</button>
-                  <button onClick={doReset} disabled={pending || newPwd.length < 12} data-testid="modal-reset-confirm" className="px-4 py-2 rounded-full bg-[#2563EB] text-white font-semibold text-sm disabled:opacity-60">Réinitialiser</button>
+                  <button onClick={doReset} disabled={pending || newPwd.length < 10} data-testid="modal-reset-confirm" className="px-4 py-2 rounded-full bg-[#2563EB] text-white font-semibold text-sm disabled:opacity-60">Réinitialiser</button>
                 </div>
               </>
             )}

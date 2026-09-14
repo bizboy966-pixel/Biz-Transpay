@@ -309,8 +309,8 @@ function ResetPasswordModal({ user, onClose }) {
   const genRandom = () => setPwd(Math.random().toString(36).slice(-10) + 'A9!');
 
   const submit = async () => {
-    if (pwd.length < 12 || !/[a-z]/.test(pwd) || !/[A-Z]/.test(pwd) || !/\d/.test(pwd) || !/[^A-Za-z0-9\s]/.test(pwd) || /\s/.test(pwd)) {
-      toast.error('12 caractères minimum, avec majuscule, minuscule, chiffre et caractère spécial.');
+    if (pwd.length < 10 || !/[a-z]/.test(pwd) || !/[A-Z]/.test(pwd) || !/\d/.test(pwd) || !/[^A-Za-z0-9\s]/.test(pwd) || /\s/.test(pwd)) {
+      toast.error('10 caractères minimum, avec majuscule, minuscule, chiffre et caractère spécial.');
       return;
     }
     setSaving(true);
@@ -327,7 +327,7 @@ function ResetPasswordModal({ user, onClose }) {
     <ModalShell title={`Réinitialiser mot de passe · ${user.username}`} onClose={onClose} testId={`reset-pwd-modal-${user.id}`}>
       <p className="text-xs text-slate-500 mb-3">Le mot de passe sera copié dans votre presse-papier après validation. Communiquez-le à l&apos;utilisateur par un canal sûr.</p>
       <div className="flex gap-2">
-        <input value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="Mot de passe fort (12 caractères minimum)" data-testid="reset-pwd-input" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#2563EB]" />
+        <input value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="Mot de passe fort (10 caractères minimum)" data-testid="reset-pwd-input" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-[#2563EB]" />
         <button onClick={genRandom} data-testid="reset-pwd-gen" className="px-3 py-2 rounded-lg border border-slate-200 text-[11px] font-semibold hover:bg-slate-50">Générer</button>
       </div>
       <div className="mt-4 flex justify-end gap-2">

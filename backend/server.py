@@ -574,12 +574,6 @@ async def login(req: LoginRequest, request: Request):
     if not u or not verify_password(req.password, u["password_hash"]):
         await _record_login_failure(ident, request)
         raise HTTPException(401, "Identifiants invalides")
-    if not u.get("password_policy_version"):
-        return {
-            "password_change_required": True,
-            "password_change_token": auth_security.create_mfa_token(
-                u["id"], "password_change"),
-        }
     if u.get("role") in ("admin", "super_admin") and not u.get("two_fa_enabled"):
         setup = await _begin_mfa_enrollment(u)
         return {"mfa_setup_required": True, "mfa_setup": setup}
