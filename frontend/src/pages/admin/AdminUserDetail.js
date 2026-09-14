@@ -18,6 +18,10 @@ export default function AdminUserDetail() {
   const load = () => api.get(`/admin/users/${id}`).then(({ data }) => setData(data)).catch(() => {});
   useEffect(() => { load(); }, [id]);
 
+  const confirmCriticalAction = (label) => (
+    window.prompt(`${label}\nSaisissez CONFIRMER pour continuer.`)?.trim().toUpperCase() === 'CONFIRMER'
+  );
+
   if (!data) return <div className="text-slate-500 text-sm">Chargement…</div>;
   const u = data.user;
 
@@ -33,9 +37,10 @@ export default function AdminUserDetail() {
   };
 
   const doBalance = async (dir) => {
+    if (!confirmCriticalAction(dir === 'credit' ? 'Confirmer le crédit administrateur ?' : 'Confirmer le débit administrateur ?')) return;
     setPending(true);
     try {
-      await api.post(`/admin/users/${id}/${dir}`, { amount: parseFloat(amount), currency, reason });
+      await api.post(`/admin/users/${id}/${dir}`, { amount: parseFloat(amount), currency, reason, confirmation: 'CONFIRMER' });
       toast.success(dir === 'credit' ? 'Compte crédité' : 'Compte débité');
       setModal(null); setAmount(''); setReason('');
       load();
@@ -44,9 +49,10 @@ export default function AdminUserDetail() {
   };
 
   const doReset = async () => {
+    if (!confirmCriticalAction('Confirmer la réinitialisation du mot de passe ?')) return;
     setPending(true);
     try {
-      await api.post(`/admin/users/${id}/reset-password`, { new_password: newPwd });
+      await api.post(`/admin/users/${id}/reset-password`, { new_password: newPwd, confirmation: 'CONFIRMER' });
       toast.success('Mot de passe réinitialisé');
       setModal(null); setNewPwd('');
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }

@@ -77,10 +77,10 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
   const netVal = Number(meta.amount_net ?? meta.net_amount ?? (isDeposit ? amount - feeVal : amount - feeVal));
 
   const approve = async () => {
-    if (!window.confirm(`Confirmer la validation de cette ${isDeposit ? 'entrée' : 'sortie'} ?`)) return;
+    if (window.prompt(`Confirmer la validation de cette ${isDeposit ? 'entrée' : 'sortie'} ?\nSaisissez CONFIRMER pour continuer.`)?.trim().toUpperCase() !== 'CONFIRMER') return;
     setBusy('approve');
     try {
-      await api.post(`/admin/transactions/${tx.id}/approve`);
+      await api.post(`/admin/transactions/${tx.id}/approve`, { confirmation: 'CONFIRMER' });
       toast.success('Transaction validée');
       onUpdated?.();
       onClose();
@@ -108,9 +108,10 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
   };
 
   const reject = async () => {
+    if (window.prompt('Confirmer le rejet de cette transaction ?\nSaisissez CONFIRMER pour continuer.')?.trim().toUpperCase() !== 'CONFIRMER') return;
     setBusy('reject');
     try {
-      await api.post(`/admin/transactions/${tx.id}/reject`, { reason: reason.trim() || null });
+      await api.post(`/admin/transactions/${tx.id}/reject`, { reason: reason.trim() || null, confirmation: 'CONFIRMER' });
       toast.success(isWithdrawal ? 'Rejeté — solde recrédité' : 'Rejeté');
       onUpdated?.();
       onClose();

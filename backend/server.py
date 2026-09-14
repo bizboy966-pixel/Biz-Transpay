@@ -7,6 +7,7 @@ import uuid
 import asyncio
 import json
 import copy
+import ipaddress
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -53,6 +54,13 @@ SESSION_COOKIE_NAME = "btp_session"
 SESSION_MAX_AGE = 24 * 60 * 60
 SESSION_IDLE_SECONDS = 30 * 60
 REAUTH_MAX_AGE_SECONDS = 15 * 60
+ADMIN_ALLOWED_IPS = tuple(
+    value.strip() for value in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",")
+    if value.strip()
+)
+ADMIN_TRUST_PROXY_HEADERS = os.environ.get(
+    "ADMIN_TRUST_PROXY_HEADERS", ""
+).lower() in {"1", "true", "yes"}
 
 
 def _session_token_hash(token: str) -> str:
@@ -118,6 +126,7 @@ async def get_current_user_id(
     request.state.session_id = session_id
     request.state.session = session
     request.state.session_token = token
+    request.state.user_id = payload["sub"]
     return payload["sub"]
 
 
@@ -449,6 +458,41 @@ def _auth_ip(request: Request) -> str:
     return (request.client.host if request.client else None) or "unknown"
 
 
+def _admin_request_ip(request: Request) -> str:
+    """Return the client IP used by the optional administrator allowlist.
+
+    Forwarded headers are ignored unless explicitly enabled because they are
+    otherwise trivially spoofable when the app is reachable directly.
+    """
+    if ADMIN_TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",", 1)[0].strip()
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
+    return _auth_ip(request)
+
+
+def _admin_ip_allowed(request: Request) -> bool:
+    if not ADMIN_ALLOWED_IPS:
+        return True
+    candidate = _admin_request_ip(request)
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return False
+    for rule in ADMIN_ALLOWED_IPS:
+        try:
+            if address in ipaddress.ip_network(rule, strict=False):
+                return True
+        except ValueError:
+            logging.getLogger(__name__).warning(
+                "Ignoring invalid ADMIN_ALLOWED_IPS entry: %s", rule
+            )
+    return False
+
+
 def _auth_hash(value: str) -> str:
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
 
@@ -640,7 +684,13 @@ async def _verify_user_totp(user: dict, code: str) -> bool:
 
 @api.post("/auth/register")
 async def register(req: RegisterRequest, request: Request, response: Response):
-    password_errors = auth_security.password_policy_errors(req.password)
+    # First account becomes the platform administrator and must use the
+    # administrator-specific password policy.
+    is_first = (await db.users.count_documents({})) == 0
+    password_errors = (
+        auth_security.admin_password_policy_errors(req.password)
+        if is_first else auth_security.password_policy_errors(req.password)
+    )
     if password_errors:
         raise HTTPException(
             422, "Mot de passe insuffisant : " + ", ".join(password_errors))
@@ -651,7 +701,6 @@ async def register(req: RegisterRequest, request: Request, response: Response):
 
     uid = new_id()
     # First user becomes super_admin automatically
-    is_first = (await db.users.count_documents({})) == 0
     role = "super_admin" if is_first else "user"
     # Registration always creates the merchant profile. The request field is
     # kept for backward compatibility with existing clients, but the public
@@ -7130,10 +7179,19 @@ async def change_password(req: ChangePassword, uid: str = Depends(get_current_us
     u = await get_user(uid)
     if not verify_password(req.current_password, u["password_hash"]):
         raise HTTPException(400, "Mot de passe actuel incorrect")
-    password_errors = auth_security.password_policy_errors(req.new_password)
+    is_admin = u.get("role") in ("admin", "super_admin")
+    password_errors = (
+        auth_security.admin_password_policy_errors(req.new_password)
+        if is_admin else auth_security.password_policy_errors(req.new_password)
+    )
     if password_errors:
         raise HTTPException(
             422, "Mot de passe insuffisant : " + ", ".join(password_errors))
+    if is_admin and verify_password(req.new_password, u["password_hash"]):
+        raise HTTPException(
+            422,
+            "Le mot de passe administrateur doit être différent de l'ancien.",
+        )
     if u.get("two_fa_enabled") and not await _verify_user_totp(u, req.otp or ""):
         raise HTTPException(401, "Code 2FA requis pour changer le mot de passe")
     await db.users.update_one({"id": uid}, {"$set": {
@@ -7373,11 +7431,23 @@ async def get_admin(
     request: Request,
     uid: str = Depends(get_current_user_id),
 ) -> dict:
+    if not _admin_ip_allowed(request):
+        raise HTTPException(403, "Accès administrateur refusé depuis cette adresse IP")
     u = await db.users.find_one({"id": uid}, {"_id": 0})
     if not u:
         raise HTTPException(401, "Non autorisé")
     if u.get("role") not in ("admin", "super_admin"):
         raise HTTPException(403, "Accès administrateur requis")
+    if not u.get("two_fa_enabled"):
+        # A stale session must not keep an administrator inside the panel
+        # after MFA has been disabled or before enrollment is completed.
+        raise HTTPException(
+            403,
+            detail={
+                "message": "MFA obligatoire pour accéder à l'administration.",
+                "code": "ADMIN_MFA_REQUIRED",
+            },
+        )
     effective_role = _effective_role(u)
     permission = _admin_permission_for_request(request)
     permissions = _permissions_for_role(effective_role)
@@ -7389,6 +7459,72 @@ async def get_admin(
     u["_effective_role"] = effective_role
     u["_permissions"] = sorted(permissions)
     return u
+
+
+async def require_admin_recent_auth(
+    request: Request,
+    uid: str = Depends(require_recent_auth),
+) -> str:
+    """Require password + MFA-backed recent authentication for admin actions."""
+    user = await get_user(uid)
+    if user.get("role") not in ("admin", "super_admin"):
+        raise HTTPException(403, "Accès administrateur requis")
+    if not user.get("two_fa_enabled"):
+        raise HTTPException(
+            403,
+            detail={
+                "message": "MFA obligatoire pour cette action.",
+                "code": "ADMIN_MFA_REQUIRED",
+            },
+        )
+    return uid
+
+
+ADMIN_CONFIRMATION_PHRASE = "CONFIRMER"
+
+
+def require_admin_confirmation(value: Optional[str]) -> None:
+    if (value or "").strip().upper() != ADMIN_CONFIRMATION_PHRASE:
+        raise HTTPException(
+            428,
+            detail={
+                "message": (
+                    "Une confirmation explicite est requise. "
+                    "Saisissez CONFIRMER."
+                ),
+                "code": "ADMIN_CONFIRMATION_REQUIRED",
+            },
+        )
+
+
+async def _record_admin_request(request: Request, status_code: int) -> None:
+    """Persist every admin endpoint access, including denied attempts."""
+    try:
+        uid = getattr(request.state, "user_id", None)
+        user = await db.users.find_one(
+            {"id": uid}, {"_id": 0, "username": 1, "role": 1}
+        ) if uid else None
+        await db.admin_logs.insert_one({
+            "id": new_id(),
+            "admin_id": uid,
+            "admin_username": (user or {}).get("username"),
+            "action": "admin_request",
+            "target_user_id": None,
+            "target_username": None,
+            "details": {
+                "method": request.method,
+                "path": request.url.path,
+                "query": str(request.url.query or ""),
+                "status": status_code,
+                "ip": _admin_request_ip(request),
+                "user_agent": request.headers.get("user-agent", "")[:300],
+            },
+            "created_at": now_iso(),
+        })
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Unable to persist administrator access log"
+        )
 
 
 
@@ -7626,6 +7762,7 @@ class AdminBalanceAction(BaseModel):
     currency: Literal["XOF", "XAF", "USDT", "USD"]
     amount: float
     reason: Optional[str] = ""
+    confirmation: Optional[str] = None
 
 
 class AdminUpdateUser(BaseModel):
@@ -7639,6 +7776,7 @@ class AdminUpdateUser(BaseModel):
         "general", "finance", "operations", "support", "compliance"
     ]] = None
     account_type: Optional[Literal["personal", "merchant"]] = None
+    confirmation: Optional[str] = None
 
 
 class AdminCreateRequest(BaseModel):
@@ -7651,6 +7789,7 @@ class AdminCreateRequest(BaseModel):
     ] = "general"
     country: str = "TG"
     phone: str = ""
+    confirmation: Optional[str] = None
 
 
 class AdminKycDecision(BaseModel):
@@ -7661,6 +7800,11 @@ class AdminKycDecision(BaseModel):
 
 class AdminResetPwd(BaseModel):
     new_password: str
+    confirmation: Optional[str] = None
+
+
+class AdminConfirmationRequest(BaseModel):
+    confirmation: Optional[str] = None
 
 
 @api.get("/admin/benefits/details")
@@ -8056,7 +8200,13 @@ async def admin_user_action(user_id: str, action: str,
 
 
 @api.post("/admin/users/{user_id}/credit")
-async def admin_credit(user_id: str, req: AdminBalanceAction, admin=Depends(get_admin)):
+async def admin_credit(
+    user_id: str,
+    req: AdminBalanceAction,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    require_admin_confirmation(req.confirmation)
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
@@ -8077,7 +8227,13 @@ async def admin_credit(user_id: str, req: AdminBalanceAction, admin=Depends(get_
 
 
 @api.post("/admin/users/{user_id}/debit")
-async def admin_debit(user_id: str, req: AdminBalanceAction, admin=Depends(get_admin)):
+async def admin_debit(
+    user_id: str,
+    req: AdminBalanceAction,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    require_admin_confirmation(req.confirmation)
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
@@ -8100,16 +8256,24 @@ async def admin_debit(user_id: str, req: AdminBalanceAction, admin=Depends(get_a
 
 
 @api.patch("/admin/users/{user_id}")
-async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(get_admin)):
+async def admin_update_user(
+    user_id: str,
+    req: AdminUpdateUser,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    confirmation = updates.pop("confirmation", None)
     # only super_admin can change roles
     if "role" in updates and admin.get("role") != "super_admin":
         raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
     if "admin_role" in updates and admin.get("role") != "super_admin":
         raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
+    if "role" in updates or "admin_role" in updates:
+        require_admin_confirmation(confirmation)
     if updates.get("admin_role") and updates.get("role") not in (None, "admin"):
         raise HTTPException(422, "Un rôle administratif nécessite un compte admin")
     # Enforce uniqueness on username/email if being changed
@@ -8141,11 +8305,21 @@ async def admin_update_user(user_id: str, req: AdminUpdateUser, admin=Depends(ge
 
 
 @api.post("/admin/users/{user_id}/reset-password")
-async def admin_reset_password(user_id: str, req: AdminResetPwd, admin=Depends(get_admin)):
+async def admin_reset_password(
+    user_id: str,
+    req: AdminResetPwd,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    require_admin_confirmation(req.confirmation)
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    password_errors = auth_security.password_policy_errors(req.new_password)
+    password_errors = (
+        auth_security.admin_password_policy_errors(req.new_password)
+        if target.get("role") in ("admin", "super_admin")
+        else auth_security.password_policy_errors(req.new_password)
+    )
     if password_errors:
         raise HTTPException(
             422, "Mot de passe insuffisant : " + ", ".join(password_errors))
@@ -8247,7 +8421,8 @@ class AdminPlatformResetReq(BaseModel):
 
 @api.post("/admin/platform/reset")
 async def admin_platform_reset(req: AdminPlatformResetReq,
-                               admin=Depends(get_admin)):
+                               admin=Depends(get_admin),
+                               _recent_uid: str = Depends(require_admin_recent_auth)):
     """DESTRUCTIVE — Full platform reset. Super_admin only.
 
     Deletes ALL non-super_admin users and their data, wipes ALL transactional
@@ -8510,7 +8685,12 @@ async def admin_refresh_transaction(tx_id: str, admin=Depends(get_admin)):
 
 
 @api.post("/admin/transactions/{tx_id}/approve")
-async def admin_approve_transaction(tx_id: str, admin=Depends(get_admin)):
+async def admin_approve_transaction(
+    tx_id: str,
+    body: AdminConfirmationRequest = Body(default_factory=AdminConfirmationRequest),
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
     """Manually validate a pending transaction.
 
     - Deposit → credits the user's balance (crypto → balance_usdt, MoMo → balance_xof)
@@ -8518,6 +8698,7 @@ async def admin_approve_transaction(tx_id: str, admin=Depends(get_admin)):
     - Withdrawal → simply marks 'completed' (balance was already debited on request).
     - Any other pending transaction → marks 'completed' without balance side-effects.
     """
+    require_admin_confirmation(body.confirmation)
     tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Transaction introuvable")
@@ -8562,17 +8743,20 @@ async def admin_approve_transaction(tx_id: str, admin=Depends(get_admin)):
 
 class AdminRejectRequest(BaseModel):
     reason: Optional[str] = None
+    confirmation: Optional[str] = None
 
 
 @api.post("/admin/transactions/{tx_id}/reject")
 async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
-                                     admin=Depends(get_admin)):
+                                     admin=Depends(get_admin),
+                                     _recent_uid: str = Depends(require_admin_recent_auth)):
     """Manually reject a pending transaction.
 
     - Deposit → marks 'failed' (no balance side-effect; nothing was credited yet).
     - Withdrawal → refunds the user's balance with `total_debit` (falls back to
       amount + fee, then just amount).
     """
+    require_admin_confirmation(body.confirmation)
     tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Transaction introuvable")
@@ -8770,14 +8954,19 @@ async def admin_list_admins(admin=Depends(get_admin)):
 
 
 @api.post("/admin/admins")
-async def admin_create_admin(req: AdminCreateRequest, admin=Depends(get_admin)):
+async def admin_create_admin(
+    req: AdminCreateRequest,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
     if admin.get("role") != "super_admin":
         raise HTTPException(403, "Seul l'administrateur principal peut ajouter un admin")
+    require_admin_confirmation(req.confirmation)
     username = req.username.strip().lower()
     email = req.email.strip().lower()
     if len(req.full_name.strip()) < 2 or len(username) < 3:
         raise HTTPException(422, "Nom et identifiant administrateur invalides")
-    password_errors = auth_security.password_policy_errors(req.password)
+    password_errors = auth_security.admin_password_policy_errors(req.password)
     if password_errors:
         raise HTTPException(
             422, "Mot de passe insuffisant : " + ", ".join(password_errors))
@@ -9418,8 +9607,11 @@ async def api_log_middleware(request: Request, call_next):
             "code": "MODULE_RETIRED",
         })
     is_v1 = _is_v1_path(p)
+    is_admin = p == "/api/admin" or p.startswith("/api/admin/")
     start = datetime.now(timezone.utc)
     response = await call_next(request)
+    if is_admin:
+        await _record_admin_request(request, response.status_code)
     if is_v1:
         duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
         # Try to resolve user_id from Authorization if it's a merchant key

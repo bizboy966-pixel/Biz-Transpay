@@ -47,12 +47,14 @@ export default function AdminAdmins() {
   const saveAdmin = async () => {
     try {
       if (!editingAdmin && mode === 'new') {
+        if (window.prompt('Confirmer la création d’un compte administrateur ?\nSaisissez CONFIRMER pour continuer.')?.trim().toUpperCase() !== 'CONFIRMER') return;
         const { data: created } = await api.post('/admin/admins', {
           full_name: fullName.trim(),
           username: newUsername.trim(),
           email: email.trim(),
           password,
           admin_role: adminRole,
+          confirmation: 'CONFIRMER',
         });
         toast.success(`${created.username} est maintenant administrateur`);
         closeModal();
@@ -66,7 +68,8 @@ export default function AdminAdmins() {
         target = users.find((u) => u.username?.toLowerCase() === query || u.email?.toLowerCase() === query);
       }
       if (!target) { toast.error('Utilisateur introuvable'); return; }
-      await api.patch(`/admin/users/${target.id}`, { role: 'admin', admin_role: adminRole });
+      if (window.prompt('Confirmer l’attribution des droits administrateur ?\nSaisissez CONFIRMER pour continuer.')?.trim().toUpperCase() !== 'CONFIRMER') return;
+      await api.patch(`/admin/users/${target.id}`, { role: 'admin', admin_role: adminRole, confirmation: 'CONFIRMER' });
       toast.success(editingAdmin ? 'Rôle administrateur mis à jour' : `${target.username} est maintenant administrateur`);
       closeModal();
       load();
@@ -74,9 +77,9 @@ export default function AdminAdmins() {
   };
 
   const demote = async (id, uname) => {
-    if (!window.confirm(`Retirer les droits admin de @${uname} ?`)) return;
+    if (window.prompt(`Retirer les droits admin de @${uname} ?\nSaisissez CONFIRMER pour continuer.`)?.trim().toUpperCase() !== 'CONFIRMER') return;
     try {
-      await api.patch(`/admin/users/${id}`, { role: 'user' });
+      await api.patch(`/admin/users/${id}`, { role: 'user', confirmation: 'CONFIRMER' });
       toast.success('Droits administrateur retirés');
       load();
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
@@ -150,7 +153,7 @@ export default function AdminAdmins() {
                 <input value={fullName} onChange={(e) => setFullName(e.target.value)} data-testid="new-admin-full-name" placeholder="Nom complet" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB]" />
                 <input value={newUsername} onChange={(e) => setNewUsername(e.target.value.toLowerCase().replace(/\s+/g, ''))} data-testid="new-admin-username" placeholder="Nom d'utilisateur" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB]" />
                 <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="new-admin-email" placeholder="Adresse e-mail" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB]" />
-                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} data-testid="new-admin-password" placeholder="Mot de passe temporaire" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB]" />
+                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} data-testid="new-admin-password" placeholder="Mot de passe admin (14 caractères minimum)" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB]" />
               </div>
             ) : (
               <input value={username} onChange={(e) => setUsername(e.target.value)} disabled={Boolean(editingAdmin)} data-testid="promote-username" placeholder="Nom d'utilisateur ou email" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] disabled:bg-slate-50 disabled:text-slate-500" />
@@ -163,7 +166,7 @@ export default function AdminAdmins() {
             </div>
             <div className="mt-4 flex gap-2 justify-end">
               <button onClick={closeModal} className="px-4 py-2 rounded-full border border-slate-200 font-semibold text-sm">Annuler</button>
-        <button onClick={saveAdmin} data-testid="btn-confirm-promote" disabled={editingAdmin ? !username.trim() : mode === 'existing' ? !username.trim() : !fullName.trim() || !newUsername.trim() || !email.trim() || password.length < 10} className="px-4 py-2 rounded-full bg-[#2563EB] text-white font-semibold text-sm disabled:opacity-60">{editingAdmin ? 'Enregistrer' : 'Ajouter'}</button>
+         <button onClick={saveAdmin} data-testid="btn-confirm-promote" disabled={editingAdmin ? !username.trim() : mode === 'existing' ? !username.trim() : !fullName.trim() || !newUsername.trim() || !email.trim() || password.length < 14} className="px-4 py-2 rounded-full bg-[#2563EB] text-white font-semibold text-sm disabled:opacity-60">{editingAdmin ? 'Enregistrer' : 'Ajouter'}</button>
             </div>
           </div>
         </div>

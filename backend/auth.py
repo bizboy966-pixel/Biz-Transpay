@@ -59,6 +59,15 @@ def password_policy_errors(password: str) -> list[str]:
     return errors
 
 
+def admin_password_policy_errors(password: str) -> list[str]:
+    """Stricter policy for administrator credentials."""
+    errors = password_policy_errors(password)
+    value = password or ""
+    if len(value) < 14:
+        errors.append("un mot de passe administrateur d'au moins 14 caractères")
+    return list(dict.fromkeys(errors))
+
+
 def _fernet_key() -> bytes:
     secret = os.environ.get("SESSION_SECRET") or SECRET
     return base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())

@@ -9,5 +9,6 @@
 - [Mbiyo integration](mbiyo-integration.md) — Mbiyo remains isolated with prefixed routes, encrypted credentials, signed webhooks, and idempotent settlement.
 - [Authentication security boundary](security-auth.md) — harden account access without changing or blocking financial and commerce workflows.
 - [Session security boundary](session-security.md) — use revocable HttpOnly browser sessions, idle expiry, rotation, remote logout, and step-up authentication.
+- [Admin security boundary](admin-security-boundary.md) — administrative access requires MFA, recent step-up authentication, explicit confirmation, and an audit trail.
 - [Authorization boundaries](authorization-boundaries.md) — scope every authenticated lookup by owner and keep public capability endpoints allowlisted and minimal.
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.
