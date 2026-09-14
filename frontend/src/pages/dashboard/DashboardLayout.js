@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Home, Receipt, ScanLine, Link2, UserRound, IdCard, WalletCards, Menu, ChevronDown, LogOut, X } from 'lucide-react';
+import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, WalletCards, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
 import NotificationBell from '@/components/NotificationBell';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
@@ -40,7 +40,12 @@ export default function DashboardLayout() {
     { to: '/dashboard', end: true, i: Home, l: t('dashboard.bottom_home') },
     { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions') },
     { to: '/dashboard/deposit', i: ScanLine, l: t('dashboard.deposit'), prominent: true },
-    { to: '/dashboard/links', i: Link2, l: t('dashboard.link') },
+    {
+      to: '/dashboard/services',
+      i: LayoutGrid,
+      l: t('dashboard.services'),
+      activePaths: ['/dashboard/links', '/dashboard/api'],
+    },
     { to: '/dashboard/profile', i: UserRound, l: t('dashboard.profile') },
   ];
 
@@ -89,7 +94,11 @@ export default function DashboardLayout() {
 
           <div className="hidden md:block">
             <div className="font-cabinet font-extrabold text-slate-900 text-sm">
-              {bottomNav.concat(nav).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Biz-trans'}
+              {bottomNav.concat(nav).find((n) => (
+                n.end
+                  ? loc.pathname === n.to
+                  : loc.pathname.startsWith(n.to) || n.activePaths?.some((path) => loc.pathname.startsWith(path))
+              ))?.l || 'Biz-trans'}
             </div>
             <div className="text-[10px] text-slate-500 font-medium">Passerelle de paiement</div>
           </div>
@@ -139,7 +148,9 @@ export default function DashboardLayout() {
             to={n.to}
             end={n.end}
             data-testid={`bottomnav-${n.l.toLowerCase()}`}
-            className={({ isActive }) => `bt-bottom-nav__item ${n.prominent ? 'bt-bottom-nav__item--prominent' : ''} ${isActive ? 'active' : ''}`}
+            className={({ isActive }) => `bt-bottom-nav__item ${n.prominent ? 'bt-bottom-nav__item--prominent' : ''} ${
+              isActive || n.activePaths?.some((path) => loc.pathname.startsWith(path)) ? 'active' : ''
+            }`}
           >
             <span className="bt-bottom-nav__icon">
               <n.i strokeWidth={n.prominent ? 2 : 1.8} />
