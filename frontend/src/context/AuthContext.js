@@ -52,16 +52,8 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  const forcePasswordChange = async (changeToken, newPassword) => {
-    const { data } = await api.post('/auth/password/force-change', {
-      change_token: changeToken,
-      new_password: newPassword,
-    });
-    return data;
-  };
-
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setUser, confirmTwoFactor, forcePasswordChange }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setUser, confirmTwoFactor }}>
       {children}
     </AuthCtx.Provider>
   );

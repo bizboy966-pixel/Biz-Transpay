@@ -33,7 +33,6 @@ from models import (  # noqa: E402
     KycSubmit, ApiKeys, WebhookConfig, UpdateProfile, ChangePassword,
     TicketCreate, Ticket, new_id, now_iso,
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
-    ForcedPasswordChangeRequest,
 )
 import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token, get_current_user_id  # noqa: E402
@@ -603,23 +602,6 @@ async def setup_two_factor(uid: str = Depends(get_current_user_id)):
     if user.get("two_fa_enabled"):
         raise HTTPException(409, "La double authentification est déjà activée")
     return await _begin_mfa_enrollment(user)
-
-
-@api.post("/auth/password/force-change")
-async def force_password_change(req: ForcedPasswordChangeRequest):
-    payload = auth_security.decode_mfa_token(req.change_token, "password_change")
-    errors = auth_security.password_policy_errors(req.new_password)
-    if errors:
-        raise HTTPException(
-            422, "Mot de passe insuffisant : " + ", ".join(errors))
-    changed = await db.users.update_one(
-        {"id": payload["sub"], "password_policy_version": {"$ne": 1}},
-        {"$set": {"password_hash": hash_password(req.new_password),
-                  "password_policy_version": 1}},
-    )
-    if changed.modified_count != 1:
-        raise HTTPException(409, "Le mot de passe a déjà été mis à jour")
-    return {"ok": True}
 
 
 async def _optional_user_id(

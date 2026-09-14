@@ -10,7 +10,7 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 export default function Login() {
   const { t } = useTranslation();
   const nav = useNavigate();
-  const { login, confirmTwoFactor, forcePasswordChange } = useAuth();
+  const { login, confirmTwoFactor } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
@@ -21,9 +21,6 @@ export default function Login() {
   const [setup, setSetup] = useState(null);
   const [setupCode, setSetupCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState([]);
-  const [passwordChangeToken, setPasswordChangeToken] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
   const [challenge, setChallenge] = useState(null);
   const [challengeSolution, setChallengeSolution] = useState('');
 
@@ -68,12 +65,6 @@ export default function Login() {
         setChallenge(null);
         setChallengeSolution('');
         toast.success('Entrez votre code de sécurité');
-        return;
-      }
-      if (data.password_change_required) {
-        setPasswordChangeToken(data.password_change_token);
-        setStep('password_change');
-        toast.success('Choisissez un mot de passe fort pour continuer');
         return;
       }
       if (data.mfa_setup_required) {
@@ -136,26 +127,7 @@ export default function Login() {
             <p className="mt-2 text-slate-600 text-sm">{t('login.subtitle')}</p>
           </div>
 
-          {step === 'password_change' ? (
-            <div className="space-y-4">
-              <h2 className="font-cabinet font-bold text-xl text-slate-900">Mise à jour obligatoire</h2>
-              <p className="text-sm text-slate-600">Votre compte doit utiliser un mot de passe fort avant de continuer.</p>
-              <input type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Nouveau mot de passe fort" className="bt-field" />
-              <input type="password" autoComplete="new-password" value={newPasswordConfirm} onChange={(e) => setNewPasswordConfirm(e.target.value)} placeholder="Confirmer le nouveau mot de passe" className="bt-field" />
-              <button type="button" className="bt-button-primary w-full" disabled={loading || newPassword !== newPasswordConfirm || newPassword.length < 12} onClick={async () => {
-                setLoading(true);
-                try {
-                  await forcePasswordChange(passwordChangeToken, newPassword);
-                  setStep('password');
-                  setPasswordChangeToken('');
-                  setNewPassword('');
-                  setNewPasswordConfirm('');
-                  toast.success('Mot de passe mis à jour. Connectez-vous à nouveau.');
-                } catch (err) { toast.error(errorDetail(err)); }
-                finally { setLoading(false); }
-              }}>Mettre à jour le mot de passe</button>
-            </div>
-          ) : step === 'setup' ? (
+          {step === 'setup' ? (
             <div className="space-y-4">
               <h2 className="font-cabinet font-bold text-xl text-slate-900">Activez la double authentification</h2>
               <p className="text-sm text-slate-600">Ajoutez cette clé dans votre application d’authentification, puis saisissez le code à 6 chiffres.</p>

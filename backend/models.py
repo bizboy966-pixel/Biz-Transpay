@@ -49,11 +49,6 @@ class PasswordRecoveryRequest(BaseModel):
     new_password: str
 
 
-class ForcedPasswordChangeRequest(BaseModel):
-    change_token: str
-    new_password: str
-
-
 class UserPublic(BaseModel):
     id: str
     full_name: str
