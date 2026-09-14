@@ -1460,6 +1460,7 @@ async def transfer(req: TransferRequest, request: Request,
 
         metadata = {
             "transfer_type": "biz_to_mobile",
+            "provider": "paydunya",
             "country": op.get("country"),
             "country_code": op.get("country"),
             "country_label": op.get("country_label"),
@@ -2082,6 +2083,14 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "status": mbiyo.status_value(response) or "pending", "created_at": now_iso(),
     }
     await db.momo_deposits.insert_one(doc)
+    if doc["status"] in mbiyo.SUCCESS_STATUSES:
+        await _credit_momo_deposit(doc)
+    elif doc["status"] in mbiyo.FAILURE_STATUSES:
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": {"$ne": "approved"}},
+            {"$set": {"status": "failed", "retryable": False,
+                      "provider_status": doc["status"]}},
+        )
     return {"id": dep_id, "status": doc["status"], "amount": req.amount,
             "requested_amount": req.amount, "charged_amount": fees["charged_amount"],
             "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
@@ -2541,6 +2550,38 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
     return True
 
 
+async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
+    """Verify a Mbiyo deposit server-to-server and credit it once."""
+    d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
+    if not d or d.get("provider") != "mbiyo":
+        return False
+    if d.get("status") == "approved":
+        return True
+    provider_id = str(d.get("mbiyo_transaction_id") or "")
+    if not provider_id:
+        return False
+    cfg = await get_mbiyo_config(decrypt=True)
+    response = await mbiyo.MbiyoClient(
+        cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)
+    ).status(provider_id)
+    status = mbiyo.status_value(response)
+    await db.momo_deposits.update_one(
+        {"id": dep_id, "status": {"$ne": "approved"}},
+        {"$set": {"provider_status": status or "pending"}},
+    )
+    if status in mbiyo.SUCCESS_STATUSES:
+        fresh = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
+        if fresh:
+            await _credit_momo_deposit(fresh)
+        return True
+    if status in mbiyo.FAILURE_STATUSES:
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": {"$ne": "approved"}},
+            {"$set": {"status": "failed", "retryable": False}},
+        )
+    return False
+
+
 async def _paydunya_reconcile_loop() -> None:
     """Repair paid deposits even when the browser and provider callback vanish."""
     while True:
@@ -2548,21 +2589,24 @@ async def _paydunya_reconcile_loop() -> None:
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
             cursor = db.momo_deposits.find(
                 {
-                    "provider": "paydunya",
+                    "provider": {"$in": ["paydunya", "mbiyo"]},
                     "created_at": {"$gt": cutoff},
                     "$or": [
                         {"status": "pending"},
                         {"status": "failed", "retryable": True},
                     ],
                 },
-                {"_id": 0, "id": 1},
+                {"_id": 0, "id": 1, "provider": 1},
             ).sort("created_at", -1).limit(50)
             async for deposit in cursor:
                 try:
-                    await _reconcile_momo_deposit(deposit["id"])
+                    if deposit.get("provider") == "mbiyo":
+                        await _reconcile_mbiyo_deposit(deposit["id"])
+                    else:
+                        await _reconcile_momo_deposit(deposit["id"])
                 except Exception:
                     logger.exception(
-                        "PayDunya background reconciliation failed for %s",
+                        "Mobile Money deposit reconciliation failed for %s",
                         deposit.get("id"),
                     )
             due = now_iso()
@@ -2588,10 +2632,21 @@ async def _paydunya_reconcile_loop() -> None:
                         await _refund_mobile_withdrawal(
                             withdrawal["id"],
                             withdrawal_meta.get("failure_reason", ""))
-                    elif (withdrawal_meta.get("provider") == "mbiyo"
-                          and withdrawal_meta.get("mbiyo_transaction_id")):
-                        await _reconcile_mbiyo_withdrawal(withdrawal)
+                    elif withdrawal_meta.get("provider") == "mbiyo":
+                        if withdrawal_meta.get("mbiyo_transaction_id"):
+                            await _reconcile_mbiyo_withdrawal(withdrawal)
+                        else:
+                            await db.transactions.update_one(
+                                {"id": withdrawal["id"], "status": "pending"},
+                                {"$set": {"metadata.next_reconcile_at": (
+                                    datetime.now(timezone.utc)
+                                    + timedelta(seconds=60)).isoformat()}})
+                    elif (withdrawal_meta.get("provider") == "paydunya"
+                          and withdrawal_meta.get("paydunya_invoice_token")):
+                        await _reconcile_mobile_withdrawal(withdrawal)
                     elif withdrawal_meta.get("paydunya_invoice_token"):
+                        # Legacy PayDunya transactions created before the
+                        # provider marker was added.
                         await _reconcile_mobile_withdrawal(withdrawal)
                     else:
                         debit_marker = await db.users.find_one(
@@ -2912,7 +2967,12 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
         return {"ok": True}
     raw = await request.body()
     cfg = await get_mbiyo_config(decrypt=True)
-    signature = request.headers.get("Signature", "")
+    signature = (
+        request.headers.get("Signature")
+        or request.headers.get("X-Mbiyo-Signature")
+        or request.headers.get("X-Signature")
+        or ""
+    )
     if not mbiyo.verify_signature(raw, signature, cfg.get("_webhook_secret", "")):
         raise HTTPException(400, "Signature Mbiyo invalide")
     try:
@@ -2926,9 +2986,22 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
         or data.get("provider_transaction_id")
         or data.get("providerTransactionId")
         or data.get("reference")
-        or ref
         or ""
     )
+    if not provider_id and ref:
+        local_tx = await db.transactions.find_one(
+            {"id": ref, "metadata.provider": "mbiyo"},
+            {"_id": 0, "metadata.mbiyo_transaction_id": 1},
+        )
+        local_dep = await db.momo_deposits.find_one(
+            {"id": ref, "provider": "mbiyo"},
+            {"_id": 0, "mbiyo_transaction_id": 1},
+        )
+        provider_id = str(
+            (local_tx or {}).get("metadata", {}).get("mbiyo_transaction_id")
+            or (local_dep or {}).get("mbiyo_transaction_id")
+            or ""
+        )
     if not provider_id:
         return {"received": True}
     event_id = f"mbiyo:{provider_id}:{mbiyo.status_value(payload)}"
@@ -2950,9 +3023,9 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
     dep = await db.momo_deposits.find_one(
         {"provider": "mbiyo", "mbiyo_transaction_id": provider_id}, {"_id": 0})
     if dep:
-        if status == "successful" and dep.get("status") != "approved":
+        if status in mbiyo.SUCCESS_STATUSES and dep.get("status") != "approved":
             await _credit_momo_deposit(dep)
-        elif status in ("failed", "cancelled"):
+        elif status in mbiyo.FAILURE_STATUSES:
             await db.momo_deposits.update_one({"id": dep["id"], "status": {"$ne": "approved"}},
                                               {"$set": {"status": "failed", "retryable": False,
                                                         "provider_status": status}})
@@ -2982,7 +3055,8 @@ async def paydunya_disbursement_webhook(request: Request, ref: str = Query("")):
         raise HTTPException(400, "Missing withdrawal reference")
     tx = await db.transactions.find_one(
         {"reference": ref, "type": "transfer",
-         "metadata.transfer_type": "biz_to_mobile"}, {"_id": 0})
+         "metadata.transfer_type": "biz_to_mobile",
+         "metadata.provider": {"$ne": "mbiyo"}}, {"_id": 0})
     if not tx:
         raise HTTPException(404, "Withdrawal not found")
     if tx.get("status") in ("completed", "failed"):

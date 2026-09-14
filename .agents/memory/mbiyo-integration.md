@@ -7,4 +7,4 @@ Mbiyo is configured independently from PayDunya, with encrypted public key, secr
 
 **Why:** The existing PayDunya flows have provider-specific callback and reconciliation rules; sharing their configuration or route identifiers would risk changing live payment behavior.
 
-**How to apply:** Keep Mbiyo operator codes prefixed with `mbiyo_`, route Mbiyo through its own client and webhook, and only enable live transaction testing after valid Mbiyo credentials and a public callback URL are configured.
+**How to apply:** Keep Mbiyo operator codes prefixed with `mbiyo_`, route Mbiyo through its own client, webhook, and reconciliation loop, and never let a PayDunya fallback handle a Mbiyo transaction.
