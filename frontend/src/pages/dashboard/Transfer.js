@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin, ChevronDown } from 'lucide-react';
@@ -7,11 +7,13 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { COUNTRIES } from '@/constants/countries';
+import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function Transfer() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { refresh, user } = useAuth();
+  const turnstile = useTurnstileConfig();
   const features = useFeatures();
   const [step, setStep] = useState(1);
   const [type, setType] = useState(null);
@@ -77,9 +79,9 @@ export default function Transfer() {
         </div>
       )}
 
-      {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} />}
-      {step === 2 && type === 'biz_to_mobile' && <BizToMobileForm config={config} onDone={onDone} balance={user} />}
-      {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} />}
+      {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} turnstile={turnstile} />}
+      {step === 2 && type === 'biz_to_mobile' && <BizToMobileForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
+      {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
 
       {step === 3 && done && (
         <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 text-center" data-testid="transfer-success">
@@ -112,7 +114,8 @@ export default function Transfer() {
 }
 
 // ------- BIZ TO BIZ -------
-function BizToBizForm({ onDone, balance }) {
+function BizToBizForm({ onDone, balance, turnstile }) {
+  const turnstileRef = useRef(null);
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [amount, setAmount] = useState('');
@@ -122,6 +125,7 @@ function BizToBizForm({ onDone, balance }) {
   const [lookupErr, setLookupErr] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   const lookup = async () => {
     setLookupErr(null); setRecipient(null);
@@ -135,17 +139,26 @@ function BizToBizForm({ onDone, balance }) {
 
   const amt = parseFloat(amount) || 0;
   const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
-  const canSubmit = recipient && amt > 0 && amt <= bal;
+  const canSubmit = recipient && amt > 0 && amt <= bal && turnstileToken;
 
   const submit = async () => {
+    if (!turnstileToken) {
+      toast.error('Veuillez terminer la vérification anti-bot.');
+      return;
+    }
     setPending(true);
     try {
       const { data } = await api.post('/transfers', {
         transfer_type: 'biz_to_biz', recipient: username || phone,
         recipient_phone: phone, amount: amt, currency, description,
+        turnstile_token: turnstileToken,
       });
       onDone(data, { type: 'biz_to_biz' });
-    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+    } catch (err) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
+      toast.error(err.response?.data?.detail || 'Erreur');
+    }
     finally { setPending(false); }
   };
 
@@ -198,9 +211,18 @@ function BizToBizForm({ onDone, balance }) {
         <input data-testid="b2b-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
       </Field>
 
-      <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-b2b-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
-        Continuer
-      </button>
+      <TurnstileWidget
+        ref={turnstileRef}
+        siteKey={turnstile.siteKey}
+        action="withdrawal"
+        disabled={turnstile.loading || !turnstile.enabled}
+        onToken={setTurnstileToken}
+      />
+      {turnstileToken && (
+        <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-b2b-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
+          Continuer
+        </button>
+      )}
 
       {confirmOpen && recipient && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="b2b-confirm-modal" rows={[
@@ -209,14 +231,15 @@ function BizToBizForm({ onDone, balance }) {
           ['Frais', '0 (gratuit)', 'green'],
           ['Total débité', `${amt.toLocaleString()} ${currency}`, 'strong'],
           ['Le bénéficiaire reçoit', `${amt.toLocaleString()} ${currency}`, 'green'],
-        ]} onConfirm={submit} pending={pending} confirmTestId="btn-b2b-confirm" />
+        ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-b2b-confirm" />
       )}
     </div>
   );
 }
 
 // ------- BIZ TO MOBILE -------
-function BizToMobileForm({ config, onDone, balance }) {
+function BizToMobileForm({ config, onDone, balance, turnstile }) {
+  const turnstileRef = useRef(null);
   const operators = useMemo(
     () => (config?.mobile_money?.operators || []).filter((operator) => operator.active === true),
     [config],
@@ -231,6 +254,7 @@ function BizToMobileForm({ config, onDone, balance }) {
   const [description, setDescription] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
   const [idempotencyKey, setIdempotencyKey] = useState(
     () => window.crypto?.randomUUID?.()
       || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -259,18 +283,25 @@ function BizToMobileForm({ config, onDone, balance }) {
   const min = Number(op?.min) || 100;
   const max = op?.max === '' || op?.max == null ? 10 ** 12 : (Number(op.max) || 10 ** 12);
   const canSubmit = op && currency && phone && amt >= min && amt <= max
-    && recipientGets > 0 && totalDebit <= bal;
+    && recipientGets > 0 && totalDebit <= bal && turnstileToken;
 
   const submit = async () => {
+    if (!turnstileToken) {
+      toast.error('Veuillez terminer la vérification anti-bot.');
+      return;
+    }
     setPending(true);
     try {
       const { data } = await api.post('/transfers', {
         transfer_type: 'biz_to_mobile', recipient: phone, country, operator,
         fee_bearer: feeBearer, amount: amt, currency, description,
         idempotency_key: idempotencyKey,
+        turnstile_token: turnstileToken,
       });
       onDone(data, { type: 'biz_to_mobile' });
     } catch (err) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
       const status = err.response?.status;
       if (status >= 400 && status < 500 && status !== 408) {
         setIdempotencyKey(window.crypto?.randomUUID?.()
@@ -340,9 +371,18 @@ function BizToMobileForm({ config, onDone, balance }) {
         </div>
       )}
 
-      <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-mm-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
-        Continuer
-      </button>
+      <TurnstileWidget
+        ref={turnstileRef}
+        siteKey={turnstile.siteKey}
+        action="withdrawal"
+        disabled={turnstile.loading || !turnstile.enabled}
+        onToken={setTurnstileToken}
+      />
+      {turnstileToken && (
+        <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-mm-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
+          Continuer
+        </button>
+      )}
 
       {confirmOpen && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="mm-confirm-modal" rows={[
@@ -353,14 +393,15 @@ function BizToMobileForm({ config, onDone, balance }) {
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
           ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`, 'green'],
-        ]} onConfirm={submit} pending={pending} confirmTestId="btn-mm-confirm" />
+        ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-mm-confirm" />
       )}
     </div>
   );
 }
 
 // ------- BIZ TO CRYPTO -------
-function BizToCryptoForm({ config, onDone, balance }) {
+function BizToCryptoForm({ config, onDone, balance, turnstile }) {
+  const turnstileRef = useRef(null);
   const ccfg = config?.crypto || { enabled: false };
   const [coins, setCoins] = useState([]);
   const [loadingCoins, setLoadingCoins] = useState(true);
@@ -392,6 +433,7 @@ function BizToCryptoForm({ config, onDone, balance }) {
   const [description, setDescription] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   // Live address validation
   const addressValidation = useMemo(() => {
@@ -425,7 +467,8 @@ function BizToCryptoForm({ config, onDone, balance }) {
   // configured for this network → we cannot validate client-side, so accept
   // any non-empty value (backend does the definitive check).
   const addressOk = !!walletAddress && (addressValidation.ok !== false);
-  const canSubmit = crypto && network && addressOk && amt >= min && amt <= max && totalDebit <= bal && fullName && email;
+  const canSubmit = crypto && network && addressOk && amt >= min && amt <= max
+    && totalDebit <= bal && fullName && email && turnstileToken;
 
   // Human-readable list of what's still missing, shown when the button is disabled.
   const missing = [];
@@ -440,6 +483,10 @@ function BizToCryptoForm({ config, onDone, balance }) {
   if (!email) missing.push('email');
 
   const submit = async () => {
+    if (!turnstileToken) {
+      toast.error('Veuillez terminer la vérification anti-bot.');
+      return;
+    }
     setPending(true);
     try {
       const { data } = await api.post('/transfers', {
@@ -447,9 +494,14 @@ function BizToCryptoForm({ config, onDone, balance }) {
         recipient_name: fullName,
         crypto: cryptoCode, network: networkCode, wallet_address: walletAddress,
         fee_bearer: feeBearer, amount: amt, currency, description,
+        turnstile_token: turnstileToken,
       });
       onDone(data, { type: 'biz_to_crypto' });
-    } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
+    } catch (err) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
+      toast.error(err.response?.data?.detail || 'Erreur');
+    }
     finally { setPending(false); }
   };
 
@@ -532,9 +584,18 @@ function BizToCryptoForm({ config, onDone, balance }) {
         </div>
       )}
 
-      <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-crypto-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed">
-        {canSubmit ? 'Continuer' : (missing.length ? `Renseigner : ${missing.join(', ')}` : 'Continuer')}
-      </button>
+      <TurnstileWidget
+        ref={turnstileRef}
+        siteKey={turnstile.siteKey}
+        action="withdrawal"
+        disabled={turnstile.loading || !turnstile.enabled}
+        onToken={setTurnstileToken}
+      />
+      {turnstileToken && (
+        <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-crypto-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+          {canSubmit ? 'Continuer' : (missing.length ? `Renseigner : ${missing.join(', ')}` : 'Continuer')}
+        </button>
+      )}
 
       {confirmOpen && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="crypto-confirm-modal" rows={[
@@ -545,7 +606,7 @@ function BizToCryptoForm({ config, onDone, balance }) {
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
           ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'green'],
-        ]} onConfirm={submit} pending={pending} confirmTestId="btn-crypto-confirm" />
+        ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-crypto-confirm" />
       )}
     </div>
   );
@@ -590,7 +651,7 @@ function FeeBearerSwitch({ value, onChange }) {
   );
 }
 
-function ConfirmModal({ onClose, rows, onConfirm, pending, testId, confirmTestId }) {
+function ConfirmModal({ onClose, rows, onConfirm, pending, canConfirm = true, testId, confirmTestId }) {
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-4 sm:p-6 max-w-md w-full" data-testid={testId}>
@@ -602,7 +663,9 @@ function ConfirmModal({ onClose, rows, onConfirm, pending, testId, confirmTestId
         </div>
         <div className="mt-4 sm:mt-5 flex gap-2 justify-end">
           <button onClick={onClose} className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-full border border-slate-200 font-semibold text-[11px] sm:text-xs">Annuler</button>
-          <button onClick={onConfirm} disabled={pending} data-testid={confirmTestId} className="px-4 sm:px-5 py-1.5 sm:py-2 rounded-full bg-[#2563EB] text-white font-bold text-[11px] sm:text-xs disabled:opacity-60">{pending ? '…' : 'Transférer'}</button>
+          {canConfirm && (
+            <button onClick={onConfirm} disabled={pending} data-testid={confirmTestId} className="px-4 sm:px-5 py-1.5 sm:py-2 rounded-full bg-[#2563EB] text-white font-bold text-[11px] sm:text-xs disabled:opacity-60">{pending ? '…' : 'Transférer'}</button>
+          )}
         </div>
       </div>
     </div>

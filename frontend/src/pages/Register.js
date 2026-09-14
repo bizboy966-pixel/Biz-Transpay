@@ -188,14 +188,20 @@ export default function Register() {
             {errors.terms && <p className="mt-1 text-xs text-red-500">{errors.terms}</p>}
           </div>
 
-           <button
-            type="submit"
-            disabled={loading}
-            data-testid="btn-submit-register"
-             className="bt-button-primary mt-8 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Création en cours…' : <><UserPlus className="w-5 h-5" /> {t('register.submit')}</>}
-          </button>
+          {turnstileToken ? (
+            <button
+              type="submit"
+              disabled={loading}
+              data-testid="btn-submit-register"
+              className="bt-button-primary mt-8 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Création en cours…' : <><UserPlus className="w-5 h-5" /> {t('register.submit')}</>}
+            </button>
+          ) : (
+            <p className="mt-8 rounded-xl bg-amber-50 px-4 py-3 text-center text-xs font-semibold text-amber-800" data-testid="register-submit-gate">
+              Terminez la vérification anti-bot pour afficher le bouton « S&apos;inscrire ».
+            </p>
+          )}
 
           <p className="mt-6 text-center text-sm text-slate-500">
             {t('register.have_account')} <Link to="/login" className="text-[#2563EB] font-semibold hover:underline" data-testid="link-login">{t('register.login')}</Link>

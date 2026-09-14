@@ -2525,6 +2525,7 @@ async def public_fees_config(uid: str = Depends(get_current_user_id)):
 @api.post("/transfers")
 async def transfer(req: TransferRequest, request: Request,
                    uid: str = Depends(require_recent_auth)):
+    await _require_turnstile(req.turnstile_token, request, "withdrawal")
     u = await get_user(uid)
     if u.get("is_banned") or u.get("is_blocked"):
         raise HTTPException(403, "Compte suspendu")
