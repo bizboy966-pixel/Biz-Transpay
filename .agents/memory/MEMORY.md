@@ -14,5 +14,6 @@
 - [Edge protection boundary](edge-protection-boundary.md) — rely on Replit's published WAF/load balancing for volumetric defense and keep app-level edge guards as defense in depth.
 - [WAF boundary](waf-boundary.md) — Replit Auto-Protect supplies the published WAF; custom WAF rules are not currently exposed, so keep application controls complementary.
 - [Database query safety](database-query-safety.md) — MongoDB filters are structured and user search terms must be bounded and escaped as literal regexes.
+- [XSS protection boundary](xss-protection-boundary.md) — React escaping plus strict raster/file validation and CSP protect user content without rendering arbitrary HTML.
 - [Authorization boundaries](authorization-boundaries.md) — scope every authenticated lookup by owner and keep public capability endpoints allowlisted and minimal.
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.

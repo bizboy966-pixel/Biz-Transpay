@@ -43,6 +43,10 @@ export default function Support() {
   const onAttach = (e) => {
     const files = Array.from(e.target.files || []);
     files.forEach((f) => {
+      if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(f.type)) {
+        toast.error(`${f.name} : format non supporté`);
+        return;
+      }
       if (f.size > 2_500_000) { toast.error(`${f.name} trop volumineux (max 2.5Mo)`); return; }
       const r = new FileReader();
       r.onload = (ev) => setAttachments((a) => [...a, { name: f.name, type: f.type, data: ev.target.result }]);

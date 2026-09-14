@@ -78,6 +78,16 @@ function Party({ icon: Icon, label, name, phone, email }) {
   );
 }
 
+function safeExternalUrl(value) {
+  if (!value || typeof value !== 'string') return null;
+  try {
+    const url = new URL(value, window.location.origin);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function InfoRow({ icon: Icon, label, value, content, copyable = false, external = false, onCopy }) {
   if (value === null || value === undefined || value === '') {
     if (content === null || content === undefined) return null;
@@ -243,8 +253,8 @@ export default function TransactionDetailModal({ tx, onClose }) {
             <InfoRow icon={FileText} label="Description" value={tx.description} />
           </div>
 
-          {meta.receipt_url && (
-            <a href={meta.receipt_url} target="_blank" rel="noreferrer" className="mt-4 flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-bold text-[#2563EB] hover:bg-blue-50" data-testid={`detail-receipt-${tx.id}`}>
+           {safeExternalUrl(meta.receipt_url) && (
+            <a href={safeExternalUrl(meta.receipt_url)} target="_blank" rel="noreferrer" className="mt-4 flex min-h-12 items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-bold text-[#2563EB] hover:bg-blue-50" data-testid={`detail-receipt-${tx.id}`}>
               <Download className="h-4 w-4" /> Télécharger le reçu
             </a>
           )}

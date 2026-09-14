@@ -9,6 +9,7 @@ import json
 import copy
 import ipaddress
 import re
+import base64
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -493,6 +494,17 @@ def _apply_edge_security_headers(response: JSONResponse, request: Request) -> No
     response.headers.setdefault(
         "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
     )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; object-src 'none'; "
+        "frame-ancestors 'none'; form-action 'self' https:; "
+        "script-src 'self' "
+        "'sha256-bv3BJQ9HDRPWREafa7OTAYZEHepHMGBDm7yX52R8CKE='; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob: https:; font-src 'self' data: https:; "
+        "connect-src 'self' https:; frame-src 'self' https:; "
+        "worker-src 'self' blob:; media-src 'self' blob: https:",
+    )
     if request.url.path.startswith("/api/"):
         response.headers.setdefault("Cache-Control", "no-store")
     forwarded_proto = request.headers.get("x-forwarded-proto", "").lower()
@@ -715,6 +727,66 @@ def _literal_regex_term(value: str, *, field_name: str = "valeur") -> str:
     if len(term) > 100:
         raise HTTPException(422, f"{field_name} trop long")
     return re.escape(term)
+
+
+_IMAGE_DATA_URL_RE = re.compile(
+    r"^data:(image/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$",
+    re.IGNORECASE,
+)
+_IMAGE_SIGNATURES = {
+    "image/jpeg": lambda data: data.startswith(b"\xff\xd8\xff"),
+    "image/png": lambda data: data.startswith(b"\x89PNG\r\n\x1a\n"),
+    "image/webp": lambda data: (
+        len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"
+    ),
+}
+
+
+def _validate_raster_image(value: Optional[str], field_name: str,
+                           *, required: bool = False) -> Optional[str]:
+    """Accept only bounded raster data URLs; SVG and scriptable formats stay out."""
+    if not value:
+        if required:
+            raise HTTPException(422, f"{field_name} requis")
+        return None
+    match = _IMAGE_DATA_URL_RE.fullmatch(value.strip())
+    if not match:
+        raise HTTPException(
+            422, f"{field_name} doit être une image JPEG, PNG ou WebP"
+        )
+    mime = match.group(1).lower()
+    try:
+        raw = base64.b64decode(match.group(2), validate=True)
+    except (ValueError, TypeError):
+        raise HTTPException(422, f"{field_name} invalide")
+    if not raw or len(raw) > 3_000_000 or not _IMAGE_SIGNATURES[mime](raw):
+        raise HTTPException(422, f"{field_name} invalide ou trop volumineux")
+    return f"data:{mime};base64,{match.group(2)}"
+
+
+def _validate_image_source(value: Optional[str], field_name: str) -> Optional[str]:
+    """Allow safe raster data URLs or ordinary HTTPS/HTTP image URLs only."""
+    if not value:
+        return None
+    if value.strip().lower().startswith("data:"):
+        return _validate_raster_image(value, field_name)
+    parsed = urlparse(value.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(422, f"{field_name} URL invalide")
+    if parsed.username or parsed.password:
+        raise HTTPException(422, f"{field_name} URL invalide")
+    if parsed.path.lower().endswith((".svg", ".svgz")):
+        raise HTTPException(422, f"{field_name} SVG interdit")
+    return value.strip()
+
+
+def _validate_http_url(value: str, field_name: str) -> str:
+    parsed = urlparse(str(value or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(422, f"{field_name} URL invalide")
+    if parsed.username or parsed.password:
+        raise HTTPException(422, f"{field_name} URL invalide")
+    return value.strip().rstrip("/")
 
 
 async def _issue_login_challenge(identifier: str, ip: str) -> dict:
@@ -1368,14 +1440,66 @@ async def support_config(uid: str = Depends(get_current_user_id)):
     }
 
 
+class SupportAttachment(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    type: Literal["image/jpeg", "image/png", "image/webp", "application/pdf"]
+    data: str = Field(..., min_length=1, max_length=4_200_000)
+
+
 class ChatMessage(BaseModel):
-    text: Optional[str] = ""
-    attachments: List[dict] = Field(default_factory=list)
+    text: Optional[str] = Field("", max_length=5000)
+    attachments: List[SupportAttachment] = Field(default_factory=list, max_length=5)
+
+
+def _validate_support_attachments(
+    attachments: list[SupportAttachment],
+) -> list[dict]:
+    clean = []
+    for attachment in attachments:
+        if attachment.type.startswith("image/"):
+            safe_data = _validate_raster_image(attachment.data, "Pièce jointe")
+        else:
+            match = re.fullmatch(
+                r"data:application/pdf;base64,([A-Za-z0-9+/]+={0,2})",
+                attachment.data.strip(),
+                re.IGNORECASE,
+            )
+            if not match:
+                raise HTTPException(
+                    422, "Les pièces jointes PDF doivent être des données PDF valides"
+                )
+            try:
+                raw = base64.b64decode(match.group(1), validate=True)
+            except (ValueError, TypeError):
+                raise HTTPException(422, "Pièce jointe PDF invalide")
+            if len(raw) > 2_500_000 or not raw.startswith(b"%PDF-"):
+                raise HTTPException(422, "Pièce jointe PDF invalide ou trop volumineuse")
+            safe_data = f"data:application/pdf;base64,{match.group(1)}"
+        clean.append({
+            "name": Path(attachment.name).name[:160],
+            "type": attachment.type,
+            "data": safe_data,
+        })
+    return clean
+
+
+def _sanitize_stored_attachments(attachments) -> list[dict]:
+    """Drop legacy or tampered attachments before rendering them in a browser."""
+    clean = []
+    for raw in attachments or []:
+        try:
+            attachment = SupportAttachment.model_validate(raw)
+            clean.extend(_validate_support_attachments([attachment]))
+        except (HTTPException, ValueError, TypeError):
+            continue
+    return clean
 
 
 @api.get("/support/messages")
 async def user_get_messages(uid: str = Depends(get_current_user_id)):
     msgs = await db.support_messages.find({"conversation_id": uid}, {"_id": 0}).sort("created_at", 1).to_list(500)
+    for msg in msgs:
+        msg["attachments"] = _sanitize_stored_attachments(msg.get("attachments"))
     # mark admin msgs as read by user
     await db.support_messages.update_many(
         {"conversation_id": uid, "sender": "admin", "read_by_user": {"$ne": True}},
@@ -1394,7 +1518,7 @@ async def user_send_message(msg: ChatMessage, uid: str = Depends(get_current_use
         "sender_id": uid,
         "sender_name": u.get("full_name") or u.get("username"),
         "text": msg.text or "",
-        "attachments": msg.attachments,
+        "attachments": _validate_support_attachments(msg.attachments),
         "created_at": now_iso(),
         "read_by_user": True,
         "read_by_admin": False,
@@ -2596,8 +2720,9 @@ async def create_deposit(req: DepositRequest, request: Request,
     webhook_url = f"{host_url}/api/webhook/stripe"
     checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
 
-    success_url = f"{req.origin_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{req.origin_url}/payment/cancel"
+    return_url = _validate_http_url(req.origin_url, "URL de retour")
+    success_url = f"{return_url}/payment/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{return_url}/payment/cancel"
 
     session_req = CheckoutSessionRequest(
         amount=float(usd_amount),
@@ -6075,6 +6200,7 @@ async def list_links(uid: str = Depends(get_current_user_id)):
 async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_user_id)):
     if not req.title.strip():
         raise HTTPException(400, "Le nom du lien est requis")
+    safe_logo = _validate_image_source(req.logo, "Logo")
     if req.amount_type == "fixed" and req.amount <= 0:
         raise HTTPException(400, "Le montant fixe doit être supérieur à zéro")
     if req.amount_type == "free":
@@ -6098,7 +6224,7 @@ async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_use
         min_amount=req.min_amount,
         max_amount=req.max_amount,
         fee_bearer=req.fee_bearer,
-        logo=req.logo,
+        logo=safe_logo,
     )
     await db.payment_links.insert_one(link.model_dump())
     return link
@@ -6136,6 +6262,8 @@ async def update_link(link_id: str, req: PaymentLinkUpdate, uid: str = Depends(g
         raise HTTPException(404, "Lien introuvable")
     if not update:
         raise HTTPException(400, "Aucune modification")
+    if "logo" in update:
+        update["logo"] = _validate_image_source(update["logo"], "Logo")
     candidate = {**current, **update}
     if not str(candidate.get("title") or "").strip():
         raise HTTPException(400, "Le nom du lien est requis")
@@ -6256,9 +6384,18 @@ async def get_kyc(uid: str = Depends(get_current_user_id)):
 
 @api.post("/kyc/submit")
 async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
+    data = req.model_dump()
+    for field_name, required in (
+        ("document_front", True),
+        ("document_back", False),
+        ("selfie", True),
+    ):
+        data[field_name] = _validate_raster_image(
+            data.get(field_name), field_name, required=required
+        )
     doc = {
         "user_id": uid,
-        **req.model_dump(),
+        **data,
         "submitted_at": now_iso(),
         "status": "pending",
         "reject_reason": None,
@@ -6271,7 +6408,6 @@ async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
 # ==================== API KEYS (v2 — test/live envs, hashed secrets) ====================
 import hmac
 import hashlib
-import base64
 from cryptography.fernet import Fernet, InvalidToken
 
 _FERNET: Optional[Fernet] = None
@@ -7374,13 +7510,9 @@ async def update_profile(req: UpdateProfile, uid: str = Depends(get_current_user
         updates.pop("two_fa_enabled", None)
         raise HTTPException(400, "Utilisez la procédure de configuration 2FA")
     if "avatar_url" in updates:
-        avatar = str(updates["avatar_url"] or "")
-        if avatar and (
-            not avatar.startswith(("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,"))
-            or len(avatar) > 3_000_000
-        ):
-            raise HTTPException(400, "Photo invalide ou trop volumineuse")
-        updates["avatar_url"] = avatar or None
+        updates["avatar_url"] = _validate_image_source(
+            updates["avatar_url"], "Photo"
+        )
     protected_fields = {"full_name", "phone", "email"}
     if protected_fields.intersection(updates):
         current_user = await get_user(uid)
@@ -9441,6 +9573,8 @@ async def admin_conversations(admin=Depends(get_admin)):
 @api.get("/admin/support/conversations/{user_id}/messages")
 async def admin_conversation_messages(user_id: str, admin=Depends(get_admin)):
     msgs = await db.support_messages.find({"conversation_id": user_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
+    for msg in msgs:
+        msg["attachments"] = _sanitize_stored_attachments(msg.get("attachments"))
     await db.support_messages.update_many(
         {"conversation_id": user_id, "sender": "user", "read_by_admin": {"$ne": True}},
         {"$set": {"read_by_admin": True}}
@@ -9457,7 +9591,7 @@ async def admin_reply(user_id: str, msg: ChatMessage, admin=Depends(get_admin)):
         "sender_id": admin["id"],
         "sender_name": admin.get("full_name") or admin.get("username"),
         "text": msg.text or "",
-        "attachments": msg.attachments,
+        "attachments": _validate_support_attachments(msg.attachments),
         "created_at": now_iso(),
         "read_by_user": False,
         "read_by_admin": True,

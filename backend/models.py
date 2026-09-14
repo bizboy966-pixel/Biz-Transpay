@@ -15,11 +15,11 @@ def new_id():
 
 # ---------- Auth ----------
 class RegisterRequest(BaseModel):
-    full_name: str
-    username: str
+    full_name: str = Field(..., min_length=1, max_length=120)
+    username: str = Field(..., min_length=3, max_length=50)
     account_type: Literal["personal", "merchant"]
-    country: str
-    phone: str
+    country: str = Field(..., min_length=2, max_length=3)
+    phone: str = Field(..., min_length=3, max_length=40)
     email: EmailStr
     password: str
 
@@ -87,27 +87,27 @@ class AuthResponse(BaseModel):
 
 # ---------- Payment link ----------
 class PaymentLinkCreate(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=120)
     amount: float = 0  # kept for backward compat; used when amount_type = fixed
     # Universal links no longer force a currency at creation time — the customer
     # picks it (XOF/XAF/USDT) on the checkout page. Field kept optional for
     # legacy inbound payloads and defaults to "UNIVERSAL".
     currency: Literal["XOF", "XAF", "USDT", "UNIVERSAL"] = "UNIVERSAL"
-    description: Optional[str] = ""
+    description: Optional[str] = Field("", max_length=2000)
     expires_at: Optional[str] = None
     single_use: bool = False
     amount_type: Literal["fixed", "free"] = "fixed"
     min_amount: Optional[float] = None
     max_amount: Optional[float] = None
     fee_bearer: Literal["customer", "owner"] = "customer"
-    logo: Optional[str] = None  # data URL or hosted URL
+    logo: Optional[str] = Field(None, max_length=3_000_000)  # raster data URL or hosted URL
 
 
 class PaymentLinkUpdate(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, min_length=1, max_length=120)
     amount: Optional[float] = None
     currency: Optional[Literal["XOF", "XAF", "USDT", "UNIVERSAL"]] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(None, max_length=2000)
     expires_at: Optional[str] = None
     single_use: Optional[bool] = None
     active: Optional[bool] = None
@@ -115,7 +115,7 @@ class PaymentLinkUpdate(BaseModel):
     min_amount: Optional[float] = None
     max_amount: Optional[float] = None
     fee_bearer: Optional[Literal["customer", "owner"]] = None
-    logo: Optional[str] = None
+    logo: Optional[str] = Field(None, max_length=3_000_000)
 
 
 class PaymentLink(BaseModel):
@@ -212,14 +212,14 @@ class ExchangeRequest(BaseModel):
 
 # ---------- KYC ----------
 class KycSubmit(BaseModel):
-    full_name: str
-    phone: str
+    full_name: str = Field(..., min_length=1, max_length=120)
+    phone: str = Field(..., min_length=3, max_length=40)
     document_type: Literal["cni", "passport", "driver_license"]
-    document_number: str
-    activity_description: str
-    document_front: Optional[str] = None  # data URL
-    document_back: Optional[str] = None
-    selfie: Optional[str] = None
+    document_number: str = Field(..., min_length=1, max_length=100)
+    activity_description: str = Field(..., min_length=1, max_length=500)
+    document_front: Optional[str] = Field(None, max_length=4_200_000)  # raster data URL
+    document_back: Optional[str] = Field(None, max_length=4_200_000)
+    selfie: Optional[str] = Field(None, max_length=4_200_000)
 
 
 # ---------- API keys ----------
@@ -236,13 +236,13 @@ class WebhookConfig(BaseModel):
 
 # ---------- Settings ----------
 class UpdateProfile(BaseModel):
-    full_name: Optional[str] = None
-    phone: Optional[str] = None
+    full_name: Optional[str] = Field(None, min_length=1, max_length=120)
+    phone: Optional[str] = Field(None, min_length=3, max_length=40)
     email: Optional[EmailStr] = None
     language: Optional[str] = None
     default_currency: Optional[Literal["XOF", "XAF"]] = None
     two_fa_enabled: Optional[bool] = None
-    avatar_url: Optional[str] = None
+    avatar_url: Optional[str] = Field(None, max_length=3_000_000)
 
 
 class ChangePassword(BaseModel):
@@ -253,8 +253,8 @@ class ChangePassword(BaseModel):
 
 # ---------- Support ticket ----------
 class TicketCreate(BaseModel):
-    subject: str
-    message: str
+    subject: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=5000)
     category: Literal["general", "technical", "billing", "kyc"] = "general"
 
 

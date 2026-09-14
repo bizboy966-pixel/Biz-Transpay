@@ -30,6 +30,17 @@ function makeDevServerV5Compatible(devServerConfig) {
   compatibleConfig.headers = {
     ...compatibleConfig.headers,
     "Cross-Origin-Resource-Policy": "same-origin",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy":
+      "default-src 'self'; base-uri 'self'; object-src 'none'; " +
+      "frame-ancestors 'none'; form-action 'self' https:; " +
+      "script-src 'self' 'sha256-QFPQVbeyXKIeV46k93WqgNMtAwxoOZLcuCifQkdouYY=' " +
+      "'sha256-bv3BJQ9HDRPWREafa7OTAYZEHepHMGBDm7yX52R8CKE='; " +
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; " +
+      "font-src 'self' data: https:; connect-src 'self' https:; " +
+      "frame-src 'self' https:; worker-src 'self' blob:; media-src 'self' blob: https:",
   };
 
   if (onBeforeSetupMiddleware || setupMiddlewares) {
