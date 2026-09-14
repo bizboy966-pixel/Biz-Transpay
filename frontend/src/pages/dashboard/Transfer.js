@@ -29,13 +29,15 @@ export default function Transfer() {
       (features?.wallet_xof_enabled !== false && features?.withdrawal_xof_enabled !== false)
       || (features?.wallet_xaf_enabled !== false && features?.withdrawal_xaf_enabled !== false)
     );
+    const providerAvailable = config?.mobile_money?.enabled === true
+      && (config?.mobile_money?.operators || []).some((operator) => operator.active === true);
     const cryptoOn = features?.wallet_crypto_enabled !== false && features?.withdrawal_crypto_enabled !== false;
     return [
       { v: 'biz_to_biz', I: Users, c: 'bg-blue-50 text-[#2563EB]', l: 'Biz-trans → Biz-trans', d: 'Instantané · Sans frais', enabled: true },
-      { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money', enabled: mmOn },
+      { v: 'biz_to_mobile', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Biz-trans → Mobile Money', d: 'Vers un numéro Mobile Money', enabled: mmOn && providerAvailable },
       { v: 'biz_to_crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Biz-trans → Crypto', d: 'USDT · BTC · ETH · Multi-réseaux', enabled: cryptoOn },
     ].filter((o) => o.enabled);
-  }, [features]);
+  }, [features, config]);
 
   const onDone = (data, meta) => {
     setDone({ ...data, meta });

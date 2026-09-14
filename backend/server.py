@@ -757,12 +757,16 @@ def _mbiyo_public_config(cfg: dict, admin: bool = False) -> dict:
     return result
 
 
-def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
-    configured = bool(
+def _paydunya_credentials_configured(cfg: dict) -> bool:
+    return bool(
         (cfg.get("master_key_encrypted") or os.environ.get("PAYDUNYA_MASTER_KEY"))
         and (cfg.get("private_key_encrypted") or os.environ.get("PAYDUNYA_PRIVATE_KEY"))
         and (cfg.get("token_encrypted") or os.environ.get("PAYDUNYA_TOKEN"))
     )
+
+
+def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
+    configured = _paydunya_credentials_configured(cfg)
     modes = cfg.get("modes")
     if not isinstance(modes, dict):
         # Legacy settings only implemented direct SoftPay.  Do not advertise
@@ -835,6 +839,8 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
             any(item["available"] for item in public_modes.values())
             and bool(result["catalog"])
         )
+        if not result["mobile_money_enabled"]:
+            result["catalog"] = []
     return result
 
 
@@ -847,8 +853,48 @@ def _find_deposit_operator(cfg: dict, country: str, code: str) -> Optional[dict]
     code_lo = (code or "").lower()
     for op in mm.get("operators", []):
         if op.get("country", "").upper() == country_up and op.get("code", "").lower() == code_lo:
-            return op if op.get("active", True) else None
+            return op if (op.get("active", True)
+                          and not op.get("archived", False)
+                          and not op.get("hidden", False)) else None
     return None
+
+
+def _active_operator(catalog: list[dict], country: str, code: str) -> Optional[dict]:
+    country_up = str(country or "").upper()
+    code_lo = str(code or "").lower()
+    return next((
+        op for op in catalog
+        if str(op.get("country") or "").upper() == country_up
+        and str(op.get("code") or "").lower() == code_lo
+        and op.get("active", True)
+        and not op.get("archived", False)
+        and not op.get("hidden", False)
+    ), None)
+
+
+async def _resolve_deposit_provider(country: str, code: str) -> str:
+    paydunya_cfg = await get_paydunya_config()
+    mbiyo_cfg = await get_mbiyo_config()
+    paydunya_match = (
+        _active_operator(paydunya_cfg.get("catalog") or [], country, code)
+        if paydunya_cfg.get("enabled")
+        and _paydunya_credentials_configured(paydunya_cfg) else None
+    )
+    mbiyo_match = (
+        _active_operator(mbiyo_cfg.get("catalog") or [], country, code)
+        if mbiyo_cfg.get("enabled")
+        and bool(mbiyo_cfg.get("secret_key_encrypted")
+                 or mbiyo_cfg.get("api_key_encrypted")
+                 or os.environ.get("MBIYO_SECRET_KEY")
+                 or os.environ.get("MBIYO_API_KEY")) else None
+    )
+    if paydunya_match and mbiyo_match:
+        raise HTTPException(409, "Code opérateur présent chez plusieurs prestataires")
+    if mbiyo_match:
+        return "mbiyo"
+    if paydunya_match:
+        return "paydunya"
+    raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
 
 
 # ==================== TRANSFER CONFIG ====================
@@ -981,6 +1027,11 @@ async def get_transfer_config() -> dict:
     merged = dict(doc)
     merged["mobile_money"] = _merged_mobile_money(
         DEFAULT_TRANSFER_CONFIG, doc.get("mobile_money") or {})
+    paydunya_cfg = await get_paydunya_config()
+    merged["paydunya"] = {
+        "enabled": bool(paydunya_cfg.get("enabled")
+                        and _paydunya_credentials_configured(paydunya_cfg)),
+    }
     mb_cfg = await get_mbiyo_config()
     merged["mbiyo"] = {
         "enabled": bool(mb_cfg.get("enabled") and (
@@ -995,7 +1046,11 @@ def _public_transfer_config(cfg: dict) -> dict:
     result = copy.deepcopy(cfg)
     mm = result.get("mobile_money") or {}
     public_ops = []
-    for op in mm.get("operators") or []:
+    global_enabled = bool(mm.get("enabled", False))
+    paydunya_enabled = bool((result.get("paydunya") or {}).get("enabled"))
+    paydunya_ops = (mm.get("operators") or []) if (
+        global_enabled and paydunya_enabled) else []
+    for op in paydunya_ops:
         if not op.get("active", True) or op.get("archived", False) or op.get("hidden", False):
             continue
         if not op.get("withdraw_mode") or str(op.get("currency") or "").upper() != "XOF":
@@ -1019,13 +1074,13 @@ def _public_transfer_config(cfg: dict) -> dict:
             "active": True,
         })
     result["mobile_money"] = {
-        "enabled": bool(mm.get("enabled", False)),
+        "enabled": False,
         "operators": public_ops,
     }
     # Mbiyo payout routes are configured with the provider catalogue and are
     # exposed under the same customer contract, using provider-prefixed codes.
     mb_cfg = cfg.get("mbiyo") or {}
-    if mb_cfg.get("enabled"):
+    if global_enabled and mb_cfg.get("enabled"):
         for op in mb_cfg.get("operators", []):
             if not op.get("active", True) or op.get("archived") or op.get("hidden"):
                 continue
@@ -1041,8 +1096,10 @@ def _public_transfer_config(cfg: dict) -> dict:
                     + float(op.get("platform_fee_fixed", 0) or 0), "active": True,
                 "provider": "mbiyo",
             })
-        result["mobile_money"]["enabled"] = True
-        result["mobile_money"]["operators"] = public_ops
+    result["mobile_money"]["enabled"] = bool(global_enabled and public_ops)
+    result["mobile_money"]["operators"] = public_ops
+    result.pop("paydunya", None)
+    result.pop("mbiyo", None)
     return result
 
 
@@ -1251,35 +1308,37 @@ async def transfer(req: TransferRequest, request: Request,
 
     # -------- BIZ TO MOBILE --------
     if req.transfer_type == "biz_to_mobile":
-        callback_base = (os.environ.get("OFFICIAL_DOMAIN")
-                         or _paydunya_callback_base(request)).rstrip("/")
-        callback_host = (urlparse(callback_base).hostname or "").lower()
-        if (not str(req.operator or "").lower().startswith("mbiyo_")
-                and (callback_host.endswith(".replit.dev")
-                     or callback_host in {"localhost", "127.0.0.1"})):
-            raise HTTPException(
-                503,
-                "Le retrait automatique Mobile Money nécessite l'application "
-                "publiée. PayDunya refuse les callbacks de prévisualisation.")
-
         mm_cfg = cfg.get("mobile_money", {})
         if not mm_cfg.get("enabled"):
             raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
         if not req.country or not req.operator:
             raise HTTPException(400, "Pays et opérateur requis")
-        # Mbiyo is intentionally routed before any PayDunya callback logic.
-        # PayDunya's existing route below remains unchanged.
-        if str(req.operator).lower().startswith("mbiyo_"):
-            mb_cfg = await get_mbiyo_config(decrypt=True)
-            if not mb_cfg.get("enabled") or not mb_cfg.get("_api_key"):
-                raise HTTPException(503, "Mbiyo n'est pas configuré")
-            op = next((o for o in mb_cfg.get("catalog", [])
-                       if str(o.get("country", "")).upper() == req.country.upper()
-                       and str(o.get("code", "")).lower() == req.operator.lower()
-                       and o.get("active", True) and not o.get("archived", False)
-                       and not o.get("hidden", False)), None)
-            if not op:
-                raise HTTPException(400, "Opérateur Mbiyo non disponible pour ce pays")
+        mb_cfg = await get_mbiyo_config(decrypt=True)
+        mb_op = (
+            _active_operator(mb_cfg.get("catalog") or [], req.country, req.operator)
+            if mb_cfg.get("enabled") and mb_cfg.get("_api_key") else None
+        )
+        paydunya_op = (
+            _active_operator(mm_cfg.get("operators") or [], req.country, req.operator)
+            if (cfg.get("paydunya") or {}).get("enabled") else None
+        )
+        if mb_op and paydunya_op:
+            raise HTTPException(409, "Code opérateur présent chez plusieurs prestataires")
+        if not mb_op and not paydunya_op:
+            raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
+
+        callback_base = (os.environ.get("OFFICIAL_DOMAIN")
+                         or _paydunya_callback_base(request)).rstrip("/")
+        callback_host = (urlparse(callback_base).hostname or "").lower()
+        if (paydunya_op and (callback_host.endswith(".replit.dev")
+                             or callback_host in {"localhost", "127.0.0.1"})):
+            raise HTTPException(
+                503,
+                "Le retrait automatique Mobile Money nécessite l'application "
+                "publiée. PayDunya refuse les callbacks de prévisualisation.")
+
+        if mb_op:
+            op = mb_op
             if str(op.get("currency")).upper() != req.currency.upper():
                 raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
             if req.amount < float(op.get("min", 0) or 0) or req.amount > float(op.get("max", 0) or 10**12):
@@ -1335,13 +1394,14 @@ async def transfer(req: TransferRequest, request: Request,
             return {"transaction": (await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})),
                     "fee": fees["total_fee"], "total_debit": fees["charged_amount"],
                     "recipient_gets": fees["wallet_credit_amount"], "operator": op.get("name")}
-        op = next((o for o in mm_cfg.get("operators", [])
-                   if str(o.get("country", "")).upper() == str(req.country).upper()
-                   and str(o.get("code", "")).lower() == str(req.operator).lower()
-                   and o.get("active", True) and not o.get("archived", False)
-                   and not o.get("hidden", False)), None)
-        if not op:
-            raise HTTPException(400, "Opérateur non disponible pour ce pays")
+        op = paydunya_op
+        # Reject a disabled PayDunya route before recording or debiting the
+        # withdrawal. Mbiyo has already been dispatched in the branch above.
+        pcfg = await get_paydunya_config(decrypt=True)
+        if (not pcfg.get("enabled")
+                or not _paydunya_credentials_configured(pcfg)
+                or not op.get("withdraw_mode")):
+            raise HTTPException(503, "PayDunya n'est pas configuré pour les retraits")
         operator_currency = str(op.get("currency") or "").upper()
         if operator_currency and operator_currency != req.currency.upper():
             raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
@@ -1446,9 +1506,6 @@ async def transfer(req: TransferRequest, request: Request,
         # Creating the token is the only stage where a provider failure proves
         # that no payout can have been submitted, so a refund is safe here.
         try:
-            pcfg = await get_paydunya_config(decrypt=True)
-            if not pcfg.get("enabled") or not withdraw_mode:
-                raise paydunya.PayDunyaError(503, "PayDunya disbursement is not configured")
             invoice = await paydunya.get_disbursement_invoice(
                 pcfg, amount=recipient_gets, currency=req.currency,
                 withdraw_mode=withdraw_mode, account_alias=account_alias,
@@ -1926,6 +1983,9 @@ async def deposits_config_public():
     public["catalog"] = list(grouped.values())
     public["mobile_money_enabled"] = bool(public.get("mobile_money_enabled") or
                                           mb_public.get("mobile_money_enabled"))
+    # The top-level flag represents aggregate Mobile Money availability, not
+    # PayDunya alone. This keeps Mbiyo-only configurations usable.
+    public["enabled"] = public["mobile_money_enabled"]
     return public
 
 
@@ -2012,7 +2072,8 @@ async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
     The route name is deliberately kept server-side. The browser receives only
     the UX action it must perform: phone confirmation, popup, or redirect.
     """
-    if str(req.operator or "").lower().startswith("mbiyo_"):
+    provider = await _resolve_deposit_provider(req.country, req.operator)
+    if provider == "mbiyo":
         return await _create_mbiyo_deposit(req, request, uid)
     cfg = await get_paydunya_config()
     public = _paydunya_public_config(cfg)
@@ -2193,17 +2254,15 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
 class PayDunyaInvoiceRequest(BaseModel):
     """Request shared by the hosted (PAR) and client (PSR) flows.
 
-    Hosted/client checkout lets PayDunya choose the operator, therefore
-    ``country``/``operator`` are optional.  When supplied, they are still
-    validated against our catalog so the same limits and tariff snapshot are
-    used as direct SoftPay.
+    Country and operator are mandatory so disabled local routes cannot be
+    bypassed through a provider-hosted checkout.
     """
     amount: float = Field(..., ge=1)
     currency: str = "XOF"
     email: str
     full_name: str
-    country: Optional[str] = None
-    operator: Optional[str] = None
+    country: str
+    operator: str
     phone_number: Optional[str] = None
     fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "client"
     description: Optional[str] = None
@@ -2236,24 +2295,10 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
     if flow not in ("psr", "par_redirect"):
         raise HTTPException(400, "Mode PayDunya invalide")
 
-    selected = None
-    if req.operator:
-        selected = next((op for op in cfg.get("catalog", [])
-                         if op.get("country", "").upper() == (req.country or "").upper()
-                         and op.get("code", "").lower() == req.operator.lower()
-                         and op.get("active", True)
-                         and not op.get("archived", False)
-                         and not op.get("hidden", False)), None)
-        if not selected:
-            raise HTTPException(400, "Opérateur non disponible pour ce pays")
-    elif req.country:
-        # A country-only request may use hosted PayDunya operator selection;
-        # use its first active entry solely for currency/limits/tariffs.
-        selected = next((op for op in cfg.get("catalog", [])
-                         if op.get("country", "").upper() == req.country.upper()
-                         and op.get("active", True)
-                         and not op.get("archived", False)
-                         and not op.get("hidden", False)), None)
+    selected = _active_operator(
+        cfg.get("catalog") or [], req.country, req.operator)
+    if not selected:
+        raise HTTPException(400, "Opérateur non disponible pour ce pays")
 
     currency = (selected.get("currency") if selected else req.currency or "XOF").upper()
     if currency not in PAYDUNYA_WALLET_CURRENCIES:

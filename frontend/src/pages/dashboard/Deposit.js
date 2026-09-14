@@ -189,10 +189,10 @@ function MethodPicker({ features, onPick }) {
     (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
     || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
   );
-  const [providerAvailable, setProviderAvailable] = useState(true);
+  const [providerAvailable, setProviderAvailable] = useState(false);
   useEffect(() => {
     api.get('/deposits/config').then(({ data }) => {
-      setProviderAvailable(data.enabled !== false && data.mobile_money_enabled === true);
+      setProviderAvailable(data.mobile_money_enabled === true);
     }).catch(() => setProviderAvailable(false));
   }, []);
   const methods = [
@@ -492,7 +492,7 @@ function MobileMoneyForm({ onSuccess }) {
     api.get('/deposits/config').then(({ data }) => {
       setCatalog(data.catalog || []);
       setProvider({
-        enabled: data.enabled !== false,
+        enabled: data.mobile_money_enabled === true,
         mobile_money_enabled: data.mobile_money_enabled === true,
       });
       return null;
