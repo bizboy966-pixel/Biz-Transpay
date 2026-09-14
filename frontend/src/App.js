@@ -40,6 +40,7 @@ import AdminRates from '@/pages/admin/AdminRates';
 import AdminFees from '@/pages/admin/AdminFees';
 import AdminBenefits from '@/pages/admin/AdminBenefits';
 import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
+import AdminFunds from '@/pages/admin/AdminFunds';
 import ReauthGate from '@/components/ReauthGate';
 import '@/App.css';
 
@@ -119,6 +120,7 @@ function App() {
             <Route path="fees" element={<AdminFees />} />
             <Route path="benefits" element={<AdminBenefits />} />
              <Route path="payment-providers" element={<AdminPaymentProviders />} />
+             <Route path="funds" element={<AdminFunds />} />
           </Route>
         </Routes>
       </BrowserRouter>

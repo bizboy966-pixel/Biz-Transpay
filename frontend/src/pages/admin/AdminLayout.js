@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet, TrendingUp, Smartphone } from 'lucide-react';
+import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet, TrendingUp, Smartphone, Landmark } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import NotificationBell from '@/components/NotificationBell';
 import { Link } from 'react-router-dom';
@@ -21,6 +21,7 @@ const NAV = [
   { to: '/admin/fees', i: SettingsIcon, l: 'Frais', permission: 'fees:read' },
   { to: '/admin/benefits', i: TrendingUp, l: 'Bénéfice', sub: 'Marge plateforme', permission: 'finance:read' },
   { to: '/admin/payment-providers', i: Smartphone, l: 'Prestataire de paiement', permission: 'providers:read' },
+  { to: '/admin/funds', i: Landmark, l: 'Fonds', permission: 'finance:read' },
   { to: '/admin/support', i: MessageCircle, l: 'Support & Chat', permission: 'support:read' },
   { section: 'Administration' },
   { to: '/admin/admins', i: ShieldCheck, l: 'Administrateurs', permission: 'admin_users:read' },

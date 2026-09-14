@@ -25,6 +25,16 @@ NETWORKS = {
     "SN": ("orange", "free", "wave"),
     "TG": ("moov", "togocom"),
 }
+NETWORK_LABELS = {
+    "orange": "Orange Money",
+    "moov": "Moov Money",
+    "coris": "Coris Money",
+    "mtn": "MTN Mobile Money",
+    "celtiis": "Celtiis Cash",
+    "wave": "Wave",
+    "free": "Free Money",
+    "togocom": "TMoney",
+}
 CURRENCIES = {"BF": "XOF", "BJ": "XOF", "CI": "XOF", "ML": "XOF",
               "SN": "XOF", "TG": "XOF", "CM": "XAF", "CG": "XAF"}
 LIMITS = {
@@ -51,7 +61,7 @@ def default_catalog() -> list[dict]:
                 "provider": "mbiyo", "country": country,
                 "country_label": COUNTRY_LABELS[country],
                 "code": f"mbiyo_{network}_{country.lower()}",
-                "network": network, "name": network.upper(),
+                "network": network, "name": NETWORK_LABELS.get(network, network.upper()),
                 "currency": currency, "active": True, "archived": False,
                 "hidden": False, "gateway_fee_pct": 0.0,
                 "gateway_fee_fixed": 0.0, "platform_fee_pct": 0.0,
@@ -142,3 +152,50 @@ class MbiyoClient:
     async def resend_webhook(self, transaction_id: str):
         return await self._request("POST",
                                    f"/merchant/transactions/{transaction_id}/resend-webhook")
+
+    async def wallets(self, currency: Optional[str] = None):
+        """List the wallets available to the authenticated Mbiyo account.
+
+        ``currency`` is sent only when a non-empty value is supplied.  Mbiyo
+        accepts the provider's ISO currency code (for example ``XOF``).
+        """
+        value = str(currency).strip() if currency is not None else ""
+        params = {"currency": value} if value else None
+        return await self._request("GET", "/wallets", **({"params": params} if params else {}))
+
+    async def balances(self, currency: Optional[str] = None):
+        """Read wallet totals, optionally filtered by currency."""
+        value = str(currency).strip() if currency is not None else ""
+        params = {"currency": value} if value else None
+        return await self._request("GET", "/balances", **({"params": params} if params else {}))
+
+    async def network_balances(
+        self,
+        currency: Optional[str] = None,
+        country_code: Optional[str] = None,
+    ):
+        """Read Mobile Money network balances.
+
+        Both filters are optional and empty filters are omitted from the
+        request so that Mbiyo can apply its default account scope.
+        """
+        params = {}
+        currency_value = str(currency).strip() if currency is not None else ""
+        country_value = str(country_code).strip() if country_code is not None else ""
+        if currency_value:
+            params["currency"] = currency_value
+        if country_value:
+            params["country_code"] = country_value
+        return await self._request(
+            "GET",
+            "/balance/networks",
+            **({"params": params} if params else {}),
+        )
+
+    async def balance_networks(
+        self,
+        currency: Optional[str] = None,
+        country_code: Optional[str] = None,
+    ):
+        """Backward-compatible alias for :meth:`network_balances`."""
+        return await self.network_balances(currency=currency, country_code=country_code)

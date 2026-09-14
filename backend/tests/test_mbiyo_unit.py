@@ -69,3 +69,43 @@ def test_client_sends_bearer_and_exact_nested_payload(monkeypatch):
     assert url == f"{mbiyo.BASE_URL}/merchant/payin"
     assert request["headers"]["Authorization"] == "Bearer secret-key"
     assert request["json"] == payload
+
+
+def test_balance_read_methods_use_documented_paths_and_omit_empty_filters(monkeypatch):
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"data": []}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            return Response()
+
+    monkeypatch.setattr(mbiyo.httpx, "AsyncClient", FakeClient)
+    client = mbiyo.MbiyoClient("secret-key", "https://mbiyo.test/api")
+    asyncio.run(client.wallets())
+    asyncio.run(client.balances(currency="XOF"))
+    asyncio.run(client.network_balances(currency="", country_code="TG"))
+
+    assert [call[:2] for call in calls] == [
+        ("GET", "https://mbiyo.test/api/wallets"),
+        ("GET", "https://mbiyo.test/api/balances"),
+        ("GET", "https://mbiyo.test/api/balance/networks"),
+    ]
+    assert "params" not in calls[0][2]
+    assert calls[1][2]["params"] == {"currency": "XOF"}
+    assert calls[2][2]["params"] == {"country_code": "TG"}

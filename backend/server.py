@@ -14,10 +14,12 @@ import socket
 import unicodedata
 from html import escape as html_escape
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Optional, List, Literal
+from typing import Any, Optional, List, Literal
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body, Response
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -8852,6 +8854,8 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         return "api_keys:read" if method == "GET" else "api_keys:write"
     if path.startswith("/admin/admins"):
         return "admin_users:read" if method == "GET" else "admin_users:write"
+    if path == "/admin/funds" or path.startswith("/admin/funds/"):
+        return "finance:read"
     if path.startswith("/admin/logs"):
         return "audit:read"
     if path.startswith("/admin/benefits") or path.startswith("/admin/stats") \
@@ -8903,6 +8907,295 @@ async def get_admin(
     u["_effective_role"] = effective_role
     u["_permissions"] = sorted(permissions)
     return u
+
+
+def _mbiyo_collection(payload: Any, aliases: tuple[str, ...],
+                      mapping_values: bool = False, depth: int = 0) -> list[dict]:
+    """Extract Mbiyo's documented ``{"data": [...]}`` collection strictly."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("Mbiyo response must contain a data list")
+    records = payload["data"]
+    if any(not isinstance(item, dict) for item in records):
+        raise ValueError("Mbiyo data list contains a non-object item")
+    return records
+
+
+def _mbiyo_value(item: dict, *names: str) -> Any:
+    for name in names:
+        value = item.get(name)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _mbiyo_text(value: Any, limit: int = 160) -> Optional[str]:
+    if value is None or isinstance(value, (dict, list, tuple, set)):
+        return None
+    text = str(value).strip()
+    return text[:limit] if text else None
+
+
+def _mbiyo_amount(item: dict) -> Any:
+    """Choose the provider's display amount before raw/legacy aliases."""
+    return _mbiyo_value(
+        item,
+        "human_readable_amount",
+        "humanReadableAmount",
+        "human_readable_balance",
+        "humanReadableBalance",
+        "readable_amount",
+        "display_amount",
+        "displayAmount",
+        "formatted_amount",
+        "formattedAmount",
+        "balance",
+        "amount",
+        "value",
+        "total",
+        "available_balance",
+        "availableBalance",
+        "available_amount",
+        "availableAmount",
+        "current_balance",
+        "currentBalance",
+    )
+
+
+def _mbiyo_raw_amount(item: dict) -> Any:
+    return _mbiyo_value(
+        item,
+        "raw_amount",
+        "rawAmount",
+        "amount_raw",
+        "amountRaw",
+        "balance_raw",
+        "balanceRaw",
+        "minor_amount",
+        "amount_in_minor_units",
+        "amountInMinorUnits",
+        "amount",
+    )
+
+
+def _mbiyo_money_text(value: Any, *, required: bool = True) -> Optional[str]:
+    """Return a finite provider amount as a JSON-safe decimal string."""
+    if value is None or value == "":
+        if required:
+            raise ValueError("Missing Mbiyo monetary amount")
+        return None
+    if isinstance(value, (bool, dict, list, tuple, set)):
+        raise ValueError("Invalid Mbiyo monetary amount")
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Invalid Mbiyo monetary amount")
+    if not amount.is_finite():
+        raise ValueError("Invalid Mbiyo monetary amount")
+    return format(amount, "f")
+
+
+def _mbiyo_bool(item: dict, *names: str) -> bool:
+    value = _mbiyo_value(item, *names)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "enabled", "active"}
+    return bool(value)
+
+
+def _sanitize_mbiyo_wallets(payload: Any) -> list[dict]:
+    records = _mbiyo_collection(
+        payload,
+        ("wallets", "wallet", "walletList", "wallet_data", "items"),
+    )
+    clean = []
+    for item in records:
+        wallet_id = _mbiyo_text(_mbiyo_value(
+            item, "id", "wallet_id", "walletId", "walletIdentifier",
+            "wallet_code", "code", "name"
+        ))
+        currency = _mbiyo_text(_mbiyo_value(
+            item, "currency", "currency_code", "currencyCode", "currency_code_iso"
+        ))
+        country_code = _mbiyo_text(_mbiyo_value(
+            item, "country_code", "countryCode", "iso2",
+        ))
+        if not country_code:
+            candidate = _mbiyo_text(item.get("country"))
+            country_code = candidate if candidate and len(candidate) <= 3 else None
+        country = _mbiyo_text(_mbiyo_value(item, "country", "country_name", "countryName"))
+        if country_code and len(country_code) <= 3:
+            country_code = country_code.upper()
+        if country and country_code and country.upper() == country_code:
+            country = None
+        if not country and country_code:
+            country = mbiyo.COUNTRY_LABELS.get(country_code, country_code)
+        capabilities = item.get("capabilities")
+        capabilities = capabilities if isinstance(capabilities, dict) else {}
+        if not wallet_id or not currency:
+            raise ValueError("Malformed Mbiyo wallet row")
+        balance = _mbiyo_money_text(_mbiyo_amount(item))
+        raw_amount = _mbiyo_money_text(_mbiyo_raw_amount(item), required=False)
+        clean.append({
+            "id": wallet_id,
+            "currency": currency.upper() if currency else None,
+            "country": country,
+            "country_code": country_code,
+            "balance": balance,
+            "raw_amount": raw_amount,
+            "topup": _mbiyo_bool(
+                item, "topup", "top_up", "can_top_up", "canTopUp", "canTopup",
+            ) or _mbiyo_bool(capabilities, "topup", "top_up", "can_top_up"),
+            "payout": _mbiyo_bool(
+                item, "payout", "can_payout", "canPayout",
+            ) or _mbiyo_bool(capabilities, "payout", "can_payout"),
+            "local_swap": _mbiyo_bool(
+                item, "local_swap", "localSwap", "can_local_swap", "canLocalSwap",
+            ) or _mbiyo_bool(capabilities, "local_swap", "localSwap", "can_local_swap"),
+        })
+    return clean
+
+
+def _sanitize_mbiyo_networks(payload: Any) -> list[dict]:
+    records = _mbiyo_collection(
+        payload,
+        (
+            "network_balances", "networkBalances", "network_balance",
+            "networks", "network", "operators", "balance", "items",
+        ),
+    )
+    clean = []
+    for item in records:
+        country_code = _mbiyo_text(_mbiyo_value(
+            item, "country_code", "countryCode", "iso2",
+        ))
+        if not country_code:
+            candidate = _mbiyo_text(item.get("country"))
+            country_code = candidate if candidate and len(candidate) <= 3 else None
+        if country_code and len(country_code) <= 3:
+            country_code = country_code.upper()
+        country = _mbiyo_text(_mbiyo_value(item, "country", "country_name", "countryName"))
+        if country and country_code and country.upper() == country_code:
+            country = None
+        if not country and country_code:
+            country = mbiyo.COUNTRY_LABELS.get(country_code, country_code)
+        network = _mbiyo_text(_mbiyo_value(
+            item, "network", "network_code", "networkCode", "networkName",
+            "operator_code", "operatorCode", "operator", "provider"
+        ))
+        operator = _mbiyo_text(_mbiyo_value(
+            item, "operator", "operator_name", "operatorName", "providerName",
+            "provider", "network"
+        ))
+        operator_label = mbiyo.NETWORK_LABELS.get(
+            str(network or "").lower(),
+            operator or network,
+        )
+        currency = (_mbiyo_text(_mbiyo_value(
+            item, "currency", "currency_code", "currencyCode", "currency_code_iso"
+        )) or "").upper() or None
+        if not network or not country_code or not currency:
+            raise ValueError("Malformed Mbiyo network balance row")
+        balance = _mbiyo_money_text(_mbiyo_amount(item))
+        clean.append({
+            "network": network,
+            "label": _mbiyo_text(_mbiyo_value(
+                item, "label", "network_label", "networkLabel", "name", "network"
+            )) if item.get("label") or item.get("network_label") \
+                or item.get("networkLabel") or item.get("name") else operator_label,
+            "operator": operator_label,
+            "country": country,
+            "country_code": country_code,
+            "currency": currency,
+            "balance": balance,
+            "wallet_id": _mbiyo_text(_mbiyo_value(
+                item, "wallet_id", "walletId", "wallet", "id"
+            )),
+        })
+    return clean
+
+
+def _mbiyo_wallet_totals(payload: Any) -> list[dict]:
+    records = _mbiyo_collection(
+        payload,
+        (
+            "balances", "wallet_balances", "wallet_totals", "walletTotals",
+            "totals", "wallets", "wallet", "items",
+        ),
+        mapping_values=True,
+    )
+    totals: dict[str, Decimal] = {}
+    for item in records:
+        currency = _mbiyo_text(_mbiyo_value(
+            item, "currency", "currency_code", "currencyCode", "code"
+        ))
+        currency = currency.upper() if currency else None
+        if not currency:
+            raise ValueError("Malformed Mbiyo balance row")
+        amount = _mbiyo_amount(item)
+        if amount is None:
+            raise ValueError("Malformed Mbiyo balance row")
+        try:
+            numeric = Decimal(str(amount))
+        except (InvalidOperation, TypeError, ValueError):
+            raise ValueError("Invalid Mbiyo monetary amount")
+        if not numeric.is_finite():
+            raise ValueError("Invalid Mbiyo monetary amount")
+        totals[currency] = totals.get(currency, Decimal("0")) + numeric
+    return [
+        {"currency": currency, "balance": format(amount, "f")}
+        for currency, amount in sorted(totals.items())
+    ]
+
+
+@api.get("/admin/funds")
+async def admin_funds(
+    currency: Optional[str] = Query(None),
+    country_code: Optional[str] = Query(None),
+    admin=Depends(get_admin),
+):
+    """Read-only live Mbiyo wallet and Mobile Money network balances."""
+    try:
+        cfg = await get_mbiyo_config(decrypt=True)
+    except Exception:
+        logger.exception("Unable to load Mbiyo funds configuration")
+        raise HTTPException(503, "Le service de soldes est temporairement indisponible.")
+    api_key = str(cfg.get("_api_key") or "").strip()
+    if not cfg.get("enabled", False) or not api_key:
+        raise HTTPException(409, "Mbiyo est désactivé ou non configuré.")
+
+    currency = str(currency or "").strip().upper() or None
+    country_code = str(country_code or "").strip().upper() or None
+    client = mbiyo.MbiyoClient(api_key, cfg.get("base_url", mbiyo.BASE_URL))
+    try:
+        wallets, balances, networks = await asyncio.gather(
+            client.wallets(currency=currency),
+            client.balances(currency=currency),
+            client.network_balances(currency=currency, country_code=country_code),
+        )
+    except mbiyo.MbiyoError:
+        raise HTTPException(502, "Mbiyo a refusé la lecture des soldes.")
+    except (httpx.TimeoutException, httpx.NetworkError):
+        raise HTTPException(503, "Mbiyo est temporairement indisponible.")
+    except Exception:
+        logger.exception("Unexpected Mbiyo funds request failure")
+        raise HTTPException(503, "Le service de soldes est temporairement indisponible.")
+
+    try:
+        safe_wallets = _sanitize_mbiyo_wallets(wallets)
+        safe_networks = _sanitize_mbiyo_networks(networks)
+        safe_totals = _mbiyo_wallet_totals(balances)
+    except ValueError:
+        logger.exception("Mbiyo returned an invalid funds response")
+        raise HTTPException(502, "Mbiyo a retourné un relevé de soldes invalide.")
+
+    return {
+        "provider": "mbiyo",
+        "mode": cfg.get("mode", "test"),
+        "refreshed_at": now_iso(),
+        "wallets": safe_wallets,
+        "network_balances": safe_networks,
+        # Network balances intentionally never participate in these totals.
+        "wallet_totals": safe_totals,
+    }
 
 
 async def require_admin_recent_auth(
