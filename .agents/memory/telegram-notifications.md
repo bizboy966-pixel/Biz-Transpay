@@ -14,4 +14,6 @@ credentials and customer data.
 **How to apply:** Keep the bot token in Replit Secrets and the destination
 chat identifier in environment configuration. Send only an allowlisted
 summary of notification metadata; never forward raw event payloads, secrets,
-provider responses, phone numbers, email addresses, or wallet credentials.
+provider responses, full phone numbers, full email addresses, or wallet
+credentials. Operational sender/recipient contact fields may be included only
+in masked form for the authorized chat.

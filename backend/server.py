@@ -11,6 +11,7 @@ import ipaddress
 import re
 import base64
 import socket
+import unicodedata
 from html import escape as html_escape
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -828,6 +829,15 @@ _sse_subscribers: dict[str, list[asyncio.Queue]] = {}
 _telegram_queue: Optional[asyncio.Queue] = None
 _telegram_worker_task: Optional[asyncio.Task] = None
 TELEGRAM_MAX_MESSAGE_LENGTH = 3900
+TELEGRAM_FINAL_NOTIFICATION_TYPES = {
+    "deposit_success",
+    "withdrawal_success",
+    "withdrawal_failed",
+    "transfer_success",
+    "exchange_success",
+}
+_telegram_command_task: Optional[asyncio.Task] = None
+_telegram_update_offset: Optional[int] = None
 
 
 def _telegram_config() -> tuple[str, str]:
@@ -856,7 +866,124 @@ def _telegram_safe_data(data: Optional[dict]) -> list[tuple[str, str]]:
     return safe
 
 
-def _telegram_notification_text(
+def _telegram_mask_email(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if "@" not in text:
+        return text
+    local, domain = text.split("@", 1)
+    suffix = domain[domain.rfind("."):] if "." in domain else ""
+    return f"{local[:1]}***@{domain[:1]}***{suffix}"
+
+
+def _telegram_mask_phone(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if len(text) <= 4:
+        return text
+    return f"{text[:3]}••••{text[-3:]}"
+
+
+async def _telegram_user_summary(user_id: Optional[str]) -> dict:
+    if not user_id:
+        return {}
+    user = await db.users.find_one(
+        {"id": user_id},
+        {"_id": 0, "full_name": 1, "username": 1, "email": 1, "phone": 1},
+    )
+    if not user:
+        return {}
+    return {
+        "name": user.get("full_name") or user.get("username") or "Compte Biz-transPay",
+        "username": user.get("username"),
+        "email": _telegram_mask_email(user.get("email")),
+        "phone": _telegram_mask_phone(user.get("phone")),
+    }
+
+
+async def _telegram_party_lines(
+    transaction: Optional[dict] = None,
+    deposit: Optional[dict] = None,
+) -> list[str]:
+    """Show operational sender/recipient context with contact data masked."""
+    if deposit:
+        recipient = await _telegram_user_summary(deposit.get("user_id"))
+        return [
+            f"Expéditeur : <b>{html_escape(str(deposit.get('full_name') or 'Client externe')[:120])}</b>",
+            f"Email expéditeur : <code>{html_escape(_telegram_mask_email(deposit.get('email')))}</code>",
+            f"Téléphone expéditeur : <code>{html_escape(_telegram_mask_phone(deposit.get('phone_number')))}</code>",
+            f"Destinataire : <b>{html_escape(recipient.get('name', 'Compte Biz-transPay'))}</b>",
+            f"Email destinataire : <code>{html_escape(recipient.get('email', '—'))}</code>",
+        ]
+
+    tx = transaction or {}
+    meta = tx.get("metadata") or {}
+    owner = await _telegram_user_summary(tx.get("user_id"))
+    counterparty = tx.get("counterparty") or meta.get("recipient_name")
+    transfer_type = meta.get("transfer_type")
+    if tx.get("type") == "exchange":
+        return [
+            f"Expéditeur : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b> "
+            f"(portefeuille {html_escape(str(meta.get('from_currency') or tx.get('currency') or '—'))})",
+            f"Destinataire : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b> "
+            f"(portefeuille {html_escape(str(meta.get('to_currency') or '—'))})",
+        ]
+
+    if tx.get("direction") == "in":
+        sender = {}
+        if transfer_type == "biz_to_biz" and counterparty:
+            sender_doc = await db.users.find_one(
+                {"username": str(counterparty).lower()}, {"_id": 0, "id": 1}
+            )
+            sender = await _telegram_user_summary((sender_doc or {}).get("id"))
+        return [
+            f"Expéditeur : <b>{html_escape(sender.get('name') or str(counterparty or 'Source externe')[:120])}</b>",
+            f"Email expéditeur : <code>{html_escape(sender.get('email', '—'))}</code>",
+            f"Destinataire : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
+            f"Email destinataire : <code>{html_escape(owner.get('email', '—'))}</code>",
+        ]
+
+    recipient_name = meta.get("recipient_name") or counterparty or "Destinataire externe"
+    recipient_phone = meta.get("phone_number") or meta.get("recipient_phone")
+    recipient_wallet = meta.get("wallet_address")
+    if transfer_type == "biz_to_biz" and counterparty:
+        recipient_doc = await db.users.find_one(
+            {"username": str(counterparty).lower()}, {"_id": 0, "id": 1}
+        )
+        recipient = await _telegram_user_summary((recipient_doc or {}).get("id"))
+    else:
+        recipient = {
+            "name": recipient_name,
+            "email": "—",
+            "phone": _telegram_mask_phone(recipient_phone),
+        }
+        if recipient_wallet:
+            wallet = str(recipient_wallet)
+            recipient["phone"] = f"Portefeuille {wallet[:8]}…{wallet[-6:]}"
+    return [
+        f"Expéditeur : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
+        f"Email expéditeur : <code>{html_escape(owner.get('email', '—'))}</code>",
+        f"Destinataire : <b>{html_escape(str(recipient.get('name', 'Destinataire externe'))[:120])}</b>",
+        f"Email destinataire : <code>{html_escape(recipient.get('email', '—'))}</code>",
+        f"Contact destinataire : <code>{html_escape(recipient.get('phone', '—'))}</code>",
+    ]
+
+
+async def _telegram_transaction_context(
+    data: Optional[dict],
+) -> tuple[Optional[dict], Optional[dict]]:
+    transaction = None
+    deposit = None
+    if data and data.get("transaction_id"):
+        transaction = await db.transactions.find_one(
+            {"id": data["transaction_id"]}, {"_id": 0}
+        )
+    if data and data.get("deposit_id"):
+        deposit = await db.momo_deposits.find_one(
+            {"id": data["deposit_id"]}, {"_id": 0}
+        )
+    return transaction, deposit
+
+
+async def _telegram_notification_text(
     user_id: str,
     ntype: str,
     title: str,
@@ -870,6 +997,8 @@ def _telegram_notification_text(
         f"Type : <code>{html_escape(str(ntype)[:80])}</code>",
         f"Compte : <code>…{html_escape(str(user_id)[-8:])}</code>",
     ]
+    transaction, deposit = await _telegram_transaction_context(data)
+    lines.extend(await _telegram_party_lines(transaction, deposit))
     for key, value in _telegram_safe_data(data):
         lines.append(
             f"{html_escape(key)} : <code>{html_escape(value)}</code>"
@@ -877,13 +1006,14 @@ def _telegram_notification_text(
     return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
 
 
-async def _send_telegram_notification(message: str) -> None:
-    token, chat_id = _telegram_config()
+async def _send_telegram_message(chat_id: str, message: str) -> None:
+    token, _ = _telegram_config()
     if not token or not chat_id:
         return
     try:
         import httpx
 
+        message = message[:TELEGRAM_MAX_MESSAGE_LENGTH]
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         async with httpx.AsyncClient(timeout=8.0) as client:
             response = await client.post(
@@ -906,11 +1036,301 @@ async def _send_telegram_notification(message: str) -> None:
         logger.warning("Telegram notification delivery failed: %s", exc)
 
 
+async def _send_telegram_notification(message: str) -> None:
+    _, chat_id = _telegram_config()
+    if chat_id:
+        await _send_telegram_message(chat_id, message)
+
+
+def _telegram_command_parts(text: str) -> tuple[str, str]:
+    raw_parts = (text or "").strip().split(maxsplit=1)
+    if not raw_parts:
+        return "", ""
+    command = raw_parts[0].split("@", 1)[0].lstrip("/")
+    command = unicodedata.normalize("NFKD", command)
+    command = "".join(char for char in command if not unicodedata.combining(char))
+    return command.lower(), raw_parts[1].strip() if len(raw_parts) > 1 else ""
+
+
+async def _telegram_search_records(kind: str, query: str) -> list[dict]:
+    query = str(query or "").strip()
+    if not query or len(query) > 100:
+        return []
+    needle = _literal_regex_term(query, field_name="Identifiant")
+    user_ids: list[str] = []
+    users = await db.users.find(
+        {"email": {"$regex": f"^{needle}$", "$options": "i"}},
+        {"_id": 0, "id": 1},
+    ).to_list(10)
+    user_ids.extend(str(user["id"]) for user in users if user.get("id"))
+
+    matches: list[dict] = []
+    if kind == "depot":
+        tx_types = ["deposit", "payment", "link_payment"]
+    elif kind == "retrait":
+        tx_types = ["withdrawal", "transfer"]
+    else:
+        tx_types = ["exchange"]
+
+    tx_or = [
+        {"id": query},
+        {"reference": query},
+        {"id": {"$regex": needle, "$options": "i"}},
+        {"reference": {"$regex": needle, "$options": "i"}},
+    ]
+    if user_ids:
+        tx_or.append({"user_id": {"$in": user_ids}})
+    tx_query = {
+        "type": {"$in": tx_types},
+        "$or": tx_or,
+    }
+    if kind == "retrait":
+        tx_query["direction"] = "out"
+    elif kind == "depot":
+        tx_query["direction"] = "in"
+    tx_docs = await db.transactions.find(
+        tx_query, {"_id": 0}
+    ).sort("created_at", -1).limit(5).to_list(5)
+    matches.extend({"source": "transaction", "record": doc} for doc in tx_docs)
+
+    if kind == "depot":
+        deposit_or = [
+            {"id": query},
+            {"paydunya_reference": query},
+            {"mbiyo_transaction_id": query},
+            {"fedapay_id": query},
+            {"email": {"$regex": needle, "$options": "i"}},
+        ]
+        if user_ids:
+            deposit_or.append({"user_id": {"$in": user_ids}})
+        deposit_docs = await db.momo_deposits.find(
+            {"$or": deposit_or}, {"_id": 0}
+        ).sort("created_at", -1).limit(5).to_list(5)
+        matches.extend({"source": "deposit", "record": doc} for doc in deposit_docs)
+
+        payment_or = [
+            {"session_id": query},
+            {"id": query},
+            {"reference": query},
+            {"email": {"$regex": needle, "$options": "i"}},
+        ]
+        if user_ids:
+            payment_or.append({"user_id": {"$in": user_ids}})
+        payment_docs = await db.payment_transactions.find(
+            {"$or": payment_or}, {"_id": 0}
+        ).sort("created_at", -1).limit(5).to_list(5)
+        matches.extend(
+            {"source": "payment", "record": doc} for doc in payment_docs
+        )
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for match in matches:
+        record = match["record"]
+        key = f"{match['source']}:{record.get('id') or record.get('session_id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(match)
+    return deduped[:5]
+
+
+def _telegram_status_label(status: Optional[str]) -> str:
+    labels = {
+        "completed": "confirmé",
+        "approved": "confirmé",
+        "paid": "confirmé",
+        "failed": "échoué",
+        "cancelled": "annulé",
+        "canceled": "annulé",
+        "pending": "en attente",
+        "expired": "expiré",
+    }
+    return labels.get(str(status or "").lower(), str(status or "inconnu"))
+
+
+async def _telegram_record_text(kind: str, match: dict) -> str:
+    source = match["source"]
+    record = match["record"]
+    if source == "transaction":
+        owner = await _telegram_user_summary(record.get("user_id"))
+        party_lines = await _telegram_party_lines(transaction=record)
+        meta = record.get("metadata") or {}
+        identifier = record.get("id") or "—"
+        reference = record.get("reference") or "—"
+        amount = f"{record.get('amount', 0)} {record.get('currency', '')}"
+        extra = ""
+        if record.get("type") == "exchange":
+            extra = (
+                f"\nConversion : {meta.get('from_currency', record.get('currency'))}"
+                f" → {meta.get('to_currency', '—')}"
+                f"\nMontant reçu : {meta.get('received', '—')}"
+            )
+        return "\n".join([
+            f"<b>{kind.title()} — {_telegram_status_label(record.get('status'))}</b>",
+            f"Numéro : <code>{html_escape(str(identifier))}</code>",
+            f"Référence : <code>{html_escape(str(reference))}</code>",
+            f"Montant : <b>{html_escape(str(amount))}</b>",
+            f"Compte : {html_escape(owner.get('name', '—'))}",
+            f"Email compte : <code>{html_escape(owner.get('email', '—'))}</code>",
+            *party_lines,
+            extra,
+        ])
+
+    if source == "deposit":
+        party_lines = await _telegram_party_lines(deposit=record)
+        identifier = record.get("id") or "—"
+        provider_ref = (
+            record.get("paydunya_reference")
+            or record.get("mbiyo_transaction_id")
+            or record.get("fedapay_id")
+            or "—"
+        )
+        amount = (
+            record.get("amount")
+            or record.get("requested_amount")
+            or record.get("wallet_credit_amount")
+            or 0
+        )
+        return "\n".join([
+            f"<b>Dépôt — {_telegram_status_label(record.get('status'))}</b>",
+            f"Numéro : <code>{html_escape(str(identifier))}</code>",
+            f"Référence fournisseur : <code>{html_escape(str(provider_ref))}</code>",
+            f"Montant : <b>{html_escape(str(amount))} {html_escape(str(record.get('currency', '')))}</b>",
+            f"Opérateur : {html_escape(str(record.get('operator_name') or record.get('operator') or '—'))}",
+            *party_lines,
+        ])
+
+    owner = await _telegram_user_summary(record.get("user_id"))
+    return "\n".join([
+        f"<b>Dépôt — {_telegram_status_label(record.get('status') or record.get('payment_status'))}</b>",
+        f"Numéro : <code>{html_escape(str(record.get('id') or record.get('session_id') or '—'))}</code>",
+        f"Référence paiement : <code>{html_escape(str(record.get('reference') or record.get('session_id') or '—'))}</code>",
+        f"Montant : <b>{html_escape(str(record.get('amount', 0)))} {html_escape(str(record.get('currency', '')))}</b>",
+        f"Destinataire : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
+        f"Email destinataire : <code>{html_escape(owner.get('email', '—'))}</code>",
+    ])
+
+
+async def _telegram_handle_command(message: dict) -> None:
+    _, allowed_chat_id = _telegram_config()
+    chat = message.get("chat") or {}
+    chat_id = str(chat.get("id") or "")
+    if not allowed_chat_id or chat_id != allowed_chat_id:
+        return
+    command, query = _telegram_command_parts(message.get("text", ""))
+    aliases = {
+        "depot": "depot",
+        "deposit": "depot",
+        "retrait": "retrait",
+        "withdrawal": "retrait",
+        "withdraw": "retrait",
+        "echange": "echange",
+        "exchange": "echange",
+    }
+    if command in {"start", "help", "aide"}:
+        await _send_telegram_message(
+            chat_id,
+            "Commandes disponibles :\n"
+            "/depot <numéro, référence ou email>\n"
+            "/retrait <numéro, référence ou email>\n"
+            "/echange <numéro, référence ou email>",
+        )
+        return
+    kind = aliases.get(command)
+    if not kind:
+        return
+    if not query:
+        await _send_telegram_message(
+            chat_id,
+            f"Utilisation : /{command} <numéro, référence ou email>",
+        )
+        return
+    matches = await _telegram_search_records(kind, query)
+    if not matches:
+        await _send_telegram_message(chat_id, f"Aucun {kind} trouvé pour cette recherche.")
+        return
+    blocks = [await _telegram_record_text(kind, match) for match in matches]
+    await _send_telegram_message(
+        chat_id,
+        f"<b>{len(blocks)} résultat(s)</b>\n\n" + "\n\n".join(blocks),
+    )
+
+
+async def _telegram_command_worker() -> None:
+    global _telegram_update_offset
+    token, chat_id = _telegram_config()
+    if not token or not chat_id:
+        return
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=35.0) as client:
+            while True:
+                try:
+                    payload = {"limit": 20, "timeout": 25, "allowed_updates": ["message"]}
+                    if _telegram_update_offset is not None:
+                        payload["offset"] = _telegram_update_offset
+                    response = await client.get(
+                        f"https://api.telegram.org/bot{token}/getUpdates",
+                        params=payload,
+                    )
+                    result = response.json()
+                    if response.status_code != 200 or not result.get("ok"):
+                        logger.warning("Telegram command polling rejected with status=%s", response.status_code)
+                        await asyncio.sleep(15)
+                        continue
+                    for update in result.get("result") or []:
+                        _telegram_update_offset = int(update.get("update_id", 0)) + 1
+                        if update.get("message"):
+                            await _telegram_handle_command(update["message"])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Telegram command polling failed: %s", exc)
+                    await asyncio.sleep(15)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Telegram command worker stopped: %s", exc)
+
+
+@app.on_event("startup")
+async def _start_telegram_command_worker() -> None:
+    global _telegram_command_task
+    token, chat_id = _telegram_config()
+    if token and chat_id and (
+        _telegram_command_task is None or _telegram_command_task.done()
+    ):
+        _telegram_command_task = asyncio.create_task(_telegram_command_worker())
+
+
+@app.on_event("shutdown")
+async def _stop_telegram_command_worker() -> None:
+    global _telegram_command_task
+    if _telegram_command_task and not _telegram_command_task.done():
+        _telegram_command_task.cancel()
+        try:
+            await _telegram_command_task
+        except asyncio.CancelledError:
+            pass
+    _telegram_command_task = None
+
+
 async def _telegram_notification_worker() -> None:
     while True:
-        message = await _telegram_queue.get()
+        event = await _telegram_queue.get()
         try:
+            message = await _telegram_notification_text(
+                event["user_id"],
+                event["ntype"],
+                event["title"],
+                event["body"],
+                event["data"],
+            )
             await _send_telegram_notification(message)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Telegram notification formatting failed: %s", exc)
         finally:
             _telegram_queue.task_done()
 
@@ -924,7 +1344,12 @@ async def _queue_telegram_notification(
 ) -> None:
     global _telegram_queue, _telegram_worker_task
     token, chat_id = _telegram_config()
-    if not token or not chat_id:
+    if (
+        not token
+        or not chat_id
+        or ntype not in TELEGRAM_FINAL_NOTIFICATION_TYPES
+        or "en cours" in f"{title} {body}".lower()
+    ):
         return
     if _telegram_queue is None:
         _telegram_queue = asyncio.Queue(maxsize=200)
@@ -934,7 +1359,13 @@ async def _queue_telegram_notification(
         )
     try:
         _telegram_queue.put_nowait(
-            _telegram_notification_text(user_id, ntype, title, body, data)
+            {
+                "user_id": user_id,
+                "ntype": ntype,
+                "title": title,
+                "body": body,
+                "data": data or {},
+            }
         )
     except asyncio.QueueFull:
         logger.warning("Telegram notification queue is full; dropping alert")
@@ -2753,6 +3184,18 @@ async def transfer(req: TransferRequest, request: Request,
                                             "recipient_name": recip.get("full_name"),
                                             "transfer_operation_id": transfer_operation_id},
                                   operation_id=f"biz-to-biz:{transfer_operation_id}:out")
+        await notify(
+            uid, "transfer_success", "Transfert Biz-transPay confirmé",
+            f"Votre transfert de {req.amount:,.0f} {req.currency} vers "
+            f"{recip.get('full_name') or recip['username']} est confirmé.",
+            data={
+                "transaction_id": tx_out.id,
+                "status": "completed",
+                "amount": req.amount,
+                "currency": req.currency,
+                "transfer_type": "biz_to_biz",
+            },
+        )
         return {"transaction": tx_out.model_dump(), "fee": 0,
                 "recipient": {"username": recip["username"], "full_name": recip.get("full_name")}}
 
@@ -2919,6 +3362,7 @@ async def transfer(req: TransferRequest, request: Request,
             "operator": op.get("code"),
             "operator_name": op["name"],
             "fee_bearer": req.fee_bearer,
+            "recipient_phone": req.recipient,
             "fee": fee, "gateway_fee": gateway_fee,
             "platform_fee": platform_fee,
             "recipient_gets": recipient_gets,
@@ -3052,7 +3496,7 @@ async def transfer(req: TransferRequest, request: Request,
 
         latest_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0}) or tx_out.model_dump()
         if latest_tx.get("status") == "pending":
-            await notify(uid, "withdrawal_success",
+            await notify(uid, "withdrawal_pending",
                          "Retrait Mobile Money en cours",
                          f"Votre retrait de {req.amount:,.0f} {req.currency} est en cours de traitement.",
                          data={"transaction_id": tx_out.id, "reference": tx_out.reference,
@@ -6718,6 +7162,20 @@ async def do_exchange(req: ExchangeRequest,
             "operation_id": operation_id,
         },
         operation_id=f"{operation_id}:out",
+    )
+    await notify(
+        uid, "exchange_success", "Échange confirmé",
+        f"Votre conversion de {req.amount:,.6g} {fc} vers "
+        f"{received:,.6g} {tc} est confirmée.",
+        data={
+            "transaction_id": tx_out.id,
+            "status": "completed",
+            "amount": req.amount,
+            "currency": fc,
+            "from_currency": fc,
+            "to_currency": tc,
+            "received": received,
+        },
     )
     result = {
         "received": received, "fee": fee, "rate": rate,
