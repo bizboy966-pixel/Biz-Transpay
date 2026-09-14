@@ -28,3 +28,14 @@ makes transaction verification faster than generic notification prose.
 **How to apply:** Preserve this hierarchy for future final-state alerts, keep
 all contact fields masked, and never change financial processing merely to
 populate a notification field.
+
+Security alerts must state what the controls actually prove: blocked requests
+are reported as blocked, while a successful unusual login remains suspicious
+but is not labeled as a confirmed compromise without stronger evidence.
+
+**Why:** Operational alerts must support a fast response without creating false
+claims about an attacker gaining access.
+
+**How to apply:** Include the masked source, target, time, outcome and a specific
+response recommendation. Deduplicate repeated alerts so an attack cannot flood
+the Telegram channel.

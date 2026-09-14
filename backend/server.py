@@ -837,7 +837,11 @@ TELEGRAM_FINAL_NOTIFICATION_TYPES = {
     "withdrawal_failed",
     "transfer_success",
     "exchange_success",
+    "security_alert",
 }
+_security_alert_last_sent: dict[str, float] = {}
+_security_alert_lock = asyncio.Lock()
+SECURITY_ALERT_COOLDOWN_SECONDS = 300
 _telegram_command_task: Optional[asyncio.Task] = None
 _telegram_update_offset: Optional[int] = None
 
@@ -911,6 +915,50 @@ def _telegram_display_time(value: Any) -> str:
         return parsed.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
     except (TypeError, ValueError):
         return "—"
+
+
+def _telegram_mask_ip(value: Any) -> str:
+    try:
+        address = ipaddress.ip_address(str(value or "").strip())
+        if address.version == 4:
+            parts = str(address).split(".")
+            return ".".join(parts[:3] + ["xxx"])
+        return ":".join(address.exploded.split(":")[:4]) + ":…"
+    except ValueError:
+        return "—"
+
+
+def _telegram_security_text(data: Optional[dict]) -> str:
+    safe = data or {}
+    event_labels = {
+        "edge_ip_blocked": "IP INTERDITE DÉTECTÉE",
+        "request_too_large": "REQUÊTE ANORMALEMENT VOLUMINEUSE",
+        "csrf_rejected": "TENTATIVE INTER-SITE DÉTECTÉE",
+        "rate_limit_triggered": "TRAFIC ABUSIF / AUTOMATISÉ",
+        "unusual_login": "CONNEXION INHABITUELLE RÉUSSIE",
+    }
+    outcome = str(safe.get("outcome") or "Signal à examiner")
+    solution = str(
+        safe.get("solution")
+        or "Examiner les journaux et renforcer temporairement la surveillance."
+    )
+    lines = [
+        f"<b>🛡️ ALERTE SÉCURITÉ — {html_escape(event_labels.get(str(safe.get('security_event')), 'ÉVÉNEMENT SUSPECT'))}</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"📊 Situation : <b>{html_escape(outcome[:240])}</b>",
+        f"🛣️ Cible : <code>{html_escape(str(safe.get('method') or '—'))} {html_escape(str(safe.get('path') or '—')[:180])}</code>",
+        f"🌐 IP : <code>{html_escape(_telegram_mask_ip(safe.get('ip')))}</code>",
+        f"🕘 Heure : <b>{html_escape(_telegram_display_time(safe.get('detected_at')))}</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "<b>🔧 Solution recommandée</b>",
+        html_escape(solution[:700]),
+    ]
+    if safe.get("profile"):
+        lines.insert(
+            5,
+            f"🎯 Protection déclenchée : <b>{html_escape(str(safe['profile'])[:80])}</b>",
+        )
+    return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
 
 
 async def _telegram_user_summary(user_id: Optional[str]) -> dict:
@@ -1035,6 +1083,8 @@ async def _telegram_notification_text(
     body: str,
     data: Optional[dict],
 ) -> str:
+    if ntype == "security_alert":
+        return _telegram_security_text(data)
     transaction, deposit = await _telegram_transaction_context(data)
     record = deposit or transaction or {}
     meta = (transaction or {}).get("metadata") or {}
@@ -1479,6 +1529,49 @@ async def _queue_telegram_notification(
         )
     except asyncio.QueueFull:
         logger.warning("Telegram notification queue is full; dropping alert")
+
+
+async def _queue_security_telegram_alert(
+    event_type: str,
+    request: Request,
+    *,
+    outcome: str,
+    solution: str,
+    profile: Optional[str] = None,
+    user_id: str = "platform",
+) -> None:
+    """Queue a deduplicated security alert without delaying the request."""
+    ip = _edge_request_ip(request)
+    dedupe_key = hashlib.sha256(
+        f"{event_type}|{ip}|{request.url.path}|{profile or ''}".encode()
+    ).hexdigest()
+    now_ts = datetime.now(timezone.utc).timestamp()
+    async with _security_alert_lock:
+        previous = _security_alert_last_sent.get(dedupe_key, 0)
+        if now_ts - previous < SECURITY_ALERT_COOLDOWN_SECONDS:
+            return
+        _security_alert_last_sent[dedupe_key] = now_ts
+        if len(_security_alert_last_sent) > 5000:
+            cutoff = now_ts - SECURITY_ALERT_COOLDOWN_SECONDS
+            for key, sent_at in list(_security_alert_last_sent.items()):
+                if sent_at < cutoff:
+                    _security_alert_last_sent.pop(key, None)
+    await _queue_telegram_notification(
+        user_id,
+        "security_alert",
+        "Alerte sécurité",
+        outcome,
+        {
+            "security_event": event_type,
+            "outcome": outcome,
+            "solution": solution,
+            "path": request.url.path,
+            "method": request.method.upper(),
+            "ip": ip,
+            "profile": profile,
+            "detected_at": now_iso(),
+        },
+    )
 
 
 async def notify(user_id: str, ntype: str, title: str, body: str,
@@ -1933,7 +2026,22 @@ async def _complete_login(user: dict, request: Request) -> None:
         await notify(
             user["id"], "security_alert", "Nouvelle connexion détectée",
             "Une nouvelle connexion à votre compte Biz-transPay a été détectée.",
-            data={"security_event": "unusual_login"},
+            data={
+                "security_event": "unusual_login",
+                "outcome": (
+                    "Accès réussi avec des caractéristiques inhabituelles. "
+                    "Une attaque n’est pas confirmée."
+                ),
+                "solution": (
+                    "Vérifier immédiatement cette connexion. Si elle est inconnue, "
+                    "révoquer les sessions, changer le mot de passe et contrôler "
+                    "les opérations financières récentes."
+                ),
+                "path": "/api/auth/login",
+                "method": "POST",
+                "ip": ip,
+                "detected_at": now_iso(),
+            },
         )
 
 
@@ -11488,6 +11596,15 @@ async def api_log_middleware(request: Request, call_next):
     is_v1 = _is_v1_path(p)
     is_admin = p == "/api/admin" or p.startswith("/api/admin/")
     if p.startswith("/api/") and _edge_ip_blocked(request):
+        await _queue_security_telegram_alert(
+            "edge_ip_blocked",
+            request,
+            outcome="Attaque bloquée. Cette requête n’a pas accédé à l’API.",
+            solution=(
+                "Conserver le blocage, examiner les tentatives associées et "
+                "étendre la règle réseau seulement si plusieurs adresses liées apparaissent."
+            ),
+        )
         response = JSONResponse(
             status_code=403,
             content={
@@ -11511,6 +11628,15 @@ async def api_log_middleware(request: Request, call_next):
             else MAX_REQUEST_BYTES
         )
         if content_length > max_bytes:
+            await _queue_security_telegram_alert(
+                "request_too_large",
+                request,
+                outcome="Tentative bloquée avant traitement du contenu.",
+                solution=(
+                    "Vérifier si la même source recommence. En cas de répétition, "
+                    "bloquer le réseau source et contrôler les limites de taille."
+                ),
+            )
             response = JSONResponse(
                 status_code=413,
                 content={
@@ -11525,6 +11651,15 @@ async def api_log_middleware(request: Request, call_next):
             return response
     csrf_failure = _validate_csrf_request(request)
     if csrf_failure:
+        await _queue_security_telegram_alert(
+            "csrf_rejected",
+            request,
+            outcome="Tentative bloquée. Aucune mutation protégée n’a été exécutée.",
+            solution=(
+                "Vérifier les sessions de l’utilisateur concerné et l’origine "
+                "des requêtes. Révoquer les sessions si une activité inconnue apparaît."
+            ),
+        )
         _apply_edge_security_headers(csrf_failure, request)
         return csrf_failure
     if p.startswith("/api/") and request.method.upper() != "OPTIONS":
@@ -11532,6 +11667,17 @@ async def api_log_middleware(request: Request, call_next):
         identity = await _global_rate_identity(request)
         blocked = await _global_rate_consume(profile, identity)
         if blocked:
+            await _queue_security_telegram_alert(
+                "rate_limit_triggered",
+                request,
+                outcome="Trafic bloqué par la limitation de débit.",
+                solution=(
+                    "Surveiller la répétition pendant les prochaines minutes. "
+                    "Si elle continue, bloquer la source et vérifier les comptes ou clés API ciblés."
+                ),
+                profile=profile,
+                user_id=str(identity.get("user_id") or identity.get("merchant_id") or "platform"),
+            )
             response = _global_rate_response(profile, blocked)
             _apply_edge_security_headers(response, request)
             return response

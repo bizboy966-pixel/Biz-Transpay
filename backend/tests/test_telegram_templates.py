@@ -85,3 +85,54 @@ def test_withdrawal_template_shows_gross_net_and_provider(monkeypatch):
     assert "Montant net : <b>6\u202f978,24 XAF</b>" in text
     assert "Passerelle : <b>FedaPay</b>" in text
     assert "MTN Mobile Money" in text
+
+
+def test_security_alert_reports_blocked_outcome_and_solution():
+    text = server._telegram_security_text({
+        "security_event": "csrf_rejected",
+        "outcome": "Tentative bloquée. Aucune mutation n’a été exécutée.",
+        "solution": "Vérifier les sessions puis révoquer toute session inconnue.",
+        "path": "/api/transfers",
+        "method": "POST",
+        "ip": "203.0.113.42",
+        "detected_at": "2026-09-14T21:00:00+00:00",
+    })
+
+    assert "TENTATIVE INTER-SITE DÉTECTÉE" in text
+    assert "Tentative bloquée" in text
+    assert "Solution recommandée" in text
+    assert "203.0.113.xxx" in text
+    assert "203.0.113.42" not in text
+
+
+def test_security_alert_reports_success_without_claiming_compromise():
+    text = server._telegram_security_text({
+        "security_event": "unusual_login",
+        "outcome": (
+            "Accès réussi avec des caractéristiques inhabituelles. "
+            "Une attaque n’est pas confirmée."
+        ),
+        "solution": "Révoquer les sessions si cette connexion est inconnue.",
+        "path": "/api/auth/login",
+        "method": "POST",
+        "ip": "2001:db8:1234:5678::1",
+    })
+
+    assert "CONNEXION INHABITUELLE RÉUSSIE" in text
+    assert "Accès réussi" in text
+    assert "attaque n’est pas confirmée" in text
+    assert "2001:0db8:1234:5678:…" in text
+
+
+def test_security_alert_escapes_untrusted_route_content():
+    text = server._telegram_security_text({
+        "security_event": "rate_limit_triggered",
+        "outcome": "<b>blocked</b>",
+        "solution": "<script>alert(1)</script>",
+        "path": "/api/<script>",
+        "method": "POST",
+        "ip": "invalid",
+    })
+
+    assert "<script>" not in text
+    assert "&lt;script&gt;" in text
