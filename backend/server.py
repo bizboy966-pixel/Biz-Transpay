@@ -327,6 +327,16 @@ async def _idempotency_store(user_id: str, key: str, method: str, path: str,
     )
 
 
+async def _idempotency_release(user_id: str, key: str, fingerprint: str = "") -> None:
+    """Release a reservation when no upstream financial operation was created."""
+    if not key:
+        return
+    query = {"user_id": user_id, "key": key, "status": "processing"}
+    if fingerprint:
+        query["fingerprint"] = fingerprint
+    await db.idempotency_keys.delete_one(query)
+
+
 async def _idempotency_claim(user_id: str, key: str, method: str, path: str,
                              fingerprint: str = "") -> Optional[dict]:
     """Atomically reserve an idempotency key before any money-moving work.
@@ -4075,6 +4085,12 @@ async def _credit_momo_deposit(d: dict) -> None:
                 metadata={**metadata, "link_id": lp["link_id"],
                           "link_payment_id": lp["id"]}, tx_type="link_payment")
         if lp:
+            if lp.get("single_use_claim_id"):
+                await db.payment_links.update_one(
+                    {"id": lp["link_id"],
+                     "single_use_claim_id": lp["single_use_claim_id"]},
+                    {"$set": {"active": False}},
+                )
             # The merchant link counter gets its own idempotency barrier so a
             # crash between this update and the deposit flag cannot lose the
             # accounting side effect or count it twice.
@@ -4258,10 +4274,11 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
         await db.webhook_events.insert_one({"event_id": event_id, "type": "mbiyo",
                                             "payload": payload, "processed": False,
                                             "received_at": now_iso()})
-    except Exception:
+    except DuplicateKeyError:
         existing = await db.webhook_events.find_one({"event_id": event_id, "processed": True})
         if existing:
             return {"received": True, "duplicate": True}
+        raise
     try:
         verified = await mbiyo.MbiyoClient(
             cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)).status(provider_id)
@@ -4694,9 +4711,24 @@ async def _reconcile_intent(intent_id: str) -> None:
         logger.warning("izipay reconcile failed for %s: %s", intent_id, e)
         return
     status = (intent.get("status") or "").lower()
+    merchant_ref = intent.get("merchantReference") or intent.get("merchant_reference")
+    if status in ("expired", "failed", "rejected", "canceled", "cancelled", "irregular"):
+        if merchant_ref:
+            link_payment = await db.link_payments.find_one(
+                {"id": merchant_ref, "status": {"$nin": ["paid", "failed", "expired"]}},
+                {"_id": 0})
+            if link_payment:
+                await db.link_payments.update_one(
+                    {"id": merchant_ref, "status": {"$nin": ["paid", "failed", "expired"]}},
+                    {"$set": {"status": "expired" if status == "expired" else "failed",
+                              "failed_at": now_iso(),
+                              "provider_status": status}},
+                )
+                await _release_single_use_link(
+                    link_payment["link_id"], link_payment.get("single_use_claim_id"))
+        return
     if status not in ("completed", "confirmed", "paid", "success", "successful"):
         return
-    merchant_ref = intent.get("merchantReference") or intent.get("merchant_reference")
     tx_hash = intent.get("txHash") or intent.get("txhash") or intent.get("transactionHash")
     if not merchant_ref:
         return
@@ -4801,8 +4833,7 @@ async def izipay_webhook(request: Request):
             "received_at": now_iso(),
             "processed": False,
         })
-    except Exception:
-        # Duplicate delivery — already processed
+    except DuplicateKeyError:
         return {"received": True, "duplicate": True}
 
     data = event.get("data") or {}
@@ -4881,6 +4912,12 @@ async def izipay_webhook(request: Request):
                             {"$inc": {"payments_received": 1, "total_received": net},
                              "$addToSet": {"link_payment_operation_ids": merchant_ref}}
                         )
+                        if link_pay.get("single_use_claim_id"):
+                            await db.payment_links.update_one(
+                                {"id": link["id"],
+                                 "single_use_claim_id": link_pay["single_use_claim_id"]},
+                                {"$set": {"active": False}},
+                            )
                         await record_tx(link["user_id"], "link_payment", "in",
                                         net, "USDT", status="completed",
                                         description=f"Paiement lien: {link.get('title','')} · {link_pay.get('coin','')} {link_pay.get('network','')}",
@@ -4945,7 +4982,14 @@ async def izipay_webhook(request: Request):
         elif ev_type == "payment_intent.expired":
             if merchant_ref:
                 await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "expired", "updated_at": now_iso()}})
-                await db.link_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
+                link_pay = await db.link_payments.find_one(
+                    {"id": merchant_ref, "status": {"$ne": "paid"}}, {"_id": 0})
+                await db.link_payments.update_one(
+                    {"id": merchant_ref, "status": {"$ne": "paid"}},
+                    {"$set": {"status": "expired"}})
+                if link_pay:
+                    await _release_single_use_link(
+                        link_pay["link_id"], link_pay.get("single_use_claim_id"))
                 await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
                 # Deliver payment.expired webhook if this was a merchant_payment
                 mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
@@ -4981,7 +5025,14 @@ async def izipay_webhook(request: Request):
             # Payment failed (irregular amount, chain rollback, refunded, etc.)
             if merchant_ref:
                 await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "failed", "updated_at": now_iso()}})
-                await db.link_payments.update_one({"id": merchant_ref}, {"$set": {"status": "failed"}})
+                link_pay = await db.link_payments.find_one(
+                    {"id": merchant_ref, "status": {"$ne": "paid"}}, {"_id": 0})
+                await db.link_payments.update_one(
+                    {"id": merchant_ref, "status": {"$ne": "paid"}},
+                    {"$set": {"status": "failed"}})
+                if link_pay:
+                    await _release_single_use_link(
+                        link_pay["link_id"], link_pay.get("single_use_claim_id"))
                 await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "failed"}})
                 mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
                 if mp:
@@ -5062,6 +5113,7 @@ async def start_link_payment(req: LinkPayRequest):
     amount = await _ensure_link_can_be_paid(
         link, req.amount if link.get("amount_type") == "free" else None
     )
+    single_use_claim = await _claim_single_use_link(link)
     fee_pct = await _crypto_fee_pct(req.asset_code.split(".")[0])
     fee, fee_net = _apply_fee(amount, fee_pct)
     customer_pays_fee = link.get("fee_bearer", "customer") != "owner"
@@ -5083,6 +5135,7 @@ async def start_link_payment(req: LinkPayRequest):
             metadata={"link_id": link["id"], "kind": "link_payment"},
         )
     except izipay.IziPayError as e:
+        await _release_single_use_link(link["id"], single_use_claim)
         print(f"izipay link pay rejected [{e.code}] {e.message}")
         msg = (e.message or "").lower()
         if "address" in msg or "adresse" in msg:
@@ -5106,6 +5159,7 @@ async def start_link_payment(req: LinkPayRequest):
         "memo": intent.get("memo"),
         "memo_type": intent.get("memoType"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
+        "single_use_claim_id": single_use_claim,
         "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
         "izipay_expires_at": intent.get("expiresAt"),
         "created_at": now_iso(),
@@ -5207,6 +5261,7 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
+    single_use_claim = await _claim_single_use_link(link)
     lp_id = new_id()
     dep_id = new_id()
     parts = (req.full_name or "").strip().split(" ", 1)
@@ -5225,6 +5280,7 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
         if not token:
             raise paydunya.PayDunyaError(502, "PayDunya did not return an invoice token")
     except paydunya.PayDunyaError as exc:
+        await _release_single_use_link(link["id"], single_use_claim)
         raise HTTPException(400 if exc.status < 500 else 502,
                             f"Passerelle Mobile Money: {exc.message}")
     ref = invoice.get("reference") or invoice.get("invoice_id")
@@ -5268,6 +5324,7 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest):
         "momo_deposit_id": dep_id,
         "paydunya_token": token, "paydunya_reference": ref,
         "checkout_url": checkout_url,
+         "single_use_claim_id": single_use_claim,
         "fee_bearer": fees["fee_bearer"],
         "prompt_sent": False,
         "created_at": now_iso(),
@@ -5493,21 +5550,23 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
     # ---- Idempotency ----------------------------------------------------
     idem_key = (request.headers.get("Idempotency-Key")
                 or request.headers.get("idempotency-key") or "").strip()
+    idem_fingerprint = _request_fingerprint(payload)
     if idem_key:
         if len(idem_key) > 255:
             raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
                               "IDEMPOTENCY_KEY_TOO_LONG")
-        cached = await _idempotency_claim(
-            merchant["id"], idem_key, "POST", "/api/v1/payments",
-            _request_fingerprint(payload))
-        if cached and cached.get("body") is not None:
-            return JSONResponse(status_code=cached.get("status_code", 200),
-                                content=cached["body"])
 
     if not izipay.is_configured():
         raise BizAPIError(503, "Crypto gateway not configured", "GATEWAY_UNAVAILABLE")
     if payload.amount < 1:
         raise BizAPIError(400, "Minimum amount: 1 USDT", "AMOUNT_TOO_SMALL")
+    if idem_key:
+        cached = await _idempotency_claim(
+            merchant["id"], idem_key, "POST", "/api/v1/payments",
+            idem_fingerprint)
+        if cached and cached.get("body") is not None:
+            return JSONResponse(status_code=cached.get("status_code", 200),
+                                content=cached["body"])
 
     mp_id = new_id()
     accepted_networks = [n.upper() for n in (payload.accepted_networks or ["TRC20", "BEP20", "ERC20"])]
@@ -5525,6 +5584,7 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                       **(payload.metadata or {})},
         )
     except izipay.IziPayError as e:
+        await _idempotency_release(merchant["id"], idem_key, idem_fingerprint)
         # Log full detail server-side.
         logger.warning("v1/payments gateway rejected [%s] %s", e.code, e.message)
         # Surface the upstream reason to the merchant so they can fix
@@ -5878,17 +5938,12 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     uid = merchant["id"]
 
     # ---------- Idempotency ----------
-    idem_key = request.headers.get("Idempotency-Key")
+    idem_key = (request.headers.get("Idempotency-Key") or "").strip()
+    idem_fingerprint = _request_fingerprint(payload)
+    cached = None
     if idem_key and len(idem_key) > 255:
         raise BizAPIError(400, "Idempotency-Key too long (max 255 chars).",
                           "IDEMPOTENCY_KEY_TOO_LONG")
-    if idem_key:
-        cached = await _idempotency_claim(
-            uid, idem_key, "POST", "/api/v1/payouts",
-            _request_fingerprint(payload))
-    if cached is not None:
-        return cached.get("body") if isinstance(cached, dict) else cached
-
     # ---------- Validate coin/network via IziChange assets ----------
     coin_upper = payload.coin.upper().strip()
     net_upper = payload.network.upper().strip()
@@ -5962,6 +6017,12 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
                           details={"required": total_debit,
                                    "available": float(merchant_doc.get("balance_usdt", 0))})
 
+    if idem_key:
+        cached = await _idempotency_claim(
+            uid, idem_key, "POST", "/api/v1/payouts", idem_fingerprint)
+        if cached is not None:
+            return cached.get("body") if isinstance(cached, dict) else cached
+
     # ---------- Persist doc & debit balance ----------
     po_id = new_id()
     now = now_iso()
@@ -5996,7 +6057,14 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         raise BizAPIError(400, "Insufficient balance (concurrent debit).",
                           "INSUFFICIENT_BALANCE")
 
-    await db.merchant_payouts.insert_one(doc)
+    try:
+        await db.merchant_payouts.insert_one(doc)
+    except Exception:
+        await _refund_wallet_once(uid, "balance_usdt", total_debit,
+                                  f"merchant-payout:{po_id}")
+        await _idempotency_release(uid, idem_key, idem_fingerprint)
+        raise BizAPIError(500, "Could not persist payout.",
+                          "PAYOUT_PERSISTENCE_ERROR")
 
     # ---------- Forward to IziChange ----------
     try:
@@ -6020,6 +6088,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "error_code": e.code,
             "error_message": e.message,
         }})
+        await _idempotency_release(uid, idem_key, idem_fingerprint)
         # Classify error for the merchant.
         msg = (e.message or "").lower()
         if "address" in msg or "adresse" in msg:
@@ -6044,6 +6113,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "refunded_at": now_iso(),
             "error_message": str(e),
         }})
+        await _idempotency_release(uid, idem_key, idem_fingerprint)
         raise BizAPIError(502, "The crypto gateway is temporarily unreachable.",
                           "GATEWAY_UNREACHABLE")
 
@@ -6371,14 +6441,6 @@ async def do_exchange(req: ExchangeRequest,
     if not from_field or not to_field:
         raise HTTPException(400, "Devise invalide")
 
-    exchange_key = (req.idempotency_key or "").strip()
-    if exchange_key:
-        cached = await _idempotency_claim(
-            uid, exchange_key, "POST", "/api/exchange",
-            _request_fingerprint(req))
-        if cached and cached.get("body") is not None:
-            return cached["body"]
-
     cfg = await get_platform_config()
     key = f"{fc}_{tc}"
     if not (cfg.get("conversion_pairs_enabled") or {}).get(key, True):
@@ -6401,6 +6463,13 @@ async def do_exchange(req: ExchangeRequest,
     fee = _compute_fee(cfg.get("conversion_fee") or {}, req.amount)
 
     received = round((req.amount - fee) * rate, 6)
+    exchange_key = (req.idempotency_key or "").strip()
+    exchange_fingerprint = _request_fingerprint(req)
+    if exchange_key:
+        cached = await _idempotency_claim(
+            uid, exchange_key, "POST", "/api/exchange", exchange_fingerprint)
+        if cached and cached.get("body") is not None:
+            return cached["body"]
     operation_id = f"exchange:{uid}:{exchange_key or new_id()}"
     # Both legs and their operation markers are changed in one Mongo update.
     # This prevents a crash between debit and credit from destroying value.
@@ -6482,6 +6551,40 @@ async def _ensure_link_can_be_paid(link: dict, requested: Optional[float] = None
         if paid:
             raise HTTPException(409, "Ce lien à usage unique a déjà été utilisé")
     return _payment_link_amount(link, requested)
+
+
+async def _claim_single_use_link(link: dict) -> Optional[str]:
+    """Reserve a single-use link before calling an external payment provider.
+
+    Checking for an existing paid child alone is a TOCTOU race: two customers
+    can both pass the check before either provider intent is created.
+    """
+    if not link.get("single_use"):
+        return None
+    paid = await db.link_payments.find_one(
+        {"link_id": link["id"], "status": "paid"}, {"_id": 1})
+    if paid:
+        raise HTTPException(409, "Ce lien à usage unique a déjà été utilisé")
+    claim_id = new_id()
+    claimed = await db.payment_links.update_one(
+        {"id": link["id"], "active": True,
+         "single_use_claim_id": {"$exists": False}},
+        {"$set": {"single_use_claim_id": claim_id,
+                  "single_use_claimed_at": now_iso()}},
+    )
+    if claimed.modified_count == 1:
+        return claim_id
+    raise HTTPException(
+        409, "Une autre tentative de paiement utilise déjà ce lien")
+
+
+async def _release_single_use_link(link_id: str, claim_id: Optional[str]) -> None:
+    if not claim_id:
+        return
+    await db.payment_links.update_one(
+        {"id": link_id, "single_use_claim_id": claim_id},
+        {"$unset": {"single_use_claim_id": "", "single_use_claimed_at": ""}},
+    )
 
 
 def _public_link_payment_status(payment: dict) -> dict:

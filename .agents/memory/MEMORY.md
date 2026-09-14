@@ -19,3 +19,4 @@
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.
 - [Python environment manifests](python-environment-manifests.md) — package installation can rewrite project manifests; restore the requirements source of truth before restarting.
 - [Financial idempotency barriers](financial-idempotency.md) — wallet mutations use Mongo atomic markers; every retryable credit, debit, refund, and settlement needs an operation id.
+- [Backend test environment](backend-test-environment.md) — integration tests need an explicit local/Preview base URL; external Preview TLS and shared rate limits can invalidate results.

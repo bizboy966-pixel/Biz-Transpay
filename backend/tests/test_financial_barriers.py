@@ -45,6 +45,33 @@ class _AtomicUsers:
             return _Result(1)
 
 
+class _AtomicLinkPayments:
+    async def find_one(self, query, projection=None):
+        return None
+
+
+class _AtomicPaymentLinks:
+    def __init__(self):
+        self.doc = {"id": "link-1", "active": True, "single_use": True}
+        self.lock = asyncio.Lock()
+
+    async def update_one(self, query, update):
+        async with self.lock:
+            if self.doc.get("id") != query.get("id"):
+                return _Result(0)
+            if query.get("active") is True and not self.doc.get("active"):
+                return _Result(0)
+            if "single_use_claim_id" in query:
+                exists = "single_use_claim_id" in self.doc
+                if query["single_use_claim_id"].get("$exists") is False and exists:
+                    return _Result(0)
+            for field, value in update.get("$set", {}).items():
+                self.doc[field] = value
+            for field in update.get("$unset", {}):
+                self.doc.pop(field, None)
+            return _Result(1)
+
+
 def test_concurrent_credit_is_applied_once(monkeypatch):
     import server
 
@@ -107,3 +134,24 @@ def test_same_debit_operation_is_idempotent(monkeypatch):
 
     assert sum(results) == 1
     assert users.doc["balance_usdt"] == 13
+
+
+def test_single_use_link_has_one_concurrent_claim(monkeypatch):
+    import server
+
+    links = _AtomicPaymentLinks()
+    monkeypatch.setattr(
+        server, "db",
+        SimpleNamespace(payment_links=links, link_payments=_AtomicLinkPayments()),
+    )
+
+    async def run():
+        return await asyncio.gather(*[
+            server._claim_single_use_link(
+                {"id": "link-1", "active": True, "single_use": True})
+            for _ in range(20)
+        ], return_exceptions=True)
+
+    results = asyncio.run(run())
+    assert sum(isinstance(value, str) for value in results) == 1
+    assert "single_use_claim_id" in links.doc
