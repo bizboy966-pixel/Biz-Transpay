@@ -365,6 +365,16 @@ async def get_user(uid: str) -> dict:
     return u
 
 
+async def require_merchant_account(
+    uid: str = Depends(get_current_user_id),
+) -> str:
+    """Authorize merchant-only resources at the API boundary."""
+    user = await get_user(uid)
+    if user.get("account_type") != "merchant":
+        raise HTTPException(403, "Réservé aux comptes marchands")
+    return uid
+
+
 async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
                     currency: str, status: str = "completed",
                     counterparty: Optional[str] = None, description: str = "",
@@ -2342,8 +2352,10 @@ async def create_deposit(req: DepositRequest, request: Request,
 
 
 @api.get("/payments/status/{session_id}")
-async def payment_status(session_id: str, request: Request):
-    record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+async def payment_status(session_id: str, request: Request,
+                         uid: str = Depends(get_current_user_id)):
+    record = await db.payment_transactions.find_one(
+        {"session_id": session_id, "user_id": uid}, {"_id": 0})
     if not record:
         raise HTTPException(404, "Transaction not found")
     if record.get("payment_status") != "paid":
@@ -2353,10 +2365,10 @@ async def payment_status(session_id: str, request: Request):
             checkout = StripeCheckout(api_key=STRIPE_API_KEY, webhook_url=webhook_url)
             s = await checkout.get_checkout_status(session_id)
             if s.payment_status == "paid" or s.status == "complete":
-                uid = record["user_id"]
                 field = "balance_xof" if record["currency"] == "XOF" else "balance_xaf"
                 r = await db.payment_transactions.update_one(
-                    {"session_id": session_id, "payment_status": {"$ne": "paid"}},
+                    {"session_id": session_id, "user_id": uid,
+                     "payment_status": {"$ne": "paid"}},
                     {"$set": {"status": "completed", "payment_status": "paid",
                               "updated_at": now_iso()}}
                 )
@@ -2365,7 +2377,8 @@ async def payment_status(session_id: str, request: Request):
                     await record_tx(uid, "deposit", "in", record["amount"], record["currency"],
                                     description="Dépôt Stripe",
                                     metadata={"stripe_session_id": session_id})
-                record = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+                record = await db.payment_transactions.find_one(
+                    {"session_id": session_id, "user_id": uid}, {"_id": 0})
         except Exception:
             pass
     return {
@@ -4442,11 +4455,11 @@ async def get_link_payment_status(payment_id: str):
                     {"$set": {"status": "failed"}}
                 )
                 lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
-        return lp
+        return _public_link_payment_status(lp)
     if lp.get("status") not in ("paid", "expired", "failed") and lp.get("izipay_intent_id"):
         await _reconcile_intent(lp["izipay_intent_id"])
         lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
-    return lp
+    return _public_link_payment_status(lp)
 
 
 class LinkPayMoMoRequest(BaseModel):
@@ -4646,6 +4659,9 @@ async def _authenticate_merchant(request: Request) -> dict:
         user = await db.users.find_one({"id": mkey["user_id"]})
         if not user or user.get("is_banned") or user.get("is_blocked"):
             raise BizAPIError(403, "Merchant account inactive", "ACCOUNT_INACTIVE")
+        if user.get("account_type") != "merchant":
+            raise BizAPIError(403, "Merchant API access is reserved for merchant accounts.",
+                              "MERCHANT_ACCOUNT_REQUIRED")
         try:
             await db.merchant_keys.update_one(
                 {"id": mkey["id"]},
@@ -4667,6 +4683,9 @@ async def _authenticate_merchant(request: Request) -> dict:
     user = await db.users.find_one({"id": keys["user_id"]})
     if not user or user.get("is_banned") or user.get("is_blocked"):
         raise BizAPIError(403, "Merchant account inactive", "ACCOUNT_INACTIVE")
+    if user.get("account_type") != "merchant":
+        raise BizAPIError(403, "Merchant API access is reserved for merchant accounts.",
+                          "MERCHANT_ACCOUNT_REQUIRED")
     try:
         await db.api_keys.update_one(
             {"user_id": keys["user_id"]},
@@ -5755,6 +5774,23 @@ async def _ensure_link_can_be_paid(link: dict, requested: Optional[float] = None
     return _payment_link_amount(link, requested)
 
 
+def _public_link_payment_status(payment: dict) -> dict:
+    """Expose only fields needed by a public checkout tracker."""
+    return {
+        "id": payment.get("id"),
+        "status": payment.get("status"),
+        "amount": payment.get("amount"),
+        "currency": payment.get("currency"),
+        "coin": payment.get("coin"),
+        "network": payment.get("network"),
+        "amount_to_send": payment.get("amount_to_send"),
+        "deposit_address": payment.get("deposit_address"),
+        "memo": payment.get("memo"),
+        "memo_type": payment.get("memo_type"),
+        "expires_at": payment.get("expires_at"),
+    }
+
+
 @api.get("/links", response_model=List[PaymentLink])
 async def list_links(uid: str = Depends(get_current_user_id)):
     docs = await db.payment_links.find({"user_id": uid}, {"_id": 0}).sort("created_at", -1).to_list(500)
@@ -5799,8 +5835,23 @@ async def get_public_link(slug: str):
     doc = await db.payment_links.find_one({"slug": slug}, {"_id": 0})
     if not doc:
         raise HTTPException(404, "Lien introuvable")
-    # Never expose the owner's identity from a public payment page.
-    return doc
+    # A public slug authorizes checkout only. Never expose the owner's
+    # internal id or any future private fields from the stored document.
+    return {
+        "slug": doc.get("slug"),
+        "title": doc.get("title"),
+        "amount": doc.get("amount"),
+        "currency": doc.get("currency"),
+        "description": doc.get("description") or "",
+        "expires_at": doc.get("expires_at"),
+        "single_use": bool(doc.get("single_use")),
+        "active": bool(doc.get("active")),
+        "amount_type": doc.get("amount_type", "fixed"),
+        "min_amount": doc.get("min_amount"),
+        "max_amount": doc.get("max_amount"),
+        "fee_bearer": doc.get("fee_bearer", "customer"),
+        "logo": doc.get("logo"),
+    }
 
 
 @api.patch("/links/{link_id}", response_model=PaymentLink)
@@ -6121,10 +6172,8 @@ def _public_keys_view(doc: dict) -> dict:
 
 
 @api.get("/api-keys")
-async def get_api_keys_v2(request: Request, uid: str = Depends(get_current_user_id)):
+async def get_api_keys_v2(request: Request, uid: str = Depends(require_merchant_account)):
     u = await get_user(uid)
-    if u["account_type"] != "merchant":
-        raise HTTPException(403, "Réservé aux comptes marchands")
     doc = await _ensure_api_keys(uid, request)
     view = _public_keys_view(doc)
     # If this is the very first fetch after auto-creation, expose the plaintext
@@ -6138,7 +6187,7 @@ async def get_api_keys_v2(request: Request, uid: str = Depends(get_current_user_
 
 @api.post("/api-keys/regenerate")
 async def regenerate_keys_v2(body: dict = Body(default_factory=dict),
-                              uid: str = Depends(get_current_user_id)):
+                              uid: str = Depends(require_merchant_account)):
     """Body: {"env": "test" | "live"}. Returns the plaintext secret ONCE."""
     env = (body.get("env") or "test").lower()
     if env not in ("test", "live"):
@@ -6169,7 +6218,8 @@ class WebhookConfigV2(BaseModel):
 
 
 @api.patch("/api-keys/webhook")
-async def update_webhook_config(cfg: WebhookConfigV2, uid: str = Depends(get_current_user_id)):
+async def update_webhook_config(cfg: WebhookConfigV2,
+                                uid: str = Depends(require_merchant_account)):
     await _ensure_api_keys(uid)
     updates: dict = {}
     if cfg.url is not None:
@@ -6183,7 +6233,9 @@ async def update_webhook_config(cfg: WebhookConfigV2, uid: str = Depends(get_cur
 
 
 @api.post("/api-keys/webhook/regenerate-secret")
-async def regenerate_webhook_secret(uid: str = Depends(get_current_user_id)):
+async def regenerate_webhook_secret(
+    uid: str = Depends(require_merchant_account),
+):
     new_secret = _gen_key("whsec_", 32)
     await _ensure_api_keys(uid)
     await db.api_keys.update_one(
@@ -6250,11 +6302,8 @@ def _mkey_view(k: dict, reveal: Optional[str] = None) -> dict:
 
 
 @api.get("/merchant/keys")
-async def list_merchant_keys(uid: str = Depends(get_current_user_id),
+async def list_merchant_keys(uid: str = Depends(require_merchant_account),
                               request: Request = None):
-    u = await get_user(uid)
-    if u["account_type"] != "merchant":
-        raise HTTPException(403, "Réservé aux comptes marchands")
     await _ensure_api_keys(uid, request)  # triggers migration on first read
     rows = await db.merchant_keys.find({"user_id": uid}, {"_id": 0}) \
         .sort("created_at", -1).to_list(200)
@@ -6263,11 +6312,8 @@ async def list_merchant_keys(uid: str = Depends(get_current_user_id),
 
 @api.post("/merchant/keys")
 async def create_merchant_key(req: CreateMerchantKeyReq,
-                                uid: str = Depends(get_current_user_id),
+                                 uid: str = Depends(require_merchant_account),
                                 request: Request = None):
-    u = await get_user(uid)
-    if u["account_type"] != "merchant":
-        raise HTTPException(403, "Réservé aux comptes marchands")
     await _ensure_api_keys(uid, request)
     prefix_pk = f"pk_{req.env}_"
     prefix_sk = f"sk_{req.env}_"
@@ -6291,7 +6337,7 @@ async def create_merchant_key(req: CreateMerchantKeyReq,
 
 @api.patch("/merchant/keys/{key_id}")
 async def update_merchant_key(key_id: str, req: UpdateMerchantKeyReq,
-                                uid: str = Depends(get_current_user_id)):
+                                 uid: str = Depends(require_merchant_account)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "Aucune modification")
@@ -6305,7 +6351,7 @@ async def update_merchant_key(key_id: str, req: UpdateMerchantKeyReq,
 
 @api.post("/merchant/keys/{key_id}/regenerate")
 async def regenerate_merchant_key(key_id: str,
-                                    uid: str = Depends(get_current_user_id)):
+                                     uid: str = Depends(require_merchant_account)):
     k = await db.merchant_keys.find_one({"id": key_id, "user_id": uid}, {"_id": 0})
     if not k:
         raise HTTPException(404, "Clé introuvable")
@@ -6326,7 +6372,7 @@ async def regenerate_merchant_key(key_id: str,
 
 @api.delete("/merchant/keys/{key_id}")
 async def delete_merchant_key(key_id: str,
-                                uid: str = Depends(get_current_user_id)):
+                                 uid: str = Depends(require_merchant_account)):
     r = await db.merchant_keys.delete_one({"id": key_id, "user_id": uid})
     if r.deleted_count == 0:
         raise HTTPException(404, "Clé introuvable")
@@ -6365,7 +6411,7 @@ def _wh_view(w: dict, reveal: Optional[str] = None) -> dict:
 
 
 @api.get("/merchant/webhooks")
-async def list_webhooks(uid: str = Depends(get_current_user_id),
+async def list_webhooks(uid: str = Depends(require_merchant_account),
                           request: Request = None):
     await _ensure_api_keys(uid, request)
     rows = await db.merchant_webhooks.find({"user_id": uid}, {"_id": 0}) \
@@ -6376,7 +6422,7 @@ async def list_webhooks(uid: str = Depends(get_current_user_id),
 
 @api.post("/merchant/webhooks")
 async def create_webhook(req: CreateWebhookReq,
-                          uid: str = Depends(get_current_user_id)):
+                          uid: str = Depends(require_merchant_account)):
     url = (req.url or "").strip()
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "URL invalide (doit commencer par http:// ou https://)")
@@ -6404,7 +6450,7 @@ async def create_webhook(req: CreateWebhookReq,
 
 @api.patch("/merchant/webhooks/{wh_id}")
 async def update_webhook(wh_id: str, req: UpdateWebhookReq,
-                            uid: str = Depends(get_current_user_id)):
+                             uid: str = Depends(require_merchant_account)):
     payload = req.model_dump(exclude_unset=True)
     if "url" in payload and not payload["url"].startswith(("http://", "https://")):
         raise HTTPException(400, "URL invalide")
@@ -6422,7 +6468,7 @@ async def update_webhook(wh_id: str, req: UpdateWebhookReq,
 
 @api.post("/merchant/webhooks/{wh_id}/regenerate-secret")
 async def regenerate_merchant_webhook_secret(wh_id: str,
-                                       uid: str = Depends(get_current_user_id)):
+                                       uid: str = Depends(require_merchant_account)):
     w = await db.merchant_webhooks.find_one({"id": wh_id, "user_id": uid}, {"_id": 0})
     if not w:
         raise HTTPException(404, "Webhook introuvable")
@@ -6439,7 +6485,7 @@ async def regenerate_merchant_webhook_secret(wh_id: str,
 
 @api.delete("/merchant/webhooks/{wh_id}")
 async def delete_webhook(wh_id: str,
-                          uid: str = Depends(get_current_user_id)):
+                           uid: str = Depends(require_merchant_account)):
     r = await db.merchant_webhooks.delete_one({"id": wh_id, "user_id": uid})
     if r.deleted_count == 0:
         raise HTTPException(404, "Webhook introuvable")
@@ -6448,7 +6494,7 @@ async def delete_webhook(wh_id: str,
 
 @api.post("/merchant/webhooks/{wh_id}/test")
 async def send_test_webhook(wh_id: str,
-                              uid: str = Depends(get_current_user_id)):
+                               uid: str = Depends(require_merchant_account)):
     w = await db.merchant_webhooks.find_one({"id": wh_id, "user_id": uid}, {"_id": 0})
     if not w:
         raise HTTPException(404, "Webhook introuvable")
