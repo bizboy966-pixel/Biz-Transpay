@@ -10,3 +10,4 @@
 - [Authentication security boundary](security-auth.md) — harden account access without changing or blocking financial and commerce workflows.
 - [Session security boundary](session-security.md) — use revocable HttpOnly browser sessions, idle expiry, rotation, remote logout, and step-up authentication.
 - [Authorization boundaries](authorization-boundaries.md) — scope every authenticated lookup by owner and keep public capability endpoints allowlisted and minimal.
+- [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.

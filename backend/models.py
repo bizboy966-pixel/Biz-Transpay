@@ -73,6 +73,8 @@ class UserPublic(BaseModel):
     avatar_url: Optional[str] = None
     role: str = "user"
     admin_role: Optional[str] = None
+    effective_role: str = "USER"
+    permissions: list[str] = Field(default_factory=list)
     is_blocked: bool = False
     is_banned: bool = False
     withdrawals_blocked: bool = False

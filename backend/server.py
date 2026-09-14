@@ -333,6 +333,7 @@ def _format_iso(dt) -> str:
 
 # ---------- helpers ----------
 def user_to_public(u: dict) -> UserPublic:
+    effective_role = _effective_role(u)
     return UserPublic(
         id=u["id"],
         full_name=u["full_name"],
@@ -352,6 +353,8 @@ def user_to_public(u: dict) -> UserPublic:
         avatar_url=u.get("avatar_url"),
         role=u.get("role", "user"),
         admin_role=u.get("admin_role"),
+        effective_role=effective_role,
+        permissions=sorted(_permissions_for_role(effective_role)),
         is_blocked=u.get("is_blocked", False),
         is_banned=u.get("is_banned", False),
         withdrawals_blocked=u.get("withdrawals_blocked", False),
@@ -7243,12 +7246,148 @@ async def notifications_stream(request: Request,
 
 
 # ==================== ADMIN ====================
-async def get_admin(uid: str = Depends(get_current_user_id)) -> dict:
+ROLE_PERMISSIONS: dict[str, set[str]] = {
+    "USER": set(),
+    "MERCHANT": {"merchant:api"},
+    "SUPPORT": {
+        "users:read",
+        "support:read",
+        "support:write",
+    },
+    "FINANCE": {
+        "users:read",
+        "finance:read",
+        "transactions:read",
+        "transactions:write",
+        "balances:write",
+        "fees:read",
+        "fees:write",
+        "providers:read",
+    },
+    "COMPLIANCE": {
+        "users:read",
+        "kyc:read",
+        "kyc:write",
+    },
+    # ADMIN keeps the existing operational administrator capability, but
+    # administrator-account creation and destructive platform reset remain
+    # SUPER_ADMIN-only.
+    "ADMIN": {
+        "users:read",
+        "users:write",
+        "finance:read",
+        "transactions:read",
+        "transactions:write",
+        "balances:write",
+        "fees:read",
+        "fees:write",
+        "providers:read",
+        "providers:write",
+        "kyc:read",
+        "kyc:write",
+        "links:read",
+        "links:write",
+        "api_keys:read",
+        "api_keys:write",
+        "support:read",
+        "support:write",
+        "settings:read",
+        "settings:write",
+        "audit:read",
+        "admin_users:read",
+    },
+    "SUPER_ADMIN": {"*"},
+}
+
+
+def _effective_role(user: dict) -> str:
+    if user.get("role") == "super_admin":
+        return "SUPER_ADMIN"
+    if user.get("role") == "admin":
+        staff_role = (user.get("admin_role") or "general").lower()
+        return {
+            "support": "SUPPORT",
+            "finance": "FINANCE",
+            "compliance": "COMPLIANCE",
+            # "general" and the legacy "operations" role are the
+            # operational ADMIN role.
+            "general": "ADMIN",
+            "operations": "ADMIN",
+        }.get(staff_role, "USER")
+    if user.get("account_type") == "merchant":
+        return "MERCHANT"
+    return "USER"
+
+
+def _permissions_for_role(role: str) -> set[str]:
+    return ROLE_PERMISSIONS.get(role, set())
+
+
+def _admin_permission_for_request(request: Request) -> Optional[str]:
+    """Map an admin HTTP operation to one server-side permission."""
+    path = request.url.path
+    if path.startswith("/api/"):
+        path = path[4:]
+    method = request.method.upper()
+
+    if path.startswith("/admin/support"):
+        return "support:write" if method in {"PATCH", "POST", "DELETE"} else "support:read"
+    if path.startswith("/admin/kyc"):
+        return "kyc:write" if method != "GET" else "kyc:read"
+    if path.startswith("/admin/users"):
+        if path.endswith("/cleanup-test-users"):
+            return "platform:reset"
+        if method == "GET":
+            return "users:read"
+        if path.endswith("/credit") or path.endswith("/debit"):
+            return "balances:write"
+        return "users:write"
+    if path.startswith("/admin/transactions"):
+        return "transactions:read" if method == "GET" else "transactions:write"
+    if path.startswith("/admin/links"):
+        return "links:read" if method == "GET" else "links:write"
+    if path.startswith("/admin/api-keys"):
+        return "api_keys:read" if method == "GET" else "api_keys:write"
+    if path.startswith("/admin/admins"):
+        return "admin_users:read" if method == "GET" else "admin_users:write"
+    if path.startswith("/admin/logs"):
+        return "audit:read"
+    if path.startswith("/admin/benefits") or path.startswith("/admin/stats") \
+            or path.startswith("/admin/conversions") \
+            or path.startswith("/admin/crypto/coins"):
+        return "finance:read"
+    if path.startswith("/admin/conversion/config"):
+        return "fees:write" if method != "GET" else "finance:read"
+    if path.startswith("/admin/payment-providers"):
+        return "providers:write" if method not in {"GET", "HEAD"} else "providers:read"
+    if path.startswith("/admin/transfer/config") or path.startswith("/admin/deposit/config"):
+        return "fees:write" if method != "GET" else "fees:read"
+    if path.startswith("/admin/platform/reset"):
+        return "platform:reset"
+    if path.startswith("/admin/platform/config") or path.startswith("/admin/settings"):
+        return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
+    return "settings:read"
+
+
+async def get_admin(
+    request: Request,
+    uid: str = Depends(get_current_user_id),
+) -> dict:
     u = await db.users.find_one({"id": uid}, {"_id": 0})
     if not u:
         raise HTTPException(401, "Non autorisé")
     if u.get("role") not in ("admin", "super_admin"):
         raise HTTPException(403, "Accès administrateur requis")
+    effective_role = _effective_role(u)
+    permission = _admin_permission_for_request(request)
+    permissions = _permissions_for_role(effective_role)
+    if permission and "*" not in permissions and permission not in permissions:
+        raise HTTPException(
+            403,
+            f"Permission requise : {permission}",
+        )
+    u["_effective_role"] = effective_role
+    u["_permissions"] = sorted(permissions)
     return u
 
 

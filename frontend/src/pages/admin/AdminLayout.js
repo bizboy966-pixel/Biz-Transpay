@@ -7,23 +7,23 @@ import { Link } from 'react-router-dom';
 
 const NAV = [
   { section: 'Général' },
-  { to: '/admin', end: true, i: LayoutDashboard, l: 'Tableau de bord' },
+  { to: '/admin', end: true, i: LayoutDashboard, l: 'Tableau de bord', permission: 'finance:read' },
   { section: 'Gestion' },
-  { to: '/admin/users', i: Users, l: 'Utilisateurs' },
-  { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC' },
-  { to: '/admin/links', i: Link2, l: 'Liens de paiement' },
+  { to: '/admin/users', i: Users, l: 'Utilisateurs', permission: 'users:read' },
+  { to: '/admin/kyc', i: IdCard, l: 'Vérifications KYC', permission: 'kyc:read' },
+  { to: '/admin/links', i: Link2, l: 'Liens de paiement', permission: 'links:read' },
   { section: 'Transactions' },
-  { to: '/admin/transactions', i: ArrowLeftRight, l: 'Toutes' },
-  { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts' },
-  { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits' },
+  { to: '/admin/transactions', i: ArrowLeftRight, l: 'Toutes', permission: 'transactions:read' },
+  { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts', permission: 'transactions:read' },
+  { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits', permission: 'transactions:read' },
   { section: 'Réglages' },
-  { to: '/admin/features', i: Wallet, l: 'Fonctionnalités' },
-  { to: '/admin/fees', i: SettingsIcon, l: 'Frais' },
-  { to: '/admin/benefits', i: TrendingUp, l: 'Bénéfice', sub: 'Marge plateforme' },
-  { to: '/admin/payment-providers', i: Smartphone, l: 'Prestataire de paiement' },
-  { to: '/admin/support', i: MessageCircle, l: 'Support & Chat' },
+  { to: '/admin/features', i: Wallet, l: 'Fonctionnalités', permission: 'settings:read' },
+  { to: '/admin/fees', i: SettingsIcon, l: 'Frais', permission: 'fees:read' },
+  { to: '/admin/benefits', i: TrendingUp, l: 'Bénéfice', sub: 'Marge plateforme', permission: 'finance:read' },
+  { to: '/admin/payment-providers', i: Smartphone, l: 'Prestataire de paiement', permission: 'providers:read' },
+  { to: '/admin/support', i: MessageCircle, l: 'Support & Chat', permission: 'support:read' },
   { section: 'Administration' },
-  { to: '/admin/admins', i: ShieldCheck, l: 'Administrateurs' },
+  { to: '/admin/admins', i: ShieldCheck, l: 'Administrateurs', permission: 'admin_users:read' },
 ];
 
 export default function AdminLayout() {
@@ -36,6 +36,13 @@ export default function AdminLayout() {
   });
   const [profileOpen, setProfileOpen] = useState(false);
   const loc = useLocation();
+  const canAccess = (item) => !item.permission
+    || user?.permissions?.includes('*')
+    || user?.permissions?.includes(item.permission);
+  const visibleNav = NAV.filter((item, idx) => {
+    if (!item.section) return canAccess(item);
+    return NAV.slice(idx + 1).some((next) => !next.section && canAccess(next));
+  });
 
   // Auto-close on route change on mobile so a nav click doesn't leave the
   // drawer covering the destination page.
@@ -46,7 +53,13 @@ export default function AdminLayout() {
   }, [loc.pathname]);
 
   const initials = (user?.full_name || 'A').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
-  const roleLabel = user?.role === 'super_admin' ? 'Super Administrateur' : 'Administrateur';
+  const roleLabel = {
+    SUPER_ADMIN: 'Super Administrateur',
+    ADMIN: 'Administrateur',
+    SUPPORT: 'Support',
+    FINANCE: 'Finance',
+    COMPLIANCE: 'Conformité',
+  }[user?.effective_role] || 'Administrateur';
 
   return (
     <div className="bt-shell flex" data-testid="admin-layout">
@@ -64,7 +77,7 @@ export default function AdminLayout() {
         </div>
 
         <nav className="p-3 space-y-0.5 overflow-y-auto h-[calc(100vh-210px)]">
-          {NAV.map((n, idx) => n.section ? (
+          {visibleNav.map((n, idx) => n.section ? (
             <div key={`s-${idx}`} className="text-[9px] font-bold uppercase tracking-[0.18em] text-slate-500 px-3 pt-4 pb-1.5">{n.section}</div>
           ) : (
             <NavLink
@@ -114,7 +127,7 @@ export default function AdminLayout() {
             <div className="font-cabinet font-extrabold text-slate-900 text-base">
               {NAV.filter((n) => n.to).find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)))?.l || 'Admin'}
             </div>
-             <div className="text-[11px] text-slate-500 font-medium">Bienvenue, {user?.full_name?.split(' ')[0] || 'Admin'}</div>
+              <div className="text-[11px] text-slate-500 font-medium">{roleLabel} · {user?.full_name?.split(' ')[0] || 'Admin'}</div>
           </div>
           <div className="ml-auto flex items-center gap-2">
             <button className="w-10 h-10 rounded-lg hover:bg-slate-100 flex items-center justify-center" data-testid="admin-search"><Search className="w-4 h-4 text-slate-600" /></button>

@@ -58,6 +58,18 @@ function AdminOnly({ children }) {
   return children;
 }
 
+function AdminHomeEntry() {
+  const { user } = useAuth();
+  const landingByRole = {
+    SUPPORT: '/admin/support',
+    COMPLIANCE: '/admin/kyc',
+    FINANCE: '/admin/transactions',
+  };
+  const landing = landingByRole[user?.effective_role];
+  if (landing) return <Navigate to={landing} replace />;
+  return <AdminHome />;
+}
+
 function App() {
   return (
     <AuthProvider>
@@ -89,7 +101,7 @@ function App() {
             <Route path="api/docs" element={<ApiDocs />} />
           </Route>
           <Route path="/admin" element={<AdminOnly><AdminLayout /></AdminOnly>}>
-            <Route index element={<AdminHome />} />
+            <Route index element={<AdminHomeEntry />} />
             <Route path="users" element={<AdminUsers />} />
             <Route path="users/:id" element={<AdminUserDetail />} />
             <Route path="kyc" element={<AdminKyc />} />
