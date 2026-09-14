@@ -17,3 +17,14 @@ summary of notification metadata; never forward raw event payloads, secrets,
 provider responses, full phone numbers, full email addresses, or wallet
 credentials. Operational sender/recipient contact fields may be included only
 in masked form for the authorized chat.
+
+Final payment and withdrawal alerts use a compact operational receipt format:
+status title, gross/net amounts, wallet, provider/operator, internal/provider
+references and time, followed by separated sender and recipient sections.
+
+**Why:** The administrator chose a Telegram receipt-style reference because it
+makes transaction verification faster than generic notification prose.
+
+**How to apply:** Preserve this hierarchy for future final-state alerts, keep
+all contact fields masked, and never change financial processing merely to
+populate a notification field.

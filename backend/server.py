@@ -884,12 +884,42 @@ def _telegram_mask_phone(value: Optional[str]) -> str:
     return f"{text[:3]}••••{text[-3:]}"
 
 
+def _telegram_display_amount(value: Any, currency: str) -> str:
+    if value is None or value == "":
+        return f"— {currency}".strip()
+    try:
+        amount = Decimal(str(value))
+        if not amount.is_finite():
+            raise InvalidOperation
+        digits = 6 if str(currency).upper() in {"USDT", "BTC", "ETH"} else 2
+        rendered = f"{amount:,.{digits}f}"
+        if digits == 2 and rendered.endswith(".00"):
+            rendered = rendered[:-3]
+        rendered = rendered.replace(",", "\u202f").replace(".", ",")
+    except (InvalidOperation, TypeError, ValueError):
+        rendered = "—"
+    return f"{rendered} {str(currency).upper()}".strip()
+
+
+def _telegram_display_time(value: Any) -> str:
+    if not value:
+        return datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+    except (TypeError, ValueError):
+        return "—"
+
+
 async def _telegram_user_summary(user_id: Optional[str]) -> dict:
     if not user_id:
         return {}
     user = await db.users.find_one(
         {"id": user_id},
-        {"_id": 0, "full_name": 1, "username": 1, "email": 1, "phone": 1},
+        {"_id": 0, "full_name": 1, "username": 1, "email": 1, "phone": 1,
+         "country": 1, "country_name": 1},
     )
     if not user:
         return {}
@@ -898,6 +928,7 @@ async def _telegram_user_summary(user_id: Optional[str]) -> dict:
         "username": user.get("username"),
         "email": _telegram_mask_email(user.get("email")),
         "phone": _telegram_mask_phone(user.get("phone")),
+        "country": user.get("country_name") or user.get("country"),
     }
 
 
@@ -909,11 +940,17 @@ async def _telegram_party_lines(
     if deposit:
         recipient = await _telegram_user_summary(deposit.get("user_id"))
         return [
-            f"Expéditeur : <b>{html_escape(str(deposit.get('full_name') or 'Client externe')[:120])}</b>",
-            f"Email expéditeur : <code>{html_escape(_telegram_mask_email(deposit.get('email')))}</code>",
-            f"Téléphone expéditeur : <code>{html_escape(_telegram_mask_phone(deposit.get('phone_number')))}</code>",
-            f"Destinataire : <b>{html_escape(recipient.get('name', 'Compte Biz-transPay'))}</b>",
-            f"Email destinataire : <code>{html_escape(recipient.get('email', '—'))}</code>",
+            "━━━━ 👤 <b>EXPÉDITEUR (PAYEUR)</b> ━━━━",
+            f"👤 Nom : <b>{html_escape(str(deposit.get('full_name') or 'Client externe')[:120])}</b>",
+            f"📧 Email : <code>{html_escape(_telegram_mask_email(deposit.get('email')) or '—')}</code>",
+            f"📞 Téléphone : <code>{html_escape(_telegram_mask_phone(deposit.get('phone_number')) or '—')}</code>",
+            f"🌍 Pays : <b>{html_escape(str(deposit.get('country_label') or deposit.get('country') or '—'))}</b>",
+            "━━━━ 🏦 <b>BÉNÉFICIAIRE</b> ━━━━",
+            f"👤 Nom : <b>{html_escape(recipient.get('name', 'Compte Biz-transPay'))}</b>",
+            f"📧 Email : <code>{html_escape(recipient.get('email', '—'))}</code>",
+            f"🔑 Username : <code>{html_escape(str(recipient.get('username') or '—'))}</code>",
+            f"📞 Téléphone : <code>{html_escape(recipient.get('phone', '—'))}</code>",
+            f"🌍 Pays : <b>{html_escape(str(recipient.get('country') or '—'))}</b>",
         ]
 
     tx = transaction or {}
@@ -961,11 +998,17 @@ async def _telegram_party_lines(
             wallet = str(recipient_wallet)
             recipient["phone"] = f"Portefeuille {wallet[:8]}…{wallet[-6:]}"
     return [
-        f"Expéditeur : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
-        f"Email expéditeur : <code>{html_escape(owner.get('email', '—'))}</code>",
-        f"Destinataire : <b>{html_escape(str(recipient.get('name', 'Destinataire externe'))[:120])}</b>",
-        f"Email destinataire : <code>{html_escape(recipient.get('email', '—'))}</code>",
-        f"Contact destinataire : <code>{html_escape(recipient.get('phone', '—'))}</code>",
+        "━━━━ 👤 <b>EXPÉDITEUR</b> ━━━━",
+        f"👤 Nom : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
+        f"📧 Email : <code>{html_escape(owner.get('email', '—'))}</code>",
+        f"🔑 Username : <code>{html_escape(str(owner.get('username') or '—'))}</code>",
+        f"📞 Téléphone : <code>{html_escape(owner.get('phone', '—'))}</code>",
+        f"🌍 Pays : <b>{html_escape(str(owner.get('country') or '—'))}</b>",
+        "━━━━ 📱 <b>DESTINATAIRE</b> ━━━━",
+        f"👤 Nom : <b>{html_escape(str(recipient.get('name', 'Destinataire externe'))[:120])}</b>",
+        f"📧 Email : <code>{html_escape(recipient.get('email', '—'))}</code>",
+        f"📞 Téléphone / wallet : <code>{html_escape(recipient.get('phone', '—'))}</code>",
+        f"🌍 Pays : <b>{html_escape(str(meta.get('country_label') or meta.get('country') or '—'))}</b>",
     ]
 
 
@@ -992,19 +1035,84 @@ async def _telegram_notification_text(
     body: str,
     data: Optional[dict],
 ) -> str:
-    lines = [
-        "🔔 <b>Biz-transPay</b>",
-        f"<b>{html_escape(str(title)[:240])}</b>",
-        html_escape(str(body)[:1200]),
-        f"Type : <code>{html_escape(str(ntype)[:80])}</code>",
-        f"Compte : <code>…{html_escape(str(user_id)[-8:])}</code>",
-    ]
     transaction, deposit = await _telegram_transaction_context(data)
-    lines.extend(await _telegram_party_lines(transaction, deposit))
-    for key, value in _telegram_safe_data(data):
-        lines.append(
-            f"{html_escape(key)} : <code>{html_escape(value)}</code>"
+    record = deposit or transaction or {}
+    meta = (transaction or {}).get("metadata") or {}
+    title_by_type = {
+        "deposit_success": "✅ PAIEMENT REÇU / DÉPÔT CONFIRMÉ",
+        "withdrawal_success": "✅ RETRAIT VALIDÉ AUTOMATIQUEMENT",
+        "withdrawal_failed": "❌ RETRAIT ÉCHOUÉ / REMBOURSÉ",
+        "transfer_success": "✅ TRANSFERT CONFIRMÉ",
+        "exchange_success": "✅ CONVERSION CONFIRMÉE",
+    }
+    provider = (
+        record.get("provider") or meta.get("provider")
+        or ("fedapay" if meta.get("fedapay_payout_id") else None)
+        or ("paydunya" if meta.get("paydunya_disbursement_token") else None)
+        or ("izichangepay" if meta.get("izipay_payout_id") else None)
+        or ("mbiyo" if meta.get("mbiyo_transaction_id") else None)
+        or "Biz-transPay"
+    )
+    provider_labels = {
+        "paydunya": "PayDunya", "fedapay": "FedaPay", "mbiyo": "Mbiyo",
+        "izipay": "IzichangePay", "izichangepay": "IzichangePay",
+    }
+    provider_label = provider_labels.get(str(provider).lower(), str(provider))
+    currency = str(
+        record.get("currency") or (data or {}).get("currency") or "—"
+    ).upper()
+    if deposit:
+        gross = deposit.get("amount_gross", deposit.get("amount"))
+        net = deposit.get("amount_net", (data or {}).get("amount"))
+        operator = deposit.get("operator_name") or deposit.get("operator") or "—"
+        provider_reference = (
+            deposit.get("provider_reference") or deposit.get("paydunya_reference")
+            or deposit.get("fedapay_reference") or deposit.get("mbiyo_transaction_id")
         )
+        internal_reference = deposit.get("reference") or deposit.get("id")
+        event_time = deposit.get("approved_at") or deposit.get("updated_at") or deposit.get("created_at")
+        source_labels = {
+            "link_payment": "Lien de paiement",
+            "merchant_api": "API marchand",
+            "dashboard": "Dépôt Mobile Money",
+        }
+        lines = [
+            f"<b>{title_by_type.get(ntype, title)}</b>",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📋 Type : <b>{html_escape(source_labels.get(str(deposit.get('source')), 'Dépôt Mobile Money'))}</b>",
+            f"💰 Montant brut : <b>{html_escape(_telegram_display_amount(gross, currency))}</b>",
+            f"💳 Montant crédité : <b>{html_escape(_telegram_display_amount(net, currency))}</b>",
+            f"💼 Wallet crédité : <b>{html_escape(currency)}</b>",
+            f"🔌 Passerelle : <b>{html_escape(provider_label)}</b>",
+            f"📱 Opérateur : <b>{html_escape(str(operator))}</b>",
+            f"📌 Réf. Biz-transPay : <code>{html_escape(str(internal_reference or '—'))}</code>",
+            f"🔗 Réf. fournisseur : <code>{html_escape(str(provider_reference or '—'))}</code>",
+            f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>",
+        ]
+    else:
+        gross = meta.get("total_debit", record.get("amount"))
+        net = meta.get("recipient_gets", record.get("amount"))
+        operator = meta.get("operator_name") or meta.get("operator") or meta.get("network") or "—"
+        provider_reference = (
+            meta.get("provider_reference") or meta.get("mbiyo_transaction_id")
+            or meta.get("fedapay_payout_id") or meta.get("paydunya_disbursement_id")
+            or meta.get("izipay_payout_id")
+        )
+        internal_reference = record.get("reference") or record.get("id")
+        event_time = meta.get("completed_at") or record.get("updated_at") or record.get("created_at")
+        lines = [
+            f"<b>{title_by_type.get(ntype, title)}</b>",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"💰 Montant brut : <b>{html_escape(_telegram_display_amount(gross, currency))}</b>",
+            f"💳 Montant net : <b>{html_escape(_telegram_display_amount(net, currency))}</b>",
+            f"💼 Wallet débité : <b>{html_escape(currency)}</b>",
+            f"🔌 Passerelle : <b>{html_escape(provider_label)}</b>",
+            f"📱 Opérateur / réseau : <b>{html_escape(str(operator))}</b>",
+            f"📌 Réf. Biz-transPay : <code>{html_escape(str(internal_reference or '—'))}</code>",
+            f"🔗 Réf. fournisseur : <code>{html_escape(str(provider_reference or '—'))}</code>",
+            f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>",
+        ]
+    lines.extend(await _telegram_party_lines(transaction, deposit))
     return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
 
 
