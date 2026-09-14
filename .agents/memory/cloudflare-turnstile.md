@@ -17,3 +17,16 @@ Add the actual Preview and production hostnames in Cloudflare Turnstile
 Hostname Management. Use Cloudflare's documented test keys for local
 `localhost`/`127.0.0.1` testing rather than weakening production hostname
 validation.
+
+Replit environment-specific secrets can shadow the shared secret. When a
+Turnstile secret validates against Cloudflare but the running app rejects it,
+check and align the `development` override used by Preview before changing
+backend code.
+
+**Why:** This project had the correct widget secret available through Cloudflare
+while the runtime still read a different value from an environment-specific
+secret entry.
+
+**How to apply:** For Preview, replace or remove stale `development` and
+`production` overrides in the Secrets pane, keeping the exact widget secret in
+the environment the workflow uses.
