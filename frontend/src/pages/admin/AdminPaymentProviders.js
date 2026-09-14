@@ -314,8 +314,66 @@ export default function AdminPaymentProviders() {
           </div>
         )}
       </section>
+      <MbiyoPanel />
     </div>
   );
+}
+
+function MbiyoPanel() {
+  const [config, setConfig] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [show, setShow] = useState({});
+
+  useEffect(() => {
+    api.get('/admin/payment-providers/mbiyo')
+      .then(({ data }) => setConfig(data))
+      .catch((err) => toast.error(err.response?.data?.detail || 'Impossible de charger Mbiyo'));
+  }, []);
+
+  if (!config) return <section className="bg-white border border-slate-100 rounded-2xl p-5 text-xs text-slate-500">Chargement de Mbiyo…</section>;
+  const set = (key, value) => setConfig((current) => ({ ...current, [key]: value }));
+  const setOp = (id, key, value) => setConfig((current) => ({
+    ...current, catalog: current.catalog.map((op) => op.id === id ? { ...op, [key]: value } : op),
+  }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        enabled: config.enabled, mode: config.mode, catalog: config.catalog,
+        ...(draft.api_key?.trim() ? { api_key: draft.api_key.trim() } : {}),
+        ...(draft.webhook_secret?.trim() ? { webhook_secret: draft.webhook_secret.trim() } : {}),
+      };
+      const { data } = await api.put('/admin/payment-providers/mbiyo', payload);
+      setConfig(data); setDraft({});
+      toast.success('Configuration Mbiyo enregistrée');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Impossible d’enregistrer Mbiyo');
+    } finally { setSaving(false); }
+  };
+  return (
+    <section className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5" data-testid="mbiyo-settings">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${config.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}><Smartphone className="w-5 h-5" /></div>
+        <div className="flex-1"><h2 className="font-cabinet font-bold text-slate-900">Mbiyo</h2><p className="text-[11px] text-slate-500">Dépôts et retraits Mobile Money XOF / XAF, avec webhooks signés.</p></div>
+        <label className="inline-flex items-center gap-2 cursor-pointer text-xs font-bold"><input type="checkbox" checked={!!config.enabled} onChange={(e) => set('enabled', e.target.checked)} className="accent-emerald-500" /> {config.enabled ? 'Activé' : 'Désactivé'}</label>
+        <button onClick={save} disabled={saving} className="inline-flex items-center gap-2 bg-[#2563EB] text-white font-bold px-4 py-2.5 rounded-full text-xs disabled:opacity-50">{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Enregistrer</button>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3 mt-4">
+        <div><label className="text-xs font-semibold text-slate-700 mb-1.5 block">Mode</label><div className="grid grid-cols-2 gap-2">{['test', 'live'].map((mode) => <button key={mode} type="button" onClick={() => set('mode', mode)} className={`p-2 rounded-xl border-2 text-xs font-bold ${config.mode === mode ? 'border-blue-600 bg-blue-50 text-blue-600' : 'border-slate-200 text-slate-500'}`}>{mode === 'live' ? 'Production' : 'Test'}</button>)}</div></div>
+        <SecretInput label="Clé API Mbiyo" configured={config.configured} value={draft.api_key || ''} visible={show.api} onToggle={() => setShow((s) => ({ ...s, api: !s.api }))} onChange={(value) => setDraft((d) => ({ ...d, api_key: value }))} />
+        <SecretInput label="Secret webhook" configured={config.webhook_secret_configured} value={draft.webhook_secret || ''} visible={show.webhook} onToggle={() => setShow((s) => ({ ...s, webhook: !s.webhook }))} onChange={(value) => setDraft((d) => ({ ...d, webhook_secret: value }))} />
+      </div>
+      <div className="mt-5 flex items-center justify-between"><div><h3 className="font-cabinet font-bold text-slate-900 text-sm">Catalogue XOF / XAF</h3><p className="text-[10px] text-slate-500">Activez séparément chaque pays et opérateur.</p></div><span className="text-[10px] text-slate-400">{(config.catalog || []).filter((o) => o.active).length} actifs / {(config.catalog || []).length}</span></div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2 mt-3">
+        {(config.catalog || []).map((op) => <label key={op.id} className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs ${op.active ? 'border-emerald-200 bg-emerald-50/40' : 'border-slate-200'}`}><input type="checkbox" checked={!!op.active} onChange={(e) => setOp(op.id, 'active', e.target.checked)} className="accent-emerald-500" /><span className="font-bold">{op.country} · {op.network}</span><span className="ml-auto text-[10px] text-slate-500">{op.currency}</span></label>)}
+      </div>
+    </section>
+  );
+}
+
+function SecretInput({ label, configured, value, visible, onToggle, onChange }) {
+  return <div><label className="text-xs font-semibold text-slate-700 mb-1.5 block">{label}</label><div className="relative"><input type={visible ? 'text' : 'password'} value={value} onChange={(e) => onChange(e.target.value)} placeholder={configured ? 'Configuré · saisir pour remplacer' : 'Non configuré'} autoComplete="new-password" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none text-sm pr-10 font-mono" /><button type="button" onClick={onToggle} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400">{visible ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}</button></div><div className="text-[10px] text-slate-400 mt-1">{configured ? <span className="text-emerald-600 font-semibold">Configuré</span> : 'Non configuré'}</div></div>;
 }
 
 function CatalogItem({ item, onChange, onArchive }) {
