@@ -8,9 +8,9 @@ import api from '@/api';
 
 const EMPTY_MOBILE_MONEY = { enabled: true, operators: [] };
 
-function normalizeConfig(data) {
-  const operators = Array.isArray(data?.mobile_money?.operators)
-    ? data.mobile_money.operators.map((operator, index) => {
+function normalizeOperators(operators, provider) {
+  return Array.isArray(operators)
+    ? operators.map((operator, index) => {
       const gatewayPct = operator.gateway_fee_pct == null
         ? number(operator.fee_pct)
         : number(operator.gateway_fee_pct);
@@ -31,15 +31,28 @@ function normalizeConfig(data) {
       min: 0,
       max: '',
       ...operator,
+       provider: operator.provider || provider,
       // The admin response does not require an id. A stable local key keeps
       // editing safe without inventing a field for the API.
-      _key: operator.id || `${operator.country || 'country'}-${operator.code || index}-${index}`,
+       _key: `${operator.provider || provider}-${operator.id || `${operator.country || 'country'}-${operator.code || index}-${index}`}`,
       });
     })
     : [];
+}
+
+function normalizeConfig(data, mbiyoData) {
+  const paydunyaOperators = normalizeOperators(data?.mobile_money?.operators, 'paydunya');
+  const mbiyoOperators = normalizeOperators(
+    mbiyoData?.catalog || data?.mbiyo?.operators,
+    'mbiyo',
+  );
   return {
     enabled: data?.mobile_money?.enabled !== false,
-    operators,
+    operators: [...paydunyaOperators, ...mbiyoOperators],
+    mbiyo: {
+      enabled: mbiyoData?.enabled !== false,
+      mode: mbiyoData?.mode || 'test',
+    },
   };
 }
 
@@ -51,6 +64,7 @@ function number(value) {
 export default function AdminMobileMoneyWithdrawals() {
   const [config, setConfig] = useState(null);
   const [countryFilter, setCountryFilter] = useState('all');
+  const [providerFilter, setProviderFilter] = useState('all');
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -58,8 +72,11 @@ export default function AdminMobileMoneyWithdrawals() {
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await api.get('/admin/transfer/config');
-      setConfig(normalizeConfig(data));
+      const [{ data }, { data: mbiyoData }] = await Promise.all([
+        api.get('/admin/transfer/config'),
+        api.get('/admin/payment-providers/mbiyo'),
+      ]);
+      setConfig(normalizeConfig(data, mbiyoData));
       setDirty(false);
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Impossible de charger le catalogue Mobile Money');
@@ -80,8 +97,9 @@ export default function AdminMobileMoneyWithdrawals() {
 
   const visibleOperators = useMemo(() => (config?.operators || [])
     .filter((operator) => countryFilter === 'all' || operator.country === countryFilter)
+    .filter((operator) => providerFilter === 'all' || operator.provider === providerFilter)
     .sort((a, b) => (a.country_label || a.country).localeCompare(b.country_label || b.country)),
-  [config, countryFilter]);
+  [config, countryFilter, providerFilter]);
 
   const update = (key, value) => {
     setConfig((current) => ({ ...current, [key]: value }));
@@ -121,14 +139,25 @@ export default function AdminMobileMoneyWithdrawals() {
     setSaving(true);
     try {
       // _key is only a client-side editing key and must never be sent back.
-      const operators = config.operators.map(({ _key, ...operator }) => ({
+      const cleanOperators = config.operators.map(({ _key, ...operator }) => ({
         ...operator,
         max: operator.max === '' ? null : operator.max,
       }));
-      const { data } = await api.patch('/admin/transfer/config', {
-        mobile_money: { enabled: config.enabled, operators },
-      });
-      setConfig(normalizeConfig(data));
+      const paydunyaOperators = cleanOperators
+        .filter((operator) => operator.provider !== 'mbiyo')
+        .map(({ provider, ...operator }) => operator);
+      const mbiyoOperators = cleanOperators.filter((operator) => operator.provider === 'mbiyo');
+      const [{ data }, { data: mbiyoData }] = await Promise.all([
+        api.patch('/admin/transfer/config', {
+          mobile_money: { enabled: config.enabled, operators: paydunyaOperators },
+        }),
+        api.put('/admin/payment-providers/mbiyo', {
+          enabled: config.mbiyo.enabled,
+          mode: config.mbiyo.mode,
+          catalog: mbiyoOperators,
+        }),
+      ]);
+      setConfig(normalizeConfig(data, mbiyoData));
       setDirty(false);
       toast.success('Catalogue Mobile Money enregistré');
     } catch (err) {
@@ -181,12 +210,23 @@ export default function AdminMobileMoneyWithdrawals() {
           <div className="w-9 h-9 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Globe2 className="w-4 h-4" /></div>
           <div>
             <h2 className="font-cabinet font-bold text-slate-900">Catalogue des opérateurs</h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">Configurez séparément les frais passerelle et Biz-transPay, les limites et le statut.</p>
+            <p className="text-[11px] text-slate-500 mt-0.5">Configurez les frais de retrait PayDunya et Mbiyo, les limites et le statut.</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1">
-          <button type="button" onClick={() => setCountryFilter('all')} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${countryFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>Tous ({config.operators.length})</button>
+          {[
+            ['all', 'Tous les prestataires'],
+            ['paydunya', 'PayDunya'],
+            ['mbiyo', 'Mbiyo'],
+          ].map(([value, label]) => {
+            const count = config.operators.filter((operator) => value === 'all' || operator.provider === value).length;
+            return <button type="button" key={value} onClick={() => setProviderFilter(value)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${providerFilter === value ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'}`}>{label} ({count})</button>;
+          })}
+        </div>
+
+        <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1">
+          <button type="button" onClick={() => setCountryFilter('all')} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${countryFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>Tous les pays</button>
           {countries.map((country) => {
             const count = config.operators.filter((operator) => operator.country === country).length;
             const label = config.operators.find((operator) => operator.country === country)?.country_label || country;
@@ -223,6 +263,7 @@ function WithdrawalOperator({ operator, onChange, onArchive }) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-bold text-sm text-slate-900">{operator.name || 'Sans nom'}</span>
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${operator.provider === 'mbiyo' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>{operator.provider === 'mbiyo' ? 'MBIYO' : 'PAYDUNYA'}</span>
               {operator.archived && <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[9px] font-bold">ARCHIVÉ</span>}
             </div>
             <div className="text-[10px] text-slate-500">{operator.country_label || operator.country} · {operator.code} · {operator.currency}</div>
