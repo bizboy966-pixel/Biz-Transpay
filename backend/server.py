@@ -2122,10 +2122,12 @@ async def transfer(req: TransferRequest, request: Request,
     # -------- BIZ TO BIZ: instant, no fees --------
     if req.transfer_type == "biz_to_biz":
         needle = (req.recipient or "").lower().strip()
+        phone_term = req.recipient_phone or needle
         recip = await db.users.find_one({
             "$or": [
                 {"username": needle}, {"email": needle},
-                {"phone": {"$regex": req.recipient_phone or needle, "$options": "i"}} if (req.recipient_phone or needle) else {"_none": True},
+                {"phone": {"$regex": _literal_regex_term(phone_term, field_name="Téléphone"),
+                            "$options": "i"}} if phone_term else {"_none": True},
             ]
         })
         if not recip:
@@ -6186,9 +6188,7 @@ async def list_transactions(
         query["status"] = status
     if q:
         # Escape regex-special chars so user input like "0x..." works verbatim.
-        import re
-        needle = q.strip()
-        esc = re.escape(needle)
+        esc = _literal_regex_term(q, field_name="Recherche")
         rx = {"$regex": esc, "$options": "i"}
         search_terms = [
             {"id": rx}, {"reference": rx}, {"counterparty": rx},
@@ -8057,7 +8057,7 @@ async def admin_benefits_details(period: str = "all",
     # Text search
     user_ids: Optional[list[str]] = None
     if q:
-        needle = q.strip()
+        needle = _literal_regex_term(q, field_name="Recherche")
         # Search users first (name/email)
         udocs = await db.users.find(
             {"$or": [
@@ -8362,11 +8362,12 @@ async def admin_list_users(admin=Depends(get_admin), q: Optional[str] = None,
                            limit: int = Query(200, le=1000)):
     query: dict = {}
     if q:
+        safe_q = _literal_regex_term(q, field_name="Recherche")
         query["$or"] = [
-            {"full_name": {"$regex": q, "$options": "i"}},
-            {"email": {"$regex": q, "$options": "i"}},
-            {"username": {"$regex": q, "$options": "i"}},
-            {"phone": {"$regex": q, "$options": "i"}},
+            {"full_name": {"$regex": safe_q, "$options": "i"}},
+            {"email": {"$regex": safe_q, "$options": "i"}},
+            {"username": {"$regex": safe_q, "$options": "i"}},
+            {"phone": {"$regex": safe_q, "$options": "i"}},
         ]
     if kyc:
         query["kyc_status"] = kyc
@@ -8781,7 +8782,7 @@ async def admin_transactions(admin=Depends(get_admin), q: Optional[str] = None,
     if status:
         query["status"] = status
     if q:
-        esc = __import__("re").escape(q.strip())
+        esc = _literal_regex_term(q, field_name="Recherche")
         rx = {"$regex": esc, "$options": "i"}
         # First resolve users matching email/username so we can filter their txns.
         matching_users = await db.users.find(
@@ -9042,7 +9043,7 @@ async def admin_list_links(admin=Depends(get_admin), q: Optional[str] = None,
     elif status in ("suspended", "disabled", "inactive"):
         query["active"] = False
     if q:
-        esc = __import__("re").escape(q.strip())
+        esc = _literal_regex_term(q, field_name="Recherche")
         rx = {"$regex": esc, "$options": "i"}
         matching = await db.users.find(
             {"$or": [{"email": rx}, {"username": rx}, {"full_name": rx}]},
@@ -9090,7 +9091,7 @@ async def admin_list_api_keys(admin=Depends(get_admin), q: Optional[str] = None,
     elif status == "suspended":
         query["suspended"] = True
     if q:
-        esc = __import__("re").escape(q.strip())
+        esc = _literal_regex_term(q, field_name="Recherche")
         rx = {"$regex": esc, "$options": "i"}
         matching = await db.users.find(
             {"$or": [{"email": rx}, {"username": rx}, {"full_name": rx}]},
@@ -9712,13 +9713,15 @@ async def admin_update_paydunya(req: PayDunyaProviderUpdate,
 
 
 @api.get("/users/lookup")
-async def lookup_user(q: str = Query(...), uid: str = Depends(get_current_user_id)):
+async def lookup_user(q: str = Query(..., min_length=1, max_length=100),
+                      uid: str = Depends(get_current_user_id)):
     needle = q.lower().strip()
+    phone_regex = _literal_regex_term(needle, field_name="Recherche")
     recip = await db.users.find_one({
         "$or": [
             {"username": needle},
             {"email": needle},
-            {"phone": {"$regex": needle, "$options": "i"}},
+            {"phone": {"$regex": phone_regex, "$options": "i"}},
         ]
     }, {"_id": 0, "id": 1, "username": 1, "full_name": 1, "country": 1})
     if not recip:
