@@ -1386,11 +1386,32 @@ async def transfer(req: TransferRequest, request: Request,
                 await db.transactions.update_one(
                     {"id": tx_out.id}, {"$set": {"metadata.mbiyo_transaction_id": provider_id,
                                                 "metadata.mbiyo_status": mbiyo.status_value(response)}})
-            except Exception as exc:
-                await db.users.update_one({"id": uid}, {"$inc": {field: fees["charged_amount"]}})
+            except mbiyo.MbiyoError as exc:
+                await _refund_mobile_withdrawal(tx_out.id, exc.message)
                 await db.transactions.update_one(
-                    {"id": tx_out.id}, {"$set": {"status": "failed", "metadata.error": str(exc)[:240]}})
-                raise HTTPException(502, "Mbiyo a refusé le retrait; votre solde a été remboursé")
+                    {"id": tx_out.id},
+                    {"$set": {"metadata.error": str(exc)[:240],
+                              "metadata.provider_status": exc.status}})
+                message_lower = exc.message.lower()
+                if "insufficient" in message_lower and "balance" in message_lower:
+                    detail = (
+                        "Le solde de décaissement Mbiyo pour cet opérateur est "
+                        "insuffisant. Votre solde Biz-transPay a été remboursé.")
+                else:
+                    detail = (
+                        f"Mbiyo a refusé le retrait : {exc.message}. "
+                        "Votre solde Biz-transPay a été remboursé.")
+                raise HTTPException(
+                    400 if exc.status < 500 else 502, detail)
+            except Exception as exc:
+                await _refund_mobile_withdrawal(tx_out.id, str(exc))
+                await db.transactions.update_one(
+                    {"id": tx_out.id},
+                    {"$set": {"metadata.error": str(exc)[:240]}})
+                raise HTTPException(
+                    502,
+                    "Mbiyo est temporairement indisponible. Votre solde "
+                    "Biz-transPay a été remboursé.")
             return {"transaction": (await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})),
                     "fee": fees["total_fee"], "total_debit": fees["charged_amount"],
                     "recipient_gets": fees["wallet_credit_amount"], "operator": op.get("name")}
@@ -3135,10 +3156,15 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
     if tx.get("status") in ("completed", "failed") or meta.get("refunded"):
         return False
     if tx.get("status") == "pending":
+        provider_status_field = (
+            "metadata.mbiyo_status"
+            if meta.get("provider") == "mbiyo"
+            else "metadata.paydunya_status"
+        )
         claimed = await db.transactions.update_one(
             {"id": tx_id, "status": "pending"},
             {"$set": {"status": "refund_pending",
-                      "metadata.paydunya_status": "failed",
+                      provider_status_field: "failed",
                       "metadata.failure_reason": reason[:300]}})
         if not claimed.modified_count:
             tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
