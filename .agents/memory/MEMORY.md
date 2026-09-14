@@ -21,3 +21,4 @@
 - [Financial idempotency barriers](financial-idempotency.md) — wallet mutations use Mongo atomic markers; every retryable credit, debit, refund, and settlement needs an operation id.
 - [Backend test environment](backend-test-environment.md) — integration tests need an explicit local/Preview base URL; external Preview TLS and shared rate limits can invalidate results.
 - [Cloudflare Turnstile hostnames](cloudflare-turnstile.md) — real Turnstile keys reject unlisted Preview domains with client error 110200; configure Hostname Management explicitly.
+- [Telegram notification delivery](telegram-notifications.md) — platform notifications use a non-blocking Telegram queue with an allowlisted, redacted event payload.

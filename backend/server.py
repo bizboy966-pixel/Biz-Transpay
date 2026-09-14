@@ -11,6 +11,7 @@ import ipaddress
 import re
 import base64
 import socket
+from html import escape as html_escape
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -824,6 +825,119 @@ async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
 # ==================== NOTIFICATIONS ====================
 # Per-user Server-Sent Events subscribers for real-time push.
 _sse_subscribers: dict[str, list[asyncio.Queue]] = {}
+_telegram_queue: Optional[asyncio.Queue] = None
+_telegram_worker_task: Optional[asyncio.Task] = None
+TELEGRAM_MAX_MESSAGE_LENGTH = 3900
+
+
+def _telegram_config() -> tuple[str, str]:
+    """Read Telegram delivery settings without ever exposing the bot token."""
+    return (
+        os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
+        os.environ.get("TELEGRAM_CHAT_ID", "").strip(),
+    )
+
+
+def _telegram_safe_data(data: Optional[dict]) -> list[tuple[str, str]]:
+    """Keep provider credentials and customer PII out of Telegram alerts."""
+    allowed = (
+        "amount", "currency", "reference", "transaction_id", "deposit_id",
+        "transfer_type", "security_event", "operation_id",
+    )
+    safe: list[tuple[str, str]] = []
+    for key in allowed:
+        value = (data or {}).get(key)
+        if value is None or value == "":
+            continue
+        text = str(value)
+        if len(text) > 180:
+            text = text[:177] + "..."
+        safe.append((key, text))
+    return safe
+
+
+def _telegram_notification_text(
+    user_id: str,
+    ntype: str,
+    title: str,
+    body: str,
+    data: Optional[dict],
+) -> str:
+    lines = [
+        "🔔 <b>Biz-transPay</b>",
+        f"<b>{html_escape(str(title)[:240])}</b>",
+        html_escape(str(body)[:1200]),
+        f"Type : <code>{html_escape(str(ntype)[:80])}</code>",
+        f"Compte : <code>…{html_escape(str(user_id)[-8:])}</code>",
+    ]
+    for key, value in _telegram_safe_data(data):
+        lines.append(
+            f"{html_escape(key)} : <code>{html_escape(value)}</code>"
+        )
+    return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
+
+
+async def _send_telegram_notification(message: str) -> None:
+    token, chat_id = _telegram_config()
+    if not token or not chat_id:
+        return
+    try:
+        import httpx
+
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "text": message,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": True,
+                },
+            )
+            result = response.json()
+        if response.status_code != 200 or not result.get("ok"):
+            logger.warning(
+                "Telegram notification rejected with status=%s",
+                response.status_code,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Telegram must never block or fail a financial/authentication flow.
+        logger.warning("Telegram notification delivery failed: %s", exc)
+
+
+async def _telegram_notification_worker() -> None:
+    while True:
+        message = await _telegram_queue.get()
+        try:
+            await _send_telegram_notification(message)
+        finally:
+            _telegram_queue.task_done()
+
+
+async def _queue_telegram_notification(
+    user_id: str,
+    ntype: str,
+    title: str,
+    body: str,
+    data: Optional[dict],
+) -> None:
+    global _telegram_queue, _telegram_worker_task
+    token, chat_id = _telegram_config()
+    if not token or not chat_id:
+        return
+    if _telegram_queue is None:
+        _telegram_queue = asyncio.Queue(maxsize=200)
+    if _telegram_worker_task is None or _telegram_worker_task.done():
+        _telegram_worker_task = asyncio.create_task(
+            _telegram_notification_worker()
+        )
+    try:
+        _telegram_queue.put_nowait(
+            _telegram_notification_text(user_id, ntype, title, body, data)
+        )
+    except asyncio.QueueFull:
+        logger.warning("Telegram notification queue is full; dropping alert")
 
 
 async def notify(user_id: str, ntype: str, title: str, body: str,
@@ -852,6 +966,7 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
             q.put_nowait(doc)
         except Exception:
             pass
+    await _queue_telegram_notification(user_id, ntype, title, body, data)
     return doc
 
 
