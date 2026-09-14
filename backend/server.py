@@ -53,6 +53,8 @@ db = mongo_client[os.environ["DB_NAME"]]
 
 # ---------- Browser sessions ----------
 SESSION_COOKIE_NAME = "btp_session"
+CSRF_COOKIE_NAME = "btp_csrf"
+CSRF_HEADER_NAME = "X-CSRF-Token"
 SESSION_MAX_AGE = 24 * 60 * 60
 SESSION_IDLE_SECONDS = 30 * 60
 REAUTH_MAX_AGE_SECONDS = 15 * 60
@@ -91,14 +93,30 @@ def _set_session_cookie(response: Response, token: str) -> None:
         max_age=SESSION_MAX_AGE,
         httponly=True,
         secure=True,
-        samesite="lax",
+        samesite="strict",
         path="/",
     )
 
 
+def _set_csrf_cookie(response: Response, token: Optional[str] = None) -> str:
+    csrf_token = token or secrets.token_urlsafe(32)
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        csrf_token,
+        max_age=SESSION_MAX_AGE,
+        httponly=False,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
+    return csrf_token
+
+
 def _clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
-        SESSION_COOKIE_NAME, httponly=True, secure=True, samesite="lax", path="/")
+        SESSION_COOKIE_NAME, httponly=True, secure=True, samesite="strict", path="/")
+    response.delete_cookie(
+        CSRF_COOKIE_NAME, httponly=False, secure=True, samesite="strict", path="/")
 
 
 async def get_current_user_id(
@@ -159,6 +177,7 @@ async def _issue_session(user_id: str, request: Request, response: Response) -> 
         "user_agent": (request.headers.get("user-agent") or "")[:300],
     })
     _set_session_cookie(response, token)
+    _set_csrf_cookie(response)
 
 
 async def _rotate_session(request: Request, response: Response, user_id: str) -> None:
@@ -789,6 +808,86 @@ def _validate_http_url(value: str, field_name: str) -> str:
     return value.strip().rstrip("/")
 
 
+def _csrf_allowed_hosts(request: Request) -> set[str]:
+    hosts: set[str] = set()
+    for raw in (
+        request.headers.get("host"),
+        request.headers.get("x-forwarded-host"),
+        os.environ.get("REPLIT_DEV_DOMAIN"),
+        os.environ.get("REPLIT_DOMAINS"),
+    ):
+        for value in str(raw or "").split(","):
+            value = value.strip().lower()
+            if not value:
+                continue
+            parsed = urlparse(value if "://" in value else f"https://{value}")
+            if parsed.netloc:
+                hosts.add(parsed.netloc)
+    for value in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(","):
+        parsed = urlparse(value.strip())
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            hosts.add(parsed.netloc.lower())
+    return hosts
+
+
+def _csrf_origin_is_allowed(request: Request) -> bool:
+    fetch_site = (request.headers.get("sec-fetch-site") or "").lower()
+    if fetch_site == "cross-site":
+        return False
+    source = request.headers.get("origin") or request.headers.get("referer")
+    if not source or source == "null":
+        return False
+    parsed = urlparse(source)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1"}:
+        return False
+    return parsed.netloc.lower() in _csrf_allowed_hosts(request)
+
+
+def _csrf_error(code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={"detail": {"code": code, "message": message}},
+    )
+
+
+def _validate_csrf_request(request: Request) -> Optional[JSONResponse]:
+    if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
+        return None
+    if not request.url.path.startswith("/api/"):
+        return None
+    if request.url.path in {
+        "/api/auth/login",
+        "/api/auth/register",
+        "/api/auth/recover",
+    }:
+        return None
+    # Bearer-authenticated server-to-server calls and provider callbacks do not
+    # carry browser session cookies and therefore do not use browser CSRF.
+    if not request.cookies.get(SESSION_COOKIE_NAME):
+        return None
+    if not _csrf_origin_is_allowed(request):
+        return _csrf_error(
+            "CSRF_ORIGIN_REJECTED",
+            "Origine de la requête non autorisée.",
+        )
+    cookie_token = request.cookies.get(CSRF_COOKIE_NAME) or ""
+    header_token = request.headers.get(CSRF_HEADER_NAME) or ""
+    if (
+        len(cookie_token) < 32
+        or len(cookie_token) > 128
+        or len(header_token) < 32
+        or len(header_token) > 128
+        or not secrets.compare_digest(cookie_token, header_token)
+    ):
+        return _csrf_error(
+            "CSRF_TOKEN_INVALID",
+            "Jeton CSRF absent ou invalide.",
+        )
+    return None
+
+
 async def _issue_login_challenge(identifier: str, ip: str) -> dict:
     nonce = secrets.token_urlsafe(24)
     challenge_id = new_id()
@@ -1072,6 +1171,14 @@ async def login(req: LoginRequest, request: Request, response: Response):
     await _complete_login(u, request)
     await _issue_session(u["id"], request, response)
     return {"token": None, "user": user_to_public(u)}
+
+
+@api.get("/auth/csrf")
+async def csrf_token(response: Response,
+                     uid: str = Depends(get_current_user_id)):
+    token = _set_csrf_cookie(response)
+    response.headers["Cache-Control"] = "no-store"
+    return {"csrf_token": token}
 
 
 @api.post("/auth/logout")
@@ -9877,10 +9984,16 @@ async def public_stats():
 # ---------- register ----------
 app.include_router(api)
 
+_configured_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", "").split(",")
+    if origin.strip() and origin.strip() != "*"
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=_configured_cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining",
@@ -10001,6 +10114,10 @@ async def api_log_middleware(request: Request, call_next):
             )
             _apply_edge_security_headers(response, request)
             return response
+    csrf_failure = _validate_csrf_request(request)
+    if csrf_failure:
+        _apply_edge_security_headers(csrf_failure, request)
+        return csrf_failure
     if p.startswith("/api/") and request.method.upper() != "OPTIONS":
         profile = _global_rate_profile(p, request.method)
         identity = await _global_rate_identity(request)
