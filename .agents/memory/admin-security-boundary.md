@@ -3,7 +3,7 @@ name: Admin security boundary
 description: Additional protections applied to the Biz-transPay administrative panel and high-impact staff actions.
 ---
 
-The admin panel is a critical zone: admin sessions require MFA, high-impact actions require recent password-plus-MFA authentication and an explicit confirmation phrase, and every admin endpoint request is written to the audit log, including denied attempts.
+The admin panel is a critical zone: admin sessions require MFA, high-impact actions require recent password-plus-MFA authentication and an explicit confirmation phrase, and every admin endpoint request is written to the audit log, including denied attempts. MFA is reserved for admin and super-admin accounts; ordinary users and merchants must never be offered or prompted for it.
 
 **Why:** A valid administrator session alone is not enough protection for balance changes, transaction decisions, account administration, or platform reset operations.
 

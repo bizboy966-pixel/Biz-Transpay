@@ -6,6 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 
 export default function ReauthGate() {
   const { user } = useAuth();
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
   const [request, setRequest] = useState(null);
   const [password, setPassword] = useState('');
   const [otp, setOtp] = useState('');
@@ -56,7 +57,7 @@ export default function ReauthGate() {
         <h2 className="text-center font-cabinet text-2xl font-extrabold text-slate-900">Confirmez votre identité</h2>
         <p className="mt-2 text-center text-sm text-slate-500">Une nouvelle authentification est requise pour cette opération sensible.</p>
         <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" placeholder="Mot de passe actuel" required className="bt-field mt-5" />
-        {user?.two_fa_enabled && <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="Code 2FA" required className="bt-field mt-3 text-center tracking-[0.35em]" />}
+        {isAdmin && user?.two_fa_enabled && <input value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, ''))} inputMode="numeric" autoComplete="one-time-code" maxLength={6} placeholder="Code 2FA de l’application" required className="bt-field mt-3 text-center tracking-[0.35em]" />}
         <button type="submit" disabled={loading} className="bt-button-primary mt-5 w-full">{loading ? 'Vérification…' : 'Confirmer et continuer'}</button>
       </form>
     </div>

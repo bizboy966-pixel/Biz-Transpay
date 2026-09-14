@@ -64,7 +64,7 @@ export default function Login() {
         setStep('mfa');
         setChallenge(null);
         setChallengeSolution('');
-        toast.success('Entrez votre code de sécurité');
+        toast.success('Entrez le code actuel de votre application d’authentification');
         return;
       }
       if (data.mfa_setup_required) {
@@ -153,9 +153,9 @@ export default function Login() {
             </div>
           ) : step === 'mfa' ? (
             <div>
-              <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">Code de sécurité</label>
+               <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">Code 2FA de l’application d’authentification</label>
               <input data-testid="input-login-otp" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
-              <p className="mt-2 text-xs text-slate-500 text-center">Le code expire rapidement et ne peut pas être réutilisé.</p>
+               <p className="mt-2 text-xs text-slate-500 text-center">Réservé aux administrateurs. Utilisez le code à 6 chiffres affiché actuellement dans Google Authenticator, Microsoft Authenticator ou une application compatible. Ce n’est pas un code fixe choisi par vous.</p>
             </div>
           ) : (
           <div>

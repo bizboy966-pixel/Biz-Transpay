@@ -17,9 +17,9 @@ export default function Settings({ embedded = false }) {
   const [mfaSetup, setMfaSetup] = useState(null);
   const [mfaCode, setMfaCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState([]);
-  const [disableCode, setDisableCode] = useState('');
   const [sessions, setSessions] = useState([]);
   const [sessionsLoading, setSessionsLoading] = useState(true);
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
 
   const loadSessions = async () => {
     try {
@@ -59,10 +59,10 @@ export default function Settings({ embedded = false }) {
       <Section icon={Lock} title={t('settings.security_t')}>
         <Input label={t('settings.current_pwd')} type="password" value={pwd.current_password} onChange={(v) => setPwd({ ...pwd, current_password: v })} tid="set-current-pwd" />
         <Input label={t('settings.new_pwd')} type="password" value={pwd.new_password} onChange={(v) => setPwd({ ...pwd, new_password: v })} tid="set-new-pwd" />
-        {user?.two_fa_enabled && <Input label="Code 2FA" value={pwd.otp} onChange={(v) => setPwd({ ...pwd, otp: v.replace(/\D/g, '') })} tid="set-password-otp" />}
+        {isAdmin && user?.two_fa_enabled && <Input label="Code 2FA" value={pwd.otp} onChange={(v) => setPwd({ ...pwd, otp: v.replace(/\D/g, '') })} tid="set-password-otp" />}
         <button onClick={savePwd} data-testid="btn-change-pwd" className="inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white font-bold px-6 py-3 rounded-full"><Lock className="w-4 h-4" /> {t('settings.change_pwd')}</button>
 
-        <div className="mt-4 p-4 bg-slate-50 rounded-xl">
+        {isAdmin && <div className="mt-4 p-4 bg-slate-50 rounded-xl">
           <div className="flex items-center gap-3">
             <Shield className="w-5 h-5 text-[#2563EB]" />
             <div className="flex-1">
@@ -95,18 +95,7 @@ export default function Settings({ embedded = false }) {
             <p className="text-xs text-slate-600 mb-2">Conservez vos codes de récupération :</p>
             <div className="grid grid-cols-2 gap-1 font-mono text-xs">{recoveryCodes.map((code) => <span key={code}>{code}</span>)}</div>
           </div>}
-          {user?.two_fa_enabled && user?.role === 'user' && <div className="mt-3 flex gap-2">
-            <input value={disableCode} onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ''))} maxLength={6} inputMode="numeric" placeholder="Code pour désactiver" className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm" />
-            <button type="button" onClick={async () => {
-              try {
-                await api.post('/auth/2fa/disable', { current_password: pwd.current_password, code: disableCode });
-                setDisableCode('');
-                await refresh();
-                toast.success('Double authentification désactivée');
-              } catch (err) { toast.error(err.response?.data?.detail || 'Désactivation impossible'); }
-            }} className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm font-bold">Désactiver</button>
-          </div>}
-        </div>
+        </div>}
       </Section>
 
       <Section icon={Monitor} title="Sessions actives">

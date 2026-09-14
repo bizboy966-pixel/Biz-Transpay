@@ -1073,6 +1073,10 @@ async def _verify_user_totp(user: dict, code: str) -> bool:
     return claimed.modified_count == 1
 
 
+def _is_admin_account(user: dict) -> bool:
+    return user.get("role") in ("admin", "super_admin")
+
+
 @api.post("/auth/register")
 async def register(req: RegisterRequest, request: Request, response: Response):
     # First account becomes the platform administrator and must use the
@@ -1150,10 +1154,11 @@ async def login(req: LoginRequest, request: Request, response: Response):
     if not u or not verify_password(req.password, u["password_hash"]):
         await _record_login_failure(ident, request)
         raise HTTPException(401, "Identifiants invalides")
-    if u.get("role") in ("admin", "super_admin") and not u.get("two_fa_enabled"):
+    is_admin = _is_admin_account(u)
+    if is_admin and not u.get("two_fa_enabled"):
         setup = await _begin_mfa_enrollment(u)
         return {"mfa_setup_required": True, "mfa_setup": setup}
-    if u.get("two_fa_enabled"):
+    if is_admin and u.get("two_fa_enabled"):
         if not req.mfa_token:
             return {
                 "mfa_required": True,
@@ -1166,7 +1171,11 @@ async def login(req: LoginRequest, request: Request, response: Response):
             raise
         if mfa_payload.get("sub") != u["id"] or not await _verify_user_totp(u, req.otp or ""):
             await _record_login_failure(ident, request)
-            raise HTTPException(401, "Code de sécurité invalide")
+            raise HTTPException(
+                401,
+                "Code 2FA invalide ou expiré. Utilisez le code à 6 chiffres "
+                "actuellement affiché dans votre application d’authentification.",
+            )
     await _clear_login_account_failures(ident)
     await _complete_login(u, request)
     await _issue_session(u["id"], request, response)
@@ -1257,7 +1266,7 @@ async def reauthenticate(req: ReauthenticationRequest, request: Request,
     user = await get_user(uid)
     if not verify_password(req.current_password, user.get("password_hash", "")):
         raise HTTPException(401, "Mot de passe actuel incorrect")
-    if user.get("two_fa_enabled") and not await _verify_user_totp(
+    if _is_admin_account(user) and user.get("two_fa_enabled") and not await _verify_user_totp(
             user, req.otp or ""):
         raise HTTPException(401, "Code 2FA invalide")
     session_id = getattr(request.state, "session_id", None)
@@ -1272,6 +1281,10 @@ async def reauthenticate(req: ReauthenticationRequest, request: Request,
 @api.post("/auth/2fa/setup")
 async def setup_two_factor(uid: str = Depends(get_current_user_id)):
     user = await get_user(uid)
+    if not _is_admin_account(user):
+        raise HTTPException(
+            403, "La double authentification est réservée aux administrateurs"
+        )
     if user.get("two_fa_enabled"):
         raise HTTPException(409, "La double authentification est déjà activée")
     return await _begin_mfa_enrollment(user)
@@ -1300,6 +1313,11 @@ async def confirm_two_factor(req: TwoFactorCodeRequest,
         enrollment_id = payload.get("enrollment_id")
     if not user_id:
         raise HTTPException(401, "Authentification requise")
+    user = await get_user(user_id)
+    if not _is_admin_account(user):
+        raise HTTPException(
+            403, "La double authentification est réservée aux administrateurs"
+        )
     enrollment = await db.mfa_enrollments.find_one({
         "id": enrollment_id if enrollment_id else {"$exists": True},
         "user_id": user_id, "used": False,
@@ -1339,7 +1357,7 @@ async def confirm_two_factor(req: TwoFactorCodeRequest,
 async def disable_two_factor(req: TwoFactorDisableRequest,
                              uid: str = Depends(get_current_user_id)):
     user = await get_user(uid)
-    if user.get("role") in ("admin", "super_admin"):
+    if _is_admin_account(user):
         raise HTTPException(403, "La 2FA est obligatoire pour les administrateurs")
     if not verify_password(req.current_password, user.get("password_hash", "")):
         raise HTTPException(401, "Mot de passe actuel incorrect")
@@ -7651,7 +7669,8 @@ async def change_password(req: ChangePassword, uid: str = Depends(get_current_us
             422,
             "Le mot de passe administrateur doit être différent de l'ancien.",
         )
-    if u.get("two_fa_enabled") and not await _verify_user_totp(u, req.otp or ""):
+    if is_admin and u.get("two_fa_enabled") and not await _verify_user_totp(
+            u, req.otp or ""):
         raise HTTPException(401, "Code 2FA requis pour changer le mot de passe")
     await db.users.update_one({"id": uid}, {"$set": {
         "password_hash": hash_password(req.new_password),
