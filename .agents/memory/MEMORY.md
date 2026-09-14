@@ -12,5 +12,6 @@
 - [Admin security boundary](admin-security-boundary.md) — administrative access requires MFA, recent step-up authentication, explicit confirmation, and an audit trail.
 - [Global rate limiting](global-rate-limiting.md) — apply route-specific sliding-window limits across the API, with stricter buckets for auth and money movement.
 - [Edge protection boundary](edge-protection-boundary.md) — rely on Replit's published WAF/load balancing for volumetric defense and keep app-level edge guards as defense in depth.
+- [WAF boundary](waf-boundary.md) — Replit Auto-Protect supplies the published WAF; custom WAF rules are not currently exposed, so keep application controls complementary.
 - [Authorization boundaries](authorization-boundaries.md) — scope every authenticated lookup by owner and keep public capability endpoints allowlisted and minimal.
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.
