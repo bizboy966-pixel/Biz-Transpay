@@ -1383,9 +1383,15 @@ async def transfer(req: TransferRequest, request: Request,
                                               or req.recipient)})
                 data = response.get("data") if isinstance(response.get("data"), dict) else response
                 provider_id = data.get("transaction_id") or data.get("id") or data.get("reference")
+                provider_status = mbiyo.status_value(response)
                 await db.transactions.update_one(
                     {"id": tx_out.id}, {"$set": {"metadata.mbiyo_transaction_id": provider_id,
-                                                "metadata.mbiyo_status": mbiyo.status_value(response)}})
+                                                "metadata.mbiyo_status": provider_status,
+                                                "metadata.next_reconcile_at": now_iso()}})
+                if provider_status in mbiyo.SUCCESS_STATUSES:
+                    await _complete_mbiyo_withdrawal(tx_out.id, provider_status)
+                elif provider_status in mbiyo.FAILURE_STATUSES:
+                    await _refund_mobile_withdrawal(tx_out.id, provider_status)
             except mbiyo.MbiyoError as exc:
                 await _refund_mobile_withdrawal(tx_out.id, exc.message)
                 await db.transactions.update_one(
@@ -2582,6 +2588,9 @@ async def _paydunya_reconcile_loop() -> None:
                         await _refund_mobile_withdrawal(
                             withdrawal["id"],
                             withdrawal_meta.get("failure_reason", ""))
+                    elif (withdrawal_meta.get("provider") == "mbiyo"
+                          and withdrawal_meta.get("mbiyo_transaction_id")):
+                        await _reconcile_mbiyo_withdrawal(withdrawal)
                     elif withdrawal_meta.get("paydunya_invoice_token"):
                         await _reconcile_mobile_withdrawal(withdrawal)
                     else:
@@ -2942,21 +2951,10 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
     tx = await db.transactions.find_one(
         {"metadata.provider": "mbiyo",
          "metadata.mbiyo_transaction_id": provider_id}, {"_id": 0})
-    if tx and status in ("successful", "failed", "cancelled"):
-        if status == "successful":
-            await db.transactions.update_one({"id": tx["id"], "status": {"$ne": "completed"}},
-                                             {"$set": {"status": "completed",
-                                                       "metadata.mbiyo_status": status}})
-            await notify(tx["user_id"], "withdrawal_success", "Retrait Mobile Money confirmé",
-                         f"Votre retrait de {tx.get('amount', 0):,.0f} {tx.get('currency')} a été confirmé.")
-        elif tx.get("status") not in ("completed", "failed"):
-            meta = tx.get("metadata") or {}
-            field = f"balance_{str(tx.get('currency', 'XOF')).lower()}"
-            await db.users.update_one({"id": tx["user_id"]}, {"$inc": {field: float(meta.get("total_debit", tx.get("amount", 0)))}})
-            await db.transactions.update_one({"id": tx["id"]}, {"$set": {"status": "failed",
-                                                                          "metadata.mbiyo_status": status}})
-            await notify(tx["user_id"], "withdrawal_failed", "Retrait Mobile Money échoué",
-                         "Votre solde a été remboursé après l'échec du retrait Mbiyo.")
+    if tx and status in mbiyo.SUCCESS_STATUSES:
+        await _complete_mbiyo_withdrawal(tx["id"], status)
+    elif tx and status in mbiyo.FAILURE_STATUSES:
+        await _refund_mobile_withdrawal(tx["id"], status)
     await db.webhook_events.update_one({"event_id": event_id},
                                        {"$set": {"processed": True, "processed_at": now_iso()}})
     return {"received": True}
@@ -3189,6 +3187,68 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
                      "Votre retrait a échoué. Le montant a été remboursé sur votre portefeuille.",
                      data={"transaction_id": tx_id, "reference": tx.get("reference")})
     return True
+
+
+async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:
+    """Complete a verified Mbiyo payout exactly once."""
+    changed = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"},
+        {"$set": {
+            "status": "completed",
+            "metadata.mbiyo_status": provider_status,
+            "metadata.completed_at": now_iso(),
+        },
+         "$unset": {"metadata.next_reconcile_at": ""}},
+    )
+    if not changed.modified_count:
+        # Keep the verified provider state for diagnosis without silently
+        # reversing a refund that may already have reached the wallet.
+        await db.transactions.update_one(
+            {"id": tx_id},
+            {"$set": {"metadata.mbiyo_status": provider_status,
+                      "metadata.reconciliation_conflict": True}},
+        )
+        return False
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if tx:
+        await notify(
+            tx["user_id"], "withdrawal_success",
+            "Retrait Mobile Money confirmé",
+            f"Votre retrait de {tx.get('amount', 0):,.0f} {tx.get('currency', '')} a été envoyé au bénéficiaire.",
+            data={"transaction_id": tx_id, "reference": tx.get("reference"),
+                  "amount": tx.get("amount"), "transfer_type": "biz_to_mobile"},
+        )
+    return True
+
+
+async def _reconcile_mbiyo_withdrawal(tx: dict) -> str:
+    """Read a Mbiyo payout status and apply its idempotent terminal outcome."""
+    if not tx:
+        return ""
+    meta = tx.get("metadata") or {}
+    provider_id = str(meta.get("mbiyo_transaction_id") or "")
+    if not provider_id:
+        return "pending"
+    cfg = await get_mbiyo_config(decrypt=True)
+    response = await mbiyo.MbiyoClient(
+        cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)
+    ).status(provider_id)
+    status = mbiyo.status_value(response)
+    if status in mbiyo.SUCCESS_STATUSES:
+        await _complete_mbiyo_withdrawal(tx["id"], status)
+        return "completed"
+    if status in mbiyo.FAILURE_STATUSES:
+        await _refund_mobile_withdrawal(tx["id"], status)
+        return "failed"
+    await db.transactions.update_one(
+        {"id": tx["id"], "status": "pending"},
+        {"$set": {
+            "metadata.mbiyo_status": status or "pending",
+            "metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+        }},
+    )
+    return "pending"
 
 
 def _disbursement_status(payload: dict) -> str:

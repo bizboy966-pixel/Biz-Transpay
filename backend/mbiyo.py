@@ -91,7 +91,16 @@ def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
 
 def status_value(payload: dict) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    return str((data or {}).get("status") or payload.get("status") or "").lower()
+    return str((data or {}).get("status") or payload.get("status") or "").strip().lower()
+
+
+SUCCESS_STATUSES = {
+    "completed", "complete", "success", "successful", "sent", "paid", "succeeded",
+}
+FAILURE_STATUSES = {
+    "failed", "failure", "cancelled", "canceled", "rejected", "declined",
+    "error", "refunded",
+}
 
 
 class MbiyoClient:
