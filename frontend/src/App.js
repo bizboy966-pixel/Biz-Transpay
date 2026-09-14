@@ -40,6 +40,7 @@ import AdminRates from '@/pages/admin/AdminRates';
 import AdminFees from '@/pages/admin/AdminFees';
 import AdminBenefits from '@/pages/admin/AdminBenefits';
 import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
+import ReauthGate from '@/components/ReauthGate';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -62,6 +63,7 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <Toaster position="top-right" richColors closeButton offset={72} />
+        <ReauthGate />
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />

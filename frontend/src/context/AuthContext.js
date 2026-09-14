@@ -8,12 +8,10 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const loadMe = async () => {
-    const token = localStorage.getItem('btp_token');
-    if (!token) { setLoading(false); return; }
     try {
       const { data } = await api.get('/auth/me');
       setUser(data);
-    } catch { localStorage.removeItem('btp_token'); }
+    } catch { setUser(null); }
     setLoading(false);
   };
 
@@ -23,8 +21,7 @@ export function AuthProvider({ children }) {
     const { data } = await api.post('/auth/login', {
       email, password, ...security,
     });
-    if (data.token) {
-      localStorage.setItem('btp_token', data.token);
+    if (data.user && data.token !== undefined) {
       setUser(data.user);
     }
     return data;
@@ -32,18 +29,34 @@ export function AuthProvider({ children }) {
 
   const register = async (payload) => {
     const { data } = await api.post('/auth/register', payload);
-    localStorage.setItem('btp_token', data.token);
-    setUser(data.user);
-    return data.user;
+    if (data.user && data.token !== undefined) setUser(data.user);
+    return data;
   };
 
   const logout = () => {
-    localStorage.removeItem('btp_token');
+    api.post('/auth/logout').catch(() => {});
     setUser(null);
     window.location.href = '/';
   };
 
   const refresh = loadMe;
+
+  useEffect(() => {
+    if (!user) return undefined;
+    let lastActivity = Date.now();
+    const markActivity = () => { lastActivity = Date.now(); };
+    const events = ['mousedown', 'keydown', 'touchstart', 'scroll'];
+    events.forEach((name) => window.addEventListener(name, markActivity, { passive: true }));
+    const timer = window.setInterval(() => {
+      if (Date.now() - lastActivity < 10 * 60 * 1000) {
+        api.post('/auth/session/refresh').catch(() => {});
+      }
+    }, 5 * 60 * 1000);
+    return () => {
+      window.clearInterval(timer);
+      events.forEach((name) => window.removeEventListener(name, markActivity));
+    };
+  }, [user]);
 
   const confirmTwoFactor = async (code, setupToken) => {
     const { data } = await api.post('/auth/2fa/confirm', {

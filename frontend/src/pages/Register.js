@@ -51,14 +51,19 @@ export default function Register() {
     if (!validate()) return;
     setLoading(true);
     try {
-      await register({
+      const data = await register({
         full_name: form.full_name, username: form.username,
         account_type: 'merchant', country: form.country,
         phone: `${country.dial} ${form.phone}`, email: form.email,
         password: form.password,
       });
       toast.success('Compte créé avec succès !');
-      nav('/dashboard');
+      if (data?.mfa_setup_required) {
+        toast.success('Compte créé. Connectez-vous pour activer la sécurité administrateur.');
+        nav('/login');
+      } else {
+        nav('/dashboard');
+      }
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erreur lors de la création du compte');
     } finally {

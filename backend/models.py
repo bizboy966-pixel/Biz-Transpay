@@ -33,6 +33,11 @@ class LoginRequest(BaseModel):
     challenge_solution: Optional[str] = None
 
 
+class ReauthenticationRequest(BaseModel):
+    current_password: str
+    otp: Optional[str] = None
+
+
 class TwoFactorCodeRequest(BaseModel):
     code: str
     setup_token: Optional[str] = None
@@ -74,7 +79,7 @@ class UserPublic(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    token: str
+    token: Optional[str] = None
     user: UserPublic
 
 

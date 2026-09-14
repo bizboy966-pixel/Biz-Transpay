@@ -24,13 +24,10 @@ export default function LanguageSwitcher({ compact = false, className = '' }) {
     setLang(next);
     setOpen(false);
 
-    if (localStorage.getItem('btp_token')) {
-      try {
-        await api.patch('/settings/profile', { language: next });
-      } catch {
-        // The interface still changes locally if the account preference
-        // cannot be saved because the session has expired or is offline.
-      }
+    try {
+      await api.patch('/settings/profile', { language: next });
+    } catch {
+      // The public login/register screens can change language locally.
     }
   };
 

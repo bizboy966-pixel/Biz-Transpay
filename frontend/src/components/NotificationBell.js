@@ -36,12 +36,9 @@ export default function NotificationBell({ compact = false }) {
 
   useEffect(() => {
     load();
-    // Open SSE stream. EventSource cannot send Authorization headers,
-    // so we pass the JWT as a query param — the backend validates it.
-    const token = localStorage.getItem('btp_token');
-    if (!token) return;
-    const url = `${process.env.REACT_APP_BACKEND_URL || ''}/api/notifications/stream?token=${encodeURIComponent(token)}`;
-    const es = new EventSource(url);
+    // The browser sends the HttpOnly session cookie with this same-origin stream.
+    const url = `${process.env.REACT_APP_BACKEND_URL || ''}/api/notifications/stream`;
+    const es = new EventSource(url, { withCredentials: true });
     esRef.current = es;
     es.addEventListener('notification', (ev) => {
       try {

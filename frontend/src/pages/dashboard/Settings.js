@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Save, Lock, Globe, Shield } from 'lucide-react';
+import { Save, Lock, Globe, Shield, Monitor, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
@@ -18,6 +18,18 @@ export default function Settings({ embedded = false }) {
   const [mfaCode, setMfaCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState([]);
   const [disableCode, setDisableCode] = useState('');
+  const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+
+  const loadSessions = async () => {
+    try {
+      const { data } = await api.get('/auth/sessions');
+      setSessions(data || []);
+    } catch { setSessions([]); }
+    finally { setSessionsLoading(false); }
+  };
+
+  useEffect(() => { loadSessions(); }, []);
 
   const saveProfile = async () => {
     await api.patch('/settings/profile', {
@@ -95,6 +107,41 @@ export default function Settings({ embedded = false }) {
             }} className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm font-bold">Désactiver</button>
           </div>}
         </div>
+      </Section>
+
+      <Section icon={Monitor} title="Sessions actives">
+        <p className="text-sm text-slate-500">Consultez les appareils connectés à votre compte et fermez immédiatement une session que vous ne reconnaissez pas.</p>
+        {sessionsLoading ? <div className="text-sm text-slate-500">Chargement des sessions…</div> : (
+          <div className="space-y-2">
+            {sessions.map((session) => (
+              <div key={session.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3">
+                <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center"><Monitor className="w-4 h-4" /></div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-slate-800 truncate">{session.user_agent}</div>
+                  <div className="text-xs text-slate-500">Dernière activité : {new Date(session.last_activity_at).toLocaleString()}</div>
+                  {session.current && <span className="inline-block mt-1 text-[10px] font-bold uppercase tracking-wide text-emerald-600">Session actuelle</span>}
+                </div>
+                <button type="button" onClick={async () => {
+                  try {
+                    await api.delete(`/auth/sessions/${session.id}`);
+                    if (session.current) window.location.href = '/login';
+                    else { setSessions((current) => current.filter((item) => item.id !== session.id)); toast.success('Session fermée'); }
+                  } catch (err) { toast.error(err.response?.data?.detail || 'Impossible de fermer la session'); }
+                }} className="inline-flex items-center gap-1.5 rounded-full border border-red-200 px-3 py-2 text-xs font-bold text-red-600 hover:bg-red-50">
+                  <LogOut className="w-3.5 h-3.5" /> Fermer
+                </button>
+              </div>
+            ))}
+            {!sessions.length && <div className="text-sm text-slate-500">Aucune session active.</div>}
+          </div>
+        )}
+        {sessions.length > 1 && <button type="button" onClick={async () => {
+          if (!window.confirm('Fermer toutes les sessions, y compris celle-ci ?')) return;
+          try { await api.post('/auth/sessions/revoke-all'); window.location.href = '/login'; }
+          catch (err) { toast.error(err.response?.data?.detail || 'Impossible de fermer les sessions'); }
+        }} className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-5 py-3 text-sm font-bold text-white">
+          <LogOut className="w-4 h-4" /> Fermer toutes les sessions
+        </button>}
       </Section>
 
       <Section icon={Globe} title={t('settings.preferences')}>

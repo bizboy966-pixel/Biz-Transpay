@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, List, Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body, Response
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -33,9 +33,10 @@ from models import (  # noqa: E402
     KycSubmit, ApiKeys, WebhookConfig, UpdateProfile, ChangePassword,
     TicketCreate, Ticket, new_id, now_iso,
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
+    ReauthenticationRequest,
 )
 import auth as auth_security  # noqa: E402
-from auth import hash_password, verify_password, create_token, get_current_user_id  # noqa: E402
+from auth import hash_password, verify_password, create_token  # noqa: E402
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
 import fedapay  # FedaPay Mobile Money integration (server-side only)
@@ -46,6 +47,125 @@ import mbiyo  # Mbiyo Mobile Money integration (server-side only)
 mongo_url = os.environ["MONGO_URL"]
 mongo_client = AsyncIOMotorClient(mongo_url)
 db = mongo_client[os.environ["DB_NAME"]]
+
+# ---------- Browser sessions ----------
+SESSION_COOKIE_NAME = "btp_session"
+SESSION_MAX_AGE = 24 * 60 * 60
+SESSION_IDLE_SECONDS = 30 * 60
+REAUTH_MAX_AGE_SECONDS = 15 * 60
+
+
+def _session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        SESSION_COOKIE_NAME, httponly=True, secure=True, samesite="lax", path="/")
+
+
+async def get_current_user_id(
+    request: Request,
+    creds=Depends(auth_security.bearer),
+) -> str:
+    """Validate a short-lived browser session and expose only the user id."""
+    token = request.cookies.get(SESSION_COOKIE_NAME) or (
+        creds.credentials if creds else None)
+    if not token:
+        raise HTTPException(401, "Session requise")
+    payload = auth_security.decode_token_payload(token)
+    session_id = payload.get("sid")
+    if payload.get("typ") != "session" or not session_id:
+        raise HTTPException(401, "Session invalide")
+    now = datetime.now(timezone.utc)
+    session = await db.sessions.find_one({
+        "id": session_id,
+        "user_id": payload.get("sub"),
+        "token_hash": _session_token_hash(token),
+        "revoked_at": {"$exists": False},
+    }, {"_id": 0})
+    if not session:
+        raise HTTPException(401, "Session révoquée")
+    expired = _as_utc(session["expires_at"]) <= now
+    idle = _as_utc(session["last_activity_at"]) + timedelta(
+        seconds=SESSION_IDLE_SECONDS) <= now
+    if expired or idle:
+        await db.sessions.update_one(
+            {"id": session_id, "revoked_at": {"$exists": False}},
+            {"$set": {"revoked_at": now, "revocation_reason": "expired"}},
+        )
+        raise HTTPException(401, "Session expirée")
+    await db.sessions.update_one(
+        {"id": session_id},
+        {"$set": {"last_activity_at": now}},
+    )
+    request.state.session_id = session_id
+    request.state.session = session
+    request.state.session_token = token
+    return payload["sub"]
+
+
+async def _issue_session(user_id: str, request: Request, response: Response) -> None:
+    now = datetime.now(timezone.utc)
+    session_id = secrets.token_urlsafe(32)
+    token = auth_security.create_token(user_id, session_id=session_id)
+    await db.sessions.insert_one({
+        "id": session_id,
+        "user_id": user_id,
+        "token_hash": _session_token_hash(token),
+        "created_at": now,
+        "last_activity_at": now,
+        "last_auth_at": now,
+        "expires_at": now + timedelta(seconds=SESSION_MAX_AGE),
+        "ip": _auth_ip(request),
+        "user_agent": (request.headers.get("user-agent") or "")[:300],
+    })
+    _set_session_cookie(response, token)
+
+
+async def _rotate_session(request: Request, response: Response, user_id: str) -> None:
+    old_id = getattr(request.state, "session_id", None)
+    if old_id:
+        await db.sessions.update_one(
+            {"id": old_id, "user_id": user_id, "revoked_at": {"$exists": False}},
+            {"$set": {"revoked_at": datetime.now(timezone.utc),
+                      "revocation_reason": "rotated"}},
+        )
+    await _issue_session(user_id, request, response)
+
+
+async def require_recent_auth(
+    request: Request,
+    uid: str = Depends(get_current_user_id),
+) -> str:
+    session = getattr(request.state, "session", {})
+    last_auth = session.get("last_auth_at")
+    if not last_auth or _as_utc(last_auth) + timedelta(
+            seconds=REAUTH_MAX_AGE_SECONDS) <= datetime.now(timezone.utc):
+        raise HTTPException(
+            428,
+            detail={
+                "message": "Réauthentification requise pour cette opération.",
+                "code": "REAUTH_REQUIRED",
+            },
+        )
+    return uid
 
 # ---------- Stripe ----------
 STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
@@ -505,8 +625,8 @@ async def _verify_user_totp(user: dict, code: str) -> bool:
     return claimed.modified_count == 1
 
 
-@api.post("/auth/register", response_model=AuthResponse)
-async def register(req: RegisterRequest):
+@api.post("/auth/register")
+async def register(req: RegisterRequest, request: Request, response: Response):
     password_errors = auth_security.password_policy_errors(req.password)
     if password_errors:
         raise HTTPException(
@@ -560,12 +680,16 @@ async def register(req: RegisterRequest):
         }
         await db.api_keys.insert_one(keys)
 
-    token = create_token(uid)
-    return AuthResponse(token=token, user=user_to_public(user_doc))
+    if role in ("admin", "super_admin"):
+        setup = await _begin_mfa_enrollment(user_doc)
+        return {"mfa_setup_required": True, "mfa_setup": setup,
+                "user": user_to_public(user_doc)}
+    await _issue_session(uid, request, response)
+    return {"token": None, "user": user_to_public(user_doc)}
 
 
 @api.post("/auth/login")
-async def login(req: LoginRequest, request: Request):
+async def login(req: LoginRequest, request: Request, response: Response):
     ident = req.email.lower().strip()
     await _check_login_security(
         ident, request, req.challenge_id, req.challenge_solution)
@@ -592,8 +716,96 @@ async def login(req: LoginRequest, request: Request):
             raise HTTPException(401, "Code de sécurité invalide")
     await _clear_login_account_failures(ident)
     await _complete_login(u, request)
-    token = create_token(u["id"])
-    return {"token": token, "user": user_to_public(u)}
+    await _issue_session(u["id"], request, response)
+    return {"token": None, "user": user_to_public(u)}
+
+
+@api.post("/auth/logout")
+async def logout(request: Request, response: Response,
+                 uid: str = Depends(get_current_user_id)):
+    session_id = getattr(request.state, "session_id", None)
+    if session_id:
+        await db.sessions.update_one(
+            {"id": session_id, "user_id": uid, "revoked_at": {"$exists": False}},
+            {"$set": {"revoked_at": datetime.now(timezone.utc),
+                      "revocation_reason": "logout"}},
+        )
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@api.get("/auth/sessions")
+async def list_sessions(request: Request,
+                        uid: str = Depends(get_current_user_id)):
+    current_id = getattr(request.state, "session_id", None)
+    docs = await db.sessions.find(
+        {"user_id": uid, "revoked_at": {"$exists": False}},
+        {"_id": 0, "id": 1, "created_at": 1, "last_activity_at": 1,
+         "last_auth_at": 1, "expires_at": 1, "user_agent": 1, "ip": 1},
+    ).sort("last_activity_at", -1).to_list(50)
+    return [{
+        "id": doc["id"],
+        "created_at": _as_utc(doc["created_at"]).isoformat(),
+        "last_activity_at": _as_utc(doc["last_activity_at"]).isoformat(),
+        "last_auth_at": _as_utc(doc["last_auth_at"]).isoformat(),
+        "expires_at": _as_utc(doc["expires_at"]).isoformat(),
+        "user_agent": doc.get("user_agent") or "Navigateur inconnu",
+        "ip": doc.get("ip") or "",
+        "current": doc["id"] == current_id,
+    } for doc in docs]
+
+
+@api.delete("/auth/sessions/{session_id}")
+async def revoke_session(session_id: str, request: Request, response: Response,
+                         uid: str = Depends(get_current_user_id)):
+    result = await db.sessions.update_one(
+        {"id": session_id, "user_id": uid, "revoked_at": {"$exists": False}},
+        {"$set": {"revoked_at": datetime.now(timezone.utc),
+                  "revocation_reason": "user_revoked"}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(404, "Session introuvable")
+    if getattr(request.state, "session_id", None) == session_id:
+        _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@api.post("/auth/sessions/revoke-all")
+async def revoke_all_sessions(request: Request, response: Response,
+                              uid: str = Depends(get_current_user_id)):
+    await db.sessions.update_many(
+        {"user_id": uid, "revoked_at": {"$exists": False}},
+        {"$set": {"revoked_at": datetime.now(timezone.utc),
+                  "revocation_reason": "user_revoked_all"}},
+    )
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@api.post("/auth/session/refresh")
+async def refresh_session(request: Request, response: Response,
+                          uid: str = Depends(get_current_user_id)):
+    await _rotate_session(request, response, uid)
+    return {"ok": True}
+
+
+@api.post("/auth/reauth")
+async def reauthenticate(req: ReauthenticationRequest, request: Request,
+                         response: Response,
+                         uid: str = Depends(get_current_user_id)):
+    user = await get_user(uid)
+    if not verify_password(req.current_password, user.get("password_hash", "")):
+        raise HTTPException(401, "Mot de passe actuel incorrect")
+    if user.get("two_fa_enabled") and not await _verify_user_totp(
+            user, req.otp or ""):
+        raise HTTPException(401, "Code 2FA invalide")
+    session_id = getattr(request.state, "session_id", None)
+    await db.sessions.update_one(
+        {"id": session_id, "user_id": uid, "revoked_at": {"$exists": False}},
+        {"$set": {"last_auth_at": datetime.now(timezone.utc)}},
+    )
+    await _rotate_session(request, response, uid)
+    return {"ok": True, "expires_in": REAUTH_MAX_AGE_SECONDS}
 
 
 @api.post("/auth/2fa/setup")
@@ -605,11 +817,15 @@ async def setup_two_factor(uid: str = Depends(get_current_user_id)):
 
 
 async def _optional_user_id(
+    request: Request,
     creds=Depends(auth_security.bearer),
 ) -> Optional[str]:
-    if not creds:
+    if not request.cookies.get(SESSION_COOKIE_NAME) and not creds:
         return None
-    return auth_security.decode_token(creds.credentials)
+    try:
+        return await get_current_user_id(request, creds)
+    except HTTPException:
+        return None
 
 
 @api.post("/auth/2fa/confirm")
@@ -1542,7 +1758,7 @@ async def public_fees_config(uid: str = Depends(get_current_user_id)):
 # ==================== TRANSFER ====================
 @api.post("/transfers")
 async def transfer(req: TransferRequest, request: Request,
-                   uid: str = Depends(get_current_user_id)):
+                   uid: str = Depends(require_recent_auth)):
     u = await get_user(uid)
     if u.get("is_banned") or u.get("is_blocked"):
         raise HTTPException(403, "Compte suspendu")
@@ -2085,7 +2301,8 @@ async def transfer(req: TransferRequest, request: Request,
 
 # ==================== DEPOSIT (Stripe) ====================
 @api.post("/deposits/checkout")
-async def create_deposit(req: DepositRequest, request: Request, uid: str = Depends(get_current_user_id)):
+async def create_deposit(req: DepositRequest, request: Request,
+                         uid: str = Depends(require_recent_auth)):
     # Convert XOF/XAF amount to USD approximation for Stripe (1 USD ≈ 600 XOF)
     usd_amount = round(req.amount / 600.0, 2)
     if usd_amount < 0.5:
@@ -2225,7 +2442,8 @@ async def crypto_assets():
 
 # ==================== DEPOSIT (Crypto via IzichangePay) ====================
 @api.post("/deposits/crypto")
-async def create_crypto_deposit(req: CryptoDepositRequest, uid: str = Depends(get_current_user_id)):
+async def create_crypto_deposit(req: CryptoDepositRequest,
+                                uid: str = Depends(require_recent_auth)):
     """Create a crypto deposit — direct in-app flow. Returns depositAddress
     + amount + expiry so the frontend can display them and poll for confirmation.
     """
@@ -2444,7 +2662,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
 @api.post("/deposits/mobile-money/start")
 async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
                                      request: Request,
-                                     uid: str = Depends(get_current_user_id)):
+                                     uid: str = Depends(require_recent_auth)):
     """Start the customer-facing payment using the admin-selected route.
 
     The route name is deliberately kept server-side. The browser receives only
@@ -2480,7 +2698,7 @@ async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
 @api.post("/deposits/mobile-money")
 async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
                                       request: Request,
-                                      uid: str = Depends(get_current_user_id)):
+                                      uid: str = Depends(require_recent_auth)):
     """Create a PayDunya invoice and trigger SoftPay; never credits here."""
     cfg = await get_paydunya_config(decrypt=True)
     if not cfg.get("enabled"):
@@ -5426,7 +5644,8 @@ async def conversion_quote(from_currency: str, to_currency: str, amount: float):
 
 
 @api.post("/exchange")
-async def do_exchange(req: ExchangeRequest, uid: str = Depends(get_current_user_id)):
+async def do_exchange(req: ExchangeRequest,
+                      uid: str = Depends(require_recent_auth)):
     """Currency-agnostic conversion. Supports the 6 pairs across
     USDT / XOF / XAF, rate-driven by admin config, fee-driven by admin config."""
     fc = (req.from_currency or "").upper()
@@ -6943,19 +7162,13 @@ async def notification_delete_all(uid: str = Depends(get_current_user_id)):
 
 
 @api.get("/notifications/stream")
-async def notifications_stream(request: Request, token: str = Query(...)):
-    """Server-Sent Events stream. Since EventSource cannot set Authorization
-    headers, we accept the JWT via ?token= query. Emits:
+async def notifications_stream(request: Request,
+                               uid: str = Depends(get_current_user_id)):
+    """Server-Sent Events stream authenticated by the HttpOnly session cookie.
+    Emits:
         event: notification\ndata: {json}\n\n
     and heartbeats (': ping\n\n') every 25s to keep the socket alive.
     """
-    try:
-        payload = pyjwt.decode(token, os.environ.get("JWT_SECRET", "dev-secret"),
-                               algorithms=[os.environ.get("JWT_ALGORITHM", "HS256")])
-        uid = payload["sub"]
-    except Exception:
-        raise HTTPException(401, "Token invalide")
-
     q: asyncio.Queue = asyncio.Queue()
     _sse_subscribers.setdefault(uid, []).append(q)
 
@@ -9066,6 +9279,10 @@ async def api_log_middleware(request: Request, call_next):
 async def startup_db_client():
     global _paydunya_reconcile_task
     try:
+        await db.sessions.create_index("expires_at", expireAfterSeconds=0,
+                                       name="sessions_ttl")
+        await db.sessions.create_index(
+            [("user_id", 1), ("id", 1)], name="sessions_user_id")
         await db.auth_rate_limits.create_index(
             "expires_at", expireAfterSeconds=0, name="auth_rate_limits_ttl")
         await db.auth_challenges.create_index(

@@ -9,7 +9,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 SECRET = os.environ.get("JWT_SECRET") or os.environ.get("SESSION_SECRET") or "dev-secret"
@@ -137,26 +137,36 @@ def decode_mfa_token(token: str, purpose: str) -> dict:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Jeton de sécurité invalide")
 
 
-def create_token(user_id: str) -> str:
+def create_token(user_id: str, session_id: Optional[str] = None) -> str:
     payload = {
         "sub": user_id,
+        "sid": session_id,
+        "typ": "session",
         "exp": datetime.now(timezone.utc) + timedelta(hours=EXPIRE_HOURS),
         "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, SECRET, algorithm=ALGO)
 
 
-def decode_token(token: str) -> str:
+def decode_token_payload(token: str) -> dict:
     try:
-        payload = jwt.decode(token, SECRET, algorithms=[ALGO])
-        return payload["sub"]
+        return jwt.decode(token, SECRET, algorithms=[ALGO])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token expired")
     except jwt.PyJWTError:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
 
 
-async def get_current_user_id(creds: HTTPAuthorizationCredentials = Depends(bearer)) -> str:
+def decode_token(token: str) -> str:
+    return decode_token_payload(token)["sub"]
+
+
+async def get_current_user_id(
+    request: Request,
+    creds: HTTPAuthorizationCredentials = Depends(bearer),
+) -> str:
     if not creds:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing token")
-    return decode_token(creds.credentials)
+    token = creds.credentials
+    request.state.session_token = token
+    return decode_token(token)
