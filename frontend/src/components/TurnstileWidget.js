@@ -5,6 +5,15 @@ const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render
 
 let scriptPromise;
 
+function safelyRunTurnstile(action) {
+  try {
+    action();
+  } catch {
+    // Cloudflare can throw a non-Error value when a solved widget has already
+    // been detached during route navigation. Cleanup must never break routing.
+  }
+}
+
 function loadTurnstileScript() {
   if (window.turnstile) return Promise.resolve(window.turnstile);
   if (scriptPromise) return scriptPromise;
@@ -71,7 +80,7 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
   useImperativeHandle(ref, () => ({
     reset() {
       if (widgetIdRef.current !== null && window.turnstile) {
-        window.turnstile.reset(widgetIdRef.current);
+        safelyRunTurnstile(() => window.turnstile.reset(widgetIdRef.current));
       }
       onTokenRef.current?.('');
     },
@@ -113,8 +122,9 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
     return () => {
       cancelled = true;
       if (widgetIdRef.current !== null && window.turnstile) {
-        window.turnstile.remove(widgetIdRef.current);
+        const widgetId = widgetIdRef.current;
         widgetIdRef.current = null;
+        safelyRunTurnstile(() => window.turnstile.remove(widgetId));
       }
     };
   }, [action, disabled, siteKey]);

@@ -18,15 +18,22 @@ Hostname Management. Use Cloudflare's documented test keys for local
 `localhost`/`127.0.0.1` testing rather than weakening production hostname
 validation.
 
-Replit environment-specific secrets can shadow the shared secret. When a
-Turnstile secret validates against Cloudflare but the running app rejects it,
-check and align the `development` override used by Preview before changing
-backend code.
+Replit environment-specific secrets can shadow shared values, and agent shell
+commands can retain an older secret after the Secrets pane is updated. Validate
+the restarted workflow separately from one-off shell processes.
 
-**Why:** This project had the correct widget secret available through Cloudflare
-while the runtime still read a different value from an environment-specific
-secret entry.
+**Why:** A shell validation continued reading a stale Turnstile secret while
+the restarted application workflow successfully verified a real login token.
 
-**How to apply:** For Preview, replace or remove stale `development` and
-`production` overrides in the Secrets pane, keeping the exact widget secret in
-the environment the workflow uses.
+**How to apply:** Align stale environment-specific entries in the Secrets pane,
+restart the workflow, and use the application's Siteverify result as the
+runtime source of truth.
+
+Turnstile browser cleanup must be exception-safe because the SDK can throw a
+non-Error value when a solved widget is detached during navigation.
+
+**Why:** Successful login navigation previously reached the backend but could
+still trigger the frontend error page while the login widget unmounted.
+
+**How to apply:** Guard widget reset/remove cleanup so a third-party SDK cleanup
+failure cannot interrupt routing or authentication state changes.
