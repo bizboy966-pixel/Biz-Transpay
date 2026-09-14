@@ -17,3 +17,4 @@
 - [XSS protection boundary](xss-protection-boundary.md) — React escaping plus strict raster/file validation and CSP protect user content without rendering arbitrary HTML.
 - [Authorization boundaries](authorization-boundaries.md) — scope every authenticated lookup by owner and keep public capability endpoints allowlisted and minimal.
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.
+- [Python environment manifests](python-environment-manifests.md) — package installation can rewrite project manifests; restore the requirements source of truth before restarting.

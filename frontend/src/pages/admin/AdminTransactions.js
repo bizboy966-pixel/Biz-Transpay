@@ -36,7 +36,9 @@ export default function AdminTransactions({ filterType }) {
       .catch(() => {})
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [type, status]);
+  // `load` is intentionally recreated with the active filters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [type, status]);
   useEffect(() => {
     const id = setTimeout(() => { load(); }, 250);
     return () => clearTimeout(id);

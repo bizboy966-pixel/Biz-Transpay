@@ -13,7 +13,9 @@ export default function AdminKyc() {
   const [viewImg, setViewImg] = useState(null);
 
   const load = () => api.get('/admin/kyc', { params: status ? { status } : {} }).then(({ data }) => setItems(data)).catch(() => {});
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [status]);
+  // `load` is intentionally recreated with the selected status.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [status]);
 
   const decide = async (kind) => {
     try {

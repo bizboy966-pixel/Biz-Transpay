@@ -16,6 +16,8 @@ export default function AdminUserDetail() {
   const [pending, setPending] = useState(false);
 
   const load = () => api.get(`/admin/users/${id}`).then(({ data }) => setData(data)).catch(() => {});
+  // `load` is intentionally recreated when the route id changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [id]);
 
   const confirmCriticalAction = (label) => (

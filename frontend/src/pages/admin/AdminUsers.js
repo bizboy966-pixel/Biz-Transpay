@@ -22,7 +22,9 @@ export default function AdminUsers() {
     if (q) p.q = q; if (kyc) p.kyc = kyc; if (status) p.status = status;
     api.get('/admin/users', { params: p }).then(({ data }) => setUsers(data)).catch(() => {});
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [kyc, status]);
+  // `load` is intentionally recreated with the active filters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [kyc, status]);
   useEffect(() => { api.get('/auth/me').then(({ data }) => setMe(data)).catch(() => {}); }, []);
 
   const exportCsv = () => {

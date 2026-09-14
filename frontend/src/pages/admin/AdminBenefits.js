@@ -28,7 +28,9 @@ export default function AdminBenefits() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [period]);
+  // `load` is intentionally recreated with the selected period.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [period]);
 
   const xof = data?.xof || { total: 0, count: 0 };
   const xaf = data?.xaf || { total: 0, count: 0 };
@@ -135,7 +137,9 @@ function BenefitsDetailsDrawer({ onClose, period }) {
       .catch(() => {})
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [currency, type, period]);
+  // `load` is intentionally recreated with the current filters.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [currency, type, period]);
   useEffect(() => {
     const id = setTimeout(() => load(), 250);
     return () => clearTimeout(id);

@@ -10,6 +10,7 @@ import copy
 import ipaddress
 import re
 import base64
+import socket
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, List, Literal
@@ -806,6 +807,35 @@ def _validate_http_url(value: str, field_name: str) -> str:
     if parsed.username or parsed.password:
         raise HTTPException(422, f"{field_name} URL invalide")
     return value.strip().rstrip("/")
+
+
+async def _is_safe_outbound_http_url(value: str) -> bool:
+    """Reject webhook targets that resolve to local or private networks."""
+    try:
+        normalized = _validate_http_url(value, "URL")
+        parsed = urlparse(normalized)
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        if not hostname or hostname in {"localhost", "localhost.localdomain"}:
+            return False
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo,
+            hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+        addresses = {str(item[4][0]) for item in infos if item[4]}
+        if not addresses:
+            return False
+        return all(ipaddress.ip_address(address).is_global for address in addresses)
+    except (HTTPException, OSError, ValueError):
+        return False
+
+
+async def _validate_outbound_http_url(value: str, field_name: str = "URL") -> str:
+    normalized = _validate_http_url(value, field_name)
+    if not await _is_safe_outbound_http_url(normalized):
+        raise HTTPException(422, f"{field_name} doit viser un hôte public")
+    return normalized
 
 
 def _csrf_allowed_hosts(request: Request) -> set[str]:
@@ -6756,7 +6786,7 @@ async def update_webhook_config(cfg: WebhookConfigV2,
     await _ensure_api_keys(uid)
     updates: dict = {}
     if cfg.url is not None:
-        updates["webhook.url"] = cfg.url.strip()
+        updates["webhook.url"] = await _validate_outbound_http_url(cfg.url)
     if cfg.events is not None:
         updates["webhook.events"] = cfg.events
     if updates:
@@ -6956,9 +6986,7 @@ async def list_webhooks(uid: str = Depends(require_merchant_account),
 @api.post("/merchant/webhooks")
 async def create_webhook(req: CreateWebhookReq,
                           uid: str = Depends(require_merchant_account)):
-    url = (req.url or "").strip()
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "URL invalide (doit commencer par http:// ou https://)")
+    url = await _validate_outbound_http_url(req.url)
     events = [e for e in (req.events or []) if e in ALL_WEBHOOK_EVENTS]
     if not events:
         events = list(ALL_WEBHOOK_EVENTS)
@@ -6985,8 +7013,8 @@ async def create_webhook(req: CreateWebhookReq,
 async def update_webhook(wh_id: str, req: UpdateWebhookReq,
                              uid: str = Depends(require_merchant_account)):
     payload = req.model_dump(exclude_unset=True)
-    if "url" in payload and not payload["url"].startswith(("http://", "https://")):
-        raise HTTPException(400, "URL invalide")
+    if "url" in payload:
+        payload["url"] = await _validate_outbound_http_url(payload["url"])
     if "events" in payload:
         payload["events"] = [e for e in payload["events"] if e in ALL_WEBHOOK_EVENTS]
     if not payload:
@@ -7557,7 +7585,8 @@ async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
 
     async def _fire(dest: dict) -> None:
         url = dest["url"]
-        if not url or not url.startswith(("http://", "https://")):
+        if not url or not await _is_safe_outbound_http_url(url):
+            logger.warning("Skipping unsafe outbound webhook target for user %s", user_id)
             return
         plaintext_secret = _decrypt(dest.get("secret_encrypted") or "")
         sign_key = (plaintext_secret or dest.get("secret_hash") or "").encode("utf-8")
