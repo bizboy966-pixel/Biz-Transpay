@@ -44,6 +44,45 @@ export default function Login() {
     throw new Error('challenge_failed');
   };
 
+  const completeLogin = (data) => {
+    if (data.mfa_required) {
+      setMfaToken(data.mfa_token);
+      setStep('mfa');
+      setChallenge(null);
+      setChallengeSolution('');
+      toast.success('Entrez le code actuel de votre application d’authentification');
+      return;
+    }
+    if (data.mfa_setup_required) {
+      setSetup(data.mfa_setup);
+      setStep('setup');
+      toast.success('Configurez la double authentification obligatoire');
+      return;
+    }
+    const u = data.user;
+    toast.success('Connexion réussie');
+    const role = u?.role || u?.user?.role;
+    nav(role === 'admin' || role === 'super_admin' ? '/admin' : '/dashboard');
+  };
+
+  const attemptLogin = async (security) => {
+    try {
+      return await login(email, password, security);
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      if (detail?.code !== 'AUTH_CHALLENGE_REQUIRED' || !detail.challenge) throw err;
+      setChallenge(detail.challenge);
+      toast.info('Vérification de sécurité automatique…');
+      const solved = await solveChallenge(detail.challenge);
+      setChallengeSolution(solved);
+      return login(email, password, {
+        ...security,
+        challenge_id: detail.challenge.id,
+        challenge_solution: solved,
+      });
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -53,37 +92,17 @@ export default function Login() {
         solved = await solveChallenge(challenge);
         setChallengeSolution(solved);
       }
-      const data = await login(email, password, {
+      const data = await attemptLogin({
         otp: step === 'mfa' ? otp : undefined,
         mfa_token: step === 'mfa' ? mfaToken : undefined,
         challenge_id: challenge?.id,
         challenge_solution: solved || undefined,
       });
-      if (data.mfa_required) {
-        setMfaToken(data.mfa_token);
-        setStep('mfa');
-        setChallenge(null);
-        setChallengeSolution('');
-        toast.success('Entrez le code actuel de votre application d’authentification');
-        return;
-      }
-      if (data.mfa_setup_required) {
-        setSetup(data.mfa_setup);
-        setStep('setup');
-        toast.success('Configurez la double authentification obligatoire');
-        return;
-      }
-      const u = data.user;
-      toast.success('Connexion réussie');
-      const role = u?.role || u?.user?.role;
-      // Admins land directly on the admin panel; merchants on their dashboard.
-      nav(role === 'admin' || role === 'super_admin' ? '/admin' : '/dashboard');
+      completeLogin(data);
     } catch (err) {
       const detail = err.response?.data?.detail;
-      if (detail?.code === 'AUTH_CHALLENGE_REQUIRED') {
-        setChallenge(detail.challenge);
-        setChallengeSolution('');
-        toast.error('Une vérification de sécurité est requise. Cliquez à nouveau.');
+      if (err.message === 'challenge_failed') {
+        toast.error('La vérification automatique a échoué. Réessayez.');
       } else {
         toast.error(typeof detail === 'string' ? detail : errorDetail(err));
       }

@@ -66,7 +66,8 @@ api.interceptors.response.use(
     // Normalise error `detail` so callers can safely display it without React
     // crashing on non-string values (FastAPI 422s produce arrays/objects).
     const raw = err.response?.data?.detail;
-    if (raw && typeof raw !== 'string') {
+    const preserveStructuredDetail = raw?.code === 'AUTH_CHALLENGE_REQUIRED';
+    if (raw && typeof raw !== 'string' && !preserveStructuredDetail) {
       let msg = 'Erreur de validation';
       try {
         if (Array.isArray(raw) && raw.length > 0 && typeof raw[0]?.msg === 'string') {
