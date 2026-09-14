@@ -1362,13 +1362,15 @@ async def transfer(req: TransferRequest, request: Request,
                           "debit_phase": "pending"})
             debited = await db.users.update_one(
                 {"id": uid, field: {"$gte": fees["charged_amount"]}},
-                {"$inc": {field: -fees["charged_amount"]}})
+                {"$inc": {field: -fees["charged_amount"]},
+                 "$addToSet": {"withdrawal_debit_ids": tx_out.id}})
             if debited.modified_count != 1:
                 await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
                 raise HTTPException(400, "Solde insuffisant (frais inclus)")
             await db.transactions.update_one({"id": tx_out.id},
                                              {"$set": {"metadata.debit_phase": "applied",
-                                                       "metadata.debit_applied": True}})
+                                                       "metadata.debit_applied": True,
+                                                       "metadata.debit_applied_at": now_iso()}})
             try:
                 response = await mbiyo.MbiyoClient(
                     mb_cfg["_api_key"], mb_cfg.get("base_url", mbiyo.BASE_URL)).payout(
