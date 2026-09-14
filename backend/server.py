@@ -323,6 +323,153 @@ def _rate_headers(remaining: int, limit: int, reset_ts: int) -> dict:
     }
 
 
+# ---------- Global route-aware rate limiting ----------
+# This protects the whole API surface in the single application workflow.
+# The existing merchant API bucket remains the public 100 req/min contract;
+# these route buckets add stricter limits for sensitive operations.
+_GLOBAL_RATE_PROFILES = {
+    "default": (240, 60),
+    "login": (6, 60),
+    "otp": (8, 60),
+    "register": (3, 3600),
+    "password_reset": (5, 900),
+    "payment": (30, 60),
+    "transaction": (12, 60),
+    "deposit": (12, 60),
+    "withdrawal": (8, 60),
+    "link": (20, 60),
+    "search": (60, 60),
+    "admin": (60, 60),
+    "webhook": (120, 60),
+    "merchant_api": (100, 60),
+}
+_global_rate_buckets: dict[str, list[float]] = {}
+_global_rate_lock = asyncio.Lock()
+
+
+def _global_rate_profile(path: str, method: str) -> str:
+    p = path.lower()
+    m = method.upper()
+    if p == "/api/auth/login":
+        return "login"
+    if p == "/api/auth/register":
+        return "register"
+    if p == "/api/auth/2fa/confirm" or p == "/api/auth/2fa/disable":
+        return "otp"
+    if p in {"/api/auth/recover", "/api/settings/password"}:
+        return "password_reset"
+    if p.startswith("/api/admin/"):
+        return "admin"
+    if p.startswith("/api/webhook") or p.startswith("/api/webhooks/"):
+        return "webhook"
+    if p.startswith("/api/v1/"):
+        if (
+            p == "/api/v1/payments"
+            or p == "/api/v1/payouts"
+            or (p.startswith("/api/v1/payments/") and m == "POST")
+            or (p.startswith("/api/v1/payouts/") and m == "POST")
+        ):
+            return "payment"
+        return "merchant_api"
+    if p in {"/api/transfers", "/api/exchange"}:
+        return "withdrawal" if p == "/api/transfers" else "transaction"
+    if p.startswith("/api/deposits/"):
+        return "deposit"
+    if p.startswith("/api/links/pay"):
+        return "payment"
+    if p == "/api/links" and m in {"POST", "PATCH", "DELETE"}:
+        return "link"
+    if "/search" in p or p.endswith("/lookup") or p == "/api/users/lookup":
+        return "search"
+    return "default"
+
+
+async def _global_rate_identity(request: Request) -> dict:
+    """Resolve a stable per-user/per-merchant key without trusting user input."""
+    identity = {"ip": _auth_ip(request), "user_id": None, "merchant_id": None}
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if token:
+        try:
+            identity["user_id"] = auth_security.decode_token_payload(token).get("sub")
+        except Exception:
+            pass
+
+    authorization = request.headers.get("Authorization", "")
+    if authorization.lower().startswith("bearer "):
+        secret = authorization.split(" ", 1)[1].strip()
+        if secret.startswith(("sk_test_", "sk_live_")):
+            try:
+                env = "test" if secret.startswith("sk_test_") else "live"
+                key_doc = await db.api_keys.find_one(
+                    {f"keys.{env}.secret_hash": _hash_secret(secret)},
+                    {"_id": 0, "user_id": 1},
+                )
+                if key_doc:
+                    identity["merchant_id"] = key_doc.get("user_id")
+            except Exception:
+                pass
+    return identity
+
+
+async def _global_rate_consume(
+    profile: str, identity: dict
+) -> Optional[dict]:
+    """Consume the IP bucket and, where available, the user/merchant bucket."""
+    limit, window = _GLOBAL_RATE_PROFILES[profile]
+    now_ts = datetime.now(timezone.utc).timestamp()
+    keys = [f"{profile}:ip:{identity['ip']}"]
+    scoped_id = identity.get("merchant_id") or identity.get("user_id")
+    if scoped_id:
+        keys.append(f"{profile}:scope:{scoped_id}")
+    async with _global_rate_lock:
+        blocked = None
+        for key in keys:
+            bucket = [t for t in _global_rate_buckets.get(key, [])
+                      if t > now_ts - window]
+            _global_rate_buckets[key] = bucket
+            if len(bucket) >= limit:
+                retry_after = max(1, int(bucket[0] + window - now_ts))
+                blocked = {
+                    "retry_after": retry_after,
+                    "limit": limit,
+                    "reset": int(bucket[0] + window),
+                }
+                break
+        if blocked:
+            return blocked
+        for key in keys:
+            _global_rate_buckets[key].append(now_ts)
+        # Bound memory if an abusive client creates many distinct addresses.
+        if len(_global_rate_buckets) > 20000:
+            stale_before = now_ts - 3600
+            for key in list(_global_rate_buckets)[:5000]:
+                if not _global_rate_buckets[key] or max(_global_rate_buckets[key]) < stale_before:
+                    _global_rate_buckets.pop(key, None)
+    return None
+
+
+def _global_rate_response(profile: str, blocked: dict) -> JSONResponse:
+    limit = blocked["limit"]
+    retry_after = blocked["retry_after"]
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": {
+                "message": "Trop de requêtes. Réessayez plus tard.",
+                "code": "RATE_LIMITED",
+                "profile": profile,
+                "retry_after": retry_after,
+            }
+        },
+        headers={
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Limit": str(limit),
+            "X-RateLimit-Remaining": "0",
+            "X-RateLimit-Reset": str(blocked["reset"]),
+        },
+    )
+
+
 def _format_amount(amount: float) -> str:
     """Format an amount as a decimal string in the major unit (e.g. '100.00')."""
     return f"{float(amount):.2f}"
@@ -9608,6 +9755,12 @@ async def api_log_middleware(request: Request, call_next):
         })
     is_v1 = _is_v1_path(p)
     is_admin = p == "/api/admin" or p.startswith("/api/admin/")
+    if p.startswith("/api/") and request.method.upper() != "OPTIONS":
+        profile = _global_rate_profile(p, request.method)
+        identity = await _global_rate_identity(request)
+        blocked = await _global_rate_consume(profile, identity)
+        if blocked:
+            return _global_rate_response(profile, blocked)
     start = datetime.now(timezone.utc)
     response = await call_next(request)
     if is_admin:
