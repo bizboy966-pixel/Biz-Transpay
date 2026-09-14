@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Mail, Lock, Eye, EyeOff, LogIn as LogInIcon } from 'lucide-react';
@@ -6,11 +6,14 @@ import { toast } from 'sonner';
 import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function Login() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { login, confirmTwoFactor } = useAuth();
+  const turnstile = useTurnstileConfig();
+  const turnstileRef = useRef(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
@@ -23,6 +26,7 @@ export default function Login() {
   const [recoveryCodes, setRecoveryCodes] = useState([]);
   const [challenge, setChallenge] = useState(null);
   const [challengeSolution, setChallengeSolution] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   const errorDetail = (err) => {
     const detail = err.response?.data?.detail || err.response?.data?.message;
@@ -85,6 +89,10 @@ export default function Login() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (step === 'password' && (!turnstile.enabled || !turnstileToken)) {
+      toast.error('Veuillez terminer la vérification anti-bot.');
+      return;
+    }
     setLoading(true);
     try {
       let solved = challengeSolution;
@@ -97,9 +105,12 @@ export default function Login() {
         mfa_token: step === 'mfa' ? mfaToken : undefined,
         challenge_id: challenge?.id,
         challenge_solution: solved || undefined,
+        turnstile_token: step === 'password' ? turnstileToken : undefined,
       });
       completeLogin(data);
     } catch (err) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
       const detail = err.response?.data?.detail;
       if (err.message === 'challenge_failed') {
         toast.error('La vérification automatique a échoué. Réessayez.');
@@ -200,6 +211,16 @@ export default function Login() {
           {step === 'password' && <div className="mt-3 text-right">
             <Link to="/recover" className="text-xs font-semibold text-[#2563EB]">Mot de passe oublié ?</Link>
           </div>}
+
+          {step === 'password' && (
+            <TurnstileWidget
+              ref={turnstileRef}
+              siteKey={turnstile.siteKey}
+              action="login"
+              disabled={turnstile.loading || !turnstile.enabled}
+              onToken={setTurnstileToken}
+            />
+          )}
 
           {(step === 'password' || step === 'mfa') && <button type="submit" disabled={loading || (step === 'mfa' && otp.length !== 6)} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
             {loading ? 'Connexion…' : <><LogInIcon className="w-5 h-5" /> {t('login.submit')}</>}

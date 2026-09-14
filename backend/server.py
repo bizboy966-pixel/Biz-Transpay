@@ -223,6 +223,100 @@ api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("biz-transpay")
 
+# ---------- Cloudflare Turnstile ----------
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+
+def _turnstile_config() -> tuple[str, str, set[str]]:
+    secret = os.environ.get("CLOUDFLARE_TURNSTILE_SECRET_KEY", "").strip()
+    site_key = os.environ.get("CLOUDFLARE_TURNSTILE_SITE_KEY", "").strip()
+    hostnames = {
+        value.strip().lower()
+        for value in os.environ.get(
+            "CLOUDFLARE_TURNSTILE_ALLOWED_HOSTNAMES", ""
+        ).split(",")
+        if value.strip()
+    }
+    return secret, site_key, hostnames
+
+
+@api.get("/security/turnstile-config")
+async def turnstile_config():
+    """Expose only the public Turnstile site key to the browser."""
+    _secret, site_key, _hostnames = _turnstile_config()
+    return {
+        "enabled": bool(_secret and site_key),
+        "site_key": site_key or None,
+    }
+
+
+async def _require_turnstile(
+    token: Optional[str],
+    request: Request,
+    action: str,
+) -> None:
+    """Verify a one-time Cloudflare Turnstile token before risky public actions."""
+    secret, _site_key, allowed_hostnames = _turnstile_config()
+    if not secret:
+        raise HTTPException(
+            503,
+            detail={
+                "code": "ANTI_BOT_NOT_CONFIGURED",
+                "message": "La vérification anti-bot n'est pas configurée.",
+            },
+        )
+    if not token:
+        raise HTTPException(
+            400,
+            detail={
+                "code": "TURNSTILE_REQUIRED",
+                "message": "La vérification anti-bot est obligatoire.",
+            },
+        )
+
+    try:
+        import httpx
+
+        payload = {"secret": secret, "response": token}
+        client_ip = _edge_request_ip(request)
+        if client_ip:
+            payload["remoteip"] = client_ip
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            verification = await client.post(TURNSTILE_VERIFY_URL, data=payload)
+            result = verification.json()
+    except Exception:
+        logger.exception("Cloudflare Turnstile verification request failed")
+        raise HTTPException(
+            503,
+            detail={
+                "code": "ANTI_BOT_UNAVAILABLE",
+                "message": "La vérification anti-bot est temporairement indisponible.",
+            },
+        )
+
+    if (
+        verification.status_code != 200
+        or not result.get("success")
+        or result.get("action") != action
+        or (
+            allowed_hostnames
+            and str(result.get("hostname", "")).lower()
+            not in allowed_hostnames
+        )
+    ):
+        logger.warning(
+            "Cloudflare Turnstile rejected action=%s errors=%s",
+            action,
+            result.get("error-codes", []),
+        )
+        raise HTTPException(
+            403,
+            detail={
+                "code": "TURNSTILE_FAILED",
+                "message": "La vérification anti-bot a échoué. Réessayez.",
+            },
+        )
+
 # App start time for uptime reporting on /v1/health
 _APP_STARTED_AT = datetime.now(timezone.utc)
 API_VERSION = "1.0.0"
@@ -1213,6 +1307,7 @@ def _is_admin_account(user: dict) -> bool:
 
 @api.post("/auth/register")
 async def register(req: RegisterRequest, request: Request, response: Response):
+    await _require_turnstile(req.turnstile_token, request, "register")
     # First account becomes the platform administrator and must use the
     # administrator-specific password policy.
     is_first = (await db.users.count_documents({})) == 0
@@ -1281,6 +1376,10 @@ async def register(req: RegisterRequest, request: Request, response: Response):
 
 @api.post("/auth/login")
 async def login(req: LoginRequest, request: Request, response: Response):
+    # The MFA continuation and a retry after the server-side proof-of-work
+    # challenge already passed the initial browser bot check.
+    if not req.mfa_token and not (req.challenge_id and req.challenge_solution):
+        await _require_turnstile(req.turnstile_token, request, "login")
     ident = req.email.lower().strip()
     await _check_login_security(
         ident, request, req.challenge_id, req.challenge_solution)
@@ -1508,6 +1607,7 @@ async def disable_two_factor(req: TwoFactorDisableRequest,
 
 @api.post("/auth/recover")
 async def recover_account(req: PasswordRecoveryRequest, request: Request):
+    await _require_turnstile(req.turnstile_token, request, "recover")
     identifier = req.identifier.lower().strip()
     await _check_login_security(identifier, request, None, None)
     errors = auth_security.password_policy_errors(req.new_password)
@@ -5098,10 +5198,11 @@ async def izipay_webhook(request: Request):
 
 # ==================== PAYMENT LINK — PAY WITH CRYPTO ====================
 @api.post("/links/pay")
-async def start_link_payment(req: LinkPayRequest):
+async def start_link_payment(req: LinkPayRequest, request: Request):
     """Public endpoint: a customer opening a payment link pays with crypto.
     Uses direct intent (no redirect) — deposit address + amount are shown in-app.
     """
+    await _require_turnstile(req.turnstile_token, request, "payment")
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
     link = await db.payment_links.find_one({"slug": req.slug, "active": True})
@@ -5213,15 +5314,17 @@ class LinkPayMoMoRequest(BaseModel):
     operator: str
     phone_number: str
     fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "sender"
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
 @api.post("/links/pay/mobile-money")
-async def start_link_payment_momo(req: LinkPayMoMoRequest):
+async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
     """Public endpoint: a customer paying a payment link via Mobile Money.
 
     PayDunya SoftPay flow.  The merchant is credited only after the same
     server-side confirmation/reconciliation used by wallet deposits.
     """
+    await _require_turnstile(req.turnstile_token, request, "payment")
     cfg = await get_paydunya_config(decrypt=True)
     if not cfg.get("enabled") or not paydunya.mode_is_enabled(cfg, "softpay_direct"):
         raise HTTPException(503, "Le paiement direct SoftPay est désactivé")

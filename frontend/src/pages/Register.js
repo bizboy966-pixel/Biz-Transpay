@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { User, AtSign, Globe, Phone, Mail, Lock, Eye, EyeOff, UserPlus } from 'lucide-react';
@@ -7,15 +7,18 @@ import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function Register() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { register } = useAuth();
+  const turnstile = useTurnstileConfig();
+  const turnstileRef = useRef(null);
   const [form, setForm] = useState({
     full_name: '', username: '', country: 'TG',
     phone: '', email: '', password: '', confirm: '',
-    robot: false, terms: false,
+    terms: false,
   });
   const [errors, setErrors] = useState({});
   const [showPwd, setShowPwd] = useState(false);
@@ -40,11 +43,12 @@ export default function Register() {
       && !/\s/.test(form.password);
     if (!passwordStrong) e.password = '10 caractères minimum, avec majuscule, minuscule, chiffre et caractère spécial.';
     if (form.password !== form.confirm) e.confirm = t('register.errors.mismatch');
-    if (!form.robot) e.robot = t('register.errors.robot');
+    if (!turnstile.enabled || !turnstileToken) e.robot = 'Veuillez terminer la vérification anti-bot.';
     if (!form.terms) e.terms = t('register.errors.terms');
     setErrors(e);
     return Object.keys(e).length === 0;
   };
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   const onSubmit = async (ev) => {
     ev.preventDefault();
@@ -56,6 +60,7 @@ export default function Register() {
         account_type: 'merchant', country: form.country,
         phone: `${country.dial} ${form.phone}`, email: form.email,
         password: form.password,
+        turnstile_token: turnstileToken,
       });
       toast.success('Compte créé avec succès !');
       if (data?.mfa_setup_required) {
@@ -65,6 +70,8 @@ export default function Register() {
         nav('/dashboard');
       }
     } catch (err) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
       toast.error(err.response?.data?.detail || 'Erreur lors de la création du compte');
     } finally {
       setLoading(false);
@@ -159,13 +166,15 @@ export default function Register() {
             </button>
           </Field>
 
-          {/* Robot (visual only) */}
+          {/* Cloudflare Turnstile is verified again by the backend. */}
           <div className="mt-6">
-            <label className="flex items-center gap-3 p-4 border border-slate-200 rounded-xl bg-slate-50 cursor-pointer">
-              <input data-testid="check-robot" type="checkbox" checked={form.robot} onChange={(e) => set('robot', e.target.checked)} className="w-5 h-5 accent-[#2563EB]" />
-              <span className="text-sm font-semibold text-slate-700 flex-1">{t('register.robot')}</span>
-              <div className="text-[10px] text-slate-400 font-mono">reCAPTCHA</div>
-            </label>
+            <TurnstileWidget
+              ref={turnstileRef}
+              siteKey={turnstile.siteKey}
+              action="register"
+              disabled={turnstile.loading || !turnstile.enabled}
+              onToken={setTurnstileToken}
+            />
             {errors.robot && <p className="mt-1 text-xs text-red-500">{errors.robot}</p>}
           </div>
 

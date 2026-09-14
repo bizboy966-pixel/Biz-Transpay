@@ -1,14 +1,18 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { LockKeyhole, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { Logo } from '@/components/Logo';
+import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function RecoverAccount() {
   const nav = useNavigate();
+  const turnstile = useTurnstileConfig();
+  const turnstileRef = useRef(null);
   const [form, setForm] = useState({ identifier: '', recovery_code: '', new_password: '', confirm: '' });
   const [loading, setLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
   const set = (key, value) => setForm((current) => ({ ...current, [key]: value }));
 
   const submit = async (event) => {
@@ -23,16 +27,23 @@ export default function RecoverAccount() {
       toast.error('Le nouveau mot de passe doit être fort : 10 caractères, majuscule, minuscule, chiffre et caractère spécial.');
       return;
     }
+    if (!turnstile.enabled || !turnstileToken) {
+      toast.error('Veuillez terminer la vérification anti-bot.');
+      return;
+    }
     setLoading(true);
     try {
       await api.post('/auth/recover', {
         identifier: form.identifier,
         recovery_code: form.recovery_code,
         new_password: form.new_password,
+        turnstile_token: turnstileToken,
       });
       toast.success('Mot de passe réinitialisé. Vous pouvez vous connecter.');
       nav('/login');
     } catch (err) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
       const detail = err.response?.data?.detail;
       toast.error(typeof detail === 'string' ? detail : detail?.message || 'Informations de récupération invalides');
     } finally {
@@ -67,6 +78,13 @@ export default function RecoverAccount() {
           </div>
           <label className="text-sm font-semibold text-slate-700 mb-2 block">Confirmer le mot de passe</label>
           <input type="password" value={form.confirm} onChange={(e) => set('confirm', e.target.value)} autoComplete="new-password" required className="bt-field" />
+          <TurnstileWidget
+            ref={turnstileRef}
+            siteKey={turnstile.siteKey}
+            action="recover"
+            disabled={turnstile.loading || !turnstile.enabled}
+            onToken={setTurnstileToken}
+          />
           <button type="submit" disabled={loading} className="bt-button-primary mt-7 w-full font-bold py-3.5">{loading ? 'Réinitialisation…' : 'Réinitialiser le mot de passe'}</button>
           <p className="mt-6 text-center text-sm text-slate-500"><Link to="/login" className="text-[#2563EB] font-semibold">Retour à la connexion</Link></p>
         </form>

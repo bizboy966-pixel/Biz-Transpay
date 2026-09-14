@@ -5,6 +5,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { Logo } from '@/components/Logo';
+import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function PublicLink() {
   const { slug } = useParams();
@@ -14,6 +15,7 @@ export default function PublicLink() {
   const [method, setMethod] = useState(null);
   const [payment, setPayment] = useState(null);
   const [features, setFeatures] = useState(null);
+  const turnstile = useTurnstileConfig();
 
   useEffect(() => {
     api.get(`/links/public/${slug}`).then(({ data }) => setLink(data)).catch(() => setErr('Lien introuvable ou expiré'));
@@ -104,11 +106,11 @@ export default function PublicLink() {
             })()}
 
             {step === 2 && method === 'crypto' && (
-              <CryptoLinkForm link={link} onSuccess={(p) => { setPayment(p); setStep(3); }} />
+              <CryptoLinkForm link={link} turnstile={turnstile} onSuccess={(p) => { setPayment(p); setStep(3); }} />
             )}
 
             {step === 2 && method === 'mm' && (
-              <MoMoLinkForm link={link} onSuccess={(p) => { setPayment(p); setStep(3); }} />
+              <MoMoLinkForm link={link} turnstile={turnstile} onSuccess={(p) => { setPayment(p); setStep(3); }} />
             )}
 
             {step === 3 && payment && payment.method !== 'mobile_money' && (
@@ -141,7 +143,7 @@ function MethodBtn({ I, c, title, sub, onClick, testId, disabled }) {
   );
 }
 
-function CryptoLinkForm({ link, onSuccess }) {
+function CryptoLinkForm({ link, turnstile, onSuccess }) {
   const isFree = link.amount_type === 'free';
   // Universal links let the customer pay in USDT via crypto — always show USDT here.
   const displayCurrency = link.currency === 'UNIVERSAL' ? 'USDT' : link.currency;
@@ -152,6 +154,7 @@ function CryptoLinkForm({ link, onSuccess }) {
   const [refundAddress, setRefundAddress] = useState('');
   const [amount, setAmount] = useState(isFree ? String(link.min_amount || '') : String(link.amount));
   const [loading, setLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   useEffect(() => {
     api.get('/crypto/assets').then(({ data }) => setAssets(data)).catch(() => {});
@@ -161,20 +164,28 @@ function CryptoLinkForm({ link, onSuccess }) {
   const amt = parseFloat(amount) || 0;
   const belowMin = isFree && amt < (link.min_amount || 0);
   const aboveMax = isFree && amt > (link.max_amount || 0);
-  const canSubmit = fullName && email && refundAddress && amt > 0 && !belowMin && !aboveMax && !loading;
+  const canSubmit = fullName && email && refundAddress && amt > 0 && !belowMin
+    && !aboveMax && turnstile.enabled && turnstileToken && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!canSubmit) { toast.error('Merci de remplir tous les champs (dont l\'adresse de remboursement).'); return; }
+    if (!canSubmit) {
+      toast.error(turnstileToken
+        ? 'Merci de remplir tous les champs (dont l\'adresse de remboursement).'
+        : 'Veuillez terminer la vérification anti-bot.');
+      return;
+    }
     setLoading(true);
     try {
       const { data } = await api.post('/links/pay', {
         slug: link.slug, amount: isFree ? amt : undefined,
         asset_code: assetCode, full_name: fullName, email,
         refund_address: refundAddress.trim(), origin_url: window.location.origin,
+        turnstile_token: turnstileToken,
       });
       onSuccess(data);
     } catch (err) {
+      setTurnstileToken('');
       const detail = err.response?.data?.detail;
       toast.error(typeof detail === 'string' ? detail : 'Erreur lors du paiement');
     } finally { setLoading(false); }
@@ -232,6 +243,12 @@ function CryptoLinkForm({ link, onSuccess }) {
         <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Nécessaire pour la conformité on-chain : en cas de refund, les fonds y seront envoyés.</div>
       </Field>
 
+      <TurnstileWidget
+        siteKey={turnstile.siteKey}
+        action="payment"
+        disabled={turnstile.loading || !turnstile.enabled}
+        onToken={setTurnstileToken}
+      />
       <button type="submit" disabled={!canSubmit} data-testid="btn-pay-submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-xl disabled:bg-slate-300 disabled:text-slate-500 text-xs sm:text-sm inline-flex items-center justify-center gap-2">
         {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Génération…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
       </button>
@@ -326,7 +343,7 @@ function Field({ label, children }) {
   );
 }
 
-function MoMoLinkForm({ link, onSuccess }) {
+function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const isFree = link.amount_type === 'free';
   const [catalog, setCatalog] = useState([]);
   const [country, setCountry] = useState('');
@@ -340,6 +357,7 @@ function MoMoLinkForm({ link, onSuccess }) {
   const feeBearer = link.fee_bearer === 'owner' ? 'merchant' : 'client';
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   useEffect(() => {
     fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/config`).then(r => r.json())
@@ -368,6 +386,9 @@ function MoMoLinkForm({ link, onSuccess }) {
     if (!country || !operator || !phone.trim() || !email.trim() || !fullName.trim() || (isFree && !amount)) {
       setError('Tous les champs sont obligatoires'); return;
     }
+    if (!turnstile.enabled || !turnstileToken) {
+      setError('Veuillez terminer la vérification anti-bot'); return;
+    }
     setLoading(true);
     try {
       const endpoint = `${process.env.REACT_APP_BACKEND_URL || ''}/api/links/pay/mobile-money`;
@@ -376,6 +397,7 @@ function MoMoLinkForm({ link, onSuccess }) {
           amount: isFree ? parseFloat(amount) : undefined,
           full_name: fullName.trim(), email: email.trim(),
            country, operator, phone_number: phone.trim(), fee_bearer: bearer,
+           turnstile_token: turnstileToken,
          });
       // Newer backends accept client|merchant. Retry the pre-validation
       // request with the historical sender|receiver values when an older
@@ -393,9 +415,12 @@ function MoMoLinkForm({ link, onSuccess }) {
         });
         data = await res.json();
       }
-      if (!res.ok) throw new Error(data.detail || 'Erreur');
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Erreur');
       onSuccess({ ...data, fee_bearer: feeBearer });
-    } catch (err) { setError(err.message || 'Erreur'); }
+    } catch (err) {
+      setTurnstileToken('');
+      setError(err.message || 'Erreur');
+    }
     finally { setLoading(false); }
   };
 
@@ -455,6 +480,12 @@ function MoMoLinkForm({ link, onSuccess }) {
           ? 'Les frais sont ajoutés au montant payé. Le marchand reçoit le montant demandé.'
           : 'Les frais sont déduits du paiement. Le marchand reçoit le montant net.'}
       </div>
+      <TurnstileWidget
+        siteKey={turnstile.siteKey}
+        action="payment"
+        disabled={turnstile.loading || !turnstile.enabled}
+        onToken={setTurnstileToken}
+      />
       {error && <div className="p-2 rounded-lg bg-red-50 text-red-700 text-[11px]">{error}</div>}
       <button type="submit" disabled={loading} data-testid="momo-link-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-2.5 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">

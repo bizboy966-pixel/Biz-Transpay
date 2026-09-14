@@ -22,6 +22,7 @@ class RegisterRequest(BaseModel):
     phone: str = Field(..., min_length=3, max_length=40)
     email: EmailStr
     password: str
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
 class LoginRequest(BaseModel):
@@ -31,6 +32,7 @@ class LoginRequest(BaseModel):
     mfa_token: Optional[str] = None
     challenge_id: Optional[str] = None
     challenge_solution: Optional[str] = None
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
 class ReauthenticationRequest(BaseModel):
@@ -52,6 +54,7 @@ class PasswordRecoveryRequest(BaseModel):
     identifier: str
     recovery_code: str
     new_password: str
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
 class UserPublic(BaseModel):
@@ -201,6 +204,7 @@ class LinkPayRequest(BaseModel):
     email: EmailStr
     refund_address: str = Field(..., min_length=1)  # required on-chain address
     origin_url: str
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
 # ---------- Exchange ----------
