@@ -12,15 +12,17 @@ export default function Settings({ embedded = false }) {
   const [profile, setProfile] = useState({
     language: user?.language || 'fr',
     default_currency: user?.default_currency || 'XOF',
-    two_fa_enabled: user?.two_fa_enabled || false,
   });
-  const [pwd, setPwd] = useState({ current_password: '', new_password: '' });
+  const [pwd, setPwd] = useState({ current_password: '', new_password: '', otp: '' });
+  const [mfaSetup, setMfaSetup] = useState(null);
+  const [mfaCode, setMfaCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [disableCode, setDisableCode] = useState('');
 
   const saveProfile = async () => {
     await api.patch('/settings/profile', {
       language: profile.language,
       default_currency: profile.default_currency,
-      two_fa_enabled: profile.two_fa_enabled,
     });
     if (profile.language !== i18n.language) { i18n.changeLanguage(profile.language); localStorage.setItem('btp_lang', profile.language); }
     toast.success(t('settings.saved'));
@@ -31,7 +33,7 @@ export default function Settings({ embedded = false }) {
     try {
       await api.post('/settings/password', pwd);
       toast.success('Mot de passe modifié');
-      setPwd({ current_password: '', new_password: '' });
+      setPwd({ current_password: '', new_password: '', otp: '' });
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
   };
 
@@ -45,13 +47,54 @@ export default function Settings({ embedded = false }) {
       <Section icon={Lock} title={t('settings.security_t')}>
         <Input label={t('settings.current_pwd')} type="password" value={pwd.current_password} onChange={(v) => setPwd({ ...pwd, current_password: v })} tid="set-current-pwd" />
         <Input label={t('settings.new_pwd')} type="password" value={pwd.new_password} onChange={(v) => setPwd({ ...pwd, new_password: v })} tid="set-new-pwd" />
+        {user?.two_fa_enabled && <Input label="Code 2FA" value={pwd.otp} onChange={(v) => setPwd({ ...pwd, otp: v.replace(/\D/g, '') })} tid="set-password-otp" />}
         <button onClick={savePwd} data-testid="btn-change-pwd" className="inline-flex items-center gap-2 bg-slate-900 hover:bg-slate-800 text-white font-bold px-6 py-3 rounded-full"><Lock className="w-4 h-4" /> {t('settings.change_pwd')}</button>
 
-        <label className="mt-4 flex items-center gap-3 p-4 bg-slate-50 rounded-xl cursor-pointer">
-          <input type="checkbox" data-testid="set-2fa" checked={profile.two_fa_enabled} onChange={(e) => setProfile({ ...profile, two_fa_enabled: e.target.checked })} className="w-5 h-5 accent-[#2563EB]" />
-          <Shield className="w-5 h-5 text-[#2563EB]" />
-          <span className="font-semibold text-slate-800">{t('settings.two_fa')}</span>
-        </label>
+        <div className="mt-4 p-4 bg-slate-50 rounded-xl">
+          <div className="flex items-center gap-3">
+            <Shield className="w-5 h-5 text-[#2563EB]" />
+            <div className="flex-1">
+              <div className="font-semibold text-slate-800">{t('settings.two_fa')}</div>
+              <div className="text-xs text-slate-500">{user?.two_fa_enabled ? 'Activée : les codes sont demandés à chaque connexion.' : 'Ajoutez une protection supplémentaire à votre compte.'}</div>
+            </div>
+            {!user?.two_fa_enabled && <button type="button" onClick={async () => {
+              try { const { data } = await api.post('/auth/2fa/setup'); setMfaSetup(data); }
+              catch (err) { toast.error(err.response?.data?.detail || 'Configuration 2FA impossible'); }
+            }} className="px-4 py-2 rounded-full bg-[#2563EB] text-white text-sm font-bold">Activer</button>}
+          </div>
+          {mfaSetup && !user?.two_fa_enabled && <div className="mt-4 space-y-3">
+            <p className="text-xs text-slate-600">Saisissez cette clé dans votre application d’authentification :</p>
+            <div className="font-mono text-xs bg-white rounded-lg p-3 break-all select-all">{mfaSetup.secret}</div>
+            <div className="flex gap-2">
+              <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value.replace(/\D/g, ''))} maxLength={6} inputMode="numeric" placeholder="Code à 6 chiffres" className="flex-1 px-3 py-2 rounded-lg border border-slate-200" />
+              <button type="button" disabled={mfaCode.length !== 6} onClick={async () => {
+                try {
+                  const { data } = await api.post('/auth/2fa/confirm', { code: mfaCode });
+                  setRecoveryCodes(data.recovery_codes || []);
+                  setMfaSetup(null);
+                  setMfaCode('');
+                  await refresh();
+                  toast.success('Double authentification activée');
+                } catch (err) { toast.error(err.response?.data?.detail || 'Code 2FA invalide'); }
+              }} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-bold">Confirmer</button>
+            </div>
+          </div>}
+          {recoveryCodes.length > 0 && <div className="mt-3 p-3 bg-white rounded-lg">
+            <p className="text-xs text-slate-600 mb-2">Conservez vos codes de récupération :</p>
+            <div className="grid grid-cols-2 gap-1 font-mono text-xs">{recoveryCodes.map((code) => <span key={code}>{code}</span>)}</div>
+          </div>}
+          {user?.two_fa_enabled && user?.role === 'user' && <div className="mt-3 flex gap-2">
+            <input value={disableCode} onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, ''))} maxLength={6} inputMode="numeric" placeholder="Code pour désactiver" className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm" />
+            <button type="button" onClick={async () => {
+              try {
+                await api.post('/auth/2fa/disable', { current_password: pwd.current_password, code: disableCode });
+                setDisableCode('');
+                await refresh();
+                toast.success('Double authentification désactivée');
+              } catch (err) { toast.error(err.response?.data?.detail || 'Désactivation impossible'); }
+            }} className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm font-bold">Désactiver</button>
+          </div>}
+        </div>
       </Section>
 
       <Section icon={Globe} title={t('settings.preferences')}>

@@ -32,7 +32,13 @@ export default function Register() {
     if (!form.username) e.username = t('register.errors.required');
     if (!form.phone) e.phone = t('register.errors.required');
     if (!form.email) e.email = t('register.errors.required');
-    if (!form.password || form.password.length < 6) e.password = t('register.errors.short');
+    const passwordStrong = form.password.length >= 12
+      && /[a-z]/.test(form.password)
+      && /[A-Z]/.test(form.password)
+      && /\d/.test(form.password)
+      && /[^A-Za-z0-9\s]/.test(form.password)
+      && !/\s/.test(form.password);
+    if (!passwordStrong) e.password = '12 caractères minimum, avec majuscule, minuscule, chiffre et caractère spécial.';
     if (form.password !== form.confirm) e.confirm = t('register.errors.mismatch');
     if (!form.robot) e.robot = t('register.errors.robot');
     if (!form.terms) e.terms = t('register.errors.terms');

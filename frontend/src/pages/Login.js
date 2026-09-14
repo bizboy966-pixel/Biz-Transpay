@@ -10,23 +10,92 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 export default function Login() {
   const { t } = useTranslation();
   const nav = useNavigate();
-  const { login } = useAuth();
+  const { login, confirmTwoFactor, forcePasswordChange } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPwd, setShowPwd] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState('password');
+  const [otp, setOtp] = useState('');
+  const [mfaToken, setMfaToken] = useState('');
+  const [setup, setSetup] = useState(null);
+  const [setupCode, setSetupCode] = useState('');
+  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [passwordChangeToken, setPasswordChangeToken] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+  const [challenge, setChallenge] = useState(null);
+  const [challengeSolution, setChallengeSolution] = useState('');
+
+  const errorDetail = (err) => {
+    const detail = err.response?.data?.detail || err.response?.data?.message;
+    return typeof detail === 'string' ? detail : detail?.message || 'Identifiants invalides';
+  };
+
+  const solveChallenge = async (item) => {
+    if (!item?.nonce) return '';
+    let attempt = 0;
+    const prefix = '0'.repeat(Number(item.difficulty || 4));
+    while (attempt < 2000000) {
+      const input = `${item.nonce}${attempt}`;
+      const bytes = new TextEncoder().encode(input);
+      const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+      const hash = Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+      if (hash.startsWith(prefix)) return String(attempt);
+      attempt += 1;
+    }
+    throw new Error('challenge_failed');
+  };
 
   const submit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      const u = await login(email, password);
+      let solved = challengeSolution;
+      if (challenge && !solved) {
+        solved = await solveChallenge(challenge);
+        setChallengeSolution(solved);
+      }
+      const data = await login(email, password, {
+        otp: step === 'mfa' ? otp : undefined,
+        mfa_token: step === 'mfa' ? mfaToken : undefined,
+        challenge_id: challenge?.id,
+        challenge_solution: solved || undefined,
+      });
+      if (data.mfa_required) {
+        setMfaToken(data.mfa_token);
+        setStep('mfa');
+        setChallenge(null);
+        setChallengeSolution('');
+        toast.success('Entrez votre code de sécurité');
+        return;
+      }
+      if (data.password_change_required) {
+        setPasswordChangeToken(data.password_change_token);
+        setStep('password_change');
+        toast.success('Choisissez un mot de passe fort pour continuer');
+        return;
+      }
+      if (data.mfa_setup_required) {
+        setSetup(data.mfa_setup);
+        setStep('setup');
+        toast.success('Configurez la double authentification obligatoire');
+        return;
+      }
+      const u = data.user;
       toast.success('Connexion réussie');
       const role = u?.role || u?.user?.role;
       // Admins land directly on the admin panel; merchants on their dashboard.
       nav(role === 'admin' || role === 'super_admin' ? '/admin' : '/dashboard');
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Identifiants invalides');
+      const detail = err.response?.data?.detail;
+      if (detail?.code === 'AUTH_CHALLENGE_REQUIRED') {
+        setChallenge(detail.challenge);
+        setChallengeSolution('');
+        toast.error('Une vérification de sécurité est requise. Cliquez à nouveau.');
+      } else {
+        toast.error(typeof detail === 'string' ? detail : errorDetail(err));
+      }
     } finally {
       setLoading(false);
     }
@@ -67,6 +136,56 @@ export default function Login() {
             <p className="mt-2 text-slate-600 text-sm">{t('login.subtitle')}</p>
           </div>
 
+          {step === 'password_change' ? (
+            <div className="space-y-4">
+              <h2 className="font-cabinet font-bold text-xl text-slate-900">Mise à jour obligatoire</h2>
+              <p className="text-sm text-slate-600">Votre compte doit utiliser un mot de passe fort avant de continuer.</p>
+              <input type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Nouveau mot de passe fort" className="bt-field" />
+              <input type="password" autoComplete="new-password" value={newPasswordConfirm} onChange={(e) => setNewPasswordConfirm(e.target.value)} placeholder="Confirmer le nouveau mot de passe" className="bt-field" />
+              <button type="button" className="bt-button-primary w-full" disabled={loading || newPassword !== newPasswordConfirm || newPassword.length < 12} onClick={async () => {
+                setLoading(true);
+                try {
+                  await forcePasswordChange(passwordChangeToken, newPassword);
+                  setStep('password');
+                  setPasswordChangeToken('');
+                  setNewPassword('');
+                  setNewPasswordConfirm('');
+                  toast.success('Mot de passe mis à jour. Connectez-vous à nouveau.');
+                } catch (err) { toast.error(errorDetail(err)); }
+                finally { setLoading(false); }
+              }}>Mettre à jour le mot de passe</button>
+            </div>
+          ) : step === 'setup' ? (
+            <div className="space-y-4">
+              <h2 className="font-cabinet font-bold text-xl text-slate-900">Activez la double authentification</h2>
+              <p className="text-sm text-slate-600">Ajoutez cette clé dans votre application d’authentification, puis saisissez le code à 6 chiffres.</p>
+              <div className="rounded-xl bg-slate-50 p-3 font-mono text-xs break-all select-all">{setup?.secret}</div>
+              <input value={setupCode} onChange={(e) => setSetupCode(e.target.value)} inputMode="numeric" maxLength={6} placeholder="Code à 6 chiffres" className="bt-field" />
+              <button type="button" className="bt-button-primary w-full" disabled={loading || setupCode.length !== 6} onClick={async () => {
+                setLoading(true);
+                try {
+                  const result = await confirmTwoFactor(setupCode, setup?.setup_token);
+                  setRecoveryCodes(result.recovery_codes || []);
+                  setStep('recovery');
+                  toast.success('Double authentification activée');
+                } catch (err) { toast.error(errorDetail(err)); }
+                finally { setLoading(false); }
+              }}>Confirmer l’activation</button>
+            </div>
+          ) : step === 'recovery' ? (
+            <div className="space-y-4">
+              <h2 className="font-cabinet font-bold text-xl text-slate-900">Codes de récupération</h2>
+              <p className="text-sm text-slate-600">Conservez ces codes dans un endroit sûr. Chaque code ne peut être utilisé qu’une seule fois.</p>
+              <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-50 p-4 font-mono text-xs">{recoveryCodes.map((code) => <span key={code}>{code}</span>)}</div>
+              <button type="button" className="bt-button-primary w-full" onClick={() => { setStep('mfa'); setMfaToken(''); }}>Continuer vers la connexion</button>
+            </div>
+          ) : step === 'mfa' ? (
+            <div>
+              <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">Code de sécurité</label>
+              <input data-testid="input-login-otp" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+              <p className="mt-2 text-xs text-slate-500 text-center">Le code expire rapidement et ne peut pas être réutilisé.</p>
+            </div>
+          ) : (
           <div>
             <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('login.identifier')}</label>
             <div className="relative">
@@ -74,8 +193,9 @@ export default function Login() {
               <input data-testid="input-identifier" type="text" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="john@example.com" className="bt-field pl-11 pr-4" />
             </div>
           </div>
+          )}
 
-          <div className="mt-4">
+          {step === 'password' && <div className="mt-4">
             <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('login.password')}</label>
             <div className="relative">
               <Lock className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
@@ -84,11 +204,15 @@ export default function Login() {
                 {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-          </div>
+          </div>}
 
-          <button type="submit" disabled={loading} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
+          {step === 'password' && <div className="mt-3 text-right">
+            <Link to="/recover" className="text-xs font-semibold text-[#2563EB]">Mot de passe oublié ?</Link>
+          </div>}
+
+          {(step === 'password' || step === 'mfa') && <button type="submit" disabled={loading || (step === 'mfa' && otp.length !== 6)} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
             {loading ? 'Connexion…' : <><LogInIcon className="w-5 h-5" /> {t('login.submit')}</>}
-          </button>
+          </button>}
 
           <p className="mt-6 text-center text-sm text-slate-500">
             {t('login.no_account')} <Link to="/register" className="text-[#2563EB] font-semibold" data-testid="link-register">{t('login.register')}</Link>

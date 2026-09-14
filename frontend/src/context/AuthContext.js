@@ -19,11 +19,15 @@ export function AuthProvider({ children }) {
 
   useEffect(() => { loadMe(); }, []);
 
-  const login = async (email, password) => {
-    const { data } = await api.post('/auth/login', { email, password });
-    localStorage.setItem('btp_token', data.token);
-    setUser(data.user);
-    return data.user;
+  const login = async (email, password, security = {}) => {
+    const { data } = await api.post('/auth/login', {
+      email, password, ...security,
+    });
+    if (data.token) {
+      localStorage.setItem('btp_token', data.token);
+      setUser(data.user);
+    }
+    return data;
   };
 
   const register = async (payload) => {
@@ -41,8 +45,23 @@ export function AuthProvider({ children }) {
 
   const refresh = loadMe;
 
+  const confirmTwoFactor = async (code, setupToken) => {
+    const { data } = await api.post('/auth/2fa/confirm', {
+      code, setup_token: setupToken || undefined,
+    });
+    return data;
+  };
+
+  const forcePasswordChange = async (changeToken, newPassword) => {
+    const { data } = await api.post('/auth/password/force-change', {
+      change_token: changeToken,
+      new_password: newPassword,
+    });
+    return data;
+  };
+
   return (
-    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setUser }}>
+    <AuthCtx.Provider value={{ user, loading, login, register, logout, refresh, setUser, confirmTwoFactor, forcePasswordChange }}>
       {children}
     </AuthCtx.Provider>
   );

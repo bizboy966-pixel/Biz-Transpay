@@ -32,7 +32,10 @@ from models import (  # noqa: E402
     Transaction, TransferRequest, DepositRequest, CryptoDepositRequest, LinkPayRequest, ExchangeRequest,
     KycSubmit, ApiKeys, WebhookConfig, UpdateProfile, ChangePassword,
     TicketCreate, Ticket, new_id, now_iso,
+    TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
+    ForcedPasswordChangeRequest,
 )
+import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token, get_current_user_id  # noqa: E402
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
@@ -306,8 +309,209 @@ async def root():
     return {"message": "Biz-transPay API", "status": "ok"}
 
 
+AUTH_WINDOW_SECONDS = 15 * 60
+AUTH_CHALLENGE_AFTER = 5
+
+
+def _auth_ip(request: Request) -> str:
+    return (request.client.host if request.client else None) or "unknown"
+
+
+def _auth_hash(value: str) -> str:
+    return hashlib.sha256(value.strip().lower().encode()).hexdigest()
+
+
+async def _issue_login_challenge(identifier: str, ip: str) -> dict:
+    nonce = secrets.token_urlsafe(24)
+    challenge_id = new_id()
+    difficulty = 4
+    await db.auth_challenges.insert_one({
+        "id": challenge_id,
+        "nonce": nonce,
+        "identifier_hash": _auth_hash(identifier),
+        "ip_hash": _auth_hash(ip),
+        "difficulty": difficulty,
+        "used": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=5),
+        "created_at": now_iso(),
+    })
+    return {"id": challenge_id, "nonce": nonce, "difficulty": difficulty}
+
+
+async def _verify_login_challenge(identifier: str, ip: str,
+                                  challenge_id: str, solution: str) -> bool:
+    challenge = await db.auth_challenges.find_one({
+        "id": challenge_id,
+        "identifier_hash": _auth_hash(identifier),
+        "ip_hash": _auth_hash(ip),
+        "used": False,
+        "expires_at": {"$gt": datetime.now(timezone.utc)},
+    }, {"_id": 0})
+    if not challenge or not str(solution or "").isdigit():
+        return False
+    digest = hashlib.sha256(
+        f"{challenge['nonce']}{solution}".encode()).hexdigest()
+    if not digest.startswith("0" * int(challenge["difficulty"])):
+        return False
+    claimed = await db.auth_challenges.update_one(
+        {"id": challenge_id, "used": False},
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc)}},
+    )
+    return claimed.modified_count == 1
+
+
+async def _auth_state(scope: str, value: str) -> dict:
+    return await db.auth_rate_limits.find_one(
+        {"scope": scope, "value_hash": _auth_hash(value)}, {"_id": 0}
+    ) or {}
+
+
+async def _check_login_security(identifier: str, request: Request,
+                                challenge_id: Optional[str],
+                                challenge_solution: Optional[str]) -> None:
+    ip = _auth_ip(request)
+    states = [
+        await _auth_state("account", identifier),
+        await _auth_state("ip", ip),
+    ]
+    now = datetime.now(timezone.utc)
+    for index, state in enumerate(states):
+        lock_until = state.get("lock_until")
+        if lock_until and lock_until > now:
+            seconds = max(1, int((lock_until - now).total_seconds()))
+            raise HTTPException(
+                429,
+                detail={"message": "Trop de tentatives. Réessayez plus tard.",
+                        "code": "AUTH_TEMPORARILY_LOCKED",
+                        "retry_after": seconds},
+                headers={"Retry-After": str(seconds)},
+            )
+    account_failures = int(states[0].get("failures", 0))
+    ip_failures = int(states[1].get("failures", 0))
+    failures = max(account_failures, ip_failures // 2)
+    if failures >= AUTH_CHALLENGE_AFTER:
+        if not challenge_id or not challenge_solution or not await _verify_login_challenge(
+                identifier, ip, challenge_id, challenge_solution):
+            challenge = await _issue_login_challenge(identifier, ip)
+            raise HTTPException(
+                429,
+                detail={"message": "Vérification de sécurité requise.",
+                        "code": "AUTH_CHALLENGE_REQUIRED",
+                        "challenge": challenge},
+            )
+
+
+async def _record_login_failure(identifier: str, request: Request) -> None:
+    now = datetime.now(timezone.utc)
+    for scope, value in (("account", identifier), ("ip", _auth_ip(request))):
+        key = {"scope": scope, "value_hash": _auth_hash(value)}
+        current = await _auth_state(scope, value)
+        failures = int(current.get("failures", 0)) + 1
+        lock_seconds = 0
+        lock_failures = failures if scope == "account" else failures // 2
+        if lock_failures >= 12:
+            lock_seconds = 3600
+        elif lock_failures >= 10:
+            lock_seconds = 900
+        elif lock_failures >= 8:
+            lock_seconds = 300
+        elif lock_failures >= 6:
+            lock_seconds = 60
+        update = {
+            "$set": {
+                "last_failed_at": now,
+                "expires_at": now + timedelta(seconds=AUTH_WINDOW_SECONDS),
+                **({"lock_until": now + timedelta(seconds=lock_seconds)}
+                   if lock_seconds else {}),
+            },
+            "$setOnInsert": {"scope": scope, "value_hash": key["value_hash"],
+                             "created_at": now},
+            "$inc": {"failures": 1},
+        }
+        await db.auth_rate_limits.update_one(key, update, upsert=True)
+
+
+async def _clear_login_account_failures(identifier: str) -> None:
+    await db.auth_rate_limits.delete_one(
+        {"scope": "account", "value_hash": _auth_hash(identifier)}
+    )
+
+
+async def _begin_mfa_enrollment(user: dict) -> dict:
+    secret = auth_security.generate_totp_secret()
+    enrollment_id = new_id()
+    await db.mfa_enrollments.insert_one({
+        "id": enrollment_id,
+        "user_id": user["id"],
+        "secret_encrypted": auth_security.encrypt_mfa_secret(secret),
+        "used": False,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        "created_at": now_iso(),
+    })
+    token = auth_security.create_mfa_token(
+        user["id"], "mfa_setup", enrollment_id=enrollment_id)
+    return {
+        "setup_token": token,
+        "secret": secret,
+        "otpauth_uri": auth_security.totp_uri(
+            secret, user.get("email") or user.get("username") or user["id"]),
+        "expires_in": 600,
+    }
+
+
+async def _complete_login(user: dict, request: Request) -> None:
+    ip = _auth_ip(request)
+    user_agent = (request.headers.get("user-agent") or "")[:300]
+    unusual = bool(
+        user.get("last_login_ip") and user.get("last_login_ip") != ip
+        or user.get("last_login_user_agent")
+        and user.get("last_login_user_agent") != user_agent
+    )
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {"last_login_ip": ip, "last_login_user_agent": user_agent,
+                  "last_login_at": now_iso()}},
+    )
+    await db.auth_events.insert_one({
+        "id": new_id(), "user_id": user["id"], "type": "login",
+        "ip": ip, "user_agent": user_agent, "unusual": unusual,
+        "created_at": now_iso(),
+    })
+    if unusual:
+        await notify(
+            user["id"], "security_alert", "Nouvelle connexion détectée",
+            "Une nouvelle connexion à votre compte Biz-transPay a été détectée.",
+            data={"security_event": "unusual_login"},
+        )
+
+
+async def _verify_user_totp(user: dict, code: str) -> bool:
+    encrypted = user.get("two_fa_secret_encrypted")
+    if not encrypted:
+        return False
+    try:
+        secret = auth_security.decrypt_mfa_secret(encrypted)
+    except Exception:
+        return False
+    counter = auth_security.verify_totp(
+        secret, code, user.get("two_fa_last_counter"))
+    if counter is None:
+        return False
+    claimed = await db.users.update_one(
+        {"id": user["id"],
+         "$or": [{"two_fa_last_counter": {"$lt": counter}},
+                 {"two_fa_last_counter": {"$exists": False}}]},
+        {"$set": {"two_fa_last_counter": counter}},
+    )
+    return claimed.modified_count == 1
+
+
 @api.post("/auth/register", response_model=AuthResponse)
 async def register(req: RegisterRequest):
+    password_errors = auth_security.password_policy_errors(req.password)
+    if password_errors:
+        raise HTTPException(
+            422, "Mot de passe insuffisant : " + ", ".join(password_errors))
     if await db.users.find_one({"email": req.email.lower()}):
         raise HTTPException(400, "Email déjà utilisé")
     if await db.users.find_one({"username": req.username.lower()}):
@@ -330,6 +534,7 @@ async def register(req: RegisterRequest):
         "phone": req.phone,
         "email": req.email.lower(),
         "password_hash": hash_password(req.password),
+        "password_policy_version": 1,
         "kyc_status": "verified" if is_first else "not_started",
         "balance_xof": 0.0,   # zero-balance policy — credited only via confirmed txns
         "balance_xaf": 0.0,
@@ -360,14 +565,173 @@ async def register(req: RegisterRequest):
     return AuthResponse(token=token, user=user_to_public(user_doc))
 
 
-@api.post("/auth/login", response_model=AuthResponse)
-async def login(req: LoginRequest):
+@api.post("/auth/login")
+async def login(req: LoginRequest, request: Request):
     ident = req.email.lower().strip()
+    await _check_login_security(
+        ident, request, req.challenge_id, req.challenge_solution)
     u = await db.users.find_one({"$or": [{"email": ident}, {"username": ident}]}, {"_id": 0})
     if not u or not verify_password(req.password, u["password_hash"]):
+        await _record_login_failure(ident, request)
         raise HTTPException(401, "Identifiants invalides")
+    if not u.get("password_policy_version"):
+        return {
+            "password_change_required": True,
+            "password_change_token": auth_security.create_mfa_token(
+                u["id"], "password_change"),
+        }
+    if u.get("role") in ("admin", "super_admin") and not u.get("two_fa_enabled"):
+        setup = await _begin_mfa_enrollment(u)
+        return {"mfa_setup_required": True, "mfa_setup": setup}
+    if u.get("two_fa_enabled"):
+        if not req.mfa_token:
+            return {
+                "mfa_required": True,
+                "mfa_token": auth_security.create_mfa_token(u["id"], "login_mfa"),
+            }
+        try:
+            mfa_payload = auth_security.decode_mfa_token(req.mfa_token, "login_mfa")
+        except HTTPException:
+            await _record_login_failure(ident, request)
+            raise
+        if mfa_payload.get("sub") != u["id"] or not await _verify_user_totp(u, req.otp or ""):
+            await _record_login_failure(ident, request)
+            raise HTTPException(401, "Code de sécurité invalide")
+    await _clear_login_account_failures(ident)
+    await _complete_login(u, request)
     token = create_token(u["id"])
-    return AuthResponse(token=token, user=user_to_public(u))
+    return {"token": token, "user": user_to_public(u)}
+
+
+@api.post("/auth/2fa/setup")
+async def setup_two_factor(uid: str = Depends(get_current_user_id)):
+    user = await get_user(uid)
+    if user.get("two_fa_enabled"):
+        raise HTTPException(409, "La double authentification est déjà activée")
+    return await _begin_mfa_enrollment(user)
+
+
+@api.post("/auth/password/force-change")
+async def force_password_change(req: ForcedPasswordChangeRequest):
+    payload = auth_security.decode_mfa_token(req.change_token, "password_change")
+    errors = auth_security.password_policy_errors(req.new_password)
+    if errors:
+        raise HTTPException(
+            422, "Mot de passe insuffisant : " + ", ".join(errors))
+    changed = await db.users.update_one(
+        {"id": payload["sub"], "password_policy_version": {"$ne": 1}},
+        {"$set": {"password_hash": hash_password(req.new_password),
+                  "password_policy_version": 1}},
+    )
+    if changed.modified_count != 1:
+        raise HTTPException(409, "Le mot de passe a déjà été mis à jour")
+    return {"ok": True}
+
+
+async def _optional_user_id(
+    creds=Depends(auth_security.bearer),
+) -> Optional[str]:
+    if not creds:
+        return None
+    return auth_security.decode_token(creds.credentials)
+
+
+@api.post("/auth/2fa/confirm")
+async def confirm_two_factor(req: TwoFactorCodeRequest,
+                             uid: Optional[str] = Depends(_optional_user_id)):
+    enrollment_id = None
+    user_id = uid
+    if req.setup_token:
+        payload = auth_security.decode_mfa_token(req.setup_token, "mfa_setup")
+        user_id = payload["sub"]
+        enrollment_id = payload.get("enrollment_id")
+    if not user_id:
+        raise HTTPException(401, "Authentification requise")
+    enrollment = await db.mfa_enrollments.find_one({
+        "id": enrollment_id if enrollment_id else {"$exists": True},
+        "user_id": user_id, "used": False,
+        "expires_at": {"$gt": datetime.now(timezone.utc)},
+    }, {"_id": 0})
+    if not enrollment:
+        raise HTTPException(400, "Session de configuration 2FA expirée")
+    try:
+        secret = auth_security.decrypt_mfa_secret(enrollment["secret_encrypted"])
+    except Exception:
+        raise HTTPException(500, "Configuration 2FA indisponible")
+    counter = auth_security.verify_totp(secret, req.code)
+    if counter is None:
+        raise HTTPException(401, "Code 2FA invalide")
+    recovery_codes = [
+        f"{secrets.token_hex(4)}-{secrets.token_hex(4)}" for _ in range(8)]
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {
+            "two_fa_enabled": True,
+            "two_fa_secret_encrypted": enrollment["secret_encrypted"],
+            "two_fa_last_counter": counter,
+            "recovery_codes": [
+                {"id": new_id(), "hash": hash_password(code), "used": False}
+                for code in recovery_codes
+            ],
+        }},
+    )
+    await db.mfa_enrollments.update_one(
+        {"id": enrollment["id"], "used": False},
+        {"$set": {"used": True, "used_at": now_iso()}},
+    )
+    return {"enabled": True, "recovery_codes": recovery_codes}
+
+
+@api.post("/auth/2fa/disable")
+async def disable_two_factor(req: TwoFactorDisableRequest,
+                             uid: str = Depends(get_current_user_id)):
+    user = await get_user(uid)
+    if user.get("role") in ("admin", "super_admin"):
+        raise HTTPException(403, "La 2FA est obligatoire pour les administrateurs")
+    if not verify_password(req.current_password, user.get("password_hash", "")):
+        raise HTTPException(401, "Mot de passe actuel incorrect")
+    if not await _verify_user_totp(user, req.code):
+        raise HTTPException(401, "Code 2FA invalide")
+    await db.users.update_one(
+        {"id": uid},
+        {"$set": {"two_fa_enabled": False},
+         "$unset": {"two_fa_secret_encrypted": "", "two_fa_last_counter": "",
+                    "recovery_codes": ""}},
+    )
+    return {"enabled": False}
+
+
+@api.post("/auth/recover")
+async def recover_account(req: PasswordRecoveryRequest, request: Request):
+    identifier = req.identifier.lower().strip()
+    await _check_login_security(identifier, request, None, None)
+    errors = auth_security.password_policy_errors(req.new_password)
+    if errors:
+        raise HTTPException(422, "Mot de passe insuffisant : " + ", ".join(errors))
+    user = await db.users.find_one(
+        {"$or": [{"email": identifier}, {"username": identifier}]}, {"_id": 0})
+    if not user:
+        await _record_login_failure(identifier, request)
+        raise HTTPException(401, "Informations de récupération invalides")
+    matched = None
+    for item in user.get("recovery_codes") or []:
+        if not item.get("used") and verify_password(req.recovery_code, item.get("hash", "")):
+            matched = item
+            break
+    if not matched:
+        await _record_login_failure(identifier, request)
+        raise HTTPException(401, "Informations de récupération invalides")
+    claimed = await db.users.update_one(
+        {"id": user["id"],
+         "recovery_codes": {"$elemMatch": {"id": matched["id"], "used": False}}},
+        {"$set": {"recovery_codes.$.used": True,
+                  "password_hash": hash_password(req.new_password),
+                  "password_policy_version": 1}},
+    )
+    if claimed.modified_count != 1:
+        raise HTTPException(401, "Informations de récupération invalides")
+    await _clear_login_account_failures(identifier)
+    return {"ok": True, "message": "Mot de passe réinitialisé. Connectez-vous de nouveau."}
 
 
 @api.get("/auth/me", response_model=UserPublic)
@@ -6493,6 +6857,9 @@ async def _deliver_webhook(user_id: str, event_type: str, data: dict) -> None:
 @api.patch("/settings/profile", response_model=UserPublic)
 async def update_profile(req: UpdateProfile, uid: str = Depends(get_current_user_id)):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "two_fa_enabled" in updates:
+        updates.pop("two_fa_enabled", None)
+        raise HTTPException(400, "Utilisez la procédure de configuration 2FA")
     if "avatar_url" in updates:
         avatar = str(updates["avatar_url"] or "")
         if avatar and (
@@ -6519,7 +6886,16 @@ async def change_password(req: ChangePassword, uid: str = Depends(get_current_us
     u = await get_user(uid)
     if not verify_password(req.current_password, u["password_hash"]):
         raise HTTPException(400, "Mot de passe actuel incorrect")
-    await db.users.update_one({"id": uid}, {"$set": {"password_hash": hash_password(req.new_password)}})
+    password_errors = auth_security.password_policy_errors(req.new_password)
+    if password_errors:
+        raise HTTPException(
+            422, "Mot de passe insuffisant : " + ", ".join(password_errors))
+    if u.get("two_fa_enabled") and not await _verify_user_totp(u, req.otp or ""):
+        raise HTTPException(401, "Code 2FA requis pour changer le mot de passe")
+    await db.users.update_one({"id": uid}, {"$set": {
+        "password_hash": hash_password(req.new_password),
+        "password_policy_version": 1,
+    }})
     return {"ok": True}
 
 
@@ -7395,9 +7771,14 @@ async def admin_reset_password(user_id: str, req: AdminResetPwd, admin=Depends(g
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    if len(req.new_password) < 6:
-        raise HTTPException(400, "6 caractères minimum")
-    await db.users.update_one({"id": user_id}, {"$set": {"password_hash": hash_password(req.new_password)}})
+    password_errors = auth_security.password_policy_errors(req.new_password)
+    if password_errors:
+        raise HTTPException(
+            422, "Mot de passe insuffisant : " + ", ".join(password_errors))
+    await db.users.update_one({"id": user_id}, {"$set": {
+        "password_hash": hash_password(req.new_password),
+        "password_policy_version": 1,
+    }})
     await audit(admin["id"], admin["username"], "reset_password",
                 target_user_id=user_id, target_username=target["username"])
     return {"ok": True}
@@ -8022,8 +8403,10 @@ async def admin_create_admin(req: AdminCreateRequest, admin=Depends(get_admin)):
     email = req.email.strip().lower()
     if len(req.full_name.strip()) < 2 or len(username) < 3:
         raise HTTPException(422, "Nom et identifiant administrateur invalides")
-    if len(req.password) < 6:
-        raise HTTPException(422, "Le mot de passe doit contenir au moins 6 caractères")
+    password_errors = auth_security.password_policy_errors(req.password)
+    if password_errors:
+        raise HTTPException(
+            422, "Mot de passe insuffisant : " + ", ".join(password_errors))
     if await db.users.find_one({"$or": [{"email": email}, {"username": username}]}):
         raise HTTPException(409, "Cet e-mail ou cet identifiant est déjà utilisé")
 
@@ -8036,6 +8419,7 @@ async def admin_create_admin(req: AdminCreateRequest, admin=Depends(get_admin)):
         "phone": req.phone.strip(),
         "email": email,
         "password_hash": hash_password(req.password),
+        "password_policy_version": 1,
         "kyc_status": "verified",
         "balance_xof": 0.0,
         "balance_xaf": 0.0,
@@ -8705,6 +9089,15 @@ async def api_log_middleware(request: Request, call_next):
 @app.on_event("startup")
 async def startup_db_client():
     global _paydunya_reconcile_task
+    try:
+        await db.auth_rate_limits.create_index(
+            "expires_at", expireAfterSeconds=0, name="auth_rate_limits_ttl")
+        await db.auth_challenges.create_index(
+            "expires_at", expireAfterSeconds=0, name="auth_challenges_ttl")
+        await db.mfa_enrollments.create_index(
+            "expires_at", expireAfterSeconds=0, name="mfa_enrollments_ttl")
+    except Exception:
+        logger.exception("Unable to initialize authentication security indexes")
     try:
         await db.webhook_events.create_index("event_id", unique=True)
     except Exception:

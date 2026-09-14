@@ -27,6 +27,31 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str  # accepts email or username
     password: str
+    otp: Optional[str] = None
+    mfa_token: Optional[str] = None
+    challenge_id: Optional[str] = None
+    challenge_solution: Optional[str] = None
+
+
+class TwoFactorCodeRequest(BaseModel):
+    code: str
+    setup_token: Optional[str] = None
+
+
+class TwoFactorDisableRequest(BaseModel):
+    current_password: str
+    code: str
+
+
+class PasswordRecoveryRequest(BaseModel):
+    identifier: str
+    recovery_code: str
+    new_password: str
+
+
+class ForcedPasswordChangeRequest(BaseModel):
+    change_token: str
+    new_password: str
 
 
 class UserPublic(BaseModel):
@@ -221,6 +246,7 @@ class UpdateProfile(BaseModel):
 class ChangePassword(BaseModel):
     current_password: str
     new_password: str
+    otp: Optional[str] = None
 
 
 # ---------- Support ticket ----------
