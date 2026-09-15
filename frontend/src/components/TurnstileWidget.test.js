@@ -51,4 +51,53 @@ describe('TurnstileWidget', () => {
     });
     expect(window.turnstile.remove).toHaveBeenCalledWith('widget-id');
   });
+
+  it('keeps delayed cleanup from touching a replacement widget', async () => {
+    let sequence = 0;
+    window.turnstile = {
+      render: jest.fn(() => `widget-${++sequence}`),
+      remove: jest.fn(),
+    };
+
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    const onToken = jest.fn();
+
+    await act(async () => {
+      root.render(
+        <TurnstileWidget
+          siteKey="test-site-key"
+          action="login"
+          onToken={onToken}
+        />,
+      );
+    });
+
+    const firstIsland = container.querySelector('.turnstile-widget__island');
+    expect(firstIsland).not.toBeNull();
+
+    await act(async () => {
+      root.render(
+        <TurnstileWidget
+          siteKey="test-site-key"
+          action="register"
+          onToken={onToken}
+        />,
+      );
+    });
+
+    const secondIsland = container.querySelector('.turnstile-widget__island');
+    expect(secondIsland).not.toBe(firstIsland);
+    expect(firstIsland.parentNode).toBeNull();
+    expect(secondIsland.parentNode).not.toBeNull();
+
+    act(() => {
+      jest.runOnlyPendingTimers();
+    });
+
+    expect(window.turnstile.remove).toHaveBeenCalledWith('widget-1');
+    expect(secondIsland.parentNode).not.toBeNull();
+
+    act(() => root.unmount());
+  });
 });

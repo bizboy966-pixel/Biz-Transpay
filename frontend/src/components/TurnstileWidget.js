@@ -88,29 +88,41 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
 
   useEffect(() => {
     let cancelled = false;
+    let islandNode = null;
     if (disabled || !siteKey || !containerRef.current) {
       onTokenRef.current?.('');
       return undefined;
     }
 
-    containerRef.current.replaceChildren();
+    const hostNode = containerRef.current;
+    // React owns only containerRef. Every Turnstile instance gets a separate
+    // imperative island so a delayed cleanup can never touch a newer widget.
+    islandNode = document.createElement('div');
+    islandNode.className = 'turnstile-widget__island';
+    hostNode.appendChild(islandNode);
     setLoadError(false);
     setErrorCode('');
     loadTurnstileScript()
       .then((turnstile) => {
-        if (cancelled || !turnstile || !containerRef.current) return;
-        // Turnstile may replace or detach the node passed to render(). Keep
-        // React's host node untouched and give the SDK an imperative child
-        // that React does not track.
+        if (cancelled || !turnstile || islandNode?.parentNode !== hostNode) return;
+        // Cloudflare may replace or detach mountNode. Both mountNode and its
+        // parent island are outside React's managed child tree.
         const mountNode = document.createElement('div');
-        containerRef.current.replaceChildren(mountNode);
+        islandNode.appendChild(mountNode);
         widgetIdRef.current = turnstile.render(mountNode, {
           sitekey: siteKey,
           action,
-          callback: (token) => onTokenRef.current?.(token),
-          'expired-callback': () => onTokenRef.current?.(''),
-          'timeout-callback': () => onTokenRef.current?.(''),
+          callback: (token) => {
+            if (!cancelled) onTokenRef.current?.(token);
+          },
+          'expired-callback': () => {
+            if (!cancelled) onTokenRef.current?.('');
+          },
+          'timeout-callback': () => {
+            if (!cancelled) onTokenRef.current?.('');
+          },
           'error-callback': (code) => {
+            if (cancelled) return;
             onTokenRef.current?.('');
             setErrorCode(String(code || ''));
             setLoadError(true);
@@ -126,14 +138,15 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
 
     return () => {
       cancelled = true;
+      // Detach only this instance's island. React never tracks its children,
+      // and a later Cloudflare cleanup cannot reach a replacement widget.
+      if (islandNode?.parentNode === hostNode) {
+        islandNode.parentNode.removeChild(islandNode);
+      }
       if (widgetIdRef.current !== null && window.turnstile) {
         const widgetId = widgetIdRef.current;
         widgetIdRef.current = null;
-        // React still owns the host node during effect cleanup. Cloudflare may
-        // remove that node synchronously, causing React's following
-        // commitDeletionEffects pass to throw a removeChild NotFoundError.
-        // Let React finish the DOM removal before clearing Cloudflare's
-        // internal widget registry.
+        // Clear only Cloudflare's registry after the isolated DOM is detached.
         window.setTimeout(() => {
           if (window.turnstile) {
             safelyRunTurnstile(() => window.turnstile.remove(widgetId));
