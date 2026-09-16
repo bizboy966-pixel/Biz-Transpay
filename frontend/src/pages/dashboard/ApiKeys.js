@@ -151,7 +151,15 @@ function CreateKeyModal({ open, onClose, onCreated }) {
                 </label>
               ))}
             </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-slate-500">Le suivi des statuts est intégré à la clé avec <code className="font-mono text-slate-700">payments:read</code>. Aucun webhook n’est obligatoire : votre serveur peut interroger l’API.</p>
+             <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 text-[11px] leading-relaxed text-blue-900">
+               <strong>Ces cases sont des autorisations, pas un mode automatique.</strong>
+               <ul className="mt-1 list-disc space-y-1 pl-4">
+                 <li>PAR décoché : votre clé ne peut pas appeler <code className="font-mono">/checkout</code> ; votre code doit utiliser <code className="font-mono">/direct-payments</code> pour le PSR / SoftPay.</li>
+                 <li>PAR et PSR / SoftPay cochés : une même clé peut utiliser les deux. Votre intégration choisit le parcours pour chaque commande.</li>
+                 <li><code className="font-mono">payments:read</code> décoché : Biz-transPay confirme toujours le paiement en interne, mais votre serveur ne peut plus lire le statut pour valider automatiquement la commande.</li>
+               </ul>
+             </div>
+             <p className="mt-2 text-[11px] leading-relaxed text-slate-500">Pour une intégration entièrement automatique, laissez <code className="font-mono text-slate-700">payments:read</code> activé. Aucun webhook n’est obligatoire : votre serveur peut interroger l’API.</p>
           </div>
           <div>
             <label className="text-[12px] font-semibold text-slate-600">Environnement</label>
