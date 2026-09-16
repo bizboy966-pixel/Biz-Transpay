@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, BookOpen, Check, Code2, Copy, KeyRound, Menu, ShieldCheck, Webhook, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, Check, Code2, Copy, Download, KeyRound, Menu, ShieldCheck, Webhook, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 const API = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
@@ -174,7 +174,7 @@ function CodeBlock({ code }) {
     window.setTimeout(() => setCopied(false), 1400);
   };
   return <div className="relative my-3">
-    <button type="button" onClick={copy} className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700">
+    <button type="button" onClick={copy} className="pdf-copy-control absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-200 hover:bg-slate-700">
       {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}{copied ? 'Copié' : 'Copier'}
     </button>
     <pre className="overflow-x-auto rounded-xl bg-slate-950 p-4 pr-20 font-mono text-[12px] leading-relaxed text-slate-100"><code>{code}</code></pre>
@@ -203,6 +203,15 @@ function ProductExample({ product }) {
       {['curl', 'js', 'php', 'python'].map((key) => <button type="button" key={key} onClick={() => setLang(key)} className={`rounded-t-md px-3 py-2 text-xs font-bold ${lang === key ? 'border-b-2 border-slate-900 text-slate-900' : 'text-slate-500 hover:text-slate-900'}`}>{key === 'js' ? 'JavaScript' : key === 'curl' ? 'cURL' : key[0].toUpperCase() + key.slice(1)}</button>)}
     </div>
     <CodeBlock code={examples[product][lang]} />
+    <div className="pdf-all-examples">
+      <h3 className="mt-5 text-sm font-bold text-slate-900">Exemples {item.name}</h3>
+      {['curl', 'js', 'php', 'python'].map((key) => (
+        <div key={key}>
+          <div className="mt-3 text-xs font-bold uppercase tracking-wide text-slate-500">{key === 'js' ? 'JavaScript' : key === 'curl' ? 'cURL' : key[0].toUpperCase() + key.slice(1)}</div>
+          <CodeBlock code={examples[product][key]} />
+        </div>
+      ))}
+    </div>
   </section>;
 }
 
@@ -215,20 +224,43 @@ export default function ApiDocs() {
     ['status', 'Statuts et suivi'], ['webhooks', 'Webhooks signés'], ['errors', 'Erreurs'],
   ].filter(([, label]) => !query.trim() || label.toLowerCase().includes(query.toLowerCase())), [query]);
 
-  return <div className="min-h-screen bg-slate-50" data-testid="api-docs-page">
-    <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
+  const downloadPdf = () => {
+    toast.info('Dans la fenêtre suivante, choisissez « Enregistrer au format PDF ».');
+    window.print();
+  };
+
+  return <div className="api-docs-page min-h-screen bg-slate-50" data-testid="api-docs-page">
+    <style>{`
+      @media print {
+        @page { size: A4; margin: 14mm; }
+        .api-docs-page { background: #fff !important; }
+        .api-docs-header, .api-docs-sidebar, .pdf-copy-control { display: none !important; }
+        .api-docs-layout, .api-docs-main { display: block !important; max-width: none !important; width: 100% !important; }
+        .api-docs-main { padding: 0 !important; }
+        .pdf-all-examples { display: block !important; }
+        .pdf-all-examples > div { break-inside: avoid; }
+        pre { white-space: pre-wrap !important; overflow: visible !important; font-size: 9px !important; }
+        section { break-inside: avoid; }
+        a { color: inherit !important; text-decoration: none !important; }
+      }
+      .pdf-all-examples { display: none; }
+    `}</style>
+    <header className="api-docs-header sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center gap-4 px-5 py-3">
         <button type="button" onClick={() => setMobileOpen((value) => !value)} className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 lg:hidden">{mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}</button>
         <Link to="/dashboard/api" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" /> Retour aux clés</Link>
         <div className="hidden items-center gap-2 md:flex"><BookOpen className="h-4 w-4 text-blue-600" /><span className="font-cabinet text-sm font-extrabold text-slate-900">API Biz-transPay <span className="font-normal text-slate-400">v1</span></span></div>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher dans la documentation" className="ml-auto hidden w-64 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-blue-500 md:block" />
+        <button type="button" onClick={downloadPdf} data-testid="btn-download-api-pdf" className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-slate-700">
+          <Download className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Télécharger le PDF</span><span className="sm:hidden">PDF</span>
+        </button>
       </div>
     </header>
-    <div className="mx-auto flex max-w-7xl">
-      <aside className={`${mobileOpen ? 'translate-x-0' : '-translate-x-full'} fixed inset-y-14 left-0 z-20 w-64 overflow-y-auto border-r border-slate-200 bg-white transition-transform lg:sticky lg:top-14 lg:h-[calc(100vh-3.5rem)] lg:translate-x-0 lg:border-none lg:bg-transparent`}>
+    <div className="api-docs-layout mx-auto flex max-w-7xl">
+      <aside className={`api-docs-sidebar ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} fixed inset-y-14 left-0 z-20 w-64 overflow-y-auto border-r border-slate-200 bg-white transition-transform lg:sticky lg:top-14 lg:h-[calc(100vh-3.5rem)] lg:translate-x-0 lg:border-none lg:bg-transparent`}>
         <nav className="space-y-1 p-4">{sections.map(([id, label]) => <a key={id} href={`#${id}`} onClick={() => setMobileOpen(false)} className="block rounded-lg px-3 py-2 text-[13px] font-semibold text-slate-600 hover:bg-blue-50 hover:text-blue-700">{label}</a>)}</nav>
       </aside>
-      <main className="min-w-0 max-w-3xl flex-1 px-5 py-8 lg:px-10 lg:py-12">
+      <main className="api-docs-main min-w-0 max-w-3xl flex-1 px-5 py-8 lg:px-10 lg:py-12">
         <section id="start" className="scroll-mt-24">
           <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700"><Code2 className="h-3 w-3" /> API REST · v1</div>
           <h1 className="mt-3 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900 md:text-4xl">Paiements Mobile Money, sans détour.</h1>
