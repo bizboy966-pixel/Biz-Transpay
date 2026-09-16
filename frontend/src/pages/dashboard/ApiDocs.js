@@ -234,7 +234,7 @@ export default function ApiDocs() {
       @media print {
         @page { size: A4; margin: 14mm; }
         .api-docs-page { background: #fff !important; }
-        .api-docs-header, .api-docs-sidebar, .pdf-copy-control { display: none !important; }
+        .api-docs-header, .api-docs-sidebar, .bt-bottom-nav, .pdf-copy-control { display: none !important; }
         .api-docs-layout, .api-docs-main { display: block !important; max-width: none !important; width: 100% !important; }
         .api-docs-main { padding: 0 !important; }
         .pdf-all-examples { display: block !important; }
