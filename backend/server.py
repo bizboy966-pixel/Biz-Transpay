@@ -8555,6 +8555,7 @@ async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
 # ==================== API KEYS (v2 — test/live envs, hashed secrets) ====================
 import hmac
 import hashlib
+import base64
 from cryptography.fernet import Fernet, InvalidToken
 
 _FERNET: Optional[Fernet] = None
@@ -8565,7 +8566,21 @@ def _fernet() -> Fernet:
     if _FERNET is None:
         key = os.environ.get("SECRETS_ENCRYPTION_KEY")
         if not key:
-            raise RuntimeError("SECRETS_ENCRYPTION_KEY missing from .env")
+            # Keep existing Replit/Preview environments usable when the
+            # dedicated Fernet secret was not provisioned yet. The derived
+            # key is deterministic and never exposed; production deployments
+            # should still provide SECRETS_ENCRYPTION_KEY explicitly so it can
+            # remain independent from session signing.
+            session_secret = os.environ.get("SESSION_SECRET")
+            if not session_secret:
+                raise RuntimeError(
+                    "SECRETS_ENCRYPTION_KEY or SESSION_SECRET missing from .env"
+                )
+            key = base64.urlsafe_b64encode(
+                hashlib.sha256(
+                    f"biz-transpay:secrets-encryption:{session_secret}".encode("utf-8")
+                ).digest()
+            ).decode("ascii")
         _FERNET = Fernet(key.encode("utf-8"))
     return _FERNET
 
