@@ -79,15 +79,16 @@ function RevealModal({ open, onClose, secret, keyName, env }) {
 function CreateKeyModal({ open, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [env, setEnv] = useState('test');
+  const [scopes, setScopes] = useState(['checkout:create', 'direct:create', 'push:create', 'payments:read']);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) { setName(''); setEnv('test'); } }, [open]);
+  useEffect(() => { if (open) { setName(''); setEnv('test'); setScopes(['checkout:create', 'direct:create', 'push:create', 'payments:read']); } }, [open]);
   if (!open) return null;
 
   const submit = async () => {
     if (!name.trim()) { toast.error('Nom requis'); return; }
     setBusy(true);
     try {
-      const { data } = await api.post('/merchant/keys', { name: name.trim(), env });
+      const { data } = await api.post('/merchant/keys', { name: name.trim(), env, scopes });
       onCreated(data);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Erreur');
@@ -114,6 +115,30 @@ function CreateKeyModal({ open, onClose, onCreated }) {
             />
           </div>
           <div>
+            <label className="text-[12px] font-semibold text-slate-600">Produits autorisés</label>
+            <div className="mt-2 space-y-2">
+              {[
+                ['checkout:create', 'BizPay Checkout', 'Créer des paiements avec redirection'],
+                ['direct:create', 'BizPay Direct', 'Déclencher des paiements sans redirection'],
+                ['push:create', 'BizPUSH', 'Envoyer de l’argent aux bénéficiaires'],
+                ['payments:read', 'Lecture des statuts', 'Consulter paiements et confirmations'],
+              ].map(([value, label, description]) => (
+                <label key={value} className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 hover:border-blue-300">
+                  <input
+                    type="checkbox"
+                    checked={scopes.includes(value)}
+                    onChange={(event) => setScopes((current) => event.target.checked ? [...current, value] : current.filter((scope) => scope !== value))}
+                    className="mt-0.5 accent-blue-600"
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-slate-900">{label}</span>
+                    <span className="block text-[11px] text-slate-500">{description}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="text-[12px] font-semibold text-slate-600">Environnement</label>
             <div className="mt-1 grid grid-cols-2 gap-2">
               {[{ v: 'test', l: 'Test / Sandbox', d: 'Pour vos essais d\'intégration' }, { v: 'live', l: 'Production', d: 'Charge vos clients réels' }].map(o => (
@@ -132,7 +157,7 @@ function CreateKeyModal({ open, onClose, onCreated }) {
         </div>
         <div className="p-5 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Annuler</button>
-          <button onClick={submit} disabled={busy || !name.trim()} data-testid="btn-submit-create-key" className="px-4 py-2 rounded-lg bg-slate-900 text-white font-semibold text-sm disabled:opacity-40">
+          <button onClick={submit} disabled={busy || !name.trim() || scopes.length === 0} data-testid="btn-submit-create-key" className="px-4 py-2 rounded-lg bg-slate-900 text-white font-semibold text-sm disabled:opacity-40">
             {busy ? 'Création…' : 'Créer la clé'}
           </button>
         </div>
@@ -210,11 +235,10 @@ export default function ApiKeys() {
             </div>
             <h1 className="mt-3 font-cabinet text-2xl md:text-3xl font-extrabold">Vos clés API</h1>
             <p className="mt-2 text-sm md:text-base text-slate-300 leading-relaxed">
-              Encaissez des paiements crypto <strong>et</strong> envoyez des retraits (USDT et 40+ actifs)
-              via une API REST simple.
-              Utilisez vos clés <span className="text-blue-300 font-semibold">sk_test_…</span> en sandbox, puis passez en
-              <span className="text-emerald-300 font-semibold"> sk_live_…</span> le jour de la mise en production.
-              Aucun webhook, aucune configuration — il vous suffit d'appeler nos endpoints.
+               Intégrez les paiements Mobile Money avec BizPay Checkout, BizPay Direct et BizPUSH
+               via une API REST conçue pour les flux asynchrones.
+               Utilisez vos clés <span className="text-blue-300 font-semibold">sk_test_…</span> en test, puis passez en
+               <span className="text-emerald-300 font-semibold"> sk_live_…</span> en production. Les webhooks signés vous notifient automatiquement.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -233,7 +257,7 @@ export default function ApiKeys() {
           </div>
         </div>
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div className="p-3 rounded-xl bg-white/5 border border-white/10">
+           <div className="p-3 rounded-xl bg-white/5 border border-white/10">
             <div className="text-[11px] text-slate-400 font-semibold">Base URL</div>
             <div className="mt-0.5 font-mono text-[12px] text-blue-200 break-all">{API_BASE}</div>
           </div>
@@ -243,7 +267,7 @@ export default function ApiKeys() {
           </div>
           <div className="p-3 rounded-xl bg-white/5 border border-white/10">
             <div className="text-[11px] text-slate-400 font-semibold">Rate limit</div>
-            <div className="mt-0.5 font-mono text-[12px] text-blue-200">100 req / min / clé</div>
+             <div className="mt-0.5 font-mono text-[12px] text-blue-200">Webhook signé · statut async</div>
           </div>
         </div>
       </div>
@@ -297,6 +321,9 @@ export default function ApiKeys() {
                     <span>Créée: {new Date(k.created_at).toLocaleDateString('fr-FR')}</span>
                     <span>Dernier usage: {k.last_used_at ? new Date(k.last_used_at).toLocaleString('fr-FR') : '—'}</span>
                   </div>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {(k.scopes || []).map((scope) => <Badge key={scope} tone="slate">{scope}</Badge>)}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => toggle(k)} data-testid={`btn-toggle-${k.id}`} className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 hover:text-slate-800" title={k.active ? 'Désactiver' : 'Activer'}>
@@ -318,30 +345,35 @@ export default function ApiKeys() {
       {/* Quick start */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Encaisser</div>
-          <div className="mt-2 font-cabinet font-bold text-slate-900">Créer un paiement</div>
+          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Checkout</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Rediriger un client</div>
           <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
-{`curl -X POST ${API_BASE}/payments \\
+{`curl -X POST ${API_BASE}/checkout \\
   -H "Authorization: Bearer sk_test_..." \\
-  -d '{ "amount": 25, "coin": "USDT" }'`}
+  -H "Idempotency-Key: cart-42-v1" \\
+  -d '{ "amount": 12500, "currency": "XOF",
+        "country": "TG", "operator": "tmoney_tg",
+        "reference": "CMD-42" }'`}
           </pre>
         </div>
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Retirer</div>
-          <div className="mt-2 font-cabinet font-bold text-slate-900">Envoyer un retrait</div>
+          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Direct & PUSH</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Piloter vos flux Mobile Money</div>
           <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
-{`curl -X POST ${API_BASE}/payouts \\
+{`curl -X POST ${API_BASE}/direct-payments \\
   -H "Authorization: Bearer sk_test_..." \\
-  -d '{ "amount": 25, "network": "TRC20",
-        "destination_address": "T..." }'`}
+  -H "Idempotency-Key: payment-42-v1" \\
+  -d '{ "amount": 8900, "currency": "XOF",
+        "country": "TG", "operator": "tmoney_tg",
+        "customer_phone": "22890000000" }'`}
           </pre>
         </div>
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
           <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Suivi</div>
-          <div className="mt-2 font-cabinet font-bold text-slate-900">Vérifier un statut</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Lire un paiement asynchrone</div>
           <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
-{`curl ${API_BASE}/payments/{id}/status
-# ou /payouts/{id}/status`}
+{`curl ${API_BASE}/payments/{id}
+curl ${API_BASE}/payments/{id}/status`}
           </pre>
           <Link to="/dashboard/api/docs" data-testid="link-see-docs" className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-blue-600 hover:text-blue-700">
             Voir la documentation complète →

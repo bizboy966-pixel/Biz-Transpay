@@ -3295,7 +3295,11 @@ async def public_fees_config(uid: str = Depends(get_current_user_id)):
 @api.post("/transfers")
 async def transfer(req: TransferRequest, request: Request,
                    uid: str = Depends(require_recent_auth)):
-    await _require_turnstile(req.turnstile_token, request, "withdrawal")
+    # Merchant API requests are authenticated by a scoped secret key and
+    # already protected by API rate limits/idempotency. Browser transfers keep
+    # the anti-bot challenge unchanged.
+    if not getattr(request.state, "merchant_api", False):
+        await _require_turnstile(req.turnstile_token, request, "withdrawal")
     u = await get_user(uid)
     if u.get("is_banned") or u.get("is_blocked"):
         raise HTTPException(403, "Compte suspendu")
@@ -3579,6 +3583,10 @@ async def transfer(req: TransferRequest, request: Request,
 
         metadata = {
             "transfer_type": "biz_to_mobile",
+            "source": (req.metadata or {}).get("source"),
+            "environment": (req.metadata or {}).get("environment"),
+            "product": (req.metadata or {}).get("product"),
+            "merchant_reference": (req.metadata or {}).get("merchant_reference"),
             "provider": "paydunya",
             "country": op.get("country"),
             "country_code": op.get("country"),
@@ -4445,6 +4453,7 @@ class PayDunyaInvoiceRequest(BaseModel):
     phone_number: Optional[str] = None
     fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "client"
     description: Optional[str] = None
+    return_url: Optional[str] = None
 
 
 def _paydunya_callback_base(request: Request) -> str:
@@ -4512,7 +4521,7 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
             customer={"firstname": first, "lastname": last, "email": req.email,
                       **({"phone_number": phone} if phone else {})},
             callback_url=callback,
-            return_url=f"{callback_base}/api/deposits/paydunya/return",
+            return_url=req.return_url or f"{callback_base}/api/deposits/paydunya/return",
             cancel_url=f"{callback_base}/dashboard/deposit?paydunya=cancelled",
             description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
@@ -4849,6 +4858,17 @@ async def _claim_momo_flag(dep_id: str, flag: str) -> bool:
     result = await db.momo_deposits.update_one(
         {"id": dep_id, flag: {"$ne": True}},
         {"$set": {flag: True, f"{flag}_claimed_at": now_iso()}})
+    return result.modified_count > 0
+
+
+async def _claim_transaction_flag(transaction_id: str, flag: str) -> bool:
+    """Claim a supported transaction side effect exactly once."""
+    if flag not in {"merchant_webhook_claimed", "merchant_failure_webhook_claimed"}:
+        raise ValueError("Unsupported transaction claim flag")
+    result = await db.transactions.update_one(
+        {"id": transaction_id, flag: {"$ne": True}},
+        {"$set": {flag: True, f"{flag}_claimed_at": now_iso()}},
+    )
     return result.modified_count > 0
 
 
@@ -5420,6 +5440,18 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
                      "Retrait Mobile Money échoué",
                      "Votre retrait a échoué. Le montant a été remboursé sur votre portefeuille.",
                      data={"transaction_id": tx_id, "reference": tx.get("reference")})
+    if meta.get("source") == "merchant_api":
+        claimed = await db.transactions.update_one(
+            {"id": tx_id, "metadata.source": "merchant_api",
+             "metadata.webhook_claimed": {"$ne": True}},
+            {"$set": {"metadata.webhook_claimed": True}},
+        )
+        if claimed.modified_count:
+            await _deliver_webhook(tx["user_id"], "push.failed", {
+                "id": tx_id, "status": "failed", "amount": tx.get("amount"),
+                "currency": tx.get("currency"), "reference": tx.get("reference"),
+                "source": "merchant_api",
+            })
     return True
 
 
@@ -5460,6 +5492,18 @@ async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:
             data={"transaction_id": tx_id, "reference": tx.get("reference"),
                   "amount": tx.get("amount"), "transfer_type": "biz_to_mobile"},
         )
+        if (tx.get("metadata") or {}).get("source") == "merchant_api":
+            claimed = await db.transactions.update_one(
+                {"id": tx_id, "metadata.source": "merchant_api",
+                 "metadata.webhook_claimed": {"$ne": True}},
+                {"$set": {"metadata.webhook_claimed": True}},
+            )
+            if claimed.modified_count:
+                await _deliver_webhook(tx["user_id"], "push.succeeded", {
+                    "id": tx_id, "status": "completed",
+                    "amount": tx.get("amount"), "currency": tx.get("currency"),
+                    "reference": tx.get("reference"), "source": "merchant_api",
+                })
     return True
 
 
@@ -5568,6 +5612,16 @@ async def _reconcile_mobile_withdrawal(tx: dict) -> str:
                          f"Votre retrait de {tx['amount']:,.0f} {tx.get('currency', '')} a été envoyé au bénéficiaire.",
                          data={"transaction_id": tx["id"], "reference": tx.get("reference"),
                                "amount": tx["amount"], "transfer_type": "biz_to_mobile"})
+            if meta.get("source") == "merchant_api" and await _claim_transaction_flag(
+                    tx["id"], "merchant_webhook_claimed"):
+                await _deliver_webhook(tx["user_id"], "push.succeeded", {
+                    "payout_id": tx["id"],
+                    "reference": meta.get("merchant_reference") or tx.get("reference"),
+                    "amount": _format_amount(tx.get("amount", 0)),
+                    "currency": tx.get("currency"),
+                    "status": "completed",
+                    "completed_at": _format_iso(datetime.now(timezone.utc)),
+                })
         return "completed"
     if status in {"failed", "failure", "cancelled", "canceled", "rejected",
                   "declined", "error", "refunded"}:
@@ -6304,6 +6358,9 @@ async def _authenticate_merchant(request: Request) -> dict:
             pass
         user["_api_env"] = env
         user["_api_key_id"] = mkey["id"]
+        user["_api_scopes"] = mkey.get("scopes") or [
+            "checkout:create", "direct:create", "push:create", "payments:read"
+        ]
         return user
     # Fallback to legacy single-doc schema
     keys = await db.api_keys.find_one({f"keys.{env}.secret_hash": h})
@@ -6327,7 +6384,28 @@ async def _authenticate_merchant(request: Request) -> dict:
     except Exception:
         pass
     user["_api_env"] = env  # attach environment so downstream can vary behaviour
+    # Keys issued by the legacy schema predate scopes.  Treat them as fully
+    # enabled so existing integrations continue to work unchanged.
+    user["_api_scopes"] = [
+        "checkout:create", "direct:create", "push:create", "payments:read"
+    ]
     return user
+
+
+def _require_merchant_scope(merchant: dict, scope: str) -> None:
+    """Enforce product scopes without weakening legacy key compatibility."""
+    # A missing field denotes a legacy key; an explicitly empty list denotes
+    # a deliberately restricted key and must not gain implicit privileges.
+    scopes = merchant.get("_api_scopes")
+    if scopes is None:
+        scopes = ["checkout:create", "direct:create", "push:create", "payments:read"]
+    if "*" not in scopes and scope not in scopes:
+        raise BizAPIError(
+            403,
+            f"This API key does not allow the {scope} operation.",
+            "API_SCOPE_REQUIRED",
+            details={"required_scope": scope},
+        )
 
 
 class MerchantPaymentRequest(BaseModel):
@@ -6402,6 +6480,7 @@ def _serialize_payment(mp: dict) -> dict:
     """Normalize a merchant_payment document for the /v1/payments API surface."""
     return {
         "id": mp.get("id"),
+        "environment": mp.get("environment"),
         "status": mp.get("status"),
         "coin": mp.get("coin"),
         "amount": _format_amount(mp.get("amount", 0)),
@@ -6412,6 +6491,8 @@ def _serialize_payment(mp: dict) -> dict:
         "reference": mp.get("reference"),
         "customer_email": mp.get("customer_email"),
         "payment_url": mp.get("payment_url"),
+        "checkout_url": mp.get("checkout_url") or mp.get("payment_url"),
+        "simulation_endpoint": mp.get("simulation_endpoint"),
         "deposit_address": mp.get("deposit_address"),
         "amount_to_send": mp.get("amount_to_send"),
         "tx_hash": mp.get("tx_hash"),
@@ -6434,6 +6515,8 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
     - Returns a `payment_url` the customer can be redirected to.
     """
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "checkout:create")
+    owner = _developer_owner(merchant)
 
     # ---- Idempotency ----------------------------------------------------
     idem_key = (request.headers.get("Idempotency-Key")
@@ -6444,13 +6527,40 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
             raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
                               "IDEMPOTENCY_KEY_TOO_LONG")
 
+    if merchant.get("_api_env") == "test":
+        cached = await _idempotency_claim(
+            owner, idem_key, "POST", "/api/v1/payments", idem_fingerprint
+        ) if idem_key else None
+        if cached and cached.get("body") is not None:
+            return JSONResponse(status_code=cached.get("status_code", 200),
+                                content=cached["body"])
+        if payload.amount < 1:
+            raise BizAPIError(400, "Minimum amount: 1", "AMOUNT_TOO_SMALL")
+        mp_id = new_id()
+        now = now_iso()
+        doc = {
+            "id": mp_id, "merchant_id": merchant["id"],
+            "environment": "test", "product": "bizpay_checkout",
+            "source": "merchant_api", "amount": payload.amount,
+            "coin": payload.coin.upper(), "reference": payload.reference or mp_id,
+            "merchant_reference": payload.reference or mp_id,
+            "status": "initiated", "payment_url": f"/checkout/{mp_id}",
+            "simulation_endpoint": f"/api/v1/test/payments/{mp_id}/complete",
+            "customer_email": payload.customer_email, "metadata": payload.metadata or {},
+            "created_at": now,
+        }
+        await db.merchant_payments.insert_one(doc)
+        body = _serialize_payment(doc)
+        if idem_key:
+            await _idempotency_store(owner, idem_key, "POST", "/api/v1/payments", 200, body)
+        return body
     if not izipay.is_configured():
         raise BizAPIError(503, "Crypto gateway not configured", "GATEWAY_UNAVAILABLE")
     if payload.amount < 1:
         raise BizAPIError(400, "Minimum amount: 1 USDT", "AMOUNT_TOO_SMALL")
     if idem_key:
         cached = await _idempotency_claim(
-            merchant["id"], idem_key, "POST", "/api/v1/payments",
+            owner, idem_key, "POST", "/api/v1/payments",
             idem_fingerprint)
         if cached and cached.get("body") is not None:
             return JSONResponse(status_code=cached.get("status_code", 200),
@@ -6472,7 +6582,7 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                       **(payload.metadata or {})},
         )
     except izipay.IziPayError as e:
-        await _idempotency_release(merchant["id"], idem_key, idem_fingerprint)
+        await _idempotency_release(owner, idem_key, idem_fingerprint)
         # Log full detail server-side.
         logger.warning("v1/payments gateway rejected [%s] %s", e.code, e.message)
         # Surface the upstream reason to the merchant so they can fix
@@ -6499,14 +6609,36 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                 "hint": hint,
             },
         )
+    except Exception as exc:  # ambiguous upstream outcome: retain reservation
+        pending = {
+            "id": mp_id, "merchant_id": merchant["id"],
+            "environment": "live", "product": "bizpay_checkout",
+            "source": "merchant_api", "amount": payload.amount,
+            "coin": payload.coin.upper(), "reference": payload.reference or mp_id,
+            "merchant_reference": payload.reference or mp_id,
+            "status": "pending", "provider_status_unknown": True,
+            "metadata": payload.metadata or {}, "created_at": now_iso(),
+        }
+        await db.merchant_payments.insert_one(pending)
+        body = _serialize_payment(pending)
+        if idem_key:
+            await _idempotency_store(owner, idem_key, "POST",
+                                     "/api/v1/payments", 200, body)
+        logger.warning("ambiguous checkout upstream outcome: %s", exc)
+        raise BizAPIError(502, "Payment status is pending reconciliation.",
+                          "PAYMENT_STATUS_UNKNOWN")
 
     expires_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
     doc = {
         "id": mp_id,
         "merchant_id": merchant["id"],
+        "environment": "live",
+        "product": "bizpay_checkout",
+        "source": "merchant_api",
         "amount": payload.amount,
         "coin": payload.coin.upper(),
-        "reference": payload.reference,
+        "reference": payload.reference or mp_id,
+        "merchant_reference": payload.reference or mp_id,
         "customer_email": payload.customer_email,
         "izipay_intent_id": intent.get("id"),
         "payment_url": intent.get("paymentLink") or intent.get("paymentUrl") or intent.get("payment_url"),
@@ -6522,11 +6654,84 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
     body = _serialize_payment(doc)
     if idem_key:
         try:
-            await _idempotency_store(merchant["id"], idem_key, "POST",
+            await _idempotency_store(owner, idem_key, "POST",
                                      "/api/v1/payments", 200, body)
         except Exception:
             pass
     return body
+
+
+@api.post("/v1/test/payments/{payment_id}/complete")
+async def complete_sandbox_payment(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    if merchant.get("_api_env") != "test":
+        raise BizAPIError(403, "This simulation is only available with test keys.",
+                          "TEST_KEY_REQUIRED")
+    collection = db.merchant_payments
+    doc = await collection.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"],
+         "environment": "test", "product": "bizpay_checkout"}, {"_id": 0})
+    if not doc:
+        collection = db.momo_deposits
+        doc = await collection.find_one(
+            {"id": payment_id, "merchant_id": merchant["id"],
+             "environment": "test",
+             "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}},
+            {"_id": 0})
+    if not doc:
+        raise BizAPIError(404, "Test payment not found.", "PAYMENT_NOT_FOUND")
+    await collection.update_one(
+        {"id": payment_id, "merchant_id": merchant["id"], "environment": "test",
+         "status": {"$nin": ["paid", "failed", "canceled"]}},
+        {"$set": {"status": "paid", "updated_at": now_iso(),
+                  "completed_at": now_iso()}},
+    )
+    fresh = await collection.find_one(
+        {"id": payment_id, "merchant_id": merchant["id"], "environment": "test"},
+        {"_id": 0},
+    ) or doc
+    # Claiming on the transaction document makes webhook emission safe even
+    # when the completion endpoint is retried concurrently.
+    claim = await collection.update_one(
+        {"id": payment_id, "merchant_id": merchant["id"],
+         "environment": "test", "test_webhook_claimed": {"$ne": True}},
+        {"$set": {"test_webhook_claimed": True}},
+    )
+    if claim.modified_count:
+        await _deliver_webhook(merchant["id"], "payment.completed", {
+            "id": payment_id, "status": "paid", "amount": fresh.get("amount"),
+            "currency": fresh.get("currency") or fresh.get("coin"),
+            "reference": fresh.get("reference"),
+            "environment": "test", "source": "merchant_api",
+        })
+    return _serialize_payment(fresh)
+
+
+@api.post("/v1/bizpay/checkout")
+async def bizpay_checkout(payload: MerchantPaymentRequest, request: Request):
+    """Hosted BizPay checkout alias; the historical payments route remains
+    available for existing integrations."""
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "checkout:create")
+    if not (request.headers.get("Idempotency-Key") or "").strip():
+        raise BizAPIError(400, "Idempotency-Key is required for checkout.",
+                          "IDEMPOTENCY_KEY_REQUIRED")
+    return await merchant_create_payment(payload, request)
+
+
+@api.get("/v1/bizpay/checkout/{payment_id}")
+async def bizpay_checkout_details(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    return await merchant_get_payment(payment_id, request)
+
+
+@api.get("/v1/bizpay/checkout/{payment_id}/status")
+async def bizpay_checkout_status(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    return await merchant_get_payment_status(payment_id, request)
 
 
 @api.get("/v1/payments")
@@ -6538,7 +6743,9 @@ async def merchant_list_payments(request: Request,
     """Paginated list of the merchant's payments. Filter by `status` or
     `reference` if provided. `offset` allows page-based pagination."""
     merchant = await _authenticate_merchant(request)
-    q: dict = {"merchant_id": merchant["id"]}
+    _require_merchant_scope(merchant, "payments:read")
+    q: dict = {"merchant_id": merchant["id"],
+               "environment": merchant.get("_api_env", "test")}
     if status:
         q["status"] = status
     if reference:
@@ -6573,8 +6780,10 @@ async def merchant_search_payment(request: Request,
     """Search the most recent payment carrying this merchant `reference`.
     Returns 404 if no payment matches. Sync with upstream before returning."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
     mp = await db.merchant_payments.find_one(
-        {"merchant_id": merchant["id"], "reference": reference},
+        {"merchant_id": merchant["id"], "environment": merchant.get("_api_env", "test"),
+         "reference": reference},
         {"_id": 0},
         sort=[("created_at", -1)],
     )
@@ -6585,7 +6794,8 @@ async def merchant_search_payment(request: Request,
             and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
         mp = await db.merchant_payments.find_one(
-            {"merchant_id": merchant["id"], "reference": reference},
+            {"merchant_id": merchant["id"], "environment": merchant.get("_api_env", "test"),
+             "reference": reference},
             {"_id": 0},
             sort=[("created_at", -1)],
         ) or mp
@@ -6597,15 +6807,30 @@ async def merchant_get_payment(payment_id: str, request: Request):
     """Full details for a single payment. Triggers an upstream sync when the
     payment is still pending so the returned data is always fresh."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    _require_merchant_scope(merchant, "payments:read")
+    momo = await db.momo_deposits.find_one(
+        {"id": payment_id, "user_id": merchant["id"],
+         **_api_environment_clause(merchant),
+         "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
+    if momo:
+        if momo.get("status") == "pending":
+            await _reconcile_momo_deposit(payment_id)
+            momo = await db.momo_deposits.find_one(
+                {"id": payment_id, "user_id": merchant["id"],
+                 "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or momo
+        return _developer_payment_view(momo)
     mp = await db.merchant_payments.find_one(
-        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payment_id, "merchant_id": merchant["id"],
+         **_api_environment_clause(merchant)}, {"_id": 0})
     if not mp:
         raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
     if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
             and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
         mp = await db.merchant_payments.find_one(
-            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+            {"id": payment_id, "merchant_id": merchant["id"],
+             "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or mp
     return _serialize_payment(mp)
 
 
@@ -6614,15 +6839,32 @@ async def merchant_get_payment_status(payment_id: str, request: Request):
     """Lightweight status endpoint. Returns `{id, status, updated_at}` — cheaper
     than the full resource, ideal for repeated polling. Auto-syncs upstream."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    _require_merchant_scope(merchant, "payments:read")
+    momo = await db.momo_deposits.find_one(
+        {"id": payment_id, "user_id": merchant["id"],
+         **_api_environment_clause(merchant),
+         "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
+    if momo:
+        if momo.get("status") == "pending":
+            await _reconcile_momo_deposit(payment_id)
+            momo = await db.momo_deposits.find_one(
+                {"id": payment_id, "user_id": merchant["id"],
+                 "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or momo
+        return {"id": momo["id"], "status": momo.get("status"),
+                "updated_at": _format_iso(momo.get("updated_at")
+                                           or momo.get("created_at", ""))}
     mp = await db.merchant_payments.find_one(
-        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payment_id, "merchant_id": merchant["id"],
+         **_api_environment_clause(merchant)}, {"_id": 0})
     if not mp:
         raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
     if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
             and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
         mp = await db.merchant_payments.find_one(
-            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+            {"id": payment_id, "merchant_id": merchant["id"],
+             "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or mp
     return {
         "id": mp["id"],
         "status": mp.get("status"),
@@ -6636,15 +6878,18 @@ async def merchant_check_completed(payment_id: str, request: Request):
     """Returns `{completed, status}`. `completed` is `true` only when the
     payment status is `paid`. Auto-syncs with upstream."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
     mp = await db.merchant_payments.find_one(
-        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payment_id, "merchant_id": merchant["id"],
+         "environment": merchant.get("_api_env", "test")}, {"_id": 0})
     if not mp:
         raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
     if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
             and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
         mp = await db.merchant_payments.find_one(
-            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+            {"id": payment_id, "merchant_id": merchant["id"],
+             "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or mp
     return {
         "id": mp["id"],
         "completed": mp.get("status") == "paid",
@@ -6658,8 +6903,10 @@ async def merchant_cancel_payment(payment_id: str, request: Request):
     state can be canceled — if the customer has already paid, `409` is
     returned. Always re-syncs with upstream first."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "checkout:create")
     mp = await db.merchant_payments.find_one(
-        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payment_id, "merchant_id": merchant["id"],
+         "environment": merchant.get("_api_env", "test")}, {"_id": 0})
     if not mp:
         raise BizAPIError(404, "Payment not found", "PAYMENT_NOT_FOUND")
     # Force a fresh sync so we do not cancel something that just got paid.
@@ -6667,7 +6914,8 @@ async def merchant_cancel_payment(payment_id: str, request: Request):
             "paid", "expired", "failed", "canceled"):
         await _reconcile_intent(mp["izipay_intent_id"])
         mp = await db.merchant_payments.find_one(
-            {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+            {"id": payment_id, "merchant_id": merchant["id"],
+             "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or mp
 
     status = mp.get("status")
     if status == "paid":
@@ -6678,11 +6926,13 @@ async def merchant_cancel_payment(payment_id: str, request: Request):
         return _serialize_payment(mp)
 
     await db.merchant_payments.update_one(
-        {"id": payment_id, "merchant_id": merchant["id"]},
+        {"id": payment_id, "merchant_id": merchant["id"],
+         "environment": merchant.get("_api_env", "test")},
         {"$set": {"status": "canceled", "canceled_at": now_iso()}},
     )
     mp = await db.merchant_payments.find_one(
-        {"id": payment_id, "merchant_id": merchant["id"]}, {"_id": 0}) or mp
+        {"id": payment_id, "merchant_id": merchant["id"],
+         "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or mp
     return _serialize_payment(mp)
 
 
@@ -6695,13 +6945,542 @@ async def _safe_reconcile(intent_id: str) -> None:
         logger.warning("background reconcile failed for %s: %s", intent_id, e)
 
 
+# ==================== BIZPAY DIRECT (Mobile Money, no redirect) ====================
+class BizPayDirectRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    currency: Literal["XOF", "XAF"]
+    country: str = Field(..., min_length=2, max_length=2)
+    operator: str = Field(..., min_length=2, max_length=64)
+    customer_phone: str = Field(..., min_length=6, max_length=32)
+    customer_email: Optional[str] = None
+    reference: Optional[str] = Field(None, min_length=1, max_length=128)
+    return_url: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+class DeveloperCheckoutRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    currency: Literal["XOF", "XAF"]
+    country: str = Field(..., min_length=2, max_length=2)
+    operator: str = Field(..., min_length=2, max_length=64)
+    customer_phone: Optional[str] = Field(None, min_length=6, max_length=32)
+    customer_email: Optional[str] = None
+    customer_name: str = Field("Client", min_length=1, max_length=120)
+    reference: Optional[str] = Field(None, min_length=1, max_length=128)
+    return_url: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]:
+    environment = merchant.get("_api_env", "test")
+    # Sandbox only needs the admin catalogue.  Decrypting credentials here
+    # must never make a test request depend on provider secrets.
+    cfg = await get_paydunya_config(decrypt=environment == "live")
+    if not cfg.get("enabled"):
+        raise BizAPIError(503, "Payment service is temporarily unavailable.",
+                          "PAYMENT_SERVICE_UNAVAILABLE")
+    op = next((item for item in cfg.get("catalog", [])
+               if str(item.get("country", "")).upper() == payload.country.upper()
+               and str(item.get("code", "")).lower() == payload.operator.lower()
+               and item.get("active", True)
+               and not item.get("archived", False)
+               and not item.get("hidden", False)), None)
+    if not op:
+        raise BizAPIError(400, "The selected payment method is unavailable.",
+                          "PAYMENT_METHOD_UNAVAILABLE")
+    currency = str(op.get("currency") or payload.currency).upper()
+    if currency != payload.currency.upper():
+        raise BizAPIError(400, "The currency is not supported by this method.",
+                          "CURRENCY_NOT_SUPPORTED")
+    if payload.amount < float(op.get("min", 100)):
+        raise BizAPIError(400, "Amount is below the minimum allowed.",
+                          "AMOUNT_TOO_SMALL")
+    maximum = float(op.get("max", 0) or 0)
+    if maximum and payload.amount > maximum:
+        raise BizAPIError(400, "Amount exceeds the maximum allowed.",
+                          "AMOUNT_TOO_LARGE")
+    return cfg, op
+
+
+def _developer_owner(merchant: dict) -> str:
+    """Partition idempotency and new records by merchant and environment."""
+    return f"{merchant['id']}:{merchant.get('_api_env', 'test')}"
+
+
+def _api_environment_clause(merchant: dict) -> dict:
+    """Live keys may read pre-API rows; sandbox must remain isolated."""
+    if merchant.get("_api_env", "test") == "live":
+        return {"$or": [{"environment": "live"},
+                        {"environment": {"$exists": False}}]}
+    return {"environment": "test"}
+
+
+def _sandbox_checkout_url(payment_id: str) -> str:
+    # There is no hosted customer UI in the API service.  Never advertise a
+    # route that could 404; callers use simulation_endpoint instead.
+    return None
+
+
+def _developer_payment_view(doc: dict) -> dict:
+    return {
+        "id": doc["id"], "object": "payment", "product": doc.get("product"),
+        "status": doc.get("status", "pending"),
+        "amount": _format_amount(doc.get("amount", 0)),
+        "currency": doc.get("currency"), "reference": doc.get("reference"),
+        "checkout_url": doc.get("checkout_url"),
+        "country": doc.get("country"), "operator": doc.get("operator"),
+        "created_at": _format_iso(doc.get("created_at", "")),
+        "updated_at": _format_iso(doc.get("updated_at") or doc.get("created_at", "")),
+        "metadata": doc.get("metadata") or {},
+        "simulation_endpoint": doc.get("simulation_endpoint"),
+    }
+
+
+async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Request,
+                              product: str) -> dict:
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "checkout:create")
+    idem = (request.headers.get("Idempotency-Key") or "").strip()
+    if not idem:
+        raise BizAPIError(400, "Idempotency-Key is required.", "IDEMPOTENCY_KEY_REQUIRED")
+    fp = _request_fingerprint(payload)
+    owner = _developer_owner(merchant)
+    local_id = None
+    cached = await _idempotency_claim(owner, idem, "POST",
+                                      "/api/v1/checkout", fp)
+    if cached and cached.get("body") is not None:
+        return cached["body"]
+    try:
+        if payload.reference and await db.momo_deposits.find_one(
+            {"user_id": merchant["id"], "environment": merchant.get("_api_env", "test"),
+             "merchant_reference": payload.reference},
+            {"_id": 1},
+        ):
+            raise BizAPIError(409, "Reference already used.", "REFERENCE_ALREADY_USED")
+        req = PayDunyaInvoiceRequest(
+            amount=payload.amount, currency=payload.currency,
+            email=payload.customer_email or "customer@checkout.invalid",
+            full_name=payload.customer_name, country=payload.country,
+            operator=payload.operator, phone_number=payload.customer_phone,
+            return_url=payload.return_url,
+            description=f"BizPay Checkout {payload.reference or ''}".strip(),
+        )
+        if merchant.get("_api_env") == "test":
+            dep_id = new_id()
+            now = now_iso()
+            doc = {
+                "id": dep_id, "user_id": merchant["id"],
+                "merchant_id": merchant["id"], "source": "merchant_api",
+                "reference": payload.reference or dep_id,
+                "merchant_reference": payload.reference or dep_id,
+                "environment": "test", "product": product,
+                "amount": payload.amount, "requested_amount": payload.amount,
+                "charged_amount": payload.amount, "currency": payload.currency,
+                "country": payload.country.upper(), "operator": payload.operator,
+                "status": "pending", "checkout_url": _sandbox_checkout_url(dep_id),
+                "simulation_endpoint": f"/api/v1/test/payments/{dep_id}/complete",
+                "metadata": payload.metadata or {}, "created_at": now,
+                "updated_at": now,
+            }
+            await db.momo_deposits.insert_one(doc)
+        else:
+            result = await _create_paydunya_invoice_deposit(
+                req, merchant["id"], "par_redirect", _paydunya_callback_base(request)
+            )
+            local_id = result.get("id")
+            await db.momo_deposits.update_one(
+                {"id": result["id"], "user_id": merchant["id"]},
+                {"$set": {"merchant_id": merchant["id"],
+                          "source": "merchant_api",
+                          "reference": payload.reference or result["id"],
+                          "merchant_reference": payload.reference or result["id"],
+                          "environment": "live", "product": product,
+                          "metadata": payload.metadata or {}}},
+            )
+            doc = await db.momo_deposits.find_one({"id": result["id"]}, {"_id": 0})
+        body = _developer_payment_view(doc)
+        await _idempotency_store(owner, idem, "POST",
+                                 "/api/v1/checkout", 200, body)
+        return body
+    except Exception:
+        if local_id:
+            doc = await db.momo_deposits.find_one(
+                {"id": local_id, "user_id": merchant["id"],
+                 "environment": merchant.get("_api_env", "test")}, {"_id": 0})
+            if doc:
+                await db.momo_deposits.update_one(
+                    {"id": local_id, "user_id": merchant["id"]},
+                    {"$set": {"source": "merchant_api",
+                              "environment": merchant.get("_api_env", "test"),
+                              "product": product, "status": "pending",
+                              "provider_status_unknown": True,
+                              "merchant_reference": payload.reference or local_id,
+                              "updated_at": now_iso()}},
+                )
+                doc.update({"source": "merchant_api",
+                            "environment": merchant.get("_api_env", "test"),
+                            "product": product, "status": "pending",
+                            "provider_status_unknown": True})
+                try:
+                    await _idempotency_store(
+                        owner, idem, "POST", "/api/v1/checkout", 200,
+                        _developer_payment_view(doc))
+                except Exception:
+                    pass
+        else:
+            await _idempotency_release(owner, idem, fp)
+        raise
+
+
+@api.post("/v1/checkout")
+async def developer_checkout(payload: DeveloperCheckoutRequest, request: Request):
+    return await _developer_checkout(payload, request, "bizpay_checkout")
+
+
+@api.post("/v1/direct-payments")
+async def developer_direct_payment(payload: BizPayDirectRequest, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "direct:create")
+    idem = (request.headers.get("Idempotency-Key") or "").strip()
+    if not idem:
+        raise BizAPIError(400, "Idempotency-Key is required.", "IDEMPOTENCY_KEY_REQUIRED")
+    fp = _request_fingerprint(payload)
+    owner = _developer_owner(merchant)
+    cached = await _idempotency_claim(owner, idem, "POST",
+                                      "/api/v1/direct-payments", fp)
+    if cached and cached.get("body") is not None:
+        return cached["body"]
+    try:
+        cfg, op = await _developer_operator(merchant, payload)
+        if payload.reference and await db.momo_deposits.find_one(
+            {"user_id": merchant["id"], "environment": merchant.get("_api_env", "test"),
+             "merchant_reference": payload.reference},
+            {"_id": 1},
+        ):
+            raise BizAPIError(409, "Reference already used.", "REFERENCE_ALREADY_USED")
+        fees = paydunya.calculate_fees(payload.amount, op, "client")
+        dep_id = new_id()
+        if merchant.get("_api_env") == "test":
+            now = now_iso()
+            doc = {
+                "id": dep_id, "user_id": merchant["id"],
+                "merchant_id": merchant["id"], "source": "merchant_api",
+                "reference": payload.reference or dep_id,
+                "merchant_reference": payload.reference or dep_id,
+                "environment": "test", "product": "bizpay_direct",
+                "amount": payload.amount, "requested_amount": fees["requested_amount"],
+                "charged_amount": fees["charged_amount"],
+                "wallet_credit_amount": fees["wallet_credit_amount"],
+                "currency": payload.currency, "country": payload.country.upper(),
+                "operator": payload.operator, "phone_number": payload.customer_phone,
+                "status": "pending", "metadata": payload.metadata or {},
+                "simulation_endpoint": f"/api/v1/test/payments/{dep_id}/complete",
+                "created_at": now, "updated_at": now,
+            }
+            await db.momo_deposits.insert_one(doc)
+            body = _developer_payment_view(doc)
+            await _idempotency_store(owner, idem, "POST",
+                                     "/api/v1/direct-payments", 200, body)
+            return body
+        base = _paydunya_callback_base(request)
+        customer_name = "Client"
+        try:
+            invoice = await paydunya.create_invoice(
+                cfg, amount=fees["charged_amount"], currency=payload.currency,
+                token=dep_id,
+                customer={"firstname": customer_name,
+                          "lastname": customer_name,
+                          "email": payload.customer_email or "customer@direct.invalid",
+                          "phone_number": payload.customer_phone},
+                callback_url=f"{base}/api/webhooks/paydunya?ref={dep_id}",
+                return_url=payload.return_url or f"{base}/api/v1/payments/{dep_id}",
+                cancel_url=payload.return_url or "",
+                description=f"BizPay Direct {payload.reference or ''}".strip(),
+            )
+            token = paydunya.invoice_token(invoice)
+            if not token:
+                raise BizAPIError(502, "Payment service returned an invalid transaction.",
+                                  "PAYMENT_SERVICE_ERROR")
+            now = now_iso()
+            doc = {
+                "id": dep_id, "user_id": merchant["id"], "merchant_id": merchant["id"],
+                "source": "merchant_api",
+                "reference": payload.reference or dep_id,
+                "merchant_reference": payload.reference,
+                "environment": "live",
+                "product": "bizpay_direct", "amount": payload.amount,
+                "requested_amount": fees["requested_amount"],
+                "charged_amount": fees["charged_amount"],
+                "wallet_credit_amount": fees["wallet_credit_amount"],
+                "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+                "total_fee": fees["total_fee"], "fee_snapshot": fees,
+                "currency": payload.currency, "country": payload.country.upper(),
+                "operator": payload.operator, "operator_snapshot": dict(op),
+                "phone_number": payload.customer_phone,
+                "email": payload.customer_email, "paydunya_token": token,
+                "checkout_url": paydunya.checkout_url(invoice), "status": "pending",
+                "provider": "paydunya", "provider_mode": cfg.get("mode", "test"),
+                "paydunya_flow": "softpay_direct", "prompt_sent": False,
+                "metadata": payload.metadata or {}, "created_at": now, "updated_at": now,
+            }
+            await db.momo_deposits.insert_one(doc)
+            await paydunya.softpay_payment(
+                cfg, invoice_token=token, operator=op,
+                phone=payload.customer_phone, amount=fees["charged_amount"],
+                currency=payload.currency, customer_name=customer_name,
+                customer_email=payload.customer_email or "customer@direct.invalid",
+            )
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"prompt_sent": True, "updated_at": now_iso()}},
+            )
+            doc["prompt_sent"] = True
+            body = _developer_payment_view(doc)
+            await _idempotency_store(owner, idem, "POST",
+                                     "/api/v1/direct-payments", 200, body)
+            return body
+        except paydunya.PayDunyaError as exc:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "failed", "prompt_error": "Payment service error",
+                          "updated_at": now_iso()}},
+            )
+            raise BizAPIError(400 if exc.status < 500 else 502,
+                              "Payment service rejected the transaction.",
+                              "PAYMENT_SERVICE_ERROR")
+    except Exception:
+        # Do not release after a provider call may have accepted the request.
+        # A timeout is persisted as pending/unknown for reconciliation.
+        if "doc" in locals() and doc.get("paydunya_token"):
+            await db.momo_deposits.update_one(
+                {"id": doc["id"], "environment": "live"},
+                {"$set": {"status": "pending", "provider_status_unknown": True,
+                          "prompt_sent": False, "updated_at": now_iso()}},
+            )
+            durable = await db.momo_deposits.find_one(
+                {"id": doc["id"], "environment": "live"}, {"_id": 0}
+            ) or doc
+            await _idempotency_store(
+                owner, idem, "POST", "/api/v1/direct-payments", 200,
+                _developer_payment_view(durable),
+            )
+        else:
+            await _idempotency_release(owner, idem, fp)
+        raise
+
+
+class BizPushRequest(BaseModel):
+    amount: float = Field(..., gt=0)
+    currency: Literal["XOF", "XAF"]
+    country: str = Field(..., min_length=2, max_length=2)
+    operator: str = Field(..., min_length=2, max_length=64)
+    beneficiary_phone: str = Field(..., min_length=6, max_length=32)
+    beneficiary_name: Optional[str] = None
+    beneficiary_email: Optional[str] = None
+    reference: Optional[str] = Field(None, min_length=1, max_length=128)
+    metadata: Optional[dict] = None
+
+
+def _developer_push_view(result: dict) -> dict:
+    tx = result.get("transaction") or {}
+    meta = tx.get("metadata") or {}
+    return {
+        "id": tx.get("id"), "object": "payout", "product": "bizpush",
+        "status": tx.get("status"), "amount": _format_amount(tx.get("amount", 0)),
+        "currency": tx.get("currency"), "reference": tx.get("reference"),
+        "fee": result.get("fee", meta.get("fee", 0)),
+        "total_debit": result.get("total_debit", meta.get("total_debit")),
+        "created_at": _format_iso(tx.get("created_at", "")),
+        "updated_at": _format_iso(tx.get("updated_at") or tx.get("created_at", "")),
+        "metadata": tx.get("public_metadata") or {},
+    }
+
+
+@api.post("/v1/push")
+async def developer_push(payload: BizPushRequest, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "push:create")
+    idem = (request.headers.get("Idempotency-Key") or "").strip()
+    if not idem:
+        raise BizAPIError(400, "Idempotency-Key is required.", "IDEMPOTENCY_KEY_REQUIRED")
+    fp = _request_fingerprint(payload)
+    owner = _developer_owner(merchant)
+    cached = await _idempotency_claim(owner, idem, "POST", "/api/v1/push", fp)
+    if cached and cached.get("body") is not None:
+        return cached["body"]
+    try:
+        if merchant.get("_api_env") == "test":
+            tx_id = new_id()
+            now = now_iso()
+            reference = payload.reference or tx_id
+            doc = {
+                "id": tx_id, "user_id": merchant["id"], "type": "transfer",
+                "direction": "out", "amount": payload.amount,
+                "currency": payload.currency, "status": "pending",
+                "counterparty": payload.beneficiary_phone, "reference": reference,
+                "created_at": now, "updated_at": now,
+                "metadata": {
+                    "source": "merchant_api", "environment": "test",
+                    "product": "bizpush", "country": payload.country.upper(),
+                    "operator": payload.operator,
+                    "recipient_phone": payload.beneficiary_phone,
+                    "public_metadata": payload.metadata or {},
+                },
+            }
+            await db.transactions.insert_one(doc)
+            body = _developer_push_view({
+                "transaction": doc, "fee": 0, "total_debit": 0
+            })
+            await _idempotency_store(owner, idem, "POST", "/api/v1/push", 200, body)
+            return body
+        request.state.merchant_api = True
+        transfer_req = TransferRequest(
+            transfer_type="biz_to_mobile", recipient=payload.beneficiary_phone,
+            recipient_name=payload.beneficiary_name or "",
+            recipient_phone=payload.beneficiary_phone,
+            country=payload.country, operator=payload.operator,
+            amount=payload.amount, currency=payload.currency,
+            description=f"BizPUSH {payload.reference or ''}".strip(),
+            idempotency_key=idem,
+            metadata={**(payload.metadata or {}),
+                      "source": "merchant_api", "environment": "live",
+                      "product": "bizpush",
+                      "merchant_reference": payload.reference},
+        )
+        result = await transfer(transfer_req, request, merchant["id"])
+        tx = result.get("transaction") or {}
+        if tx.get("id"):
+            await db.transactions.update_one(
+                {"id": tx["id"], "user_id": merchant["id"]},
+                {"$set": {
+                    "metadata.source": "merchant_api",
+                    "metadata.environment": "live",
+                    "metadata.product": "bizpush",
+                    "metadata.public_metadata": payload.metadata or {},
+                    "metadata.merchant_reference": payload.reference or tx.get("reference"),
+                }},
+            )
+            result["transaction"] = await db.transactions.find_one(
+                {"id": tx["id"], "user_id": merchant["id"]}, {"_id": 0}
+            ) or tx
+        body = _developer_push_view(result)
+        # Never persist or return provider metadata through this public shape.
+        await _idempotency_store(owner, idem, "POST", "/api/v1/push", 200, body)
+        return body
+    except Exception:
+        await _idempotency_release(owner, idem, fp)
+        raise
+
+
+@api.get("/v1/push/{push_id}")
+async def developer_push_details(push_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    tx = await db.transactions.find_one(
+        {"id": push_id, "user_id": merchant["id"],
+         "metadata.environment": merchant.get("_api_env", "test"),
+         "metadata.source": "merchant_api", "metadata.product": "bizpush"},
+        {"_id": 0},
+    )
+    if not tx:
+        raise BizAPIError(404, "Push not found.", "PUSH_NOT_FOUND")
+    return _developer_push_view({"transaction": tx})
+
+
+@api.get("/v1/push/{push_id}/status")
+async def developer_push_status(push_id: str, request: Request):
+    item = await developer_push_details(push_id, request)
+    return {"id": item["id"], "status": item["status"],
+            "updated_at": item["updated_at"]}
+
+
+def _serialize_direct_payment(doc: dict) -> dict:
+    return {
+        "id": doc["id"],
+        "object": "payment",
+        "product": "bizpay_direct",
+        "status": doc.get("status", "pending"),
+        "amount": _format_amount(doc.get("amount", 0)),
+        "currency": doc.get("currency"),
+        "reference": doc.get("reference"),
+        "country": doc.get("country"),
+        "operator": doc.get("operator"),
+        "created_at": _format_iso(doc.get("created_at", "")),
+        "updated_at": _format_iso(doc.get("updated_at") or doc.get("created_at", "")),
+        "metadata": doc.get("metadata") or {},
+    }
+
+
+async def _merchant_direct_status(payment_id: str, merchant: dict,
+                                  request_obj: Optional[Request] = None) -> dict:
+    # Legacy namespaced reads delegate to the authoritative merchant API
+    # payment reader, which is backed by momo_deposits for fiat flows.
+    return await merchant_get_payment(
+        payment_id,
+        request_obj or Request({"type": "http", "method": "GET",
+                                "path": f"/api/v1/payments/{payment_id}",
+                                "headers": [], "query_string": b""}),
+    )
+
+
+@api.post("/v1/bizpay/direct")
+async def bizpay_direct_payment(payload: BizPayDirectRequest, request: Request):
+    # Backward-compatible alias. The authoritative contract is the short
+    # /v1/direct-payments route and it always uses the configured connector.
+    return await developer_direct_payment(payload, request)
+
+
+@api.get("/v1/bizpay/direct/{payment_id}")
+async def bizpay_direct_details(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    return await _merchant_direct_status(payment_id, merchant, request)
+
+
+@api.get("/v1/bizpay/direct")
+async def bizpay_direct_list(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = None,
+    reference: Optional[str] = None,
+):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    query = {"user_id": merchant["id"],
+             "environment": merchant.get("_api_env", "test"),
+             "product": "bizpay_direct"}
+    if status:
+        query["status"] = status
+    if reference:
+        query["reference"] = reference
+    total = await db.momo_deposits.count_documents(query)
+    rows = await db.momo_deposits.find(query, {"_id": 0}) \
+        .sort("created_at", -1).skip(offset).limit(limit + 1).to_list(limit + 1)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "data": [_developer_payment_view(row) for row in rows],
+        "count": len(rows), "total": total, "offset": offset,
+        "limit": limit, "has_more": has_more,
+    }
+
+
+@api.get("/v1/bizpay/direct/{payment_id}/status")
+async def bizpay_direct_status(payment_id: str, request: Request):
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
+    return await _merchant_direct_status(payment_id, merchant, request)
+
+
 # =====================================================================
 # V1 PAYOUTS API — Public merchant crypto withdrawals via IziChange
 # =====================================================================
 # Merchants call our /v1/payouts endpoints with their Biz-transPay API keys.
 # We validate, deduct their balance (pessimistic debit + refund on failure),
-# and forward the request to IziChange internally. Merchants never see the
-# IziChange credentials. No webhooks — merchants poll /status.
+# and forward the request to the configured server-side connector internally.
+# Merchants never see provider credentials; callbacks and status reconciliation
+# remain authoritative for asynchronous operations.
 
 
 class PayoutCreate(BaseModel):
@@ -6724,6 +7503,7 @@ def _serialize_payout(po: dict) -> dict:
         return {}
     return {
         "id": po.get("id"),
+        "environment": po.get("environment"),
         "object": "payout",
         "status": po.get("status"),
         "amount": _format_amount(po.get("amount", 0)),
@@ -6823,7 +7603,9 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     the balance is refunded and 502/400 is returned.
     """
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "push:create")
     uid = merchant["id"]
+    owner = _developer_owner(merchant)
 
     # ---------- Idempotency ----------
     idem_key = (request.headers.get("Idempotency-Key") or "").strip()
@@ -6832,6 +7614,29 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     if idem_key and len(idem_key) > 255:
         raise BizAPIError(400, "Idempotency-Key too long (max 255 chars).",
                           "IDEMPOTENCY_KEY_TOO_LONG")
+    if merchant.get("_api_env") == "test":
+        cached = await _idempotency_claim(owner, idem_key, "POST",
+                                          "/api/v1/payouts", idem_fingerprint) if idem_key else None
+        if cached and cached.get("body") is not None:
+            return cached["body"]
+        po_id = new_id()
+        now = now_iso()
+        doc = {
+            "id": po_id, "merchant_id": uid, "environment": "test",
+            "source": "merchant_api", "product": "bizpush",
+            "status": "pending", "amount": payload.amount,
+            "amount_net": payload.amount, "total_debit": 0,
+            "coin": payload.coin.upper(), "network": payload.network.upper(),
+            "asset_code": f"{payload.coin.upper()}.{payload.network.upper()}",
+            "destination_address": payload.destination_address,
+            "reference": payload.reference or po_id, "metadata": payload.metadata or {},
+            "created_at": now,
+        }
+        await db.merchant_payouts.insert_one(doc)
+        body = _serialize_payout(doc)
+        if idem_key:
+            await _idempotency_store(owner, idem_key, "POST", "/api/v1/payouts", 200, body)
+        return body
     # ---------- Validate coin/network via IziChange assets ----------
     coin_upper = payload.coin.upper().strip()
     net_upper = payload.network.upper().strip()
@@ -6907,7 +7712,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
 
     if idem_key:
         cached = await _idempotency_claim(
-            uid, idem_key, "POST", "/api/v1/payouts", idem_fingerprint)
+            owner, idem_key, "POST", "/api/v1/payouts", idem_fingerprint)
         if cached is not None:
             return cached.get("body") if isinstance(cached, dict) else cached
 
@@ -6917,6 +7722,8 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     doc = {
         "id": po_id,
         "merchant_id": uid,
+        "environment": "live",
+        "source": "merchant_api",
         "api_key_id": merchant.get("api_key_id"),
         "api_key_env": merchant.get("env"),
         "coin": coin_upper,
@@ -6950,7 +7757,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     except Exception:
         await _refund_wallet_once(uid, "balance_usdt", total_debit,
                                   f"merchant-payout:{po_id}")
-        await _idempotency_release(uid, idem_key, idem_fingerprint)
+        await _idempotency_release(owner, idem_key, idem_fingerprint)
         raise BizAPIError(500, "Could not persist payout.",
                           "PAYOUT_PERSISTENCE_ERROR")
 
@@ -6976,7 +7783,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "error_code": e.code,
             "error_message": e.message,
         }})
-        await _idempotency_release(uid, idem_key, idem_fingerprint)
+        await _idempotency_release(owner, idem_key, idem_fingerprint)
         # Classify error for the merchant.
         msg = (e.message or "").lower()
         if "address" in msg or "adresse" in msg:
@@ -7001,7 +7808,7 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "refunded_at": now_iso(),
             "error_message": str(e),
         }})
-        await _idempotency_release(uid, idem_key, idem_fingerprint)
+        await _idempotency_release(owner, idem_key, idem_fingerprint)
         raise BizAPIError(502, "The crypto gateway is temporarily unreachable.",
                           "GATEWAY_UNREACHABLE")
 
@@ -7052,11 +7859,22 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     body = _serialize_payout(final)
     if idem_key:
         try:
-            await _idempotency_store(uid, idem_key, "POST",
+            await _idempotency_store(owner, idem_key, "POST",
                                      "/api/v1/payouts", 200, body)
         except Exception:
             pass
     return body
+
+
+@api.post("/v1/bizpush/payouts")
+async def bizpush_payout(payload: PayoutCreate, request: Request):
+    """Stable BizPUSH name for the existing payout contract."""
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "push:create")
+    if not (request.headers.get("Idempotency-Key") or "").strip():
+        raise BizAPIError(400, "Idempotency-Key is required for payouts.",
+                          "IDEMPOTENCY_KEY_REQUIRED")
+    return await merchant_create_payout(payload, request)
 
 
 @api.get("/v1/payouts")
@@ -7067,7 +7885,8 @@ async def merchant_list_payouts(request: Request,
                                   reference: Optional[str] = None):
     """Paginated list of the merchant's payouts."""
     merchant = await _authenticate_merchant(request)
-    q: dict = {"merchant_id": merchant["id"]}
+    _require_merchant_scope(merchant, "payments:read")
+    q: dict = {"merchant_id": merchant["id"], **_api_environment_clause(merchant)}
     if status:
         q["status"] = status
     if reference:
@@ -7097,8 +7916,10 @@ async def merchant_search_payout(request: Request,
                                     reference: str = Query(..., min_length=1)):
     """Search the most recent payout carrying this merchant reference."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
     po = await db.merchant_payouts.find_one(
-        {"merchant_id": merchant["id"], "reference": reference},
+        {"merchant_id": merchant["id"], "reference": reference,
+         **_api_environment_clause(merchant)},
         {"_id": 0},
         sort=[("created_at", -1)],
     )
@@ -7109,7 +7930,8 @@ async def merchant_search_payout(request: Request,
             and po.get("izipay_payout_id"):
         await _reconcile_payout(po["izipay_payout_id"])
         po = await db.merchant_payouts.find_one(
-            {"merchant_id": merchant["id"], "reference": reference},
+            {"merchant_id": merchant["id"], "reference": reference,
+             **_api_environment_clause(merchant)},
             {"_id": 0},
             sort=[("created_at", -1)],
         ) or po
@@ -7120,15 +7942,18 @@ async def merchant_search_payout(request: Request,
 async def merchant_get_payout(payout_id: str, request: Request):
     """Full details for a single payout. Auto-syncs upstream when pending."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
     po = await db.merchant_payouts.find_one(
-        {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payout_id, "merchant_id": merchant["id"],
+         **_api_environment_clause(merchant)}, {"_id": 0})
     if not po:
         raise BizAPIError(404, "Payout not found.", "PAYOUT_NOT_FOUND")
     if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
             and po.get("izipay_payout_id"):
         await _reconcile_payout(po["izipay_payout_id"])
         po = await db.merchant_payouts.find_one(
-            {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0}) or po
+            {"id": payout_id, "merchant_id": merchant["id"],
+             **_api_environment_clause(merchant)}, {"_id": 0}) or po
     return _serialize_payout(po)
 
 
@@ -7136,15 +7961,18 @@ async def merchant_get_payout(payout_id: str, request: Request):
 async def merchant_get_payout_status(payout_id: str, request: Request):
     """Lightweight status. Auto-syncs upstream."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
     po = await db.merchant_payouts.find_one(
-        {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payout_id, "merchant_id": merchant["id"],
+         **_api_environment_clause(merchant)}, {"_id": 0})
     if not po:
         raise BizAPIError(404, "Payout not found.", "PAYOUT_NOT_FOUND")
     if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
             and po.get("izipay_payout_id"):
         await _reconcile_payout(po["izipay_payout_id"])
         po = await db.merchant_payouts.find_one(
-            {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0}) or po
+            {"id": payout_id, "merchant_id": merchant["id"],
+             **_api_environment_clause(merchant)}, {"_id": 0}) or po
     return {
         "id": po["id"],
         "status": po.get("status"),
@@ -7157,15 +7985,18 @@ async def merchant_get_payout_status(payout_id: str, request: Request):
 async def merchant_check_payout_completed(payout_id: str, request: Request):
     """Returns `{completed, status}`. `completed` is true only for status='completed'."""
     merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "payments:read")
     po = await db.merchant_payouts.find_one(
-        {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0})
+        {"id": payout_id, "merchant_id": merchant["id"],
+         **_api_environment_clause(merchant)}, {"_id": 0})
     if not po:
         raise BizAPIError(404, "Payout not found.", "PAYOUT_NOT_FOUND")
     if po.get("status") not in _TERMINAL_PAYOUT_STATUSES \
             and po.get("izipay_payout_id"):
         await _reconcile_payout(po["izipay_payout_id"])
         po = await db.merchant_payouts.find_one(
-            {"id": payout_id, "merchant_id": merchant["id"]}, {"_id": 0}) or po
+            {"id": payout_id, "merchant_id": merchant["id"],
+             **_api_environment_clause(merchant)}, {"_id": 0}) or po
     return {
         "id": po["id"],
         "completed": po.get("status") == "completed",
@@ -7995,6 +8826,7 @@ ALL_WEBHOOK_EVENTS = [
     "payment.failed", "payment.expired",
     "mobile_money.payment.approved", "mobile_money.payment.declined",
     "mobile_money.payment.canceled",
+    "push.succeeded", "push.failed",
     "refund.created", "refund.completed",
 ]
 
@@ -8002,11 +8834,13 @@ ALL_WEBHOOK_EVENTS = [
 class CreateMerchantKeyReq(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     env: Literal["test", "live"] = "test"
+    scopes: Optional[list[str]] = None
 
 
 class UpdateMerchantKeyReq(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=80)
     active: Optional[bool] = None
+    scopes: Optional[list[str]] = None
 
 
 def _mkey_view(k: dict, reveal: Optional[str] = None) -> dict:
@@ -8017,6 +8851,9 @@ def _mkey_view(k: dict, reveal: Optional[str] = None) -> dict:
         "public_key": k.get("public_key"),
         "secret_hint": k.get("secret_hint"),
         "active": bool(k.get("active", True)),
+        "scopes": k.get("scopes") or [
+            "checkout:create", "direct:create", "push:create", "payments:read"
+        ],
         "created_at": k.get("created_at"),
         "last_used_at": k.get("last_used_at"),
     }
@@ -8039,6 +8876,19 @@ async def create_merchant_key(req: CreateMerchantKeyReq,
                                  uid: str = Depends(require_merchant_account),
                                 request: Request = None):
     await _ensure_api_keys(uid, request)
+    allowed_scopes = {
+        "checkout:create", "direct:create", "push:create", "payments:read"
+    }
+    scopes = req.scopes or sorted(allowed_scopes)
+    invalid_scopes = sorted(set(scopes) - allowed_scopes)
+    if invalid_scopes:
+        raise HTTPException(
+            422,
+            detail={"message": "Scope API inconnu.", "code": "INVALID_API_SCOPE",
+                    "details": {"scopes": invalid_scopes}},
+        )
+    if not scopes:
+        raise HTTPException(422, "Au moins un scope est requis")
     prefix_pk = f"pk_{req.env}_"
     prefix_sk = f"sk_{req.env}_"
     pub = _gen_key(prefix_pk)
@@ -8052,6 +8902,7 @@ async def create_merchant_key(req: CreateMerchantKeyReq,
         "secret_hash": _hash_secret(sec),
         "secret_hint": _mask(sec),
         "active": True,
+        "scopes": sorted(set(scopes)),
         "created_at": now_iso(),
         "last_used_at": None,
     }
@@ -8065,6 +8916,19 @@ async def update_merchant_key(key_id: str, req: UpdateMerchantKeyReq,
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     if not updates:
         raise HTTPException(400, "Aucune modification")
+    if "scopes" in updates:
+        allowed_scopes = {
+            "checkout:create", "direct:create", "push:create", "payments:read"
+        }
+        invalid_scopes = sorted(set(updates["scopes"]) - allowed_scopes)
+        if invalid_scopes or not updates["scopes"]:
+            raise HTTPException(
+                422,
+                detail={"message": "Scope API inconnu ou vide.",
+                        "code": "INVALID_API_SCOPE",
+                        "details": {"scopes": invalid_scopes}},
+            )
+        updates["scopes"] = sorted(set(updates["scopes"]))
     r = await db.merchant_keys.update_one(
         {"id": key_id, "user_id": uid}, {"$set": updates})
     if r.matched_count == 0:
