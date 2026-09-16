@@ -226,6 +226,9 @@ app = FastAPI(title="Biz-transPay API")
 api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("biz-transpay")
+# httpx logs full request URLs. Telegram embeds the bot credential in its URL,
+# so production logs must never record successful outbound request lines.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ---------- Cloudflare Turnstile ----------
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
@@ -1458,8 +1461,11 @@ async def _telegram_command_worker() -> None:
 @app.on_event("startup")
 async def _start_telegram_command_worker() -> None:
     global _telegram_command_task
+    commands_enabled = os.environ.get(
+        "TELEGRAM_COMMAND_POLLING_ENABLED", "true"
+    ).strip().lower() in {"1", "true", "yes"}
     token, chat_id = _telegram_config()
-    if token and chat_id and (
+    if commands_enabled and token and chat_id and (
         _telegram_command_task is None or _telegram_command_task.done()
     ):
         _telegram_command_task = asyncio.create_task(_telegram_command_worker())
