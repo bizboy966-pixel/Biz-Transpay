@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import api from '@/api';
 
 const API_BASE = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
+const FULL_API_SCOPES = ['checkout:create', 'direct:create', 'push:create', 'payments:read'];
 
 /* ----------------------------- shared UI bits ---------------------------- */
 const Badge = ({ tone = 'slate', children }) => {
@@ -79,14 +80,12 @@ function RevealModal({ open, onClose, secret, keyName, env }) {
 function CreateKeyModal({ open, onClose, onCreated }) {
   const [name, setName] = useState('');
   const [env, setEnv] = useState('test');
-  const [scopes, setScopes] = useState(['checkout:create', 'direct:create', 'push:create', 'payments:read']);
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef(null);
   useEffect(() => {
     if (open) {
       setName('');
       setEnv('test');
-      setScopes(['checkout:create', 'direct:create', 'push:create', 'payments:read']);
       requestAnimationFrame(() => dialogRef.current?.scrollIntoView({ block: 'center' }));
     }
   }, [open]);
@@ -96,7 +95,11 @@ function CreateKeyModal({ open, onClose, onCreated }) {
     if (!name.trim()) { toast.error('Nom requis'); return; }
     setBusy(true);
     try {
-      const { data } = await api.post('/merchant/keys', { name: name.trim(), env, scopes });
+      const { data } = await api.post('/merchant/keys', {
+        name: name.trim(),
+        env,
+        scopes: FULL_API_SCOPES,
+      });
       onCreated(data);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Erreur');
@@ -123,28 +126,13 @@ function CreateKeyModal({ open, onClose, onCreated }) {
               autoFocus
             />
           </div>
-          <div>
-            <label className="text-[12px] font-semibold text-slate-600">Produits autorisés</label>
-            <div className="mt-2 space-y-2">
-              {[
-                ['checkout:create', 'BizPay Checkout', 'Créer des paiements avec redirection'],
-                ['direct:create', 'BizPay Direct', 'Déclencher des paiements sans redirection'],
-                ['push:create', 'BizPUSH', 'Envoyer de l’argent aux bénéficiaires'],
-                ['payments:read', 'Lecture des statuts', 'Consulter paiements et confirmations'],
-              ].map(([value, label, description]) => (
-                <label key={value} className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3 hover:border-blue-300">
-                  <input
-                    type="checkbox"
-                    checked={scopes.includes(value)}
-                    onChange={(event) => setScopes((current) => event.target.checked ? [...current, value] : current.filter((scope) => scope !== value))}
-                    className="mt-0.5 accent-blue-600"
-                  />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-900">{label}</span>
-                    <span className="block text-[11px] text-slate-500">{description}</span>
-                  </span>
-                </label>
-              ))}
+          <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <div className="text-[12px] font-bold text-blue-900">Une clé complète pour toute votre intégration</div>
+            <p className="mt-1 text-[12px] leading-relaxed text-blue-800">
+              Cette clé permet de créer des paiements Checkout et Direct, d’utiliser BizPUSH et de consulter les statuts de toutes les transactions. Aucun webhook n’est nécessaire : votre serveur peut interroger les statuts.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1">
+              {FULL_API_SCOPES.map((scope) => <Badge key={scope} tone="blue">{scope}</Badge>)}
             </div>
           </div>
           <div>
@@ -166,8 +154,8 @@ function CreateKeyModal({ open, onClose, onCreated }) {
         </div>
         <div className="sticky bottom-0 p-5 border-t border-slate-100 bg-slate-50 flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Annuler</button>
-          <button onClick={submit} disabled={busy || !name.trim() || scopes.length === 0} data-testid="btn-submit-create-key" className="px-4 py-2 rounded-lg bg-slate-900 text-white font-semibold text-sm disabled:opacity-40">
-            {busy ? 'Création…' : 'Créer la clé'}
+          <button onClick={submit} disabled={busy || !name.trim()} data-testid="btn-submit-create-key" className="px-4 py-2 rounded-lg bg-slate-900 text-white font-semibold text-sm disabled:opacity-40">
+            {busy ? 'Création…' : 'Créer la clé complète'}
           </button>
         </div>
       </div>
