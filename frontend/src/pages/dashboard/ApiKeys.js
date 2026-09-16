@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Plus, Copy, Trash2, RefreshCw, Power, Key, BookOpen, X, AlertTriangle, ShieldCheck, Eye, EyeOff, Code2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -81,7 +81,15 @@ function CreateKeyModal({ open, onClose, onCreated }) {
   const [env, setEnv] = useState('test');
   const [scopes, setScopes] = useState(['checkout:create', 'direct:create', 'push:create', 'payments:read']);
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) { setName(''); setEnv('test'); setScopes(['checkout:create', 'direct:create', 'push:create', 'payments:read']); } }, [open]);
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    if (open) {
+      setName('');
+      setEnv('test');
+      setScopes(['checkout:create', 'direct:create', 'push:create', 'payments:read']);
+      requestAnimationFrame(() => dialogRef.current?.scrollIntoView({ block: 'center' }));
+    }
+  }, [open]);
   if (!open) return null;
 
   const submit = async () => {
@@ -96,13 +104,14 @@ function CreateKeyModal({ open, onClose, onCreated }) {
   };
 
   return (
-    <div className="fixed inset-0 z-40 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="w-full max-w-md max-h-[calc(100vh-2rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col" data-testid="create-key-modal">
+    <div className="fixed inset-0 z-40 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+      <div ref={dialogRef} className="min-h-full flex items-start sm:items-center justify-center p-4">
+      <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col my-auto" data-testid="create-key-modal">
         <div className="p-5 border-b border-slate-100 flex items-center justify-between">
           <div className="font-cabinet font-extrabold text-slate-900">Créer une nouvelle clé API</div>
           <button onClick={onClose} className="w-8 h-8 rounded-lg text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
         </div>
-        <div className="p-5 space-y-4 overflow-y-auto">
+        <div className="p-5 space-y-4 overflow-y-auto flex-1 min-h-0">
           <div>
             <label className="text-[12px] font-semibold text-slate-600">Nom de la clé</label>
             <input
@@ -155,12 +164,13 @@ function CreateKeyModal({ open, onClose, onCreated }) {
             </div>
           </div>
         </div>
-        <div className="p-5 border-t border-slate-100 bg-slate-50 flex justify-end gap-2 shrink-0">
+        <div className="sticky bottom-0 p-5 border-t border-slate-100 bg-slate-50 flex justify-end gap-2 shrink-0">
           <button onClick={onClose} className="px-3 py-2 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-100">Annuler</button>
           <button onClick={submit} disabled={busy || !name.trim() || scopes.length === 0} data-testid="btn-submit-create-key" className="px-4 py-2 rounded-lg bg-slate-900 text-white font-semibold text-sm disabled:opacity-40">
             {busy ? 'Création…' : 'Créer la clé'}
           </button>
         </div>
+      </div>
       </div>
     </div>
   );
