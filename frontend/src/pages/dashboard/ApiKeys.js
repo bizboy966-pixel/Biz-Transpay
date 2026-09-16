@@ -104,8 +104,8 @@ function CreateKeyModal({ open, onClose, onCreated }) {
   };
 
   return (
-    <div className="fixed inset-0 z-40 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
-      <div ref={dialogRef} className="min-h-full flex items-start sm:items-center justify-center p-4">
+    <div className="bt-api-key-modal-overlay fixed inset-0 z-40 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
+      <div ref={dialogRef} className="bt-api-key-modal-dialog min-h-full flex items-start sm:items-center justify-center p-4">
       <div className="w-full max-w-md max-h-[calc(100dvh-2rem)] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col my-auto" data-testid="create-key-modal">
         <div className="p-5 border-b border-slate-100 flex items-center justify-between">
           <div className="font-cabinet font-extrabold text-slate-900">Créer une nouvelle clé API</div>

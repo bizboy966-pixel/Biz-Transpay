@@ -402,6 +402,18 @@ select {
   bottom: 0;
 }
 @media (max-width: 1023px) {
+  /*
+   * API key creation is rendered inside the dashboard outlet but is fixed
+   * to the viewport. Keep its scroll area above the floating mobile nav so
+   * the submit footer can never disappear underneath it.
+   */
+  .bt-api-key-modal-overlay {
+    bottom: calc(108px + env(safe-area-inset-bottom)) !important;
+  }
+  .bt-api-key-modal-dialog {
+    max-height: calc(100dvh - 108px - env(safe-area-inset-bottom)) !important;
+    min-height: 0 !important;
+  }
   .bt-dashboard-sidebar {
     /*
      * The center deposit action rises above the bottom nav by about 30px.
