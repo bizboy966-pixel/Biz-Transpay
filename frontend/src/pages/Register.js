@@ -33,15 +33,16 @@ export default function Register() {
     const e = {};
     if (!form.full_name) e.full_name = t('register.errors.required');
     if (!form.username) e.username = t('register.errors.required');
+    else if (form.username.length < 6) e.username = '6 caractères minimum.';
     if (!form.phone) e.phone = t('register.errors.required');
     if (!form.email) e.email = t('register.errors.required');
-    const passwordStrong = form.password.length >= 10
+    const passwordStrong = form.password.length >= 6
       && /[a-z]/.test(form.password)
       && /[A-Z]/.test(form.password)
       && /\d/.test(form.password)
       && /[^A-Za-z0-9\s]/.test(form.password)
       && !/\s/.test(form.password);
-    if (!passwordStrong) e.password = '10 caractères minimum, avec majuscule, minuscule, chiffre et caractère spécial.';
+    if (!passwordStrong) e.password = '6 caractères minimum, avec majuscule, minuscule, chiffre et caractère spécial.';
     if (form.password !== form.confirm) e.confirm = t('register.errors.mismatch');
     if (!turnstile.enabled || !turnstileToken) e.robot = 'Veuillez terminer la vérification anti-bot.';
     if (!form.terms) e.terms = t('register.errors.terms');
@@ -118,7 +119,7 @@ export default function Register() {
                <input id="register-full-name" data-testid="input-full-name" type="text" autoComplete="name" value={form.full_name} onChange={(e) => set('full_name', e.target.value)} placeholder={t('register.full_name_ph')} className="bt-field pl-11 pr-4" />
             </Field>
              <Field label={t('register.username')} labelClassName="text-center" icon={AtSign} error={errors.username}>
-               <input data-testid="input-username" type="text" autoComplete="username" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
+                <input data-testid="input-username" type="text" minLength={6} maxLength={50} autoComplete="username" value={form.username} onChange={(e) => set('username', e.target.value.toLowerCase().replace(/\s+/g, ''))} placeholder={t('register.username_ph')} className="bt-field pl-11 pr-4" />
             </Field>
           </div>
 
@@ -153,7 +154,7 @@ export default function Register() {
           </div>
 
            <Field label={t('register.password')} labelClassName="text-center" icon={Lock} error={errors.password} extra="mt-5">
-             <input data-testid="input-password" type={showPwd ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="bt-field pl-11 pr-11" />
+              <input data-testid="input-password" type={showPwd ? 'text' : 'password'} minLength={6} maxLength={72} autoComplete="new-password" value={form.password} onChange={(e) => set('password', e.target.value)} placeholder={t('register.password_ph')} className="bt-field pl-11 pr-11" />
             <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700" data-testid="toggle-pwd-1">
               {showPwd ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>

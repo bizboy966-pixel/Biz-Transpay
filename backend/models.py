@@ -16,7 +16,7 @@ def new_id():
 # ---------- Auth ----------
 class RegisterRequest(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=120)
-    username: str = Field(..., min_length=3, max_length=50)
+    username: str = Field(..., min_length=6, max_length=50)
     account_type: Literal["personal", "merchant"]
     country: str = Field(..., min_length=2, max_length=3)
     phone: str = Field(..., min_length=3, max_length=40)
