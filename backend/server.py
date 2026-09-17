@@ -70,6 +70,12 @@ ADMIN_ALLOWED_IPS = tuple(
 ADMIN_TRUST_PROXY_HEADERS = os.environ.get(
     "ADMIN_TRUST_PROXY_HEADERS", ""
 ).lower() in {"1", "true", "yes"}
+PLATFORM_OWNER_EMAIL = os.environ.get(
+    "PLATFORM_OWNER_EMAIL", ""
+).strip().lower()
+PLATFORM_OWNER_CLAIM_BEFORE = os.environ.get(
+    "PLATFORM_OWNER_CLAIM_BEFORE", ""
+).strip()
 EDGE_BLOCKED_IPS = tuple(
     value.strip() for value in os.environ.get("EDGE_BLOCKED_IPS", "").split(",")
     if value.strip()
@@ -773,7 +779,7 @@ async def get_user(uid: str) -> dict:
     u = await db.users.find_one({"id": uid}, {"_id": 0})
     if not u:
         raise HTTPException(404, "User not found")
-    return u
+    return await _ensure_platform_owner_role(u)
 
 
 async def require_merchant_account(
@@ -2076,15 +2082,81 @@ def _is_admin_account(user: dict) -> bool:
     return user.get("role") in ("admin", "super_admin")
 
 
+def _is_platform_owner_email(email: str) -> bool:
+    return bool(
+        PLATFORM_OWNER_EMAIL
+        and str(email or "").strip().lower() == PLATFORM_OWNER_EMAIL
+    )
+
+
+def _platform_owner_recovery_eligible(user: dict) -> bool:
+    if user.get("platform_owner") is True:
+        return True
+    if not _is_platform_owner_email(user.get("email")):
+        return False
+    try:
+        created_at = datetime.fromisoformat(
+            str(user.get("created_at") or "").replace("Z", "+00:00")
+        )
+        claim_before = datetime.fromisoformat(
+            PLATFORM_OWNER_CLAIM_BEFORE.replace("Z", "+00:00")
+        )
+        return _as_utc(created_at) <= _as_utc(claim_before)
+    except (TypeError, ValueError):
+        return False
+
+
+def _platform_owner_preservation_filter() -> dict:
+    protected = [
+        {"role": "super_admin"},
+        {"platform_owner": True},
+    ]
+    if PLATFORM_OWNER_EMAIL:
+        protected.append({"email": PLATFORM_OWNER_EMAIL})
+    return {"$or": protected}
+
+
+async def _ensure_platform_owner_role(user: dict) -> dict:
+    """Restore the configured platform owner to the immutable top-level role."""
+    if not _platform_owner_recovery_eligible(user):
+        return user
+    expected = {
+        "platform_owner": True,
+        "role": "super_admin",
+        "kyc_status": "verified",
+        "is_blocked": False,
+        "is_banned": False,
+        "withdrawals_blocked": False,
+    }
+    if all(user.get(key) == value for key, value in expected.items()) \
+            and not user.get("admin_role"):
+        return user
+    result = await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": expected,
+            "$unset": {"admin_role": ""},
+        },
+    )
+    if result.matched_count != 1:
+        raise HTTPException(409, "Impossible d'activer le propriétaire de la plateforme")
+    restored = dict(user)
+    restored.update(expected)
+    restored.pop("admin_role", None)
+    logger.warning("Platform owner role restored for user_id=%s", user["id"])
+    return restored
+
+
 @api.post("/auth/register")
 async def register(req: RegisterRequest, request: Request, response: Response):
     await _require_turnstile(req.turnstile_token, request, "register")
-    # First account becomes the platform administrator and must use the
-    # administrator-specific password policy.
-    is_first = (await db.users.count_documents({})) == 0
+    # The first account wins a recoverable bootstrap claim. A configured
+    # owner is repaired only after authenticated login and only when the
+    # account predates the server-side recovery cutoff.
+    users_empty = (await db.users.count_documents({})) == 0
     password_errors = (
         auth_security.admin_password_policy_errors(req.password)
-        if is_first else auth_security.password_policy_errors(req.password)
+        if users_empty else auth_security.password_policy_errors(req.password)
     )
     if password_errors:
         raise HTTPException(
@@ -2094,8 +2166,32 @@ async def register(req: RegisterRequest, request: Request, response: Response):
     if await db.users.find_one({"username": req.username.lower()}):
         raise HTTPException(400, "Nom d'utilisateur déjà pris")
 
+    is_first = False
+    bootstrap_token = None
+    if users_empty:
+        now = datetime.now(timezone.utc)
+        await db.platform_bootstrap.delete_one({
+            "_id": "first_super_admin",
+            "status": "claiming",
+            "expires_at": {"$lt": now},
+        })
+        bootstrap_token = secrets.token_urlsafe(24)
+        try:
+            await db.platform_bootstrap.insert_one({
+                "_id": "first_super_admin",
+                "status": "claiming",
+                "claim_token": bootstrap_token,
+                "claimed_at": now_iso(),
+                "expires_at": now + timedelta(minutes=5),
+            })
+            is_first = True
+        except DuplicateKeyError:
+            raise HTTPException(
+                409,
+                "Initialisation de la plateforme en cours. Réessayez dans quelques instants.",
+            )
+
     uid = new_id()
-    # First user becomes super_admin automatically
     role = "super_admin" if is_first else "user"
     # Registration always creates the merchant profile. The request field is
     # kept for backward compatibility with existing clients, but the public
@@ -2120,11 +2216,37 @@ async def register(req: RegisterRequest, request: Request, response: Response):
         "language": "fr",
         "default_currency": "XOF",
         "role": role,
+        "platform_owner": is_first,
         "is_blocked": False,
         "is_banned": False,
         "withdrawals_blocked": False,
     }
-    await db.users.insert_one(user_doc)
+    try:
+        await db.users.insert_one(user_doc)
+    except Exception:
+        if is_first:
+            await db.platform_bootstrap.delete_one({
+                "_id": "first_super_admin",
+                "claim_token": bootstrap_token,
+                "status": "claiming",
+            })
+        raise
+    if is_first:
+        await db.platform_bootstrap.update_one(
+            {
+                "_id": "first_super_admin",
+                "claim_token": bootstrap_token,
+                "status": "claiming",
+            },
+            {
+                "$set": {
+                    "status": "complete",
+                    "user_id": uid,
+                    "completed_at": now_iso(),
+                },
+                "$unset": {"claim_token": "", "expires_at": ""},
+            },
+        )
 
     # generate API keys for merchant accounts
     if account_type == "merchant":
@@ -2158,6 +2280,7 @@ async def login(req: LoginRequest, request: Request, response: Response):
     if not u or not verify_password(req.password, u["password_hash"]):
         await _record_login_failure(ident, request)
         raise HTTPException(401, "Identifiants invalides")
+    u = await _ensure_platform_owner_role(u)
     is_admin = _is_admin_account(u)
     if is_admin and not u.get("two_fa_enabled"):
         setup = await _begin_mfa_enrollment(u)
@@ -9985,6 +10108,7 @@ async def get_admin(
     u = await db.users.find_one({"id": uid}, {"_id": 0})
     if not u:
         raise HTTPException(401, "Non autorisé")
+    u = await _ensure_platform_owner_role(u)
     if u.get("role") not in ("admin", "super_admin"):
         raise HTTPException(403, "Accès administrateur requis")
     if not u.get("two_fa_enabled"):
@@ -11116,6 +11240,13 @@ async def admin_update_user(
         raise HTTPException(404, "Utilisateur introuvable")
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     confirmation = updates.pop("confirmation", None)
+    if _platform_owner_recovery_eligible(target) and any(
+        field in updates for field in ("role", "admin_role", "email")
+    ):
+        raise HTTPException(
+            403,
+            "Le propriétaire de la plateforme ne peut pas être rétrogradé ni transféré",
+        )
     # only super_admin can change roles
     if "role" in updates and admin.get("role") != "super_admin":
         raise HTTPException(403, "Seul un super_admin peut modifier les rôles")
@@ -11195,13 +11326,22 @@ async def admin_delete_user(user_id: str, admin=Depends(get_admin)):
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    if target.get("role") == "super_admin":
-        raise HTTPException(403, "Impossible de supprimer un super_admin")
+    if target.get("role") == "super_admin" or _platform_owner_recovery_eligible(target):
+        raise HTTPException(
+            403,
+            "Impossible de supprimer un super_admin ou le propriétaire de la plateforme",
+        )
     if target["id"] == admin["id"]:
         raise HTTPException(403, "Vous ne pouvez pas supprimer votre propre compte")
 
     # Cascade delete across all user-linked collections.
-    r_user = await db.users.delete_one({"id": user_id})
+    r_user = await db.users.delete_one({
+        "id": user_id,
+        "role": {"$ne": "super_admin"},
+        "platform_owner": {"$ne": True},
+    })
+    if r_user.deleted_count != 1:
+        raise HTTPException(409, "Ce compte protégé ne peut pas être supprimé")
     r_tx = await db.transactions.delete_many({"user_id": user_id})
     # Payment links → also delete their child link_payments.
     links = await db.payment_links.find({"user_id": user_id}, {"_id": 0, "id": 1}).to_list(10000)
@@ -11242,7 +11382,10 @@ async def admin_cleanup_test_users(admin=Depends(get_admin)):
     """
     if admin.get("role") != "super_admin":
         raise HTTPException(403, "Réservé aux super_admin")
-    keep = await db.users.find({"role": "super_admin"}, {"_id": 0, "id": 1}).to_list(100)
+    keep = await db.users.find(
+        _platform_owner_preservation_filter(),
+        {"_id": 0, "id": 1},
+    ).to_list(100)
     keep_ids = [u["id"] for u in keep]
     victims = await db.users.find({"id": {"$nin": keep_ids}}, {"_id": 0, "id": 1, "email": 1}).to_list(10000)
     victim_ids = [u["id"] for u in victims]
@@ -11286,11 +11429,14 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
     if req.confirmation != "RÉINITIALISER":
         raise HTTPException(400, "Confirmation invalide. Tapez exactement RÉINITIALISER.")
 
-    keep = await db.users.find({"role": "super_admin"}, {"_id": 0, "id": 1, "email": 1}).to_list(100)
+    keep = await db.users.find(
+        _platform_owner_preservation_filter(),
+        {"_id": 0, "id": 1, "email": 1},
+    ).to_list(100)
     keep_ids = [u["id"] for u in keep]
 
     # 1) Delete every non-super_admin user
-    r_users = await db.users.delete_many({"role": {"$ne": "super_admin"}})
+    r_users = await db.users.delete_many({"id": {"$nin": keep_ids}})
 
     # 2) Wipe platform-wide transactional collections (all of them, including
     #    the ones belonging to the preserved super_admin — the user wants
@@ -11319,7 +11465,7 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
 
     # 3) Reset balances of preserved super_admins to 0
     await db.users.update_many(
-        {"role": "super_admin"},
+        {"id": {"$in": keep_ids}},
         {"$set": {"balance_xof": 0.0, "balance_xaf": 0.0, "balance_usdt": 0.0}},
     )
 

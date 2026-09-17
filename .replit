@@ -12,6 +12,8 @@ expertMode = true
 [userenv.shared]
 DB_NAME = "biz_transpay"
 TELEGRAM_CHAT_ID = "7838456636"
+PLATFORM_OWNER_EMAIL = "biztechsarlu@gmail.com"
+PLATFORM_OWNER_CLAIM_BEFORE = "2026-09-17T08:16:53.140Z"
 
 [env]
 MONGO_URL = "mongodb://127.0.0.1:27017"
