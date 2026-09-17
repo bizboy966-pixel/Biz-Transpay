@@ -11409,6 +11409,7 @@ async def admin_cleanup_test_users(admin=Depends(get_admin)):
 
 class AdminPlatformResetReq(BaseModel):
     confirmation: str  # must be exactly "RÉINITIALISER" (case-sensitive)
+    delete_all: bool = False
 
 
 @api.post("/admin/platform/reset")
@@ -11426,6 +11427,55 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
     """
     if admin.get("role") != "super_admin":
         raise HTTPException(403, "Réservé aux super_admin")
+    if req.delete_all:
+        if req.confirmation != "SUPPRIMER_TOUT":
+            raise HTTPException(
+                400,
+                "Confirmation invalide. Tapez exactement SUPPRIMER_TOUT.",
+            )
+        wipe_all_collections = [
+            "users",
+            "api_keys",
+            "kyc",
+            "sessions",
+            "mfa_enrollments",
+            "platform_bootstrap",
+            "transactions",
+            "payment_links",
+            "link_payments",
+            "crypto_deposits",
+            "webhook_events",
+            "webhook_deliveries",
+            "api_logs",
+            "notifications",
+            "tickets",
+            "support_messages",
+            "payment_transactions",
+            "merchant_payments",
+            "merchant_payouts",
+            "momo_deposits",
+            "merchant_keys",
+            "merchant_webhooks",
+            "idempotency_keys",
+            "auth_challenges",
+            "auth_events",
+            "auth_rate_limits",
+            "admin_logs",
+            "audit_logs",
+        ]
+        wiped: dict[str, int] = {}
+        for collection in wipe_all_collections:
+            result = await db[collection].delete_many({})
+            wiped[collection] = result.deleted_count
+        # Do not write an audit record after a full wipe: the requested final
+        # state is that no account or user-linked data remains.
+        return {
+            "deleted_users": wiped["users"],
+            "kept_super_admins": [],
+            "wiped": wiped,
+            "balances_reset": True,
+            "requires_registration": True,
+        }
     if req.confirmation != "RÉINITIALISER":
         raise HTTPException(400, "Confirmation invalide. Tapez exactement RÉINITIALISER.")
 

@@ -10,6 +10,9 @@ export default function AdminPlatform() {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetInput, setResetInput] = useState('');
   const [resetting, setResetting] = useState(false);
+  const [fullWipeOpen, setFullWipeOpen] = useState(false);
+  const [fullWipeInput, setFullWipeInput] = useState('');
+  const [fullWiping, setFullWiping] = useState(false);
   const [features, setFeatures] = useState(null);
   const [savingFeature, setSavingFeature] = useState(null);
 
@@ -284,6 +287,13 @@ export default function AdminPlatform() {
           >
             <Trash2 className="w-3.5 h-3.5" /> Réinitialiser
           </button>
+           <button
+             onClick={() => { setFullWipeInput(''); setFullWipeOpen(true); }}
+             data-testid="btn-open-full-wipe"
+             className="inline-flex items-center gap-2 bg-red-950 hover:bg-black text-white font-bold px-4 py-2 rounded-full text-xs shrink-0"
+           >
+             <Trash2 className="w-3.5 h-3.5" /> Supprimer tous les comptes
+           </button>
         </div>
       </div>
 
@@ -350,6 +360,75 @@ export default function AdminPlatform() {
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {resetting ? (<><Repeat className="w-3.5 h-3.5 animate-spin" /> Réinitialisation…</>) : (<><Trash2 className="w-3.5 h-3.5" /> Confirmer</>)}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {fullWipeOpen && (
+        <div className="fixed inset-0 z-[100] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4" data-testid="full-wipe-modal">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+            <div className="p-5 border-b border-red-200 flex items-center justify-between bg-red-950">
+              <div className="flex items-center gap-2.5 text-white">
+                <AlertTriangle className="w-5 h-5" />
+                <div>
+                  <h3 className="font-cabinet font-bold text-base">Supprimer toute la base utilisateur</h3>
+                  <p className="text-[11px] text-red-100/80">Action définitive — aucun compte ne sera conservé</p>
+                </div>
+              </div>
+              <button onClick={() => !fullWiping && setFullWipeOpen(false)} disabled={fullWiping} className="text-red-100 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="p-5 space-y-3.5">
+              <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-[12px] text-red-950 leading-relaxed">
+                Cette action supprime définitivement <b>tous les comptes</b>, sessions, clés API,
+                transactions, liens de paiement, KYC, notifications, journaux et données financières.
+                Vous serez déconnecté et devrez créer le premier compte à nouveau.
+                <br /><b>Cette action est irréversible. Vérifiez vos sauvegardes avant de continuer.</b>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-700 mb-1.5 block">
+                  Pour confirmer, tapez <span className="font-mono px-1.5 py-0.5 bg-slate-100 rounded text-red-700">SUPPRIMER_TOUT</span> :
+                </label>
+                <input
+                  type="text"
+                  value={fullWipeInput}
+                  onChange={(e) => setFullWipeInput(e.target.value)}
+                  data-testid="full-wipe-confirm-input"
+                  autoFocus
+                  disabled={fullWiping}
+                  className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-red-950 text-sm font-mono"
+                  placeholder="SUPPRIMER_TOUT"
+                />
+              </div>
+            </div>
+            <div className="p-5 pt-0 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setFullWipeOpen(false)}
+                disabled={fullWiping}
+                className="px-4 py-2 rounded-full text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-50"
+              >Annuler</button>
+              <button
+                onClick={async () => {
+                  if (fullWipeInput !== 'SUPPRIMER_TOUT') return;
+                  setFullWiping(true);
+                  try {
+                    const { data } = await api.post('/admin/platform/reset', {
+                      confirmation: 'SUPPRIMER_TOUT',
+                      delete_all: true,
+                    });
+                    toast.success(`${data.deleted_users} comptes supprimés. Vous pouvez refaire la première inscription.`);
+                    window.location.href = '/register';
+                  } catch (err) {
+                    toast.error(err.response?.data?.detail || 'Erreur pendant la suppression complète');
+                    setFullWiping(false);
+                  }
+                }}
+                disabled={fullWipeInput !== 'SUPPRIMER_TOUT' || fullWiping}
+                data-testid="btn-confirm-full-wipe"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-bold text-white bg-red-950 hover:bg-black disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {fullWiping ? (<><Repeat className="w-3.5 h-3.5 animate-spin" /> Suppression…</>) : (<><Trash2 className="w-3.5 h-3.5" /> Supprimer définitivement</>)}
               </button>
             </div>
           </div>
