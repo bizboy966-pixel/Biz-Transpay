@@ -61,3 +61,4 @@ timeoutMs = 180000
 deploymentTarget = "vm"
 run = ["bash", "scripts/start-replit.sh"]
 ignorePorts = false
+build = ["bash", "-c", "python -m pip install --disable-pip-version-check --no-input --break-system-packages -r backend/requirements.txt"]
