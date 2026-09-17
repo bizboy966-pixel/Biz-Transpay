@@ -25,7 +25,6 @@ from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 from stripe_checkout import (
     StripeCheckout, CheckoutSessionRequest, CheckoutSessionResponse,
@@ -45,6 +44,7 @@ from models import (  # noqa: E402
 )
 import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token  # noqa: E402
+from postgres_document_store import create_database  # noqa: E402
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
 import fedapay  # FedaPay Mobile Money integration (server-side only)
@@ -52,9 +52,7 @@ import paydunya  # PayDunya SoftPay deposits (server-side only)
 import mbiyo  # Mbiyo Mobile Money integration (server-side only)
 
 # ---------- DB ----------
-mongo_url = os.environ["MONGO_URL"]
-mongo_client = AsyncIOMotorClient(mongo_url)
-db = mongo_client[os.environ["DB_NAME"]]
+postgres_store, db = create_database(os.environ.get("DATABASE_URL", ""))
 
 # ---------- Browser sessions ----------
 SESSION_COOKIE_NAME = "btp_session"
@@ -12810,6 +12808,7 @@ async def api_log_middleware(request: Request, call_next):
 @app.on_event("startup")
 async def startup_db_client():
     global _paydunya_reconcile_task
+    await postgres_store.connect()
     try:
         await db.sessions.create_index("expires_at", expireAfterSeconds=0,
                                        name="sessions_ttl")
@@ -12861,4 +12860,4 @@ async def shutdown_db_client():
     if _paydunya_reconcile_task:
         _paydunya_reconcile_task.cancel()
         _paydunya_reconcile_task = None
-    mongo_client.close()
+    await postgres_store.close()
