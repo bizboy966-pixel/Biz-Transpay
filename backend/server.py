@@ -5872,6 +5872,57 @@ async def _reconcile_intent(intent_id: str) -> None:
                                       "amount_net": net, "source": "reconcile"},
                             operation_id=operation_id)
 
+    # 3) Merchant API crypto payment
+    mp = await db.merchant_payments.find_one(
+        {"id": merchant_ref, "status": {"$ne": "paid"}}, {"_id": 0})
+    if mp:
+        gross = float(mp.get("amount_gross", mp["amount"]))
+        if mp.get("fee") is not None and mp.get("amount_net") is not None:
+            fee_pct = float(mp.get("fee_pct") or 0)
+            fee = float(mp["fee"])
+            net = float(mp["amount_net"])
+            gateway_fee = float(mp.get("gateway_fee") or 0)
+            platform_fee = float(mp.get("platform_fee") or 0)
+        else:
+            fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
+            fee, net = _apply_fee(gross, fee_pct)
+            gateway_fee, platform_fee = await _crypto_platform_fee(
+                mp.get("coin", "USDT"), "deposit", gross)
+        operation_id = f"izipay:merchant-payment:{merchant_ref}"
+        await _credit_wallet_once(mp["merchant_id"], "balance_usdt", net, operation_id)
+        await db.merchant_payments.update_one(
+            {"id": merchant_ref, "status": {"$ne": "paid"}},
+            {"$set": {"status": "paid", "paid_at": now_iso(),
+                      "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                      "amount_gross": gross, "fee": fee,
+                      "fee_pct": fee_pct, "amount_net": net,
+                      "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                      "credit_operation_id": operation_id}},
+        )
+        await record_tx(
+            mp["merchant_id"], "payment", "in", net, "USDT",
+            status="completed", description="Paiement API marchand",
+            metadata={"merchant_payment_id": mp["id"],
+                      "external_reference": mp.get("reference"),
+                      "provider_reference": mp.get("izipay_intent_id"),
+                      "izipay_intent_id": intent_id, "coin": mp.get("coin"),
+                      "tx_hash": tx_hash, "customer_email": mp.get("customer_email"),
+                      "amount_gross": gross, "fee": fee,
+                      "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                      "fee_pct": fee_pct, "amount_net": net,
+                      "source": "reconcile"},
+            operation_id=operation_id)
+        await _deliver_webhook(mp["merchant_id"], "payment.completed", {
+            "payment_id": mp["id"],
+            "reference": mp.get("reference"),
+            "amount_gross": _format_amount(gross),
+            "amount_net": _format_amount(net),
+            "fee": _format_amount(fee),
+            "fee_pct": fee_pct, "coin": mp.get("coin"), "tx_hash": tx_hash,
+            "customer_email": mp.get("customer_email"),
+            "paid_at": _format_iso(datetime.now(timezone.utc)),
+        })
+
 
 @api.post("/webhooks/izipay")
 async def izipay_webhook(request: Request):
@@ -5931,6 +5982,8 @@ async def izipay_webhook(request: Request):
                                   "tx_hash": tx_hash,
                                   "amount_gross": gross, "fee": fee,
                                   "fee_pct": fee_pct, "amount_net": net,
+                                  "gateway_fee": gateway_fee,
+                                  "platform_fee": platform_fee,
                                   "credit_operation_id": operation_id}}
                     )
                     await record_tx(d["user_id"], "deposit", "in", net, "USDT",
@@ -6008,9 +6061,17 @@ async def izipay_webhook(request: Request):
                 mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
                 if mp:
                     gross = float(mp["amount"])
-                    fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
-                    fee, net = _apply_fee(gross, fee_pct)
-                    gateway_fee, platform_fee = await _crypto_platform_fee(mp.get("coin", "USDT"), "deposit", gross)
+                    if mp.get("fee") is not None and mp.get("amount_net") is not None:
+                        fee_pct = float(mp.get("fee_pct") or 0)
+                        fee = float(mp["fee"])
+                        net = float(mp["amount_net"])
+                        gateway_fee = float(mp.get("gateway_fee") or 0)
+                        platform_fee = float(mp.get("platform_fee") or 0)
+                    else:
+                        fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
+                        fee, net = _apply_fee(gross, fee_pct)
+                        gateway_fee, platform_fee = await _crypto_platform_fee(
+                            mp.get("coin", "USDT"), "deposit", gross)
                     tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
                     operation_id = f"izipay:merchant-payment:{merchant_ref}"
                     await _credit_wallet_once(mp["merchant_id"], "balance_usdt", net, operation_id)
@@ -6618,6 +6679,10 @@ def _serialize_payment(mp: dict) -> dict:
         "amount_net": _format_amount(mp.get("amount_net", 0)) if mp.get("amount_net") is not None else None,
         "fee": _format_amount(mp.get("fee", 0)) if mp.get("fee") is not None else None,
         "fee_pct": mp.get("fee_pct"),
+        "gateway_fee": _format_amount(mp.get("gateway_fee", 0))
+            if mp.get("gateway_fee") is not None else None,
+        "platform_fee": _format_amount(mp.get("platform_fee", 0))
+            if mp.get("platform_fee") is not None else None,
         "reference": mp.get("reference"),
         "customer_email": mp.get("customer_email"),
         "payment_url": mp.get("payment_url"),
@@ -6666,12 +6731,19 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                                 content=cached["body"])
         if payload.amount < 1:
             raise BizAPIError(400, "Minimum amount: 1", "AMOUNT_TOO_SMALL")
+        fee_pct = await _crypto_fee_pct(payload.coin)
+        fee, amount_net = _apply_fee(payload.amount, fee_pct)
+        gateway_fee, platform_fee = await _crypto_platform_fee(
+            payload.coin, "deposit", payload.amount)
         mp_id = new_id()
         now = now_iso()
         doc = {
             "id": mp_id, "merchant_id": merchant["id"],
             "environment": "test", "product": "bizpay_checkout",
             "source": "merchant_api", "amount": payload.amount,
+            "amount_gross": payload.amount, "amount_net": amount_net,
+            "fee": fee, "fee_pct": fee_pct,
+            "gateway_fee": gateway_fee, "platform_fee": platform_fee,
             "coin": payload.coin.upper(), "reference": payload.reference or mp_id,
             "merchant_reference": payload.reference or mp_id,
             "status": "initiated", "payment_url": f"/checkout/{mp_id}",
@@ -6688,6 +6760,10 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         raise BizAPIError(503, "Crypto gateway not configured", "GATEWAY_UNAVAILABLE")
     if payload.amount < 1:
         raise BizAPIError(400, "Minimum amount: 1 USDT", "AMOUNT_TOO_SMALL")
+    fee_pct = await _crypto_fee_pct(payload.coin)
+    fee, amount_net = _apply_fee(payload.amount, fee_pct)
+    gateway_fee, platform_fee = await _crypto_platform_fee(
+        payload.coin, "deposit", payload.amount)
     if idem_key:
         cached = await _idempotency_claim(
             owner, idem_key, "POST", "/api/v1/payments",
@@ -6744,6 +6820,9 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
             "id": mp_id, "merchant_id": merchant["id"],
             "environment": "live", "product": "bizpay_checkout",
             "source": "merchant_api", "amount": payload.amount,
+            "amount_gross": payload.amount, "amount_net": amount_net,
+            "fee": fee, "fee_pct": fee_pct,
+            "gateway_fee": gateway_fee, "platform_fee": platform_fee,
             "coin": payload.coin.upper(), "reference": payload.reference or mp_id,
             "merchant_reference": payload.reference or mp_id,
             "status": "pending", "provider_status_unknown": True,
@@ -6766,6 +6845,12 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         "product": "bizpay_checkout",
         "source": "merchant_api",
         "amount": payload.amount,
+        "amount_gross": payload.amount,
+        "amount_net": amount_net,
+        "fee": fee,
+        "fee_pct": fee_pct,
+        "gateway_fee": gateway_fee,
+        "platform_fee": platform_fee,
         "coin": payload.coin.upper(),
         "reference": payload.reference or mp_id,
         "merchant_reference": payload.reference or mp_id,
@@ -7096,6 +7181,7 @@ class DeveloperCheckoutRequest(BaseModel):
     customer_phone: Optional[str] = Field(None, min_length=6, max_length=32)
     customer_email: Optional[str] = None
     customer_name: str = Field("Client", min_length=1, max_length=120)
+    fee_bearer: Literal["client", "merchant"] = "client"
     reference: Optional[str] = Field(None, min_length=1, max_length=128)
     return_url: Optional[str] = None
     metadata: Optional[dict] = None
@@ -7132,6 +7218,38 @@ async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]
     return cfg, op
 
 
+async def _developer_withdrawal_operator(merchant: dict,
+                                         payload: Any) -> tuple[dict, dict]:
+    """Resolve a sandbox Mobile Money withdrawal from the withdrawal catalog.
+
+    Test keys may inspect admin pricing, but must not decrypt or call a
+    provider credential.  The live transfer path remains responsible for
+    choosing the actual provider.
+    """
+    cfg = await get_transfer_config()
+    mobile_money = cfg.get("mobile_money") or {}
+    if not mobile_money.get("enabled"):
+        raise BizAPIError(503, "Withdrawal service is temporarily unavailable.",
+                          "WITHDRAWAL_SERVICE_UNAVAILABLE")
+    op = _active_operator(
+        mobile_money.get("operators") or [], payload.country, payload.operator)
+    if not op:
+        raise BizAPIError(400, "The selected withdrawal method is unavailable.",
+                          "PAYMENT_METHOD_UNAVAILABLE")
+    currency = str(op.get("currency") or payload.currency).upper()
+    if currency != payload.currency.upper():
+        raise BizAPIError(400, "The currency is not supported by this method.",
+                          "CURRENCY_NOT_SUPPORTED")
+    if payload.amount < float(op.get("min", 0) or 0):
+        raise BizAPIError(400, "Amount is below the minimum allowed.",
+                          "AMOUNT_TOO_SMALL")
+    maximum = float(op.get("max", 0) or 0)
+    if maximum and payload.amount > maximum:
+        raise BizAPIError(400, "Amount exceeds the maximum allowed.",
+                          "AMOUNT_TOO_LARGE")
+    return cfg, op
+
+
 def _developer_owner(merchant: dict) -> str:
     """Partition idempotency and new records by merchant and environment."""
     return f"{merchant['id']}:{merchant.get('_api_env', 'test')}"
@@ -7156,6 +7274,19 @@ def _developer_payment_view(doc: dict) -> dict:
         "id": doc["id"], "object": "payment", "product": doc.get("product"),
         "status": doc.get("status", "pending"),
         "amount": _format_amount(doc.get("amount", 0)),
+        "requested_amount": _format_amount(
+            doc.get("requested_amount", doc.get("amount", 0))),
+        "charged_amount": _format_amount(
+            doc.get("charged_amount", doc.get("amount", 0))),
+        "wallet_credit_amount": _format_amount(
+            doc.get("wallet_credit_amount", doc.get("amount_net", doc.get("amount", 0)))),
+        "gateway_fee": _format_amount(doc.get("gateway_fee", 0))
+            if doc.get("gateway_fee") is not None else None,
+        "platform_fee": _format_amount(doc.get("platform_fee", 0))
+            if doc.get("platform_fee") is not None else None,
+        "fee": _format_amount(doc.get("total_fee", doc.get("fee", 0)))
+            if doc.get("total_fee", doc.get("fee")) is not None else None,
+        "fee_bearer": doc.get("fee_bearer"),
         "currency": doc.get("currency"), "reference": doc.get("reference"),
         "checkout_url": doc.get("checkout_url"),
         "country": doc.get("country"), "operator": doc.get("operator"),
@@ -7192,10 +7323,13 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
             email=payload.customer_email or "customer@checkout.invalid",
             full_name=payload.customer_name, country=payload.country,
             operator=payload.operator, phone_number=payload.customer_phone,
+            fee_bearer=payload.fee_bearer,
             return_url=payload.return_url,
             description=f"BizPay Checkout {payload.reference or ''}".strip(),
         )
         if merchant.get("_api_env") == "test":
+            _, op = await _developer_operator(merchant, payload)
+            fees = paydunya.calculate_fees(payload.amount, op, payload.fee_bearer)
             dep_id = new_id()
             now = now_iso()
             doc = {
@@ -7204,8 +7338,16 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
                 "reference": payload.reference or dep_id,
                 "merchant_reference": payload.reference or dep_id,
                 "environment": "test", "product": product,
-                "amount": payload.amount, "requested_amount": payload.amount,
-                "charged_amount": payload.amount, "currency": payload.currency,
+                "amount": payload.amount,
+                "requested_amount": fees["requested_amount"],
+                "charged_amount": fees["charged_amount"],
+                "wallet_credit_amount": fees["wallet_credit_amount"],
+                "gateway_fee": fees["gateway_fee"],
+                "platform_fee": fees["platform_fee"],
+                "total_fee": fees["total_fee"],
+                "fee_snapshot": fees,
+                "fee_bearer": fees["fee_bearer"],
+                "currency": payload.currency,
                 "country": payload.country.upper(), "operator": payload.operator,
                 "status": "pending", "checkout_url": _sandbox_checkout_url(dep_id),
                 "simulation_endpoint": f"/api/v1/test/payments/{dep_id}/complete",
@@ -7301,6 +7443,9 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
                 "amount": payload.amount, "requested_amount": fees["requested_amount"],
                 "charged_amount": fees["charged_amount"],
                 "wallet_credit_amount": fees["wallet_credit_amount"],
+                "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+                "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
+                "fee_snapshot": fees,
                 "currency": payload.currency, "country": payload.country.upper(),
                 "operator": payload.operator, "phone_number": payload.customer_phone,
                 "status": "pending", "metadata": payload.metadata or {},
@@ -7440,6 +7585,8 @@ async def developer_push(payload: BizPushRequest, request: Request):
         return cached["body"]
     try:
         if merchant.get("_api_env") == "test":
+            _, op = await _developer_withdrawal_operator(merchant, payload)
+            fees = paydunya.calculate_fees(payload.amount, op, "sender")
             tx_id = new_id()
             now = now_iso()
             reference = payload.reference or tx_id
@@ -7454,12 +7601,19 @@ async def developer_push(payload: BizPushRequest, request: Request):
                     "product": "bizpush", "country": payload.country.upper(),
                     "operator": payload.operator,
                     "recipient_phone": payload.beneficiary_phone,
+                    "fee": fees["total_fee"],
+                    "gateway_fee": fees["gateway_fee"],
+                    "platform_fee": fees["platform_fee"],
+                    "recipient_gets": fees["wallet_credit_amount"],
+                    "total_debit": fees["charged_amount"],
+                    "fee_snapshot": fees,
                     "public_metadata": payload.metadata or {},
                 },
             }
             await db.transactions.insert_one(doc)
             body = _developer_push_view({
-                "transaction": doc, "fee": 0, "total_debit": 0
+                "transaction": doc, "fee": fees["total_fee"],
+                "total_debit": fees["charged_amount"]
             })
             await _idempotency_store(owner, idem, "POST", "/api/v1/push", 200, body)
             return body
@@ -7749,15 +7903,35 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
                                           "/api/v1/payouts", idem_fingerprint) if idem_key else None
         if cached and cached.get("body") is not None:
             return cached["body"]
+        cfg = await get_transfer_config()
+        fees_map = ((cfg.get("crypto") or {}).get("fees") or {})
+        fees_gw_fixed = ((cfg.get("crypto") or {}).get("fees_gateway_fixed") or {})
+        coin_upper = payload.coin.upper().strip()
+        fee_pct = float(fees_map.get(coin_upper, 4.0))
+        gw_fixed = float(fees_gw_fixed.get(coin_upper, 0) or 0)
+        fee = round(payload.amount * (fee_pct / 100.0) + gw_fixed, 6)
+        gateway_fee, platform_fee = await _crypto_platform_fee(
+            coin_upper, "withdrawal", payload.amount)
+        gateway_fee = round(gateway_fee + gw_fixed, 6)
+        fee_bearer = (payload.fee_bearer or "sender").lower()
+        if fee_bearer not in ("sender", "recipient"):
+            raise BizAPIError(400, "fee_bearer must be 'sender' or 'recipient'.",
+                              "INVALID_FEE_BEARER")
+        total_debit = round(payload.amount + fee, 6) \
+            if fee_bearer == "sender" else float(payload.amount)
+        recipient_gets = float(payload.amount) \
+            if fee_bearer == "sender" else round(payload.amount - fee, 6)
         po_id = new_id()
         now = now_iso()
         doc = {
             "id": po_id, "merchant_id": uid, "environment": "test",
             "source": "merchant_api", "product": "bizpush",
             "status": "pending", "amount": payload.amount,
-            "amount_net": payload.amount, "total_debit": 0,
-            "coin": payload.coin.upper(), "network": payload.network.upper(),
-            "asset_code": f"{payload.coin.upper()}.{payload.network.upper()}",
+            "amount_net": recipient_gets, "fee": fee, "fee_pct": fee_pct,
+            "fee_bearer": fee_bearer, "gateway_fee": gateway_fee,
+            "platform_fee": platform_fee, "total_debit": total_debit,
+            "coin": coin_upper, "network": payload.network.upper(),
+            "asset_code": f"{coin_upper}.{payload.network.upper()}",
             "destination_address": payload.destination_address,
             "reference": payload.reference or po_id, "metadata": payload.metadata or {},
             "created_at": now,

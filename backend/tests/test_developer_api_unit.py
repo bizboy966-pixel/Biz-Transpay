@@ -96,6 +96,7 @@ class FakeDB:
     def __init__(self):
         self.momo_deposits = FakeCollection()
         self.merchant_payments = FakeCollection()
+        self.merchant_payouts = FakeCollection()
         self.merchant_keys = FakeCollection()
         self.idempotency_keys = FakeCollection()
         self.transactions = FakeCollection()
@@ -170,6 +171,13 @@ async def test_checkout_sandbox_is_local_and_hides_provider(monkeypatch):
     monkeypatch.setattr(server, "db", fake)
     monkeypatch.setattr(server, "_authenticate_merchant",
                         lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(server, "get_paydunya_config",
+                        lambda decrypt=False: asyncio.sleep(0, result={
+                            "enabled": True, "mode": "test",
+                            "catalog": [{"country": "TG", "code": "moov_tg",
+                                         "currency": "XOF", "min": 100, "max": 500000,
+                                         "active": True, "fee_pct": 2}],
+                        }))
     calls = []
 
     async def create(req, uid, flow, callback):
@@ -202,6 +210,9 @@ async def test_checkout_sandbox_is_local_and_hides_provider(monkeypatch):
     assert fake.momo_deposits.docs[0]["environment"] == "test"
     assert fake.momo_deposits.docs[0]["source"] == "merchant_api"
     assert fake.momo_deposits.docs[0]["reference"] == "checkout-1"
+    assert result["fee"] == "20.00"
+    assert result["charged_amount"] == "1020.00"
+    assert result["wallet_credit_amount"] == "1000.00"
 
 
 @run_async
@@ -247,6 +258,78 @@ async def test_direct_sandbox_has_no_provider_call_and_replays(monkeypatch):
     assert second == first
     assert len(fake.momo_deposits.docs) == 1
     assert fake.momo_deposits.docs[0]["environment"] == "test"
+
+
+@run_async
+async def test_crypto_payment_sandbox_snapshots_fee(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(server, "get_deposit_config",
+                        lambda: asyncio.sleep(0, result={
+                            "crypto": {
+                                "fees": {"USDT": 4},
+                                "fees_gateway": {"USDT": 3},
+                                "fees_platform": {"USDT": 1},
+                            },
+                        }))
+    monkeypatch.setattr(server, "get_transfer_config",
+                        lambda: asyncio.sleep(0, result={"crypto": {"fees": {"USDT": 4}}}))
+    monkeypatch.setattr(server, "izipay",
+                        SimpleNamespace(is_configured=lambda: False))
+    monkeypatch.setattr(server, "_idempotency_claim",
+                        lambda *args: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(server, "_idempotency_store",
+                        lambda *args: asyncio.sleep(0))
+
+    result = await server.merchant_create_payment(
+        server.MerchantPaymentRequest(amount=100, coin="USDT"),
+        request(headers={"Idempotency-Key": "crypto-test-key"}),
+    )
+
+    assert result["amount_gross"] == "100.00"
+    assert result["amount_net"] == "96.00"
+    assert result["fee"] == "4.00"
+    assert result["gateway_fee"] == "3.00"
+    assert result["platform_fee"] == "1.00"
+    assert fake.merchant_payments.docs[0]["amount_net"] == 96
+    assert fake.merchant_payments.docs[0]["fee"] == 4
+
+
+@run_async
+async def test_crypto_payout_sandbox_snapshots_fee(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(server, "get_transfer_config",
+                        lambda: asyncio.sleep(0, result={
+                            "crypto": {
+                                "fees": {"USDT": 4},
+                                "fees_gateway": {"USDT": 3},
+                                "fees_platform": {"USDT": 1},
+                            },
+                        }))
+    monkeypatch.setattr(server, "_idempotency_claim",
+                        lambda *args: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(server, "_idempotency_store",
+                        lambda *args: asyncio.sleep(0))
+
+    result = await server.merchant_create_payout(
+        server.PayoutCreate(
+            amount=100, coin="USDT", network="TRC20",
+            destination_address="T" + "1" * 33,
+        ),
+        request(headers={"Idempotency-Key": "payout-test-key"}),
+    )
+
+    assert result["amount"] == "100.00"
+    assert result["amount_net"] == "100.00"
+    assert result["fee"] == "4.00"
+    assert result["total_debit"] == "104.00"
+    assert fake.merchant_payouts.docs[0]["fee"] == 4
+    assert fake.merchant_payouts.docs[0]["total_debit"] == 104
 
 
 @run_async
@@ -316,6 +399,16 @@ async def test_push_get_status_isolated_and_sandbox_completion_webhook_once(monk
     m = merchant()
     monkeypatch.setattr(server, "_authenticate_merchant",
                         lambda req: asyncio.sleep(0, result=m))
+    monkeypatch.setattr(server, "get_transfer_config",
+                        lambda: asyncio.sleep(0, result={
+                            "mobile_money": {
+                                "enabled": True,
+                                "operators": [{"country": "TG", "code": "moov_tg",
+                                                "currency": "XOF", "min": 100,
+                                                "max": 500000, "active": True,
+                                                "fee_pct": 2}],
+                            },
+                        }))
     await server.developer_push(
         server.BizPushRequest(amount=1000, currency="XOF", country="TG",
                               operator="moov_tg", beneficiary_phone="90000000"),
@@ -365,6 +458,16 @@ async def test_push_sandbox_does_not_transfer_and_hides_metadata(monkeypatch):
     monkeypatch.setattr(server, "db", fake)
     monkeypatch.setattr(server, "_authenticate_merchant",
                         lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(server, "get_transfer_config",
+                        lambda: asyncio.sleep(0, result={
+                            "mobile_money": {
+                                "enabled": True,
+                                "operators": [{"country": "TG", "code": "moov_tg",
+                                                "currency": "XOF", "min": 100,
+                                                "max": 500000, "active": True,
+                                                "fee_pct": 2}],
+                            },
+                        }))
     monkeypatch.setattr(server, "_idempotency_claim",
                         lambda *args: asyncio.sleep(0, result=None))
     monkeypatch.setattr(server, "_idempotency_store",
@@ -389,6 +492,8 @@ async def test_push_sandbox_does_not_transfer_and_hides_metadata(monkeypatch):
     assert not captured
     assert "provider" not in result and "secret" not in result
     assert result["status"] == "pending"
+    assert result["fee"] == 20
+    assert result["total_debit"] == 1020
     assert fake.transactions.docs[0]["metadata"]["source"] == "merchant_api"
     assert fake.transactions.docs[0]["metadata"]["environment"] == "test"
 
