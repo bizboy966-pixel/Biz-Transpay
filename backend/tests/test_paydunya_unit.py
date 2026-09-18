@@ -9,6 +9,7 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import paydunya
+from models import TransferRequest
 
 
 def test_fee_snapshot_client_and_merchant():
@@ -108,6 +109,26 @@ def test_disbursement_business_error_is_not_reported_as_missing_token(monkeypatc
             withdraw_mode="t-money-togo", account_alias="90123456",
             callback_url="https://merchant.test/callback"))
     assert "application publiée" in exc.value.message
+
+
+def test_transfer_request_preserves_provider_metadata():
+    request = TransferRequest(
+        transfer_type="biz_to_mobile",
+        recipient="90123456",
+        country="TG",
+        operator="t-money-togo",
+        amount=1000,
+        currency="XOF",
+        idempotency_key="withdrawal-test",
+        metadata={
+            "source": "merchant_api",
+            "merchant_reference": "merchant-ref",
+        },
+    )
+    assert request.metadata == {
+        "source": "merchant_api",
+        "merchant_reference": "merchant-ref",
+    }
 
 
 def test_xof_fees_are_whole_units():

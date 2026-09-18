@@ -171,6 +171,7 @@ class TransferRequest(BaseModel):
     amount: float
     currency: Literal["XOF", "XAF", "USDT"]
     description: Optional[str] = ""
+    metadata: Optional[dict] = None
     idempotency_key: Optional[str] = None
     turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
     # Crypto/Binance fields
