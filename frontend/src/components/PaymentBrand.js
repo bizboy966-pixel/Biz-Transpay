@@ -5,24 +5,26 @@ const BRANDS = [
   // PayDunya supplies identifiers and names, not stable logo URLs. Keep all
   // display assets local so history and transaction details work offline and
   // under the production CSP.
-  { key: 'mixx-tg', country: 'tg', aliases: ['mixx-togo', 'mixx_tg', 'mixx', 'tmoney_tg', 'tmoney-tg', 't-money-togo', 'togocel_tg', 'togocel', 'togocom', 't-money', 'tmoney'], src: '/operator-logos/tg-mixx.jpeg', label: 'Mixx Togo', mark: 'M', color: '#0B3D91' },
+  { key: 'mixx-tg', country: 'tg', aliases: ['mixx-togo', 'mixx_tg', 'mixx', 'yas-tg', 'yas_tg'], src: '/operator-logos/tg-mixx.jpeg', label: 'Mixx Togo', mark: 'M', color: '#0B3D91' },
+  { key: 'tmoney-tg', country: 'tg', aliases: ['tmoney_tg', 'tmoney-tg', 't-money-togo', 'togocel_tg', 'togocel', 'togocom', 't-money', 'tmoney'], src: '/operator-logos/tg-tmoney.svg', label: 'T-Money Togo', mark: 'T', color: '#0B3D91' },
   { key: 'moov-tg', country: 'tg', aliases: ['moov-togo', 'moov_tg', 'moov', 'flooz'], src: '/operator-logos/tg-flooz.jpeg', label: 'Moov Money Flooz Togo', mark: 'M', color: '#F97316' },
   { key: 'moov-bf', country: 'bf', aliases: ['moov-bf', 'moov_bf', 'moov', 'moov-burkina-faso', 'moov burkina', 'moov money burkina'], src: '/operator-logos/bf-moov.png', label: 'Moov Money Burkina Faso', mark: 'M', color: '#0EA5E9' },
   { key: 'orange-bf', country: 'bf', aliases: ['orange-bf', 'orange_bf', 'orange', 'orange-money-burkina', 'orange burkina', 'orange money burkina'], src: '/operator-logos/bf-orange.png', label: 'Orange Burkina Faso', mark: 'O', color: '#F97316' },
   { key: 'yas-bf', country: 'bf', aliases: ['yas-bf', 'yas_bf', 'yas', 'mixx-bf', 'mixx burkina', 'mixx by yas'], src: '/operator-logos/tg-mixx.jpeg', label: 'Mixx by Yas Burkina Faso', mark: 'Y', color: '#7C3AED' },
   { key: 'mtn-bj', country: 'bj', aliases: ['mtn-bj', 'mtn_bj', 'mtn', 'mtn-benin', 'mtn benin', 'my mtn'], src: '/operator-logos/bj-mtn.png', label: 'MTN Bénin', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
   { key: 'moov-bj', country: 'bj', aliases: ['moov-bj', 'moov_bj', 'moov', 'moov-benin', 'moov benin', 'moov money benin'], src: '/operator-logos/bj-moov.png', label: 'Moov Money Bénin', mark: 'M', color: '#0EA5E9' },
-  { key: 'celtiis-bj', country: 'bj', aliases: ['celtiis-bj', 'celtiis_bj', 'celtiis'], label: 'Celtiis Bénin', mark: 'C', color: '#16A34A' },
-  { key: 'mtn', aliases: ['mtn'], label: 'MTN', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
-  { key: 'wave', aliases: ['wave'], label: 'Wave', mark: 'W', color: '#0EA5E9' },
-  { key: 'orange', aliases: ['orange'], label: 'Orange Money', mark: 'O', color: '#F97316' },
-  { key: 'airtel', aliases: ['airtel'], label: 'Airtel', mark: 'A', color: '#DC2626' },
-  { key: 'free', aliases: ['free'], label: 'Free Money', mark: 'F', color: '#111827' },
-  { key: 'celtiis', aliases: ['celtiis'], label: 'Celtiis', mark: 'C', color: '#16A34A' },
-  { key: 'yas', aliases: ['yas', 'mixx'], label: 'Yas / Mixx', mark: 'Y', color: '#7C3AED' },
-  { key: 'djamo', aliases: ['djamo'], label: 'Djamo', mark: 'D', color: '#111827' },
-  { key: 'expresso', aliases: ['expresso'], label: 'Expresso', mark: 'E', color: '#2563EB' },
-  { key: 'wizall', aliases: ['wizall'], label: 'Wizall', mark: 'W', color: '#059669' },
+  { key: 'celtiis-bj', country: 'bj', aliases: ['celtiis-bj', 'celtiis_bj', 'celtiis'], src: '/operator-logos/celtiis.svg', label: 'Celtiis Bénin', mark: 'C', color: '#16A34A' },
+  { key: 'mtn', aliases: ['mtn'], src: '/operator-logos/bj-mtn.png', label: 'MTN', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
+  { key: 'moov', aliases: ['moov'], src: '/operator-logos/bf-moov.png', label: 'Moov Money', mark: 'M', color: '#0EA5E9' },
+  { key: 'wave', aliases: ['wave'], src: '/operator-logos/wave.svg', label: 'Wave', mark: 'W', color: '#0EA5E9' },
+  { key: 'orange', aliases: ['orange'], src: '/operator-logos/bf-orange.png', label: 'Orange Money', mark: 'O', color: '#F97316' },
+  { key: 'airtel', aliases: ['airtel'], src: '/operator-logos/airtel.svg', label: 'Airtel', mark: 'A', color: '#DC2626' },
+  { key: 'free', aliases: ['free'], src: '/operator-logos/free.svg', label: 'Free Money', mark: 'F', color: '#111827' },
+  { key: 'celtiis', aliases: ['celtiis'], src: '/operator-logos/celtiis.svg', label: 'Celtiis', mark: 'C', color: '#16A34A' },
+  { key: 'yas', aliases: ['yas', 'mixx'], src: '/operator-logos/tg-mixx.jpeg', label: 'Yas / Mixx', mark: 'Y', color: '#7C3AED' },
+  { key: 'djamo', aliases: ['djamo'], src: '/operator-logos/djamo.svg', label: 'Djamo', mark: 'D', color: '#111827' },
+  { key: 'expresso', aliases: ['expresso'], src: '/operator-logos/expresso.svg', label: 'Expresso', mark: 'E', color: '#2563EB' },
+  { key: 'wizall', aliases: ['wizall'], src: '/operator-logos/wizall.svg', label: 'Wizall', mark: 'W', color: '#059669' },
 ];
 
 function normalized(value) {

@@ -23,10 +23,15 @@ export default function DashboardHome() {
   const [hidden, setHidden] = useState(() => localStorage.getItem('btp_balance_hidden') === '1');
 
   useEffect(() => {
-    api.get('/transactions', { params: { limit: RECENT_TRANSACTIONS_LIMIT } })
-      .then(({ data }) => setTxs(Array.isArray(data) ? data.slice(0, RECENT_TRANSACTIONS_LIMIT) : []))
-      .catch(() => setTxs([]));
-    refresh();
+    const loadDashboard = () => {
+      api.get('/transactions', { params: { limit: RECENT_TRANSACTIONS_LIMIT } })
+        .then(({ data }) => setTxs(Array.isArray(data) ? data.slice(0, RECENT_TRANSACTIONS_LIMIT) : []))
+        .catch(() => setTxs([]));
+      refresh();
+    };
+    loadDashboard();
+    window.addEventListener('btp-wallet-updated', loadDashboard);
+    return () => window.removeEventListener('btp-wallet-updated', loadDashboard);
     // eslint-disable-next-line
   }, []);
 

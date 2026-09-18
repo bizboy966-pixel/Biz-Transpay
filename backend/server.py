@@ -5017,7 +5017,24 @@ async def _upsert_momo_ledger(d: dict, *, amount: float, currency: str,
         await db.transactions.create_index("id", unique=True)
     except Exception:
         pass
-    await db.transactions.update_one({"id": ledger_id}, {"$setOnInsert": doc}, upsert=True)
+    # A provider callback or an earlier reconciliation attempt can leave the
+    # deterministic ledger row pending before the wallet credit is applied.
+    # Repair that row when the credit succeeds so the dashboard cannot show a
+    # stale pending status after the balance has already changed.
+    await db.transactions.update_one(
+        {"id": ledger_id},
+        {
+            "$setOnInsert": doc,
+            "$set": {
+                "status": "completed",
+                "amount": amount,
+                "currency": currency,
+                "description": description,
+                "metadata": metadata,
+            },
+        },
+        upsert=True,
+    )
 
 
 async def _credit_momo_deposit(d: dict) -> None:
@@ -10222,7 +10239,11 @@ def _effective_role(user: dict) -> str:
             # operational ADMIN role.
             "general": "ADMIN",
             "operations": "ADMIN",
-        }.get(staff_role, "USER")
+        # Older administrator records can contain a staff-role value that is
+        # no longer in the current catalogue. Keep those accounts in the
+        # administrator permission boundary instead of silently downgrading
+        # them to USER and blocking balance actions.
+        }.get(staff_role, "ADMIN")
     if user.get("account_type") == "merchant":
         return "MERCHANT"
     return "USER"

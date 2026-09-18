@@ -553,8 +553,14 @@ def confirmation_valid(response: dict, *, master_key: str, token: str,
     status = str(data.get("status") or invoice.get("status") or "").lower()
     returned_token = str(data.get("token") or data.get("invoice_token")
                          or invoice.get("token") or "")
-    returned_amount = (data.get("amount") or data.get("total_amount")
-                       or invoice.get("total_amount"))
+    returned_amount = (
+        data.get("amount")
+        or data.get("total_amount")
+        or invoice.get("total_amount")
+        # The confirmation endpoint may omit the duplicated amount while
+        # preserving the signed custom data sent with the invoice.
+        or custom.get("biztranspay_amount")
+    )
     currency_value = (data.get("currency") or invoice.get("currency")
                       or custom.get("biztranspay_currency") or "")
     if isinstance(currency_value, dict):
@@ -567,17 +573,24 @@ def confirmation_valid(response: dict, *, master_key: str, token: str,
         amount_ok = abs(float(returned_amount) - float(amount)) < 0.005
     except (TypeError, ValueError):
         amount_ok = False
-    identity_ok = (not deposit_id or
-                   hmac.compare_digest(returned_deposit_id, str(deposit_id)))
-    # Historical XOF invoices predate the signed currency custom-data field.
+    # PayDunya does not return custom_data consistently from the confirmation
+    # endpoint. The invoice token is already bound to the deposit server-side,
+    # so an omitted custom identity is compatible; a conflicting identity is
+    # still rejected.
+    identity_ok = (
+        not deposit_id
+        or not returned_deposit_id
+        or hmac.compare_digest(returned_deposit_id, str(deposit_id))
+    )
     # PayDunya checkout invoices are denominated in FCFA and their confirmation
-    # endpoint omits currency, so accept those only when the signed custom-data
-    # still identifies the exact local deposit. New invoices validate the
-    # explicit signed currency above.
+    # endpoint may omit currency. Accept that historical XOF shape only when
+    # the provider token, amount, and static hash have passed validation.
     currency_ok = (returned_currency == currency.upper() or
                    (not returned_currency and currency.upper() == "XOF"
                     and bool(deposit_id) and identity_ok))
-    return (code == "00" and status == "completed" and
+    return (code == "00" and status in {
+                "completed", "paid", "success", "successful"
+            } and
             hmac.compare_digest(returned_token, str(token)) and amount_ok and
             currency_ok and identity_ok and
             verify_static_hash(supplied_hash, master_key))

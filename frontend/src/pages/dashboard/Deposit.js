@@ -336,7 +336,10 @@ function CryptoDepositTracker({ deposit: initial }) {
         setStatus(data.status);
         if (['confirmed', 'expired', 'failed'].includes(data.status)) {
           stopRef.current = true;
-          if (data.status === 'confirmed') { refresh(); }
+          if (data.status === 'confirmed') {
+            await refresh();
+            window.dispatchEvent(new Event('btp-wallet-updated'));
+          }
           return;
         }
       } catch {/* ignore */}
@@ -764,7 +767,18 @@ function MobileMoneyForm({ onSuccess }) {
 }
 
 function MobileMoneyTracker({ deposit }) {
+  const { refresh } = useAuth();
   const [d, setD] = useState(deposit);
+
+  useEffect(() => {
+    if (d.status !== 'approved') return;
+    refresh();
+    window.dispatchEvent(new Event('btp-wallet-updated'));
+    // The status is terminal, so this side effect is intentionally run once
+    // for each tracker instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [d.status]);
+
   useEffect(() => {
     if (d.status !== 'pending') return;
     const iv = setInterval(async () => {

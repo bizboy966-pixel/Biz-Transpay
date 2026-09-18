@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>Djamo</title>
+  <rect width="720" height="720" rx="96" fill="#111827"/>
+  <circle cx="360" cy="285" r="136" fill="#F5C542"/>
+  <path d="M290 221h65c56 0 92 26 92 64s-36 64-92 64h-65v-42h59c27 0 45-8 45-22s-18-22-45-22h-59z" fill="#111827"/>
+  <text x="360" y="535" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="90" font-weight="700">djamo</text>
+</svg>

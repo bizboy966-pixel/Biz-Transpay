@@ -207,6 +207,26 @@ def test_confirmation_uses_signed_custom_currency_and_legacy_xof_identity():
         currency="XOF", deposit_id="another-deposit")
 
 
+def test_confirmation_accepts_provider_response_without_custom_data():
+    master = "test-master"
+    digest = hashlib.sha512(master.encode()).hexdigest()
+    response = {
+        "response_code": "00",
+        "status": "completed",
+        "token": "invoice-token",
+        "amount": 500,
+        "hash": digest,
+    }
+    assert paydunya.confirmation_valid(
+        response,
+        master_key=master,
+        token="invoice-token",
+        amount=500,
+        currency="XOF",
+        deposit_id="deposit-id",
+    )
+
+
 def test_togo_softpay_uses_documented_fields(monkeypatch):
     seen = {}
 

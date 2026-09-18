@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>T-Money Togo</title>
+  <rect width="720" height="720" rx="96" fill="#0B3D91"/>
+  <circle cx="360" cy="300" r="150" fill="#FACC15"/>
+  <path d="M255 285h210v48h-78v135h-54V333h-78z" fill="#0B3D91"/>
+  <text x="360" y="565" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="76" font-weight="700">T-MONEY</text>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>Wizall</title>
+  <rect width="720" height="720" rx="96" fill="#059669"/>
+  <path d="M186 238h348l-54 92h-58l-32 54-32-54h-58z" fill="#FACC15"/>
+  <text x="360" y="525" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="94" font-weight="700">wizall</text>
+</svg>

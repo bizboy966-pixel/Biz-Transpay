@@ -13,10 +13,9 @@ origin is authorized. Treating the issue as a code or CSP failure can leave
 the server protected while the normal login and payment UI is unusable.
 
 **How to apply:** Keep the server-side verification and fail-closed behavior.
-Add the actual Preview and production hostnames in Cloudflare Turnstile
-Hostname Management. Use Cloudflare's documented test keys for local
-`localhost`/`127.0.0.1` testing rather than weakening production hostname
-validation.
+The active Biz-transPay widget must list the actual Preview and production
+hostnames, plus `localhost` and `127.0.0.1` when local Replit screenshots are
+used. Never weaken server-side hostname or token validation.
 
 Replit environment-specific secrets can shadow shared values, and agent shell
 commands can retain an older secret after the Secrets pane is updated. Validate
