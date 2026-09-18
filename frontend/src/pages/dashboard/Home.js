@@ -7,6 +7,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem from './TransactionListItem';
+import walletReferenceCard from '@/assets/wallet-reference-card.jpg';
 
 const RECENT_TRANSACTIONS_LIMIT = 5;
 
@@ -81,7 +82,7 @@ export default function DashboardHome() {
       >
         <div className="relative aspect-[876/345] w-full border-b border-[#39C4FF]/60">
           <img
-            src="/wallet-reference-card.jpg"
+            src={walletReferenceCard}
             alt="Mon portefeuille Biz-transPay"
             className="absolute inset-0 h-full w-full object-cover object-top"
           />
