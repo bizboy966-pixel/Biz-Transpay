@@ -82,6 +82,7 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
           ? <OperatorLogo
               operator={meta.operator}
               name={meta.operator_name || meta.operator}
+              country={countryCode}
               logoUrl={meta.operator_logo || meta.logo_url}
               size="md"
             />
