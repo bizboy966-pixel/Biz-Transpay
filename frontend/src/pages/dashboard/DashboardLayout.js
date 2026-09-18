@@ -3,6 +3,7 @@ import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, WalletCards, Menu, ChevronDown, LogOut, X } from 'lucide-react';
 import { Logo } from '@/components/Logo';
+import { SafeImage } from '@/components/SafeImage';
 import NotificationBell from '@/components/NotificationBell';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
@@ -112,11 +113,12 @@ export default function DashboardLayout() {
             <LanguageSwitcher compact className="bt-topbar-language" />
             <div className="relative">
               <button onClick={() => setProfileOpen((v) => !v)} data-testid="btn-profile" className="flex items-center gap-1 pl-0.5 pr-1.5 py-1 sm:gap-1.5 sm:pl-1 sm:pr-2.5 rounded-full hover:bg-slate-100 transition-colors">
-                {user?.avatar_url ? (
-                  <img src={user.avatar_url} alt={`Photo de ${user?.full_name || 'profil'}`} className="h-7 w-7 sm:h-8 sm:w-8 rounded-full object-cover border border-white shadow-sm" />
-                ) : (
-                  <div className="h-7 w-7 sm:h-8 sm:w-8 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-bold text-xs">{initials}</div>
-                )}
+                <SafeImage
+                  src={user?.avatar_url}
+                  alt={`Photo de ${user?.full_name || 'profil'}`}
+                  className="h-7 w-7 rounded-full border border-white object-cover shadow-sm sm:h-8 sm:w-8"
+                  fallback={<div className="h-7 w-7 rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-xs font-bold text-white sm:h-8 sm:w-8">{initials}</div>}
+                />
                 <ChevronDown className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-slate-500" />
               </button>
               {profileOpen && (

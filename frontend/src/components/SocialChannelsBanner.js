@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '@/api';
 import { SOCIAL_CHANNELS } from './socialChannels';
+import { SafeImage } from './SafeImage';
 
 function SocialIcon({ channel }) {
   const [failed, setFailed] = useState(false);
@@ -12,11 +13,16 @@ function SocialIcon({ channel }) {
     );
   }
   return (
-    <img
+    <SafeImage
       src={channel.iconSrc}
       alt=""
       className="bt-social-banner__icon h-6 w-6 shrink-0 object-contain"
       onError={() => setFailed(true)}
+      fallback={(
+        <span className="bt-social-banner__icon inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[10px] font-extrabold text-slate-500" aria-hidden="true">
+          {channel.label.slice(0, 1)}
+        </span>
+      )}
     />
   );
 }

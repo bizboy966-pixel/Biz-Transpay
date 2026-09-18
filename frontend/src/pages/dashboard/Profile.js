@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
+import { SafeImage } from '@/components/SafeImage';
 import Settings from './Settings';
 
 export default function Profile() {
@@ -25,13 +26,16 @@ export default function Profile() {
       <div className="bg-white border border-slate-100 rounded-2xl p-5 sm:p-6 shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
         <div className="flex items-center gap-4 pb-5 border-b border-slate-100">
           <div className="relative shrink-0">
-            {user?.avatar_url ? (
-              <img src={user.avatar_url} alt={`Photo de ${user?.full_name || 'profil'}`} className="w-14 h-14 rounded-2xl object-cover border border-slate-100" />
-            ) : (
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white flex items-center justify-center font-cabinet font-extrabold text-xl">
-                {initials(user?.full_name)}
-              </div>
-            )}
+            <SafeImage
+              src={user?.avatar_url}
+              alt={`Photo de ${user?.full_name || 'profil'}`}
+              className="h-14 w-14 rounded-2xl border border-slate-100 object-cover"
+              fallback={(
+                <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-xl font-extrabold text-white">
+                  {initials(user?.full_name)}
+                </div>
+              )}
+            />
             <button type="button" onClick={() => fileRef.current?.click()} disabled={avatarBusy} title="Importer une photo"
               className="absolute -right-2 -bottom-2 w-7 h-7 rounded-full bg-[#2563EB] text-white flex items-center justify-center border-2 border-white shadow-sm disabled:opacity-50" data-testid="btn-upload-avatar">
               <ImagePlus className="w-3.5 h-3.5" />

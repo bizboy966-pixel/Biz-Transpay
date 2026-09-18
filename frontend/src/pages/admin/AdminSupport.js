@@ -3,6 +3,7 @@ import { MessageCircle, Send, Save, Paperclip, X, CheckCheck, Check, Plus, Trash
 import { toast } from 'sonner';
 import api from '@/api';
 import { SOCIAL_CHANNELS } from '@/components/socialChannels';
+import { SafeImage } from '@/components/SafeImage';
 
 export default function AdminSupport() {
   const [cfg, setCfg] = useState(null);
@@ -92,7 +93,16 @@ export default function AdminSupport() {
                 <div key={channel.key} className="rounded-xl border border-slate-200 p-3">
                   <div className="flex items-center justify-between gap-3 mb-2">
                     <div className="flex items-center gap-2 min-w-0">
-                      <img src={channel.iconSrc} alt="" className="h-5 w-5 shrink-0 object-contain" />
+                      <SafeImage
+                        src={channel.iconSrc}
+                        alt=""
+                        className="h-5 w-5 shrink-0 object-contain"
+                        fallback={(
+                          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-slate-100 text-[9px] font-extrabold text-slate-500" aria-hidden="true">
+                            {channel.label.slice(0, 1)}
+                          </span>
+                        )}
+                      />
                       <span className="text-xs font-bold text-slate-800">{channel.label}</span>
                     </div>
                     <label className="flex items-center gap-1.5 text-[10px] text-slate-500 shrink-0">

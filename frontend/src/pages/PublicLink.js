@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Link2, ShieldCheck, Bitcoin, ArrowRight, ArrowLeft, Copy, CheckCircle2, XCircle, Clock, Loader2, Smartphone } from 'lucide-react';
+import { ShieldCheck, Bitcoin, ArrowRight, ArrowLeft, Copy, CheckCircle2, XCircle, Clock, Loader2, Smartphone } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
