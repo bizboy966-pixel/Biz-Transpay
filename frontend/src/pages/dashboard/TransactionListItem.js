@@ -72,7 +72,14 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
   const incoming = tx.direction === 'in';
   const meta = tx.metadata || {};
   const contact = partyContact(tx);
-  const operator = meta.operator_name || meta.operator;
+  const operatorValue = meta.operator;
+  const operator = meta.operator_name
+    || (typeof operatorValue === 'object'
+      ? operatorValue.name || operatorValue.label || operatorValue.code || operatorValue.operator
+      : operatorValue);
+  const operatorCode = typeof operatorValue === 'object'
+    ? operatorValue.code || operatorValue.operator || operator
+    : operatorValue;
   const countryCode = meta.country_code || meta.country;
   const country = findCountry(countryCode);
   const row = (
@@ -80,8 +87,8 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${incoming ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
         {operator
           ? <OperatorLogo
-              operator={meta.operator}
-              name={meta.operator_name || meta.operator}
+              operator={operatorCode}
+              name={operator}
               country={countryCode}
               logoUrl={meta.operator_logo || meta.logo_url}
               size="md"

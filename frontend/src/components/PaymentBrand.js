@@ -7,10 +7,12 @@ const BRANDS = [
   // under the production CSP.
   { key: 'mixx-tg', country: 'tg', aliases: ['mixx-togo', 'mixx_tg', 'mixx', 'tmoney_tg', 'tmoney-tg', 't-money-togo', 'togocel_tg', 'togocel', 'togocom', 't-money', 'tmoney'], src: '/operator-logos/tg-mixx.jpeg', label: 'Mixx Togo', mark: 'M', color: '#0B3D91' },
   { key: 'moov-tg', country: 'tg', aliases: ['moov-togo', 'moov_tg', 'moov', 'flooz'], src: '/operator-logos/tg-flooz.jpeg', label: 'Moov Money Flooz Togo', mark: 'M', color: '#F97316' },
-  { key: 'moov-bf', country: 'bf', aliases: ['moov-burkina-faso', 'moov_bf', 'moov burkina', 'moov money burkina'], src: '/operator-logos/bf-moov.png', label: 'Moov Money Burkina Faso', mark: 'M', color: '#0EA5E9' },
-  { key: 'orange-bf', country: 'bf', aliases: ['orange-money-burkina', 'orange_bf', 'orange burkina', 'orange money burkina'], src: '/operator-logos/bf-orange.png', label: 'Orange Burkina Faso', mark: 'O', color: '#F97316' },
-  { key: 'mtn-bj', country: 'bj', aliases: ['mtn-benin', 'mtn_bj', 'mtn benin', 'my mtn'], src: '/operator-logos/bj-mtn.png', label: 'MTN Bénin', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
-  { key: 'moov-bj', country: 'bj', aliases: ['moov-benin', 'moov_bj', 'moov benin', 'moov money benin'], src: '/operator-logos/bj-moov.png', label: 'Moov Money Bénin', mark: 'M', color: '#0EA5E9' },
+  { key: 'moov-bf', country: 'bf', aliases: ['moov-bf', 'moov_bf', 'moov', 'moov-burkina-faso', 'moov burkina', 'moov money burkina'], src: '/operator-logos/bf-moov.png', label: 'Moov Money Burkina Faso', mark: 'M', color: '#0EA5E9' },
+  { key: 'orange-bf', country: 'bf', aliases: ['orange-bf', 'orange_bf', 'orange', 'orange-money-burkina', 'orange burkina', 'orange money burkina'], src: '/operator-logos/bf-orange.png', label: 'Orange Burkina Faso', mark: 'O', color: '#F97316' },
+  { key: 'yas-bf', country: 'bf', aliases: ['yas-bf', 'yas_bf', 'yas', 'mixx-bf', 'mixx burkina', 'mixx by yas'], src: '/operator-logos/tg-mixx.jpeg', label: 'Mixx by Yas Burkina Faso', mark: 'Y', color: '#7C3AED' },
+  { key: 'mtn-bj', country: 'bj', aliases: ['mtn-bj', 'mtn_bj', 'mtn', 'mtn-benin', 'mtn benin', 'my mtn'], src: '/operator-logos/bj-mtn.png', label: 'MTN Bénin', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
+  { key: 'moov-bj', country: 'bj', aliases: ['moov-bj', 'moov_bj', 'moov', 'moov-benin', 'moov benin', 'moov money benin'], src: '/operator-logos/bj-moov.png', label: 'Moov Money Bénin', mark: 'M', color: '#0EA5E9' },
+  { key: 'celtiis-bj', country: 'bj', aliases: ['celtiis-bj', 'celtiis_bj', 'celtiis'], label: 'Celtiis Bénin', mark: 'C', color: '#16A34A' },
   { key: 'mtn', aliases: ['mtn'], label: 'MTN', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
   { key: 'wave', aliases: ['wave'], label: 'Wave', mark: 'W', color: '#0EA5E9' },
   { key: 'orange', aliases: ['orange'], label: 'Orange Money', mark: 'O', color: '#F97316' },
@@ -33,11 +35,26 @@ export function findCountry(value) {
 }
 
 export function findBrand(operator, name, country) {
-  const value = normalized(`${operator || ''} ${name || ''}`);
-  const countryCode = normalized(country);
-  return BRANDS
-    .filter((brand) => !brand.country || !countryCode || brand.country === countryCode)
-    .find((brand) => brand.aliases.some((alias) => value.includes(normalized(alias)))) || null;
+  const valueOf = (value) => {
+    if (!value) return '';
+    if (typeof value === 'object') {
+      return [
+        value.code,
+        value.operator,
+        value.name,
+        value.label,
+      ].filter(Boolean).join(' ');
+    }
+    return String(value);
+  };
+  const value = normalized(`${valueOf(operator)} ${valueOf(name)}`);
+  const countryCode = normalized(findCountry(country)?.code || country);
+  const countryBrands = BRANDS.filter((brand) => brand.country === countryCode);
+  const match = (brands) => brands.find((brand) => (
+    [brand.key, ...brand.aliases].some((alias) => value.includes(normalized(alias)))
+  )) || null;
+
+  return match(countryBrands) || match(BRANDS.filter((brand) => !brand.country)) || match(BRANDS);
 }
 
 export function CountryBadge({ code, label, className = '' }) {
@@ -60,7 +77,10 @@ export function OperatorLogo({ operator, name, country, logoUrl, size = 'md', cl
     md: 'h-9 w-9 rounded-xl',
     lg: 'h-12 w-12 rounded-2xl',
   };
-  const src = logoUrl || brand?.src;
+  // Prefer the bundled operator photos. Provider-supplied logo URLs can be
+  // temporary or blocked by the production CSP and must not hide a local
+  // operator image behind the letter fallback.
+  const src = brand?.src || logoUrl;
   const fallbackMark = brand?.mark || normalized(operator || name).replace(/[^a-z0-9]/g, '').slice(0, 2).toUpperCase() || 'MM';
   const fallbackColor = brand?.color || '#64748B';
   const fallbackTextColor = brand?.textColor || '#FFFFFF';
