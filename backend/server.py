@@ -21,7 +21,8 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body, Response
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -12587,6 +12588,31 @@ async def public_stats():
 
 # ---------- register ----------
 app.include_router(api)
+
+# Production publishes use one HTTP process on port 5000. Serve the already
+# built CRA assets from FastAPI so readiness does not depend on starting the
+# CRA development compiler during VM startup. The development workflow still
+# runs CRACO separately on port 5000.
+FRONTEND_BUILD_DIR = ROOT_DIR.parent / "frontend" / "build"
+app.mount(
+    "/static",
+    StaticFiles(directory=FRONTEND_BUILD_DIR / "static", check_dir=False),
+    name="frontend-static",
+)
+
+
+@app.get("/{path:path}", include_in_schema=False)
+async def frontend_fallback(path: str):
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(404, "Route introuvable")
+    index_file = FRONTEND_BUILD_DIR / "index.html"
+    if not index_file.is_file():
+        return JSONResponse(
+            status_code=200,
+            content={"status": "ok", "message": "Frontend build not available"},
+        )
+    return FileResponse(index_file)
+
 
 _configured_cors_origins = [
     origin.strip()

@@ -51,6 +51,10 @@ localPort = 5001
 externalPort = 3001
 
 [[ports]]
+localPort = 5002
+externalPort = 3000
+
+[[ports]]
 localPort = 8000
 externalPort = 8000
 
@@ -60,6 +64,6 @@ timeoutMs = 180000
 
 [deployment]
 deploymentTarget = "vm"
-run = ["bash", "scripts/start-replit.sh"]
+run = ["bash", "scripts/start-production.sh"]
 ignorePorts = false
-build = ["bash", "-c", "python -m pip install --disable-pip-version-check --no-input --break-system-packages -r backend/requirements.txt"]
+build = ["bash", "-c", "python -m pip install --disable-pip-version-check --no-input --break-system-packages -r backend/requirements.txt && yarn --cwd frontend install --frozen-lockfile --non-interactive && yarn --cwd frontend build"]

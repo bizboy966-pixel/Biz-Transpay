@@ -19,6 +19,7 @@
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.
 - [Python environment manifests](python-environment-manifests.md) — package installation can rewrite project manifests; restore the requirements source of truth before restarting.
 - [PostgreSQL JSONB adapter behavior](postgres-jsonb-adapter.md) — asyncpg JSONB and stored datetimes may return as strings; decode and normalize them at the store boundary.
+- [VM publish readiness](vm-publish-readiness.md) — production must serve the prebuilt frontend quickly on the public port; do not start CRA compilation in the VM run command.
 - [Financial idempotency barriers](financial-idempotency.md) — wallet mutations use Mongo atomic markers; every retryable credit, debit, refund, and settlement needs an operation id.
 - [Backend test environment](backend-test-environment.md) — integration tests need an explicit local/Preview base URL; external Preview TLS and shared rate limits can invalidate results.
 - [Cloudflare Turnstile hostnames](cloudflare-turnstile.md) — real Turnstile keys reject unlisted Preview domains with client error 110200; configure Hostname Management explicitly.
