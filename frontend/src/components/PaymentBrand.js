@@ -2,21 +2,21 @@ import { useState } from 'react';
 import { COUNTRIES } from '@/constants/countries';
 
 const BRANDS = [
-  // PayDunya supplies the operator codes and names. These two logos were
-  // supplied by the project owner and are served locally for reliable history
-  // and transaction-detail rendering.
-  { key: 'tmoney', aliases: ['t-money', 'tmoney', 'togocel', 'togocom'], src: '/operator-logos/tmoney.jpeg', label: 'T-Money' },
-  { key: 'moov', aliases: ['moov', 'flooz'], src: '/operator-logos/flooz.jpeg', label: 'Moov / Flooz' },
-  { key: 'mtn', aliases: ['mtn'], src: 'https://www.mtn.com/wp-content/themes/mtn-refresh/public/img/mtn-logo.svg', label: 'MTN' },
-  { key: 'wave', aliases: ['wave'], src: 'https://www.wave.com/img/nav-logo.png', label: 'Wave' },
-  { key: 'orange', aliases: ['orange'], src: 'https://www.orange.com/favicon.ico', label: 'Orange Money' },
-  { key: 'airtel', aliases: ['airtel'], src: 'https://www.airtel.com/favicon.ico', label: 'Airtel' },
-  { key: 'free', aliases: ['free'], src: 'https://www.free.sn/favicon.ico', label: 'Free Money' },
-  { key: 'celtiis', aliases: ['celtiis'], src: 'https://celtiis.bj/favicon.ico', label: 'Celtiis' },
-  { key: 'yas', aliases: ['yas', 'mixx'], src: 'https://www.yas.tg/favicon.ico', label: 'Yas / Mixx' },
-  { key: 'djamo', aliases: ['djamo'], src: 'https://djamo.com/favicon.ico', label: 'Djamo' },
-  { key: 'expresso', aliases: ['expresso'], src: 'https://www.expressotelecom.sn/favicon.ico', label: 'Expresso' },
-  { key: 'wizall', aliases: ['wizall'], src: 'https://www.wizall.com/favicon.ico', label: 'Wizall' },
+  // PayDunya supplies identifiers and names, not stable logo URLs. Keep all
+  // display assets local so history and transaction details work offline and
+  // under the production CSP.
+  { key: 'tmoney', aliases: ['t-money', 'tmoney', 'togocel', 'togocom'], src: '/operator-logos/tmoney.jpeg', label: 'T-Money', mark: 'T', color: '#E11D48' },
+  { key: 'moov', aliases: ['moov', 'flooz'], src: '/operator-logos/flooz.jpeg', label: 'Moov / Flooz', mark: 'M', color: '#0EA5E9' },
+  { key: 'mtn', aliases: ['mtn'], label: 'MTN', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
+  { key: 'wave', aliases: ['wave'], label: 'Wave', mark: 'W', color: '#0EA5E9' },
+  { key: 'orange', aliases: ['orange'], label: 'Orange Money', mark: 'O', color: '#F97316' },
+  { key: 'airtel', aliases: ['airtel'], label: 'Airtel', mark: 'A', color: '#DC2626' },
+  { key: 'free', aliases: ['free'], label: 'Free Money', mark: 'F', color: '#111827' },
+  { key: 'celtiis', aliases: ['celtiis'], label: 'Celtiis', mark: 'C', color: '#16A34A' },
+  { key: 'yas', aliases: ['yas', 'mixx'], label: 'Yas / Mixx', mark: 'Y', color: '#7C3AED' },
+  { key: 'djamo', aliases: ['djamo'], label: 'Djamo', mark: 'D', color: '#111827' },
+  { key: 'expresso', aliases: ['expresso'], label: 'Expresso', mark: 'E', color: '#2563EB' },
+  { key: 'wizall', aliases: ['wizall'], label: 'Wizall', mark: 'W', color: '#059669' },
 ];
 
 function normalized(value) {
@@ -54,16 +54,31 @@ export function OperatorLogo({ operator, name, logoUrl, size = 'md', className =
     lg: 'h-12 w-12 rounded-2xl',
   };
   const src = logoUrl || brand?.src;
-  if (!brand || !src || failed) {
+  const fallbackMark = brand?.mark || normalized(operator || name).replace(/[^a-z0-9]/g, '').slice(0, 2).toUpperCase() || 'MM';
+  const fallbackColor = brand?.color || '#64748B';
+  const fallbackTextColor = brand?.textColor || '#FFFFFF';
+
+  if (src && !failed) {
     return (
-      <span className={`inline-flex shrink-0 items-center justify-center bg-slate-100 text-[10px] font-bold text-slate-400 ${sizes[size] || sizes.md} ${className}`} title={text} aria-label={text}>
-        <span aria-hidden="true">•••</span>
+      <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden bg-white shadow-sm ${sizes[size] || sizes.md} ${className}`} title={name || brand?.label || text} aria-label={name || brand?.label || text}>
+        <img
+          src={src}
+          alt=""
+          onError={() => setFailed(true)}
+          className="h-full w-full object-cover p-0"
+        />
       </span>
     );
   }
+
   return (
-    <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden bg-white shadow-sm ${sizes[size] || sizes.md} ${className}`} title={name || brand.label} aria-label={name || brand.label}>
-       <img src={src} alt="" onError={() => setFailed(true)} className="h-full w-full object-cover p-0" />
+    <span
+      className={`inline-flex shrink-0 items-center justify-center overflow-hidden text-[9px] font-black tracking-[-0.06em] shadow-sm ${sizes[size] || sizes.md} ${className}`}
+      style={{ backgroundColor: fallbackColor, color: fallbackTextColor }}
+      title={name || brand?.label || text}
+      aria-label={name || brand?.label || text}
+    >
+       {fallbackMark}
     </span>
   );
 }

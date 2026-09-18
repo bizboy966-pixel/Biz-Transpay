@@ -5,6 +5,8 @@ import { Plus, Copy, Trash2, Power, Link2, X, Share2, QrCode, Pencil, Upload, Me
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
+import LinkLogo from '@/components/LinkLogo';
+import { SafeImage } from '@/components/SafeImage';
 
 const LINK_COPY = {
   general: 'Informations générales',
@@ -93,11 +95,7 @@ export default function Links() {
           return (
             <div key={l.id} data-testid={`link-card-${l.id}`} className="min-w-0 w-full bg-white border border-slate-100 rounded-2xl p-5 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:shadow-[0_8px_24px_rgba(37,99,235,0.08)] transition-shadow">
               <div className="flex min-w-0 items-start gap-3">
-                {l.logo ? (
-                   <img src={l.logo} alt={l.title} className="w-12 h-12 rounded-xl object-contain bg-white p-1 border border-slate-100" />
-                ) : (
-                  <div className="w-12 h-12 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Link2 className="w-5 h-5" /></div>
-                )}
+                <LinkLogo src={l.logo} alt={l.title} size="sm" />
                 <div className="min-w-0 flex-1">
                   <div className="font-cabinet font-bold text-sm text-slate-900 truncate">{l.title}</div>
                   <div className="mt-0.5 font-cabinet font-extrabold text-lg text-[#2563EB]">
@@ -324,7 +322,18 @@ function LogoUploader({ value, onChange }) {
         data-testid="logo-uploader"
       >
         {value ? (
-          <img src={value} alt="Aperçu du logo" className="w-full h-full object-contain bg-white p-1" data-testid="logo-preview" />
+          <SafeImage
+            src={value}
+            alt="Aperçu du logo"
+            className="w-full h-full object-contain bg-white p-1"
+            fallback={(
+              <span className="w-full h-full flex flex-col items-center justify-center bg-blue-50 text-[#2563EB]">
+                <Link2 className="w-5 h-5" />
+                <span className="mt-1 text-[10px]">Image invalide</span>
+              </span>
+            )}
+            data-testid="logo-preview"
+          />
         ) : (
           <span className="w-full h-full flex flex-col items-center justify-center text-slate-400">
             <Upload className="w-5 h-5" />
@@ -358,7 +367,7 @@ function DetailsModal({ link, url, onClose }) {
     <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl" data-testid="link-details-modal">
         <div className="flex items-start gap-3">
-          {link.logo ? <img src={link.logo} alt="" className="w-14 h-14 rounded-xl object-contain bg-white p-1 border border-slate-100" /> : <div className="w-14 h-14 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Link2 className="w-6 h-6" /></div>}
+          <LinkLogo src={link.logo} size="md" />
           <div className="min-w-0 flex-1">
             <h3 className="font-cabinet font-bold text-base text-slate-900">{link.title}</h3>
             <p className="text-xs text-slate-500 mt-0.5">{link.description || 'Aucune description'}</p>

@@ -5,6 +5,7 @@ import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { Logo } from '@/components/Logo';
+import LinkLogo from '@/components/LinkLogo';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function PublicLink() {
@@ -59,13 +60,7 @@ export default function PublicLink() {
              {/* Header - link information. The owner's identity is intentionally
                  not exposed on the public checkout page. */}
             <div className="text-center">
-              {link.logo ? (
-                <img src={link.logo} alt={link.title} className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-2xl object-contain bg-white p-1 border border-slate-100" />
-              ) : (
-                <div className="mx-auto w-16 h-16 sm:w-20 sm:h-20 rounded-2xl bg-blue-50 flex items-center justify-center">
-                  <Link2 className="w-4 h-4 sm:w-5 sm:h-5 text-[#2563EB]" />
-                </div>
-              )}
+              <LinkLogo src={link.logo} alt={link.title} size="lg" className="mx-auto" />
               <h1 className="font-cabinet font-extrabold text-base sm:text-lg text-slate-900 mt-3">{link.title}</h1>
               {link.description && <p className="text-[11px] sm:text-xs text-slate-500 mt-1 leading-relaxed">{link.description}</p>}
               <div className="mt-3 inline-flex items-center justify-center px-3 py-1.5 rounded-full bg-blue-50 text-[#2563EB] text-xs font-bold">
