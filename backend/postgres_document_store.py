@@ -345,6 +345,45 @@ class Collection:
             raise DuplicateKeyError(str(exc)) from exc
         return Result(inserted_id=doc_id)
 
+    async def replace_one(self, query: dict, replacement: dict,
+                          upsert: bool = False) -> Result:
+        """Replace the first matching document with Mongo-compatible semantics.
+
+        A few legacy application flows use replacement writes for singleton
+        documents such as KYC submissions and API-key configuration.  The
+        PostgreSQL adapter previously implemented only modifier updates, so
+        those first-write paths failed after the MongoDB migration.
+        """
+        async with self.store.pool.acquire() as conn:
+            async with conn.transaction():
+                rows = await self._rows(conn)
+                matches = [doc for doc in rows if _matches(doc, query)]
+                if not matches:
+                    if not upsert:
+                        return Result()
+                    doc = copy.deepcopy(replacement)
+                    doc.setdefault("_id", str(uuid.uuid4()))
+                    doc_id = str(doc.get("id") or doc["_id"])
+                    await conn.execute(
+                        """INSERT INTO document_store(collection, doc_id, document)
+                           VALUES($1,$2,$3::jsonb)""",
+                        self.name, doc_id, self.store.encode(doc),
+                    )
+                    return Result(upserted_id=doc_id)
+
+                old = matches[0]
+                doc = copy.deepcopy(replacement)
+                doc.setdefault("_id", old.get("_id", str(uuid.uuid4())))
+                old_doc_id = str(old.get("id") or old["_id"])
+                new_doc_id = str(doc.get("id") or old_doc_id)
+                await conn.execute(
+                    """UPDATE document_store
+                       SET doc_id=$3, document=$4::jsonb, updated_at=now()
+                       WHERE collection=$1 AND doc_id=$2""",
+                    self.name, old_doc_id, new_doc_id, self.store.encode(doc),
+                )
+                return Result(matched_count=1, modified_count=int(doc != old))
+
     async def update_one(self, query: dict, update: dict, upsert: bool = False) -> Result:
         return await self._update(query, update, upsert, many=False)
 
