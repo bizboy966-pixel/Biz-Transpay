@@ -5,8 +5,8 @@ const BRANDS = [
   // PayDunya supplies identifiers and names, not stable logo URLs. Keep all
   // display assets local so history and transaction details work offline and
   // under the production CSP.
-  { key: 'tmoney-tg', country: 'tg', aliases: ['t-money-togo', 'togocel_tg', 'togocel', 'togocom', 't-money', 'tmoney'], src: '/operator-logos/tg-tmoney.jpeg', label: 'T-Money Togo', mark: 'T', color: '#E11D48' },
-  { key: 'moov-tg', country: 'tg', aliases: ['moov-togo', 'moov_tg', 'moov', 'flooz'], src: '/operator-logos/tg-moov.jpeg', label: 'Moov Money Flooz Togo', mark: 'M', color: '#0EA5E9' },
+  { key: 'mixx-tg', country: 'tg', aliases: ['mixx-togo', 'mixx_tg', 'mixx', 'tmoney_tg', 'tmoney-tg', 't-money-togo', 'togocel_tg', 'togocel', 'togocom', 't-money', 'tmoney'], src: '/operator-logos/tg-mixx.jpeg', label: 'Mixx Togo', mark: 'M', color: '#0B3D91' },
+  { key: 'moov-tg', country: 'tg', aliases: ['moov-togo', 'moov_tg', 'moov', 'flooz'], src: '/operator-logos/tg-flooz.jpeg', label: 'Moov Money Flooz Togo', mark: 'M', color: '#F97316' },
   { key: 'moov-bf', country: 'bf', aliases: ['moov-burkina-faso', 'moov_bf', 'moov burkina', 'moov money burkina'], src: '/operator-logos/bf-moov.png', label: 'Moov Money Burkina Faso', mark: 'M', color: '#0EA5E9' },
   { key: 'orange-bf', country: 'bf', aliases: ['orange-money-burkina', 'orange_bf', 'orange burkina', 'orange money burkina'], src: '/operator-logos/bf-orange.png', label: 'Orange Burkina Faso', mark: 'O', color: '#F97316' },
   { key: 'mtn-bj', country: 'bj', aliases: ['mtn-benin', 'mtn_bj', 'mtn benin', 'my mtn'], src: '/operator-logos/bj-mtn.png', label: 'MTN Bénin', mark: 'MTN', color: '#FACC15', textColor: '#111827' },

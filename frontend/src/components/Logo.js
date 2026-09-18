@@ -1,13 +1,12 @@
 import { Link } from 'react-router-dom';
 import { SafeImage } from './SafeImage';
+import logoMark from '@/assets/biz-transpay-mark.png';
 
-const LOGO_URL = '/logo-mark.png';
+const LOGO_URL = logoMark;
 
 function LogoFallback() {
   return (
-    <span className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] text-white">
-      <span className="text-[13px] font-black tracking-[-0.12em]">BT</span>
-    </span>
+    <img src={logoMark} alt="Biz-transPay" className="h-full w-full object-contain p-0.5" />
   );
 }
 

@@ -7,6 +7,7 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import ComingSoon from '@/components/ComingSoon';
+import { OperatorLogo } from '@/components/PaymentBrand';
 import { COUNTRIES } from '@/constants/countries';
 
 const PSR_ASSET_IDS = {
@@ -651,14 +652,58 @@ function MobileMoneyForm({ onSuccess }) {
         </div>
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1.5">Opérateur</label>
-          <div className="relative">
-            <select data-testid="momo-operator" value={operator} onChange={(e) => setOperator(e.target.value)} required disabled={!country}
-              className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-sm outline-none focus:border-[#2563EB] disabled:bg-slate-50">
-              <option value="">Sélectionnez un opérateur</option>
-              {operators.map((o) => <option key={o.code} value={o.code}>{o.name || o.label}</option>)}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          </div>
+          <select
+            data-testid="momo-operator"
+            value={operator}
+            onChange={(e) => setOperator(e.target.value)}
+            required
+            disabled={!country}
+            aria-label="Opérateur Mobile Money"
+            className="sr-only"
+          >
+            <option value="">Sélectionnez un opérateur</option>
+            {operators.map((o) => <option key={o.code} value={o.code}>{o.name || o.label}</option>)}
+          </select>
+          {!country ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-400">
+              Sélectionnez d’abord un pays
+            </div>
+          ) : operators.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-400">
+              Aucun opérateur disponible pour ce pays
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Opérateurs Mobile Money">
+              {operators.map((o) => {
+                const selected = operator === o.code;
+                return (
+                  <button
+                    key={o.code}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => setOperator(o.code)}
+                    data-testid={`momo-operator-${o.code}`}
+                    className={`flex min-w-0 items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors ${
+                      selected
+                        ? 'border-[#2563EB] bg-blue-50 ring-2 ring-blue-100'
+                        : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
+                    }`}
+                  >
+                    <OperatorLogo
+                      operator={o.code}
+                      name={o.name || o.label}
+                      country={country}
+                      size="sm"
+                    />
+                    <span className="min-w-0 truncate text-[11px] font-semibold text-slate-700">
+                      {o.name || o.label || o.code}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
       <div>

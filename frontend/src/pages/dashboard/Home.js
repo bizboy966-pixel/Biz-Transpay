@@ -81,9 +81,9 @@ export default function DashboardHome() {
       >
         <div className="relative aspect-[876/345] w-full border-b border-[#39C4FF]/60">
           <img
-            src="/wallet-reference-top.webp"
+            src="/wallet-reference-card.jpg"
             alt="Mon portefeuille Biz-transPay"
-            className="absolute inset-0 h-full w-full object-cover"
+            className="absolute inset-0 h-full w-full object-cover object-top"
           />
           <h2 className="sr-only">Mon portefeuille</h2>
           <p className="sr-only">Gérez tous vos soldes en un seul endroit</p>
