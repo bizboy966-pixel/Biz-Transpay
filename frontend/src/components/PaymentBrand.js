@@ -7,6 +7,8 @@ const BRANDS = [
   // under the production CSP.
   { key: 'tmoney-tg', country: 'tg', aliases: ['t-money-togo', 'togocel_tg', 'togocel', 'togocom', 't-money', 'tmoney'], src: '/operator-logos/tg-tmoney.jpeg', label: 'T-Money Togo', mark: 'T', color: '#E11D48' },
   { key: 'moov-tg', country: 'tg', aliases: ['moov-togo', 'moov_tg', 'moov', 'flooz'], src: '/operator-logos/tg-moov.jpeg', label: 'Moov Money Flooz Togo', mark: 'M', color: '#0EA5E9' },
+  { key: 'moov-bf', country: 'bf', aliases: ['moov-burkina-faso', 'moov_bf', 'moov burkina', 'moov money burkina'], src: '/operator-logos/bf-moov.png', label: 'Moov Money Burkina Faso', mark: 'M', color: '#0EA5E9' },
+  { key: 'orange-bf', country: 'bf', aliases: ['orange-money-burkina', 'orange_bf', 'orange burkina', 'orange money burkina'], src: '/operator-logos/bf-orange.png', label: 'Orange Burkina Faso', mark: 'O', color: '#F97316' },
   { key: 'mtn', aliases: ['mtn'], label: 'MTN', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
   { key: 'wave', aliases: ['wave'], label: 'Wave', mark: 'W', color: '#0EA5E9' },
   { key: 'orange', aliases: ['orange'], label: 'Orange Money', mark: 'O', color: '#F97316' },
