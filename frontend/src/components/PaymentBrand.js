@@ -9,6 +9,8 @@ const BRANDS = [
   { key: 'moov-tg', country: 'tg', aliases: ['moov-togo', 'moov_tg', 'moov', 'flooz'], src: '/operator-logos/tg-moov.jpeg', label: 'Moov Money Flooz Togo', mark: 'M', color: '#0EA5E9' },
   { key: 'moov-bf', country: 'bf', aliases: ['moov-burkina-faso', 'moov_bf', 'moov burkina', 'moov money burkina'], src: '/operator-logos/bf-moov.png', label: 'Moov Money Burkina Faso', mark: 'M', color: '#0EA5E9' },
   { key: 'orange-bf', country: 'bf', aliases: ['orange-money-burkina', 'orange_bf', 'orange burkina', 'orange money burkina'], src: '/operator-logos/bf-orange.png', label: 'Orange Burkina Faso', mark: 'O', color: '#F97316' },
+  { key: 'mtn-bj', country: 'bj', aliases: ['mtn-benin', 'mtn_bj', 'mtn benin', 'my mtn'], src: '/operator-logos/bj-mtn.png', label: 'MTN Bénin', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
+  { key: 'moov-bj', country: 'bj', aliases: ['moov-benin', 'moov_bj', 'moov benin', 'moov money benin'], src: '/operator-logos/bj-moov.png', label: 'Moov Money Bénin', mark: 'M', color: '#0EA5E9' },
   { key: 'mtn', aliases: ['mtn'], label: 'MTN', mark: 'MTN', color: '#FACC15', textColor: '#111827' },
   { key: 'wave', aliases: ['wave'], label: 'Wave', mark: 'W', color: '#0EA5E9' },
   { key: 'orange', aliases: ['orange'], label: 'Orange Money', mark: 'O', color: '#F97316' },
