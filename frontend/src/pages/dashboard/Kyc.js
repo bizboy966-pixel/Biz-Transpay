@@ -15,6 +15,10 @@ const ACTIVITIES = [
   'Autre',
 ];
 
+const MAX_UPLOAD_BYTES = 3_000_000;
+const MAX_IMAGE_DIMENSION = 1800;
+const MAX_KYC_PAYLOAD_LENGTH = 8_000_000;
+
 export default function Kyc() {
   const { t } = useTranslation();
   const { user, refresh } = useAuth();
@@ -47,15 +51,52 @@ export default function Kyc() {
       toast.error('Format non supporté (JPG, PNG, WebP uniquement)');
       return;
     }
-    if (file.size > 3_000_000) { toast.error('Image trop grande (max 3 Mo)'); return; }
+    if (file.size > MAX_UPLOAD_BYTES) { toast.error('Image trop grande (max 3 Mo)'); return; }
     const r = new FileReader();
-    r.onload = (ev) => cb(ev.target.result);
+    r.onerror = () => toast.error('Impossible de lire cette image. Réessayez avec une autre photo.');
+    r.onload = (ev) => {
+      const image = new Image();
+      image.onerror = () => toast.error('Image illisible. Utilisez une photo JPG, PNG ou WebP.');
+      image.onload = () => {
+        try {
+          const scale = Math.min(1, MAX_IMAGE_DIMENSION / image.naturalWidth, MAX_IMAGE_DIMENSION / image.naturalHeight);
+          const width = Math.max(1, Math.round(image.naturalWidth * scale));
+          const height = Math.max(1, Math.round(image.naturalHeight * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext('2d');
+          if (!context) throw new Error('canvas unavailable');
+          context.fillStyle = '#ffffff';
+          context.fillRect(0, 0, width, height);
+          context.drawImage(image, 0, 0, width, height);
+          let optimized = canvas.toDataURL('image/jpeg', 0.82);
+          if (optimized.length > MAX_KYC_PAYLOAD_LENGTH / 3) {
+            optimized = canvas.toDataURL('image/jpeg', 0.68);
+          }
+          if (optimized.length > MAX_KYC_PAYLOAD_LENGTH / 2) {
+            toast.error('Image encore trop volumineuse après optimisation. Choisissez une photo plus légère.');
+            return;
+          }
+          cb(optimized);
+        } catch {
+          toast.error('Impossible de préparer cette image. Réessayez avec une autre photo.');
+        }
+      };
+      image.src = ev.target.result;
+    };
     r.readAsDataURL(file);
   };
 
   const submit = async (e) => {
     e.preventDefault();
     if (!form.document_front || !form.selfie) { toast.error('Veuillez téléverser au moins le recto du document et le selfie'); return; }
+    const imagePayloadLength = [form.document_front, form.document_back, form.selfie]
+      .reduce((total, value) => total + String(value || '').length, 0);
+    if (imagePayloadLength > MAX_KYC_PAYLOAD_LENGTH) {
+      toast.error('Les images sont trop volumineuses. Retirez-les puis téléversez des photos moins lourdes.');
+      return;
+    }
     setLoading(true);
     try {
       await api.post('/kyc/submit', form);
@@ -63,7 +104,15 @@ export default function Kyc() {
       setStatus('pending');
       refresh();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Erreur');
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string'
+        ? detail
+        : err.response?.status === 413
+          ? 'Les images sont trop volumineuses. Utilisez des photos moins lourdes.'
+          : err.response
+            ? `Impossible de soumettre la vérification (${err.response.status}).`
+            : 'Connexion impossible. Vérifiez votre réseau puis réessayez.';
+      toast.error(message);
     } finally { setLoading(false); }
   };
 
@@ -161,7 +210,7 @@ export default function Kyc() {
               )}
               <UploadTile label="Selfie + document en main" value={form.selfie} onChange={(v) => setForm({ ...form, selfie: v })} onFile={(f) => readFile(f, (v) => setForm((prev) => ({ ...prev, selfie: v })))} testid="kyc-selfie" />
             </div>
-            <div className="mt-2 text-[10px] text-slate-500">Formats acceptés : JPG, PNG, WebP · 3 Mo max par fichier. Photos nettes et lisibles.</div>
+            <div className="mt-2 text-[10px] text-slate-500">Formats acceptés : JPG, PNG, WebP · 3 Mo max par fichier. Les photos sont automatiquement optimisées avant l’envoi.</div>
           </Section>
 
           <button type="submit" disabled={loading} data-testid="btn-submit-kyc" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3.5 rounded-xl disabled:opacity-60 text-sm">
