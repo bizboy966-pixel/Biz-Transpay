@@ -2,23 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MONGO_DATA_DIR="${MONGO_DATA_DIR:-$ROOT_DIR/.data/mongodb}"
-mkdir -p "$MONGO_DATA_DIR"
 
-export MONGO_URL="${MONGO_URL:-mongodb://127.0.0.1:27017}"
-export DB_NAME="${DB_NAME:-biztranspay_dev}"
 export JWT_SECRET="${JWT_SECRET:-${SESSION_SECRET:-dev-secret}}"
-
-MONGO_STARTED_BY_SCRIPT=0
-if ! pgrep -x mongod >/dev/null 2>&1; then
-  mongod \
-    --dbpath "$MONGO_DATA_DIR" \
-    --bind_ip 127.0.0.1 \
-    --port 27017 \
-    --logpath "$MONGO_DATA_DIR/mongod.log" \
-    --fork
-  MONGO_STARTED_BY_SCRIPT=1
-fi
 
 BACKEND_PID=""
 FRONTEND_PID=""
@@ -38,9 +23,6 @@ cleanup() {
     pkill -TERM -P "$BACKEND_PID" 2>/dev/null || true
     kill "$BACKEND_PID" 2>/dev/null || true
     wait "$BACKEND_PID" 2>/dev/null || true
-  fi
-  if [[ "$MONGO_STARTED_BY_SCRIPT" -eq 1 ]]; then
-    mongod --dbpath "$MONGO_DATA_DIR" --shutdown >/dev/null 2>&1 || true
   fi
 }
 

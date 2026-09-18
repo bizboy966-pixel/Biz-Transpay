@@ -2,7 +2,7 @@ modules = ["nodejs-20", "python-3.12", "web", "bash", "postgresql-16"]
 
 [nix]
 channel = "stable-25_05"
-packages = ["freetype", "gumbo", "harfbuzz", "jbig2dec", "libjpeg_turbo", "mongodb", "mupdf", "openjpeg", "postgresql", "swig", "xcbuild"]
+packages = ["freetype", "gumbo", "harfbuzz", "jbig2dec", "libjpeg_turbo", "mupdf", "openjpeg", "postgresql", "swig", "xcbuild"]
 
 [agent]
 expertMode = true
@@ -16,7 +16,6 @@ PLATFORM_OWNER_EMAIL = "biztechsarlu@gmail.com"
 PLATFORM_OWNER_CLAIM_BEFORE = "2026-09-17T08:16:53.140Z"
 
 [env]
-MONGO_URL = "mongodb://127.0.0.1:27017"
 DB_NAME = "biz_transpay"
 
 [workflows]

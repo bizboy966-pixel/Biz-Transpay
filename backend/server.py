@@ -91,7 +91,15 @@ def _session_token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _as_utc(value: datetime) -> datetime:
+def _as_utc(value: datetime | str) -> datetime:
+    """Normalize PostgreSQL/JSONB datetimes and ISO strings to UTC.
+
+    The document adapter serializes datetimes into JSONB, so values read back
+    from PostgreSQL are ISO strings rather than BSON datetime objects.
+    """
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 

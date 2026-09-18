@@ -7,9 +7,11 @@ the ``document_store`` table is provisioned by the deployment database schema.
 from __future__ import annotations
 
 import copy
+import json
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any, AsyncIterator
 
 import asyncpg
@@ -39,6 +41,26 @@ def _equal(value: Any, expected: Any) -> bool:
     if isinstance(value, list) and not isinstance(expected, list):
         return expected in value
     return value == expected
+
+
+def _comparable(value: Any, expected: Any) -> tuple[Any, Any]:
+    """Make ISO JSONB timestamps comparable to datetime query values."""
+    if isinstance(value, str) and isinstance(expected, (date, datetime)):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value, expected
+    if isinstance(expected, str) and isinstance(value, (date, datetime)):
+        try:
+            expected = datetime.fromisoformat(expected.replace("Z", "+00:00"))
+        except ValueError:
+            return value, expected
+    if isinstance(value, datetime) and isinstance(expected, datetime):
+        if value.tzinfo is None and expected.tzinfo is not None:
+            value = value.replace(tzinfo=expected.tzinfo)
+        elif expected.tzinfo is None and value.tzinfo is not None:
+            expected = expected.replace(tzinfo=value.tzinfo)
+    return value, expected
 
 
 def _condition(values: list[Any], condition: Any, exists: bool) -> bool:
@@ -72,7 +94,10 @@ def _condition(values: list[Any], condition: Any, exists: bool) -> bool:
                 "$lte": lambda a, b: a <= b,
             }
             try:
-                if not any(comparisons[operator](value, expected) for value in values):
+                if not any(
+                    comparisons[operator](*_comparable(value, expected))
+                    for value in values
+                ):
                     return False
             except (TypeError, ValueError):
                 return False
@@ -284,7 +309,13 @@ class Collection:
             rows = await conn.fetch(
                 "SELECT document FROM document_store WHERE collection=$1", self.name
             )
-            return [dict(row["document"]) for row in rows]
+            documents = []
+            for row in rows:
+                document = row["document"]
+                if isinstance(document, str):
+                    document = json.loads(document)
+                documents.append(dict(document))
+            return documents
         finally:
             if connection is None:
                 await self.store.pool.release(conn)
@@ -391,7 +422,6 @@ class PostgresDocumentStore:
 
     @staticmethod
     def encode(document: dict) -> str:
-        import json
         return json.dumps(document, default=str, separators=(",", ":"))
 
 

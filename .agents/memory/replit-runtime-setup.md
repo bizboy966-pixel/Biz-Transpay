@@ -13,7 +13,7 @@ the Replit environment even though the public Stripe SDK is available.
 
 **How to apply:** When rebuilding or moving the runtime, check private package
 availability first. Keep payment credentials in Replit Secrets and keep local
-MongoDB attached to the workflow if no shared database connection is configured.
+the configured Replit PostgreSQL database for persistent application state.
 
 The imported CRA/CRACO setup uses Webpack Dev Server 5. Its proxy must be an
 array configuration, and setting `HOST=0.0.0.0` can trigger schema failures in
