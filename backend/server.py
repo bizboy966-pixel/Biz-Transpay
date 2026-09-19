@@ -2331,17 +2331,6 @@ async def register(req: RegisterRequest, request: Request, response: Response):
             },
         )
 
-    # generate API keys for merchant accounts
-    if account_type == "merchant":
-        keys = {
-            "user_id": uid,
-            "public_key": f"pk_test_{secrets.token_urlsafe(24)}",
-            "secret_key": f"sk_test_{secrets.token_urlsafe(32)}",
-            "webhook_url": "",
-            "created_at": now_iso(),
-        }
-        await db.api_keys.insert_one(keys)
-
     if role in ("admin", "super_admin"):
         setup = await _begin_mfa_enrollment(user_doc)
         return {"mfa_setup_required": True, "mfa_setup": setup,
@@ -9060,36 +9049,47 @@ def _default_webhook_url(request: Request, uid: str) -> str:
 
 
 async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
-    """Idempotent: ensure the merchant has a default (test) key pair + webhook
-    secret. Live keys are lazily created on first regenerate('live').
+    """Ensure the legacy API-key container exists without creating an API key.
 
     Also migrates the legacy single-doc schema to the new multi-key collection
     `merchant_keys` and multi-webhook collection `merchant_webhooks` on first
-    read, so existing merchants keep working without any manual step.
+    read, so existing merchants keep working without any manual step. A key is
+    created only through an explicit key-creation or regeneration action.
     """
     doc = await db.api_keys.find_one({"user_id": uid}, {"_id": 0})
     if doc and doc.get("keys"):
         await _migrate_to_multi_keys(uid, doc)
         return doc
-    # Migrate legacy single-key doc → new schema (test env only)
-    legacy_pub = (doc or {}).get("public_key")
-    legacy_sec = (doc or {}).get("secret_key")
-    test_public = legacy_pub or _gen_key("pk_test_")
-    test_secret = legacy_sec or _gen_key("sk_test_", 32)
+    # Older accounts may still use the pre-multi-key fields. Migrate only an
+    # existing complete key; never generate a replacement for a missing one.
+    legacy_public = (doc or {}).get("public_key")
+    legacy_secret = (doc or {}).get("secret_key")
+    if doc and legacy_public and legacy_secret:
+        migrated = {
+            "public_key": legacy_public,
+            "secret_hint": _mask(legacy_secret),
+            "secret_hash": _hash_secret(legacy_secret),
+            "created_at": doc.get("created_at") or now_iso(),
+            "last_used_at": doc.get("last_used_at"),
+        }
+        await db.api_keys.update_one(
+            {"user_id": uid},
+            {"$set": {"keys.test": migrated},
+             "$unset": {"public_key": "", "secret_key": ""}},
+        )
+        doc["keys"] = {"test": migrated}
+        await _migrate_to_multi_keys(uid, doc)
+        return doc
+    if doc:
+        return doc
+
+    # Keep webhook configuration available to the existing webhook endpoints,
+    # but deliberately do not provision a test or live API key.
     webhook_secret = _gen_key("whsec_", 32)
     new_doc = {
         "user_id": uid,
-        "keys": {
-            "test": {
-                "public_key": test_public,
-                "secret_hint": _mask(test_secret),
-                "secret_hash": _hash_secret(test_secret),
-                "created_at": now_iso(),
-                "last_used_at": None,
-            },
-        },
         "webhook": {
-            "url": (doc or {}).get("webhook_url") or (_default_webhook_url(request, uid) if request else ""),
+            "url": _default_webhook_url(request, uid) if request else "",
             "secret_hint": _mask(webhook_secret),
             "secret_hash": _hash_secret(webhook_secret),
             "secret_encrypted": _encrypt(webhook_secret),
@@ -9099,10 +9099,8 @@ async def _ensure_api_keys(uid: str, request: Optional[Request] = None) -> dict:
             "created_at": now_iso(),
         },
         "created_at": now_iso(),
-        "_reveal": {"test_secret": test_secret, "webhook_secret": webhook_secret},
     }
     await db.api_keys.replace_one({"user_id": uid}, new_doc, upsert=True)
-    await _migrate_to_multi_keys(uid, new_doc)
     return new_doc
 
 
@@ -9161,6 +9159,7 @@ async def _migrate_to_multi_keys(uid: str, legacy: dict) -> None:
 
 def _public_keys_view(doc: dict) -> dict:
     """Strip sensitive fields (hashes, plaintexts) before returning to the UI."""
+    doc = doc or {}
     keys = {}
     for env, k in (doc.get("keys") or {}).items():
         keys[env] = {
@@ -9361,6 +9360,19 @@ async def create_merchant_key(req: CreateMerchantKeyReq,
         "last_used_at": None,
     }
     await db.merchant_keys.insert_one(doc)
+    await db.api_keys.update_one(
+        {"user_id": uid},
+        {"$set": {
+            f"keys.{req.env}": {
+                "public_key": pub,
+                "secret_hint": _mask(sec),
+                "secret_hash": _hash_secret(sec),
+                "created_at": doc["created_at"],
+                "last_used_at": None,
+            },
+        }},
+        upsert=True,
+    )
     return _mkey_view(doc, reveal=sec)
 
 
@@ -9408,6 +9420,19 @@ async def regenerate_merchant_key(key_id: str,
             "secret_hint": _mask(new_secret),
         }},
     )
+    await db.api_keys.update_one(
+        {"user_id": uid},
+        {"$set": {
+            f"keys.{env}": {
+                "public_key": new_public,
+                "secret_hint": _mask(new_secret),
+                "secret_hash": _hash_secret(new_secret),
+                "created_at": now_iso(),
+                "last_used_at": None,
+            },
+        }},
+        upsert=True,
+    )
     k = await db.merchant_keys.find_one({"id": key_id}, {"_id": 0})
     return _mkey_view(k, reveal=new_secret)
 
@@ -9415,9 +9440,35 @@ async def regenerate_merchant_key(key_id: str,
 @api.delete("/merchant/keys/{key_id}")
 async def delete_merchant_key(key_id: str,
                                  uid: str = Depends(require_merchant_account)):
+    key = await db.merchant_keys.find_one(
+        {"id": key_id, "user_id": uid}, {"_id": 0}
+    )
+    if not key:
+        raise HTTPException(404, "Clé introuvable")
     r = await db.merchant_keys.delete_one({"id": key_id, "user_id": uid})
     if r.deleted_count == 0:
         raise HTTPException(404, "Clé introuvable")
+    env = key.get("env", "test")
+    replacement = await db.merchant_keys.find_one(
+        {"user_id": uid, "env": env}, {"_id": 0}
+    )
+    if replacement:
+        legacy_key = {
+            "public_key": replacement.get("public_key"),
+            "secret_hint": replacement.get("secret_hint"),
+            "secret_hash": replacement.get("secret_hash"),
+            "created_at": replacement.get("created_at"),
+            "last_used_at": replacement.get("last_used_at"),
+        }
+        await db.api_keys.update_one(
+            {"user_id": uid}, {"$set": {f"keys.{env}": legacy_key}}
+        )
+    else:
+        # Remove the compatibility copy as well. Otherwise a later read
+        # would migrate the deleted key back into merchant_keys.
+        await db.api_keys.update_one(
+            {"user_id": uid}, {"$unset": {f"keys.{env}": ""}}
+        )
     return {"deleted": True}
 
 
@@ -11593,8 +11644,8 @@ async def admin_update_user(
         update_ops["$set"] = updates
     if update_ops:
         await db.users.update_one({"id": user_id}, update_ops)
-        # If upgrading to merchant, auto-provision API keys idempotently so the
-        # user immediately has access to /dashboard/api after promotion.
+        # Keep the API/webhook container available after promotion, but do not
+        # provision a key. Merchants create their first key explicitly.
         if updates.get("account_type") == "merchant":
             await _ensure_api_keys(user_id)
     await audit(admin["id"], admin["username"], "update_user",
@@ -11839,8 +11890,8 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
         {"$set": {"balance_xof": 0.0, "balance_xaf": 0.0, "balance_usdt": 0.0}},
     )
 
-    # 4) Re-provision fresh API keys for preserved super_admins so /dashboard/api
-    #    keeps working after the wipe.
+    # 4) Recreate only the non-key API container for preserved super_admins.
+    #    API keys remain an explicit user action.
     for sa_id in keep_ids:
         try:
             await _ensure_api_keys(sa_id)

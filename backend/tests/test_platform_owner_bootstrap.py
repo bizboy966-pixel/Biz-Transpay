@@ -174,10 +174,12 @@ async def register_for_bootstrap(monkeypatch, database):
 
 
 def test_concurrent_first_account_claim_allows_only_one_super_admin(monkeypatch):
+    database = FakeDatabase()
     first = run_async(
-        lambda: register_for_bootstrap(monkeypatch, FakeDatabase())
+        lambda: register_for_bootstrap(monkeypatch, database)
     )
     assert first["user"].role == "super_admin"
+    assert database.api_keys.docs == []
 
     with pytest.raises(HTTPException) as duplicate:
         run_async(

@@ -85,11 +85,45 @@ class FakeCollection:
                     for part in parts[:-1]:
                         target = target.setdefault(part, {})
                     target[parts[-1]] = value
+                for key in update.get("$unset", {}):
+                    target = doc
+                    parts = key.split(".")
+                    for part in parts[:-1]:
+                        target = target.get(part, {})
+                    if isinstance(target, dict):
+                        target.pop(parts[-1], None)
                 return SimpleNamespace(modified_count=1, matched_count=1)
+        if kwargs.get("upsert"):
+            created = dict(query)
+            for key, value in update.get("$set", {}).items():
+                target = created
+                parts = key.split(".")
+                for part in parts[:-1]:
+                    target = target.setdefault(part, {})
+                target[parts[-1]] = value
+            self.docs.append(created)
+            return SimpleNamespace(modified_count=1, matched_count=1)
         return SimpleNamespace(modified_count=0, matched_count=0)
 
     async def count_documents(self, query):
         return len(self.docs)
+
+    async def replace_one(self, query, replacement, **kwargs):
+        for index, doc in enumerate(self.docs):
+            if all(doc.get(key) == value for key, value in query.items()):
+                self.docs[index] = dict(replacement)
+                return SimpleNamespace(modified_count=1, upserted_id=None)
+        if kwargs.get("upsert"):
+            self.docs.append(dict(replacement))
+            return SimpleNamespace(modified_count=0, upserted_id=replacement.get("id"))
+        return SimpleNamespace(modified_count=0, upserted_id=None)
+
+    async def delete_one(self, query):
+        for index, doc in enumerate(self.docs):
+            if all(doc.get(key) == value for key, value in query.items()):
+                self.docs.pop(index)
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
 
 
 class FakeDB:
@@ -98,6 +132,7 @@ class FakeDB:
         self.merchant_payments = FakeCollection()
         self.merchant_payouts = FakeCollection()
         self.merchant_keys = FakeCollection()
+        self.api_keys = FakeCollection()
         self.idempotency_keys = FakeCollection()
         self.transactions = FakeCollection()
 
@@ -510,6 +545,41 @@ async def test_key_creation_rejects_unknown_scope(monkeypatch):
             uid="merchant-a", request=request())
     assert exc.value.status_code == 422
     assert exc.value.detail["code"] == "INVALID_API_SCOPE"
+
+
+@run_async
+async def test_api_key_container_does_not_provision_default_test_key(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+
+    doc = await server._ensure_api_keys("merchant-a")
+
+    assert "keys" not in doc
+    assert not fake.api_keys.docs[0].get("keys")
+
+
+@run_async
+async def test_deleting_last_merchant_key_removes_legacy_copy(monkeypatch):
+    fake = FakeDB()
+    fake.merchant_keys.docs.append({
+        "id": "key-1",
+        "user_id": "merchant-a",
+        "env": "test",
+        "public_key": "pk_test_1",
+        "secret_hash": "hash-1",
+        "secret_hint": "sk_test_1…hash",
+    })
+    fake.api_keys.docs.append({
+        "user_id": "merchant-a",
+        "keys": {"test": {"public_key": "pk_test_1", "secret_hash": "hash-1"}},
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    result = await server.delete_merchant_key("key-1", uid="merchant-a")
+
+    assert result == {"deleted": True}
+    assert fake.merchant_keys.docs == []
+    assert "test" not in fake.api_keys.docs[0].get("keys", {})
 
 
 @run_async

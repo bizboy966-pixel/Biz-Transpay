@@ -14,3 +14,13 @@ Sandbox financial simulations should calculate and expose the same fee snapshot,
 **Why:** A zero-fee sandbox response hides integration and accounting errors until production, while a real sandbox debit violates environment isolation.
 
 **How to apply:** Use the relevant admin deposit or withdrawal catalog for test responses, persist the snapshot locally, and keep completion local without real settlement.
+
+API keys are opt-in: account registration, merchant promotion, API-page reads,
+and webhook-container initialization must never create a test or live key.
+
+**Why:** A generated sandbox key is still an unexpected credential and used to
+reappear after the customer deleted it.
+
+**How to apply:** Show an empty developer-key state until an explicit create or
+regenerate action; when the last multi-key record is deleted, remove its
+legacy compatibility copy so migration cannot resurrect it.
