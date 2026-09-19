@@ -9,14 +9,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import mbiyo
 
 
-def test_catalog_is_xof_xaf_and_provider_prefixed():
+def test_catalog_matches_documented_countries_and_provider_prefixed():
     catalog = mbiyo.default_catalog()
-    assert len(catalog) == 20
     assert {row["country"] for row in catalog} == {
-        "BF", "BJ", "CI", "CM", "CG", "ML", "SN", "TG",
+        "BF", "BJ", "CI", "CM", "CG", "ML", "SN", "TG", "CD", "GM",
+        "GN", "UG", "TZ", "KE", "RW", "GH", "NG", "ZA", "ZM", "EG",
     }
-    assert {row["currency"] for row in catalog} == {"XOF", "XAF"}
+    assert {row["currency"] for row in catalog} == {
+        "XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX", "TZS", "KES",
+        "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP",
+    }
+    assert len({row["id"] for row in catalog}) == len(catalog)
+    assert len({row["code"] for row in catalog}) == len(catalog)
     assert all(row["code"].startswith("mbiyo_") for row in catalog)
+    by_key = {(r["country"], r["network"], r["currency"]): r for r in catalog}
+    assert by_key[("CD", "vodacom", "CDF")]["min"] == 40
+    assert by_key[("CD", "vodacom", "USD")]["max"] == 2500
+    assert by_key[("GH", "mtn", "GHS")]["max"] == 0
+
+
+def test_documented_ussd_and_post_init_flows():
+    assert mbiyo.payment_flow({"country": "GN", "network": "orange"})["ussd_code"] == "#144#"
+    qmoney = mbiyo.payment_flow({"country": "GM", "network": "qmoney"})
+    assert qmoney["before_submit"] is False
+    assert qmoney["otp_required"] is True
+    assert mbiyo.payment_flow({"country": "BF", "network": "orange"}, 1234)["ussd_code"] == "*144*4*6*1234#"
 
 
 def test_credentials_encrypt_round_trip():

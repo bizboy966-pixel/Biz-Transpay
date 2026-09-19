@@ -13,7 +13,10 @@ BASE_URL = "https://dashboard.mbiyo.africa/api/v1"
 COUNTRY_LABELS = {
     "BF": "Burkina Faso", "BJ": "Bénin", "CI": "Côte d'Ivoire",
     "CM": "Cameroun", "CG": "Congo-Brazzaville", "ML": "Mali",
-    "SN": "Sénégal", "TG": "Togo",
+    "SN": "Sénégal", "TG": "Togo", "CD": "Congo-Kinshasa",
+    "GM": "Gambie", "GN": "Guinée", "UG": "Ouganda", "TZ": "Tanzanie",
+    "KE": "Kenya", "RW": "Rwanda", "GH": "Ghana", "NG": "Nigeria",
+    "ZA": "Afrique du Sud", "ZM": "Zambie", "EG": "Égypte",
 }
 NETWORKS = {
     "BF": ("orange", "moov", "coris"),
@@ -24,6 +27,14 @@ NETWORKS = {
     "ML": ("orange", "moov"),
     "SN": ("orange", "free", "wave"),
     "TG": ("moov", "togocom"),
+    "CD": ("vodacom", "airtel", "orange", "africell"),
+    "GM": ("afrimoney", "qmoney", "wave", "aps"),
+    "GN": ("orange", "mtn"), "UG": ("mtn", "airtel"),
+    "TZ": ("vodacom", "airtel", "tigo", "halotel"),
+    "KE": ("safaricom", "airtel"), "RW": ("mtn", "airtel"),
+    "GH": ("mtn", "vodafone", "airtel", "tigo"),
+    "NG": ("mtn", "airtel", "glo", "9mobile"),
+    "ZA": ("eft",), "ZM": ("mtn", "airtel", "zamtel"), "EG": ("wallet",),
 }
 NETWORK_LABELS = {
     "orange": "Orange Money",
@@ -33,15 +44,30 @@ NETWORK_LABELS = {
     "celtiis": "Celtiis Cash",
     "wave": "Wave",
     "free": "Free Money",
-    "togocom": "TMoney",
+    "togocom": "TMoney", "vodacom": "Vodacom", "airtel": "Airtel",
+    "africell": "Africell", "afrimoney": "Afrimoney", "qmoney": "QMoney",
+    "aps": "APS", "safaricom": "Safaricom", "tigo": "Tigo",
+    "halotel": "Halotel", "vodafone": "Vodafone", "glo": "Glo",
+    "9mobile": "9Mobile", "zamtel": "Zamtel", "eft": "EFT",
+    "wallet": "Mobile Wallet",
 }
-CURRENCIES = {"BF": "XOF", "BJ": "XOF", "CI": "XOF", "ML": "XOF",
-              "SN": "XOF", "TG": "XOF", "CM": "XAF", "CG": "XAF"}
+CURRENCIES = {
+    "BF": ("XOF",), "BJ": ("XOF",), "CI": ("XOF",), "ML": ("XOF",),
+    "SN": ("XOF",), "TG": ("XOF",), "CM": ("XAF",), "CG": ("XAF",),
+    "CD": ("CDF", "USD"), "GM": ("GMD",), "GN": ("GNF",), "UG": ("UGX",),
+    "TZ": ("TZS",), "KE": ("KES",), "RW": ("RWF",), "GH": ("GHS",),
+    "NG": ("NGN",), "ZA": ("ZAR",), "ZM": ("ZMW", "USD"), "EG": ("EGP",),
+}
 LIMITS = {
     "BF": (500, 1500000), "BJ": (50, 1500000), "CI": (500, 1500000),
     "ML": (500, 1500000), "SN": (500, 1500000), "TG": (500, 1500000),
     "CM": (50, 1500000), "CG": (500, 1500000),
+    "CD": (40, 5000000), "GM": (10, 200000), "GN": (500, 1500000),
+    "UG": (500, 5000000), "TZ": (500, 5000000), "KE": (10, 70000),
+    "RW": (100, 5000000), "GH": (0.01, 0), "NG": (0.01, 0),
+    "ZA": (10, 50000), "ZM": (0.01, 0), "EG": (1, 50000),
 }
+CD_USD_LIMITS = (0.10, 2500)
 
 
 class MbiyoError(Exception):
@@ -53,28 +79,90 @@ class MbiyoError(Exception):
 def default_catalog() -> list[dict]:
     rows = []
     for country, networks in NETWORKS.items():
-        currency = CURRENCIES[country]
-        minimum, maximum = LIMITS[country]
-        for network in networks:
-            rows.append({
-                "id": f"mbiyo-{country.lower()}-{network}",
-                "provider": "mbiyo", "country": country,
-                "country_label": COUNTRY_LABELS[country],
-                "code": f"mbiyo_{network}_{country.lower()}",
-                "network": network, "name": NETWORK_LABELS.get(network, network.upper()),
-                "currency": currency, "active": True, "archived": False,
-                "hidden": False, "gateway_fee_pct": 0.0,
-                "gateway_fee_fixed": 0.0, "platform_fee_pct": 0.0,
-                "platform_fee_fixed": 0.0, "fee_pct": 0.0,
-                "min": minimum, "max": maximum,
-            })
+        for currency in CURRENCIES[country]:
+            minimum, maximum = LIMITS[country]
+            if country == "CD" and currency == "USD":
+                minimum, maximum = CD_USD_LIMITS
+            for network in networks:
+                suffix = f"-{currency.lower()}" if len(CURRENCIES[country]) > 1 else ""
+                code_suffix = f"_{currency.lower()}" if len(CURRENCIES[country]) > 1 else ""
+                # Gabon is intentionally absent: it is not in the official
+                # merchant pay-in table and awaits API support.
+                row_id = f"mbiyo-{country.lower()}-{network}{suffix}"
+                rows.append({
+                    "id": row_id, "provider": "mbiyo", "country": country,
+                    "country_label": COUNTRY_LABELS[country],
+                    "code": f"mbiyo_{network}_{country.lower()}{code_suffix}",
+                    "network": network,
+                    "name": (
+                        f"{NETWORK_LABELS.get(network, network.upper())} ({currency})"
+                        if len(CURRENCIES[country]) > 1
+                        else NETWORK_LABELS.get(network, network.upper())
+                    ),
+                    "currency": currency, "active": True, "archived": False,
+                    "hidden": False, "gateway_fee_pct": 0.0,
+                    "gateway_fee_fixed": 0.0, "platform_fee_pct": 0.0,
+                    "platform_fee_fixed": 0.0, "fee_pct": 0.0,
+                    "min": minimum, "max": maximum,
+                })
     return rows
+
+
+def payment_flow(operator: dict, amount: Optional[float] = None) -> dict:
+    """Provider-neutral instructions for the documented network flow."""
+    country = str(operator.get("country") or "").upper()
+    network = str(operator.get("network") or "").lower()
+    ussd = {
+        ("BF", "orange"): "*144*4*6*MONTANT#",
+        ("CI", "orange"): "#144*82#",
+        ("ML", "orange"): "#144#77#",
+        ("SN", "orange"): "#144#391#",
+        ("GN", "orange"): "#144#",
+    }.get((country, network))
+    if ussd:
+        template = ussd
+        if country == "BF" and network == "orange" and amount:
+            ussd = f"*144*4*6*{int(round(float(amount)))}#"
+        return {
+            "kind": "ussd",
+            "before_submit": True,
+            "otp_required": False,
+            "ussd_code": ussd,
+            "ussd_template": template,
+            "steps": [
+                (f"Composez {ussd}, choisissez l’option 4 puis l’option 2 avant "
+                 "de lancer le paiement." if country == "GN" else
+                 f"Composez {ussd} sur votre téléphone avant de lancer le paiement."),
+                ("Suivez le menu pour générer la demande."
+                 if country == "GN" else
+                 "Suivez le menu de votre opérateur pour autoriser la demande."),
+                "Revenez ici : la confirmation sera vérifiée automatiquement.",
+            ],
+            "action_label": "J’ai autorisé la demande, lancer le paiement",
+        }
+    if country == "GM" and network in {"qmoney", "aps"}:
+        return {
+            "kind": "otp", "before_submit": False, "otp_required": True,
+            "otp_label": "PIN de validation reçu après le lancement",
+            "steps": ["Lancez le paiement.", "Saisissez le PIN demandé pour finaliser."],
+            "action_label": "Finaliser le paiement",
+        }
+    return {
+        "kind": "phone_confirmation",
+        "before_submit": False,
+        "otp_required": False,
+        "steps": [
+            "Lancez le paiement.",
+            "Validez la notification reçue sur votre téléphone.",
+        ],
+        "action_label": "Valider sur mon téléphone",
+    }
 
 
 def default_config() -> dict:
     return {
         "id": "payment_provider_mbiyo", "enabled": True, "mode": "test",
-        "setup_version": 2,
+        "setup_version": 3,
         "base_url": BASE_URL, "catalog": default_catalog(),
     }
 

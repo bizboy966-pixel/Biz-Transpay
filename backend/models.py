@@ -69,6 +69,19 @@ class UserPublic(BaseModel):
     balance_xof: float
     balance_xaf: float
     balance_usdt: float = 0.0
+    balance_cdf: float = 0.0
+    balance_usd: float = 0.0
+    balance_gmd: float = 0.0
+    balance_gnf: float = 0.0
+    balance_ugx: float = 0.0
+    balance_tzs: float = 0.0
+    balance_kes: float = 0.0
+    balance_rwf: float = 0.0
+    balance_ghs: float = 0.0
+    balance_ngn: float = 0.0
+    balance_zar: float = 0.0
+    balance_zmw: float = 0.0
+    balance_egp: float = 0.0
     created_at: str
     two_fa_enabled: bool = False
     language: str = "fr"

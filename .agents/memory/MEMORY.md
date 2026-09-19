@@ -6,7 +6,7 @@
 - [PayDunya callback hosting](paydunya-callback-hosting.md) — PUSH rejects temporary Replit preview callbacks; use a public production deployment accepting GET, POST, and HEAD.
 - [Social channel visibility](social-channel-visibility.md) — social links are validated and filtered server-side before reaching the authenticated user interface.
 - [PayDunya operator logos](paydunya-operator-logos.md) — PayDunya’s operator catalogue provides identifiers, not logo URLs; resolve display assets from official operator brand sources.
-- [Mbiyo integration](mbiyo-integration.md) — Mbiyo remains isolated with prefixed routes, encrypted credentials, signed webhooks, and idempotent settlement.
+- [Mbiyo integration](mbiyo-integration.md) — Mbiyo remains isolated internally while public routes stay provider-neutral; catalog additions follow the official pay-in table.
 - [Authentication security boundary](security-auth.md) — harden account access without changing or blocking financial and commerce workflows.
 - [Session security boundary](session-security.md) — use revocable HttpOnly browser sessions, idle expiry, rotation, remote logout, and step-up authentication.
 - [Admin security boundary](admin-security-boundary.md) — admin access requires MFA and step-up; the platform owner is permanent and protected from destructive operations.

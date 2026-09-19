@@ -32,6 +32,32 @@ def request(method="POST", path="/api/v1/test", headers=None):
                     "headers": raw, "query_string": b""})
 
 
+def test_public_mobile_money_config_hides_provider_identity():
+    config = server._mbiyo_public_config({
+        "enabled": True,
+        "secret_key_encrypted": "configured",
+        "catalog": [{
+            "country": "GN", "country_label": "Guinée",
+            "code": "mbiyo_orange_gn", "network": "orange",
+            "name": "Orange Money", "currency": "GNF",
+            "min": 500, "max": 1500000, "active": True,
+        }],
+    })
+    assert config["catalog"][0]["code"] == "orange_gn"
+    assert "provider" not in config["catalog"][0]
+    fees = server._public_fee_provider_mobile_money(config["catalog"])
+    assert "provider" not in fees["operators"][0]
+
+
+def test_provider_neutral_route_resolves_internal_mbiyo_code():
+    catalog = [{
+        "country": "GN", "code": "mbiyo_orange_gn",
+        "network": "orange", "active": True,
+    }]
+    assert server._active_mbiyo_operator(
+        catalog, "GN", "orange_gn")["network"] == "orange"
+
+
 class FakeCollection:
     def __init__(self):
         self.docs = []

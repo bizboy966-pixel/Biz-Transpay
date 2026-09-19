@@ -88,6 +88,79 @@ class PayDunyaError(Exception):
         super().__init__(f"[{status}] {message}")
 
 
+def payment_flow(operator: dict, amount: Optional[float] = None) -> dict:
+    """Return provider-neutral customer instructions for a SoftPay operator."""
+    slug = str(operator.get("endpoint_slug") or "").lower()
+    flow = {
+        "kind": "phone_confirmation",
+        "before_submit": False,
+        "otp_required": False,
+        "steps": [
+            "Saisissez votre numéro Mobile Money.",
+            "Lancez le paiement puis validez la notification sur votre téléphone.",
+        ],
+        "action_label": "Valider sur mon téléphone",
+    }
+    if slug == "orange-money-ci":
+        return {
+            "kind": "otp",
+            "before_submit": True,
+            "otp_required": True,
+            "otp_label": "Code généré par le menu USSD",
+            "ussd_code": "#144*82#",
+            "steps": [
+                "Composez #144*82# sur votre téléphone.",
+                "Choisissez l'option 2 pour générer le code de paiement.",
+                "Copiez le code généré dans le champ OTP, puis lancez le paiement.",
+            ],
+            "action_label": "J’ai mon code, lancer le paiement",
+        }
+    if slug == "orange-money-burkina":
+        value = int(round(float(amount or 0)))
+        code = f"*144*4*6*{value}#" if value else "*144*4*6*MONTANT#"
+        return {
+            "kind": "otp",
+            "before_submit": True,
+            "otp_required": True,
+            "otp_label": "Code généré par le menu USSD",
+            "ussd_code": code,
+            "ussd_template": "*144*4*6*{amount}#",
+            "steps": [
+                f"Composez {code} sur votre téléphone.",
+                "Suivez le menu pour générer le code de paiement.",
+                "Copiez le code généré dans le champ OTP, puis lancez le paiement.",
+            ],
+            "action_label": "J’ai mon code, lancer le paiement",
+        }
+    if slug == "new-orange-money-senegal":
+        return {
+            "kind": "redirect",
+            "before_submit": False,
+            "otp_required": False,
+            "steps": ["Ouvrez le lien ou le QR code affiché après le lancement.",
+                      "Validez le paiement dans votre espace opérateur."],
+            "action_label": "Ouvrir le paiement",
+        }
+    if slug == "wizall-money-senegal":
+        return {
+            "kind": "otp",
+            "before_submit": False,
+            "otp_required": True,
+            "otp_label": "Code d’autorisation reçu sur votre téléphone",
+            "steps": ["Lancez la demande sur votre téléphone.",
+                      "Saisissez le code d’autorisation reçu pour finaliser."],
+            "action_label": "Finaliser le paiement",
+        }
+    if slug in {"djamo", "djamo-sn", "djamo-ci"}:
+        flow.update({
+            "kind": "redirect",
+            "steps": ["Ouvrez le lien de confirmation affiché après le lancement.",
+                      "Validez le paiement dans l’application ou la page sécurisée."],
+            "action_label": "Ouvrir la confirmation",
+        })
+    return flow
+
+
 def default_catalog() -> list[dict]:
     return [{
         "country": country,
@@ -377,7 +450,7 @@ def checkout_url(invoice: Any) -> str:
 async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
                           phone: str, amount: float, currency: str,
                           customer_name: str = "",
-                          customer_email: str = "") -> dict:
+                          customer_email: str = "", otp: str = "") -> dict:
     slug = (operator.get("endpoint_slug") or "").lower()
     if config.get("mode") != "live":
         test_customer = config.get("_sandbox_customer") or {}
@@ -401,9 +474,30 @@ async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
                 "invoice_token": invoice_token,
             },
         )
-    # These field names are the official PayDunya Togo examples and are not
-    # interchangeable with FedaPay fields.
-    if slug == "t-money-togo":
+    if slug == "orange-money-ci":
+        body = {
+            "orange_money_ci_customer_fullname": customer_name,
+            "orange_money_ci_email": customer_email,
+            "orange_money_ci_phone_number": phone,
+            "orange_money_ci_otp": otp,
+            "payment_token": invoice_token,
+        }
+    elif slug == "orange-money-burkina":
+        body = {"name_bf": customer_name, "email_bf": customer_email,
+                "phone_bf": phone, "otp_code": otp,
+                "payment_token": invoice_token}
+    elif slug == "new-orange-money-senegal":
+        body = {"customer_name": customer_name, "customer_email": customer_email,
+                "phone_number": phone, "invoice_token": invoice_token}
+    elif slug in {"djamo", "djamo-sn", "djamo-ci"}:
+        country = str(operator.get("country") or "").lower()
+        body = {"djamo_fullName": customer_name, "djamo_email": customer_email,
+                "djamo_phone": phone, "code_country": country,
+                "djamo_payment_token": invoice_token}
+    elif slug == "wizall-money-senegal":
+        body = {"customer_name": customer_name, "customer_email": customer_email,
+                "phone_number": phone, "invoice_token": invoice_token}
+    elif slug == "t-money-togo":
         body = {"name_t_money": customer_name, "email_t_money": customer_email,
                 "phone_t_money": phone, "payment_token": invoice_token}
     elif slug == "moov-togo":
@@ -411,9 +505,72 @@ async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
                 "moov_togo_email": customer_email,
                 "moov_togo_customer_address": "Togo",
                 "moov_togo_phone_number": phone, "payment_token": invoice_token}
+    elif slug == "free-money-senegal":
+        body = {"customer_name": customer_name, "customer_email": customer_email,
+                "phone_number": phone, "payment_token": invoice_token}
+    elif slug == "expresso-senegal":
+        body = {"expresso_sn_fullName": customer_name, "expresso_sn_email": customer_email,
+                "expresso_sn_phone": phone, "payment_token": invoice_token}
+    elif slug == "wave-senegal":
+        body = {"wave_senegal_fullName": customer_name, "wave_senegal_email": customer_email,
+                "wave_senegal_phone": phone, "wave_senegal_payment_token": invoice_token}
+    elif slug == "celtiis-cash":
+        body = {"celtiis_cash_customer_fullname": customer_name,
+                "celtiis_cash_customer_email": customer_email,
+                "celtiis_cash_phone_number": phone, "payment_token": invoice_token}
+    elif slug == "mtn-ci":
+        body = {"mtn_ci_customer_fullname": customer_name, "mtn_ci_email": customer_email,
+                "mtn_ci_phone_number": phone, "mtn_ci_wallet_provider": "MTNCI",
+                "payment_token": invoice_token}
+    elif slug == "moov-ci":
+        body = {"moov_ci_customer_fullname": customer_name, "moov_ci_email": customer_email,
+                "moov_ci_phone_number": phone, "payment_token": invoice_token}
+    elif slug == "wave-ci":
+        body = {"wave_ci_fullName": customer_name, "wave_ci_email": customer_email,
+                "wave_ci_phone": phone, "wave_ci_payment_token": invoice_token}
+    elif slug == "moov-burkina":
+        body = {"moov_burkina_faso_fullName": customer_name,
+                "moov_burkina_faso_email": customer_email,
+                "moov_burkina_faso_phone_number": phone,
+                "moov_burkina_faso_payment_token": invoice_token}
+    elif slug == "moov-benin":
+        body = {"moov_benin_customer_fullname": customer_name,
+                "moov_benin_email": customer_email,
+                "moov_benin_phone_number": phone, "payment_token": invoice_token}
+    elif slug == "mtn-benin":
+        body = {"mtn_benin_customer_fullname": customer_name,
+                "mtn_benin_email": customer_email,
+                "mtn_benin_phone_number": phone,
+                "mtn_benin_wallet_provider": "MTNBENIN",
+                "payment_token": invoice_token}
+    elif slug == "orange-money-mali":
+        body = {"orange_money_mali_customer_fullname": customer_name,
+                "orange_money_mali_email": customer_email,
+                "orange_money_mali_phone_number": phone,
+                "orange_money_mali_customer_address": "Mali",
+                "payment_token": invoice_token}
+    elif slug == "moov-mali":
+        body = {"moov_ml_customer_fullname": customer_name,
+                "moov_ml_email": customer_email, "moov_ml_phone_number": phone,
+                "moov_ml_customer_address": "Mali", "payment_token": invoice_token}
+    elif slug == "mtn-cameroun":
+        body = {"mtn_cameroun_customer_fullname": customer_name,
+                "mtn_cameroun_email": customer_email,
+                "mtn_cameroun_phone_number": phone,
+                "mtn_cameroun_wallet_provider": "MTNCAMEROUN",
+                "payment_token": invoice_token}
     else:
-        body = {"invoice_token": invoice_token, "phone_number": phone}
+        raise PayDunyaError(400, "Opérateur Mobile Money non pris en charge")
     return await _request("POST", f"/api/v1/softpay/{slug}", config, body)
+
+
+async def wizall_confirm(config: dict, *, authorization_code: str,
+                         phone: str, transaction_id: str) -> dict:
+    return await _request(
+        "POST", "/api/v1/softpay/wizall-money-senegal/confirm", config,
+        {"authorization_code": authorization_code, "phone_number": phone,
+         "transaction_id": transaction_id},
+    )
 
 
 async def get_disbursement_invoice(config: dict, *, amount: float,

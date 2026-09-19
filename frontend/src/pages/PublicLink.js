@@ -347,6 +347,7 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const [amount, setAmount] = useState(isFree ? '' : String(link.amount || ''));
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
+  const [otp, setOtp] = useState('');
   // Keep the business meaning independent from the legacy transport values:
   // client pays vs Biz-transPay/merchant pays.
   const feeBearer = link.fee_bearer === 'owner' ? 'merchant' : 'client';
@@ -361,6 +362,8 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const countryEntry = catalog.find((c) => c.country === country);
   const operators = countryEntry?.operators || [];
   const selectedOp = operators.find((o) => o.code === operator);
+  const paymentFlow = selectedOp?.payment_flow || {};
+  const flowNeedsOtp = Boolean(paymentFlow.before_submit && paymentFlow.otp_required);
   const baseAmount = Number(amount) || 0;
   const currency = selectedOp?.currency || 'XOF';
   const roundMoney = (value) => ['XOF', 'XAF', 'GNF'].includes(currency)
@@ -384,6 +387,10 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
     if (!turnstile.enabled || !turnstileToken) {
       setError('Veuillez terminer la vérification anti-bot'); return;
     }
+    if (flowNeedsOtp && !otp.trim()) {
+      setError(`Saisissez ${paymentFlow.otp_label || 'le code de paiement'} avant de continuer.`);
+      return;
+    }
     setLoading(true);
     try {
       const endpoint = `${process.env.REACT_APP_BACKEND_URL || ''}/api/links/pay/mobile-money`;
@@ -393,6 +400,7 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
           full_name: fullName.trim(), email: email.trim(),
            country, operator, phone_number: phone.trim(), fee_bearer: bearer,
            turnstile_token: turnstileToken,
+           ...(otp.trim() ? { otp: otp.trim() } : {}),
          });
       // Newer backends accept client|merchant. Retry the pre-validation
       // request with the historical sender|receiver values when an older
@@ -410,7 +418,13 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
         });
         data = await res.json();
       }
-      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Erreur');
+       if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Erreur');
+       const redirectUrl = data.redirect_url || data.checkout_url;
+       if (data.payment_kind === 'redirect' || redirectUrl) {
+         if (!redirectUrl) throw new Error('Le lien de paiement n’a pas pu être préparé. Veuillez réessayer.');
+         window.location.assign(redirectUrl);
+         return;
+       }
       onSuccess({ ...data, fee_bearer: feeBearer });
     } catch (err) {
       setTurnstileToken('');
@@ -431,14 +445,14 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Pays">
-          <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); }} required
+         <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); setOtp(''); }} required
             className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm bg-white">
             <option value="">—</option>
             {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
           </select>
         </Field>
         <Field label="Opérateur">
-          <select value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!country} required
+         <select value={operator} onChange={(e) => { setOperator(e.target.value); setOtp(''); }} disabled={!country} required
             className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm bg-white disabled:bg-slate-50">
             <option value="">—</option>
             {operators.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
@@ -449,6 +463,23 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
         <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="ex: 97000001" required
           className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
       </Field>
+      <PaymentFlowCard flow={paymentFlow} amount={isFree ? baseAmount : Number(link.amount) || baseAmount} currency={currency} />
+      {flowNeedsOtp && (
+        <Field label={paymentFlow.otp_label || 'Code de paiement'}>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            placeholder="Saisissez le code généré sur votre téléphone"
+            required
+            data-testid="pay-momo-otp"
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm font-mono tracking-widest"
+          />
+          <p className="mt-1 text-[10px] text-slate-500">Collez ou tapez exactement le code affiché par votre opérateur.</p>
+        </Field>
+      )}
       {isFree && (
         <Field label={`Montant (${selectedOp?.currency || 'XOF'})`}>
           <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required
@@ -482,7 +513,7 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
         onToken={setTurnstileToken}
       />
       {error && <div className="p-2 rounded-lg bg-red-50 text-red-700 text-[11px]">{error}</div>}
-      <button type="submit" disabled={loading} data-testid="momo-link-submit"
+      <button type="submit" disabled={loading || (flowNeedsOtp && !otp.trim())} data-testid="momo-link-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-2.5 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
         {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
       </button>
@@ -492,13 +523,22 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
 
 function MoMoLinkTracker({ payment }) {
   const [p, setP] = useState(payment);
+  const [otp, setOtp] = useState('');
+  const [finalizing, setFinalizing] = useState(false);
+  const [finalizeError, setFinalizeError] = useState('');
   useEffect(() => {
     if (p.status !== 'pending') return;
     const iv = setInterval(async () => {
       try {
         const res = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/links/payments/${p.id}`);
         const d = await res.json();
-        setP(d);
+        setP((current) => ({
+          ...current,
+          ...d,
+          ...(d.finalize_capability === undefined && current.finalize_capability
+            ? { finalize_capability: current.finalize_capability }
+            : {}),
+        }));
         if (d.status !== 'pending') clearInterval(iv);
       } catch { /* poll silently */ }
     }, 4000);
@@ -508,6 +548,44 @@ function MoMoLinkTracker({ payment }) {
   const ok = p.status === 'paid';
   const failed = p.status === 'failed' || p.status === 'expired';
   const pending = !ok && !failed;
+  const flow = p.payment_flow || {};
+  const needsPostInitOtp = pending && (p.auth_mode === 'pin' || (p.otp_required && !flow.before_submit));
+  const instructionValue = p.instructions || p.payment_instructions || p.pending_instructions;
+  const instructions = Array.isArray(instructionValue)
+    ? instructionValue.join(' ')
+    : (typeof instructionValue === 'string' && instructionValue.trim()
+      ? instructionValue
+      : `Ouvrez la notification ou l’application Mobile Money sur ${p.customer_phone || 'votre téléphone'} et confirmez le paiement.`);
+  const finalize = async () => {
+    if (!otp.trim()) {
+      setFinalizeError('Saisissez le code demandé pour continuer.');
+      return;
+    }
+    setFinalizing(true);
+    setFinalizeError('');
+    try {
+      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/links/payments/${p.id}/mobile-money/finalize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          otp: otp.trim(),
+          ...(p.finalize_capability ? { finalize_capability: p.finalize_capability } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Le code n’a pas pu être validé.');
+      setP((current) => {
+        const next = { ...current, ...data };
+        delete next.finalize_capability;
+        return next;
+      });
+      setOtp('');
+    } catch (error) {
+      setFinalizeError(error.message || 'Le code n’a pas pu être validé. Vérifiez-le puis réessayez.');
+    } finally {
+      setFinalizing(false);
+    }
+  };
   return (
     <div className="mt-4 text-center space-y-3" data-testid="momo-link-tracker">
       {pending && <div className="mx-auto w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center"><Clock className="w-6 h-6 text-amber-500 animate-pulse" /></div>}
@@ -519,10 +597,72 @@ function MoMoLinkTracker({ payment }) {
         {failed && 'Paiement échoué'}
       </h2>
       <p className="text-xs text-slate-500 leading-relaxed">
-        {pending && `Confirmez le paiement de ${p.amount} ${p.currency || 'XOF'} sur votre téléphone ${p.customer_phone || ''} avec votre code Mobile Money.`}
+         {pending && instructions}
         {ok && `Merci ! Le paiement a été confirmé.`}
         {failed && `La transaction a été refusée ou a expiré.`}
       </p>
+      {pending && <PaymentFlowCard flow={flow} amount={p.amount} currency={p.currency} />}
+      {needsPostInitOtp && (
+        <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-left space-y-2">
+          <label className="block text-[11px] font-bold text-blue-900">Code de validation</label>
+          <p className="text-[11px] text-blue-800">Saisissez ou collez le code reçu ou généré sur votre téléphone, puis validez.</p>
+          <div className="flex gap-2">
+            <input
+              value={otp}
+              onChange={(e) => setOtp(e.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="Code OTP / PIN"
+              data-testid="pay-tracker-otp"
+              className="min-w-0 flex-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-mono tracking-widest outline-none focus:border-blue-500"
+            />
+            <button type="button" onClick={finalize} disabled={finalizing || !otp.trim()} data-testid="pay-finalize"
+              className="shrink-0 rounded-lg bg-[#2563EB] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+              {finalizing ? 'Validation…' : 'Valider'}
+            </button>
+          </div>
+          {finalizeError && <p className="text-[11px] font-semibold text-red-700">{finalizeError}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PaymentFlowCard({ flow, amount, currency }) {
+  const steps = Array.isArray(flow?.steps) ? flow.steps.filter(Boolean) : [];
+  const roundedAmount = ['XOF', 'XAF', 'GNF'].includes(String(currency || '').toUpperCase())
+    ? Math.round(Number(amount) || 0)
+    : Math.round((Number(amount) || 0) * 100) / 100;
+  const amountText = Number.isFinite(roundedAmount) ? String(roundedAmount) : '';
+  const replaceAmount = (value) => String(value || '').replace(/\{amount\}|MONTANT/gi, amountText);
+  const ussd = replaceAmount(flow?.ussd_template || flow?.ussd_code);
+  if (!steps.length && !ussd) return null;
+  const copyUssd = () => {
+    if (navigator.clipboard && ussd) {
+      navigator.clipboard.writeText(String(ussd));
+      toast.success('Code USSD copié');
+    }
+  };
+  return (
+    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-left space-y-2" data-testid="pay-payment-flow">
+      <div className="text-xs font-bold text-amber-900">Comment confirmer votre paiement</div>
+      {steps.length > 0 && (
+        <ol className="list-decimal space-y-1 pl-5 text-[11px] leading-relaxed text-amber-900">
+          {steps.map((step, index) => <li key={`${step}-${index}`}>{replaceAmount(step)}</li>)}
+        </ol>
+      )}
+      {ussd && (
+        <div className="rounded-lg border border-amber-200 bg-white p-2">
+          <div className="text-[10px] font-semibold text-amber-800">Code à composer sur le même téléphone</div>
+          <div className="mt-1 flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all font-mono text-sm font-bold tracking-wide text-slate-900">{ussd}</code>
+            <button type="button" onClick={copyUssd} className="shrink-0 rounded-lg p-2 hover:bg-amber-50" title="Copier le code USSD" aria-label="Copier le code USSD">
+              <Copy className="h-4 w-4 text-amber-700" />
+            </button>
+          </div>
+          <p className="mt-1 text-[10px] text-slate-600">Composez ce code sur le téléphone associé au numéro indiqué, puis revenez ici.</p>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,13 +1,19 @@
 ---
 name: Mbiyo integration
-description: Mbiyo is isolated from the legacy providers and uses provider-prefixed Mobile Money routes.
+description: Mbiyo stays isolated internally while customer-facing Mobile Money routes remain provider-neutral.
 ---
 
 Mbiyo is configured independently from PayDunya, with encrypted public key, secret key and webhook secret, an editable country/operator catalogue, server-side status verification, HMAC-SHA256 webhook validation, and idempotent wallet settlement.
 
 **Why:** The existing PayDunya flows have provider-specific callback and reconciliation rules; sharing their configuration or route identifiers would risk changing live payment behavior.
 
-**How to apply:** Keep Mbiyo operator codes prefixed with `mbiyo_`, route Mbiyo through its own client, webhook, and reconciliation loop, and never let a PayDunya fallback handle a Mbiyo transaction.
+**How to apply:** Keep internal operator codes provider-prefixed, strip provider identity from public route codes, resolve them server-side, and never let another integration handle a Mbiyo transaction.
+
+Only add pay-in countries, networks, currencies, and limits that appear in the official merchant pay-in table. Gabon is not currently listed there.
+
+**Why:** Account-registration country lists are not evidence of Mobile Money pay-in support, and guessed routes can accept funds without a valid settlement path.
+
+**How to apply:** Treat the official merchant pay-in network table as authoritative; multi-currency countries need distinct route identities, and undocumented limits remain enforced by the upstream API rather than guessed locally.
 
 Mbiyo exposes separate live endpoints for wallets, currency balances, and
 network balances. Treat each response as a strict `data` list and keep wallet

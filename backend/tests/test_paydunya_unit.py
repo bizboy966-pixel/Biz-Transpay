@@ -247,6 +247,154 @@ def test_togo_softpay_uses_documented_fields(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(("slug", "country", "expected"), [
+    ("orange-money-ci", "CI", {
+        "orange_money_ci_customer_fullname": "A Test",
+        "orange_money_ci_email": "a@example.com",
+        "orange_money_ci_phone_number": "0700000000",
+        "orange_money_ci_otp": "123456", "payment_token": "tok",
+    }),
+    ("orange-money-burkina", "BF", {
+        "name_bf": "A Test", "email_bf": "a@example.com",
+        "phone_bf": "0700000000", "otp_code": "123456",
+        "payment_token": "tok",
+    }),
+    ("new-orange-money-senegal", "SN", {
+        "customer_name": "A Test", "customer_email": "a@example.com",
+        "phone_number": "0700000000", "invoice_token": "tok",
+    }),
+    ("free-money-senegal", "SN", {
+        "customer_name": "A Test", "customer_email": "a@example.com",
+        "phone_number": "0700000000", "payment_token": "tok",
+    }),
+    ("expresso-senegal", "SN", {
+        "expresso_sn_fullName": "A Test", "expresso_sn_email": "a@example.com",
+        "expresso_sn_phone": "0700000000", "payment_token": "tok",
+    }),
+    ("wave-senegal", "SN", {
+        "wave_senegal_fullName": "A Test", "wave_senegal_email": "a@example.com",
+        "wave_senegal_phone": "0700000000", "wave_senegal_payment_token": "tok",
+    }),
+    ("wizall-money-senegal", "SN", {
+        "customer_name": "A Test", "customer_email": "a@example.com",
+        "phone_number": "0700000000", "invoice_token": "tok",
+    }),
+    ("mtn-ci", "CI", {
+        "mtn_ci_customer_fullname": "A Test", "mtn_ci_email": "a@example.com",
+        "mtn_ci_phone_number": "0700000000", "mtn_ci_wallet_provider": "MTNCI",
+        "payment_token": "tok",
+    }),
+    ("moov-ci", "CI", {
+        "moov_ci_customer_fullname": "A Test", "moov_ci_email": "a@example.com",
+        "moov_ci_phone_number": "0700000000", "payment_token": "tok",
+    }),
+    ("wave-ci", "CI", {
+        "wave_ci_fullName": "A Test", "wave_ci_email": "a@example.com",
+        "wave_ci_phone": "0700000000", "wave_ci_payment_token": "tok",
+    }),
+    ("moov-burkina", "BF", {
+        "moov_burkina_faso_fullName": "A Test",
+        "moov_burkina_faso_email": "a@example.com",
+        "moov_burkina_faso_phone_number": "0700000000",
+        "moov_burkina_faso_payment_token": "tok",
+    }),
+    ("moov-benin", "BJ", {
+        "moov_benin_customer_fullname": "A Test",
+        "moov_benin_email": "a@example.com",
+        "moov_benin_phone_number": "0700000000", "payment_token": "tok",
+    }),
+    ("mtn-benin", "BJ", {
+        "mtn_benin_customer_fullname": "A Test",
+        "mtn_benin_email": "a@example.com",
+        "mtn_benin_phone_number": "0700000000",
+        "mtn_benin_wallet_provider": "MTNBENIN", "payment_token": "tok",
+    }),
+    ("celtiis-cash", "BJ", {
+        "celtiis_cash_customer_fullname": "A Test",
+        "celtiis_cash_customer_email": "a@example.com",
+        "celtiis_cash_phone_number": "0700000000", "payment_token": "tok",
+    }),
+    ("orange-money-mali", "ML", {
+        "orange_money_mali_customer_fullname": "A Test",
+        "orange_money_mali_email": "a@example.com",
+        "orange_money_mali_phone_number": "0700000000",
+        "orange_money_mali_customer_address": "Mali", "payment_token": "tok",
+    }),
+    ("moov-mali", "ML", {
+        "moov_ml_customer_fullname": "A Test", "moov_ml_email": "a@example.com",
+        "moov_ml_phone_number": "0700000000",
+        "moov_ml_customer_address": "Mali", "payment_token": "tok",
+    }),
+    ("mtn-cameroun", "CM", {
+        "mtn_cameroun_customer_fullname": "A Test",
+        "mtn_cameroun_email": "a@example.com",
+        "mtn_cameroun_phone_number": "0700000000",
+        "mtn_cameroun_wallet_provider": "MTNCAMEROUN", "payment_token": "tok",
+    }),
+    ("djamo", "CI", {
+        "djamo_fullName": "A Test", "djamo_email": "a@example.com",
+        "djamo_phone": "0700000000", "code_country": "ci",
+        "djamo_payment_token": "tok",
+    }),
+])
+def test_softpay_operator_contracts(monkeypatch, slug, country, expected):
+    seen = {}
+
+    async def fake_request(method, path, config, body=None):
+        seen.update(method=method, path=path, body=body)
+        return {"success": True}
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    asyncio.run(paydunya.softpay_payment(
+        {"mode": "live"}, invoice_token="tok",
+        operator={"endpoint_slug": slug, "country": country},
+        phone="0700000000", amount=1000, currency="XOF",
+        customer_name="A Test", customer_email="a@example.com",
+        otp="123456",
+    ))
+    assert seen["path"] == f"/api/v1/softpay/{slug}"
+    assert seen["body"] == expected
+
+
+def test_orange_and_wizall_payment_flow_contracts():
+    ci = paydunya.payment_flow({"endpoint_slug": "orange-money-ci"})
+    assert ci["before_submit"] is True
+    assert ci["otp_required"] is True
+    assert ci["ussd_code"] == "#144*82#"
+
+    bf = paydunya.payment_flow(
+        {"endpoint_slug": "orange-money-burkina"}, amount=1250)
+    assert bf["ussd_code"] == "*144*4*6*1250#"
+    assert bf["ussd_template"] == "*144*4*6*{amount}#"
+
+    wizall = paydunya.payment_flow(
+        {"endpoint_slug": "wizall-money-senegal"})
+    assert wizall["before_submit"] is False
+    assert wizall["otp_required"] is True
+
+
+def test_wizall_confirm_uses_documented_contract(monkeypatch):
+    seen = {}
+
+    async def fake_request(method, path, config, body=None):
+        seen.update(method=method, path=path, body=body)
+        return {"success": True}
+
+    monkeypatch.setattr(paydunya, "_request", fake_request)
+    asyncio.run(paydunya.wizall_confirm(
+        {"mode": "live"}, authorization_code="461050",
+        phone="771112233", transaction_id="286513913"))
+    assert seen == {
+        "method": "POST",
+        "path": "/api/v1/softpay/wizall-money-senegal/confirm",
+        "body": {
+            "authorization_code": "461050",
+            "phone_number": "771112233",
+            "transaction_id": "286513913",
+        },
+    }
+
+
 def test_sandbox_softpay_uses_fictitious_customer(monkeypatch):
     seen = {}
 
