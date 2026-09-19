@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin, ChevronDown } from 'lucide-react';
+import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';

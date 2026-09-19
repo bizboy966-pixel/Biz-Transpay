@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, Rocket, ChevronDown } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, Rocket } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { toast } from 'sonner';
 import api from '@/api';
