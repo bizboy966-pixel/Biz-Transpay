@@ -403,6 +403,9 @@ async def test_live_direct_timeout_is_durable_and_unknown(monkeypatch):
     monkeypatch.setattr(server, "get_paydunya_config",
                         lambda decrypt=False: asyncio.sleep(0, result={
                             "enabled": True, "mode": "live",
+                            "master_key_encrypted": "configured",
+                            "private_key_encrypted": "configured",
+                            "token_encrypted": "configured",
                             "catalog": [{"country": "TG", "code": "moov_tg",
                                          "currency": "XOF", "min": 100, "max": 500000,
                                          "active": True}],

@@ -3186,7 +3186,8 @@ def _active_mbiyo_operator(
     ), None)
 
 
-async def _resolve_deposit_provider(country: str, code: str) -> str:
+async def _resolve_deposit_provider(country: str, code: str,
+                                    currency: Optional[str] = None) -> str:
     paydunya_cfg = await get_paydunya_config()
     mbiyo_cfg = await get_mbiyo_config()
     paydunya_match = (
@@ -3202,6 +3203,12 @@ async def _resolve_deposit_provider(country: str, code: str) -> str:
                  or os.environ.get("MBIYO_SECRET_KEY")
                  or os.environ.get("MBIYO_API_KEY")) else None
     )
+    if currency:
+        wanted = currency.upper()
+        paydunya_match = paydunya_match if paydunya_match and str(
+            paydunya_match.get("currency", "")).upper() == wanted else None
+        mbiyo_match = mbiyo_match if mbiyo_match and str(
+            mbiyo_match.get("currency", "")).upper() == wanted else None
     if paydunya_match and mbiyo_match:
         # The public catalogue de-duplicates equivalent routes in this same
         # order, so resolution must keep the first configured route as well.
@@ -3395,6 +3402,8 @@ def _public_transfer_config(cfg: dict) -> dict:
     }
     # Mbiyo payout routes use the same provider-neutral customer contract.
     mb_cfg = cfg.get("mbiyo") or {}
+    # get_transfer_config already reduces this flag to
+    # enabled-and-configured without copying credentials publicly.
     if global_enabled and mb_cfg.get("enabled"):
         for op in mb_cfg.get("operators", []):
             if not op.get("active", True) or op.get("archived") or op.get("hidden"):
@@ -3411,6 +3420,15 @@ def _public_transfer_config(cfg: dict) -> dict:
                 "fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0)
                     + float(op.get("platform_fee_fixed", 0) or 0), "active": True,
             })
+    # Keep the first route for each public tuple: this is also the arbitration
+    # priority used by payout execution.
+    seen = set()
+    public_ops = [op for op in public_ops if not (
+        (key := (str(op.get("country") or "").upper(),
+                 str(op.get("code") or "").lower().removeprefix("mbiyo_"),
+                 str(op.get("currency") or "").upper())) in seen
+        or seen.add(key)
+    )]
     result["mobile_money"]["enabled"] = bool(global_enabled and public_ops)
     result["mobile_money"]["operators"] = public_ops
     result.pop("paydunya", None)
@@ -3695,15 +3713,22 @@ async def transfer(req: TransferRequest, request: Request,
                 mb_cfg.get("catalog") or [], req.country, req.operator)
             if mb_cfg.get("enabled") and mb_cfg.get("_api_key") else None
         )
+        if mb_op and str(mb_op.get("currency") or "").upper() != req.currency.upper():
+            mb_op = None
         paydunya_op = (
             _active_operator(mm_cfg.get("operators") or [], req.country, req.operator)
             if (cfg.get("paydunya") or {}).get("enabled") else None
         )
-        if not mm_cfg.get("enabled") and not (
-                mb_cfg.get("enabled") and mb_cfg.get("_api_key") and mb_op):
+        if paydunya_op and (
+                str(paydunya_op.get("currency") or "").upper() != req.currency.upper()
+                or not paydunya_op.get("withdraw_mode")):
+            paydunya_op = None
+        if not mm_cfg.get("enabled"):
             raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
         if mb_op and paydunya_op:
-            raise HTTPException(409, "Code opérateur présent chez plusieurs prestataires")
+            # Match the public catalogue's deterministic first-provider
+            # priority for an identical country/code/currency tuple.
+            mb_op = None
         if not mb_op and not paydunya_op:
             raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
 
@@ -4456,6 +4481,7 @@ async def deposits_config_public():
             identity = (
                 str(entry.get("country") or "").upper(),
                 re.sub(r"[^a-z0-9]", "", route_code),
+                str(operator.get("currency") or "").upper(),
             )
             if identity in seen:
                 continue
@@ -4698,7 +4724,7 @@ async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
     The route name is deliberately kept server-side. The browser receives only
     the UX action it must perform: phone confirmation, popup, or redirect.
     """
-    provider = await _resolve_deposit_provider(req.country, req.operator)
+    provider = await _resolve_deposit_provider(req.country, req.operator, req.currency)
     if provider == "mbiyo":
         return await _create_mbiyo_deposit(req, request, uid)
     cfg = await get_paydunya_config()
@@ -6987,7 +7013,9 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         link, req.amount if link.get("amount_type") == "free" else None
     )
 
-    route_provider = await _resolve_deposit_provider(req.country, req.operator)
+    link_currency = str(link.get("currency") or "XOF").upper()
+    route_provider = await _resolve_deposit_provider(
+        req.country, req.operator, link_currency)
     if route_provider == "mbiyo":
         mb_cfg = await get_mbiyo_config(decrypt=True)
         mb_op = _active_mbiyo_operator(
@@ -7942,19 +7970,36 @@ async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]
         mb_cfg.get("catalog") or [], payload.country, payload.operator)
     if mb_op and str(mb_op.get("currency", "")).upper() != payload.currency.upper():
         mb_op = None
-    if mb_op and mb_cfg.get("enabled", False):
+    cfg = await get_paydunya_config(decrypt=environment == "live")
+    if cfg.get("enabled") and (
+        environment != "live" or _paydunya_credentials_configured(cfg)
+    ):
+        op = next((item for item in cfg.get("catalog", [])
+                   if str(item.get("country", "")).upper() == payload.country.upper()
+                   and str(item.get("code", "")).lower() == payload.operator.lower()
+                   and str(item.get("currency", payload.currency)).upper() == payload.currency.upper()
+                   and item.get("active", True)
+                   and not item.get("archived", False)
+                   and not item.get("hidden", False)), None)
+    else:
+        op = None
+    if op:
+        # PayDunya is the first configured provider in the public catalogue.
+        currency = str(op.get("currency") or payload.currency).upper()
+        if currency != payload.currency.upper():
+            raise BizAPIError(400, "The currency is not supported by this method.",
+                              "CURRENCY_NOT_SUPPORTED")
+        cfg["_gateway_provider"] = "paydunya"
+        return cfg, op
+    mbiyo_ready = mb_cfg.get("enabled", False) and (
+        environment != "live" or bool(mb_cfg.get("_api_key"))
+    )
+    if mb_op and mbiyo_ready:
         mb_cfg["_gateway_provider"] = "mbiyo"
         return mb_cfg, mb_op
-    cfg = await get_paydunya_config(decrypt=environment == "live")
     if not cfg.get("enabled"):
         raise BizAPIError(503, "Payment service is temporarily unavailable.",
                           "PAYMENT_SERVICE_UNAVAILABLE")
-    op = next((item for item in cfg.get("catalog", [])
-               if str(item.get("country", "")).upper() == payload.country.upper()
-               and str(item.get("code", "")).lower() == payload.operator.lower()
-               and item.get("active", True)
-               and not item.get("archived", False)
-               and not item.get("hidden", False)), None)
     if not op:
         raise BizAPIError(400, "The selected payment method is unavailable.",
                           "PAYMENT_METHOD_UNAVAILABLE")
@@ -7989,17 +8034,29 @@ async def _developer_withdrawal_operator(merchant: dict,
         mb_cfg.get("catalog") or [], payload.country, payload.operator)
     if mb_op and str(mb_op.get("currency", "")).upper() != payload.currency.upper():
         mb_op = None
-    if mb_op and mb_cfg.get("enabled", False):
-        mb_cfg["_gateway_provider"] = "mbiyo"
-        return mb_cfg, mb_op
     cfg = await get_transfer_config()
     mobile_money = cfg.get("mobile_money") or {}
+    environment = merchant.get("_api_env", "test")
     if not mobile_money.get("enabled"):
         raise BizAPIError(503, "Withdrawal service is temporarily unavailable.",
                           "WITHDRAWAL_SERVICE_UNAVAILABLE")
     op = _active_operator(
         mobile_money.get("operators") or [], payload.country, payload.operator)
-    if not op:
+    if op and (
+            (environment == "live"
+             and not (cfg.get("paydunya") or {}).get("enabled"))
+            or (environment == "live" and not op.get("withdraw_mode"))
+            or str(op.get("currency") or "").upper() != payload.currency.upper()):
+        op = None
+    if op:
+        return cfg, op
+    mbiyo_ready = mb_cfg.get("enabled", False) and (
+        merchant.get("_api_env", "test") != "live" or bool(mb_cfg.get("_api_key"))
+    )
+    if mb_op and mbiyo_ready:
+        mb_cfg["_gateway_provider"] = "mbiyo"
+        return mb_cfg, mb_op
+    if not op and not mb_op:
         raise BizAPIError(400, "The selected withdrawal method is unavailable.",
                           "PAYMENT_METHOD_UNAVAILABLE")
     if payload.currency.upper() not in PAYDUNYA_WALLET_CURRENCIES:

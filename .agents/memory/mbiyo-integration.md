@@ -39,3 +39,14 @@ funds indefinitely.
 callback may bind a missing provider ID only after a server-side status read
 confirms that its order ID equals the pending local ID. All terminal outcomes
 must then pass through the same invariant-checking reconciler.
+
+Multiple Mobile Money providers may be enabled at the same time, but route
+eligibility is evaluated per country, neutral code, currency, and operation.
+
+**Why:** Provider-level activation alone can expose disabled operators or make
+overlapping routes fail unpredictably.
+
+**How to apply:** Require the provider to be enabled and configured, and the
+route to be active, visible, non-archived, currency-matched, and payout-capable
+when applicable. Public-catalog de-duplication and execution must use the same
+tuple and deterministic priority.
