@@ -32,3 +32,15 @@ PayDunya withdrawals use a separate Mobile Money catalog under Admin â†’ Fees â†
 **Why:** Deposit and withdrawal availability and pricing must evolve independently, while one server-side credential source prevents duplicated secrets. PayDunya PUSH v2 documents its amount as XOF even though an operator list mentions Cameroon.
 
 **How to apply:** Snapshot gateway/platform fees at withdrawal creation, select the provider route only on the server, require request idempotency, debit conditionally, and use repairable exactly-once markers for refunds and terminal reconciliation.
+
+The customer-facing deposit fee grid must read the active PayDunya and Mbiyo
+provider catalogues, while deposit-side crypto fees read the admin deposit
+configuration. It must not display a separate default Mobile Money catalogue.
+
+**Why:** Mobile Money deposits validate and charge against provider catalogues;
+showing a legacy deposit settings list makes the user-facing fee page disagree
+with the admin configuration and the actual payment route.
+
+**How to apply:** Build the public deposit Mobile Money fee list from the same
+filtered active/visible provider entries used by the deposit flow, preserving
+the configured percentage, fixed fee, currency, and limits.

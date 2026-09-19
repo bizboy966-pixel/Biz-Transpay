@@ -855,6 +855,13 @@ TELEGRAM_FINAL_NOTIFICATION_TYPES = {
     "exchange_success",
     "security_alert",
 }
+TELEGRAM_ADMIN_NOTIFICATION_TYPES = {
+    "admin_login",
+    "kyc_submitted",
+    "kyc_verified",
+    "kyc_rejected",
+    "kyc_resubmit_requested",
+}
 _security_alert_last_sent: dict[str, float] = {}
 _security_alert_lock = asyncio.Lock()
 SECURITY_ALERT_COOLDOWN_SECONDS = 300
@@ -1101,6 +1108,10 @@ async def _telegram_notification_text(
 ) -> str:
     if ntype == "security_alert":
         return _telegram_security_text(data)
+    if ntype in TELEGRAM_ADMIN_NOTIFICATION_TYPES:
+        return await _telegram_admin_notification_text(
+            user_id, ntype, title, body, data
+        )
     transaction, deposit = await _telegram_transaction_context(data)
     record = deposit or transaction or {}
     meta = (transaction or {}).get("metadata") or {}
@@ -1179,6 +1190,53 @@ async def _telegram_notification_text(
             f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>",
         ]
     lines.extend(await _telegram_party_lines(transaction, deposit))
+    return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
+
+
+async def _telegram_admin_notification_text(
+    user_id: str,
+    ntype: str,
+    title: str,
+    body: str,
+    data: Optional[dict],
+) -> str:
+    """Format admin-only operational alerts without exposing raw account data."""
+    safe = data or {}
+    user = await _telegram_user_summary(user_id)
+    account_lines = [
+        f"👤 Compte : <b>{html_escape(str(user.get('name') or 'Compte Biz-transPay')[:120])}</b>",
+        f"🔑 Username : <code>{html_escape(str(user.get('username') or '—'))}</code>",
+        f"📧 Email : <code>{html_escape(user.get('email') or '—')}</code>",
+    ]
+    if ntype == "admin_login":
+        unusual = " — caractéristiques inhabituelles" if safe.get("unusual") else ""
+        lines = [
+            f"<b>🔐 CONNEXION ADMINISTRATEUR{unusual}</b>",
+            "━━━━━━━━━━━━━━━━━━━━",
+            *account_lines,
+            f"🌐 IP : <code>{html_escape(_telegram_mask_ip(safe.get('ip')))}</code>",
+            f"🕘 Heure : <b>{html_escape(_telegram_display_time(safe.get('detected_at')))}</b>",
+        ]
+        return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
+
+    status_labels = {
+        "kyc_submitted": "SOUMIS — EN ATTENTE DE VALIDATION",
+        "kyc_verified": "VALIDÉ",
+        "kyc_rejected": "REJETÉ",
+        "kyc_resubmit_requested": "NOUVEAUX DOCUMENTS DEMANDÉS",
+    }
+    status = str(safe.get("status") or ntype.removeprefix("kyc_")).lower()
+    lines = [
+        f"<b>🪪 KYC — {html_escape(status_labels.get(ntype, status.upper()))}</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        *account_lines,
+        f"📊 Statut : <b>{html_escape(status)}</b>",
+    ]
+    reason = safe.get("reason")
+    if reason:
+        lines.append(f"📝 Motif : {html_escape(str(reason)[:500])}")
+    event_time = safe.get("reviewed_at") or safe.get("submitted_at") or safe.get("detected_at")
+    lines.append(f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>")
     return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
 
 
@@ -1526,7 +1584,10 @@ async def _queue_telegram_notification(
     if (
         not token
         or not chat_id
-        or ntype not in TELEGRAM_FINAL_NOTIFICATION_TYPES
+        or ntype not in (
+            TELEGRAM_FINAL_NOTIFICATION_TYPES
+            | TELEGRAM_ADMIN_NOTIFICATION_TYPES
+        )
         or "en cours" in f"{title} {body}".lower()
     ):
         return
@@ -1594,7 +1655,8 @@ async def _queue_security_telegram_alert(
 
 
 async def notify(user_id: str, ntype: str, title: str, body: str,
-                 data: Optional[dict] = None) -> dict:
+                 data: Optional[dict] = None,
+                 send_telegram: bool = True) -> dict:
     """Persist a notification and push it to any live SSE subscribers.
     ntype examples: 'withdrawal_success', 'withdrawal_failed', 'kyc_verified',
     'kyc_rejected', 'kyc_resubmit_requested'.
@@ -1619,7 +1681,8 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
             q.put_nowait(doc)
         except Exception:
             pass
-    await _queue_telegram_notification(user_id, ntype, title, body, data)
+    if send_telegram:
+        await _queue_telegram_notification(user_id, ntype, title, body, data)
     return doc
 
 
@@ -2041,6 +2104,18 @@ async def _complete_login(user: dict, request: Request) -> None:
         "ip": ip, "user_agent": user_agent, "unusual": unusual,
         "created_at": now_iso(),
     })
+    if _is_admin_account(user):
+        await _queue_telegram_notification(
+            user["id"],
+            "admin_login",
+            "Connexion administrateur",
+            "Le compte administrateur vient de se connecter.",
+            {
+                "ip": ip,
+                "unusual": unusual,
+                "detected_at": now_iso(),
+            },
+        )
     if unusual:
         await notify(
             user["id"], "security_alert", "Nouvelle connexion détectée",
@@ -2061,6 +2136,7 @@ async def _complete_login(user: dict, request: Request) -> None:
                 "ip": ip,
                 "detected_at": now_iso(),
             },
+            send_telegram=False,
         )
 
 
@@ -3393,16 +3469,51 @@ def _public_fee_mobile_money(mobile_money: dict, withdrawal: bool = False) -> di
     }
 
 
+def _public_fee_provider_mobile_money(
+    catalog: list[dict], provider: str
+) -> dict:
+    """Normalize an active provider catalog for the customer fee grid."""
+    operators = []
+    for op in catalog or []:
+        operators.append({
+            "provider": provider,
+            "country": op.get("country"),
+            "country_label": op.get("country_label")
+                or paydunya.COUNTRY_LABELS.get(op.get("country"), op.get("country")),
+            "name": op.get("name") or op.get("code"),
+            "currency": op.get("currency") or "XOF",
+            "fee_pct": float(op.get("fee_pct", 0) or 0),
+            "fee_fixed": float(op.get("fee_fixed", 0) or 0),
+            "min": float(op.get("min", 0) or 0),
+            "max": float(op.get("max", 0) or 0) or None,
+        })
+    return {
+        "enabled": bool(operators),
+        "operators": operators,
+    }
+
+
 @api.get("/fees/config")
 async def public_fees_config(uid: str = Depends(get_current_user_id)):
     """Customer-facing fee grid built only from administrator settings."""
     deposit = await get_deposit_config()
     withdrawal = await get_transfer_config()
+    paydunya = _paydunya_public_config(await get_paydunya_config())
+    mbiyo = _mbiyo_public_config(await get_mbiyo_config())
     platform = await get_platform_config()
     conversion = platform.get("conversion_fee") or {}
+    deposit_mobile_money = _public_fee_provider_mobile_money(
+        paydunya.get("catalog") or [], "paydunya"
+    )
+    deposit_mobile_money["operators"].extend(
+        _public_fee_provider_mobile_money(
+            mbiyo.get("catalog") or [], "mbiyo"
+        )["operators"]
+    )
+    deposit_mobile_money["enabled"] = bool(deposit_mobile_money["operators"])
     return {
         "deposit": {
-            "mobile_money": _public_fee_mobile_money(deposit.get("mobile_money")),
+            "mobile_money": deposit_mobile_money,
             "crypto": _public_fee_crypto(deposit.get("crypto")),
         },
         "withdrawal": {
@@ -8870,6 +8981,13 @@ async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
     }
     await db.kyc.replace_one({"user_id": uid}, doc, upsert=True)
     await db.users.update_one({"id": uid}, {"$set": {"kyc_status": "pending"}})
+    await _queue_telegram_notification(
+        uid,
+        "kyc_submitted",
+        "KYC soumis",
+        "Une vérification KYC a été soumise et attend une validation.",
+        {"status": "pending", "submitted_at": doc["submitted_at"]},
+    )
     return {"status": "pending", "message": "Votre demande a été soumise et est en attente de validation."}
 
 
@@ -11764,34 +11882,58 @@ async def admin_kyc_decision(user_id: str, req: AdminKycDecision, admin=Depends(
         raise HTTPException(404, "Utilisateur introuvable")
     if req.approve:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "verified"}})
+        reviewed_at = now_iso()
         await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "verified",
-                                                                 "verified_at": now_iso(),
+                                                                 "verified_at": reviewed_at,
                                                                  "reject_reason": None}})
         act = "kyc_approve"
+        kyc_type = "kyc_verified"
+        kyc_data = {"status": "verified", "reviewed_at": reviewed_at}
         await notify(user_id, "kyc_verified",
                      "KYC vérifié ✓",
                      "Votre identité a été vérifiée. Vous pouvez maintenant utiliser toutes les fonctionnalités (liens de paiement, API, retraits).",
-                     data={"status": "verified"})
+                     data=kyc_data)
     elif req.request_resubmit:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "not_started"}})
+        reviewed_at = now_iso()
         await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "resubmit_requested",
                                                                  "reject_reason": req.reason,
-                                                                 "reviewed_at": now_iso()}})
+                                                                 "reviewed_at": reviewed_at}})
         act = "kyc_request_resubmit"
+        kyc_type = "kyc_resubmit_requested"
+        kyc_data = {
+            "status": "resubmit_requested",
+            "reason": req.reason,
+            "reviewed_at": reviewed_at,
+        }
         await notify(user_id, "kyc_resubmit_requested",
                      "KYC — nouveaux documents demandés",
                      req.reason or "Merci de renvoyer vos documents KYC.",
-                     data={"status": "resubmit_requested", "reason": req.reason})
+                     data=kyc_data)
     else:
         await db.users.update_one({"id": user_id}, {"$set": {"kyc_status": "rejected"}})
+        reviewed_at = now_iso()
         await db.kyc.update_one({"user_id": user_id}, {"$set": {"status": "rejected",
                                                                  "reject_reason": req.reason,
-                                                                 "reviewed_at": now_iso()}})
+                                                                 "reviewed_at": reviewed_at}})
         act = "kyc_reject"
+        kyc_type = "kyc_rejected"
+        kyc_data = {
+            "status": "rejected",
+            "reason": req.reason,
+            "reviewed_at": reviewed_at,
+        }
         await notify(user_id, "kyc_rejected",
                      "KYC rejeté",
                      req.reason or "Votre demande de KYC a été rejetée. Contactez le support pour plus d'informations.",
-                     data={"status": "rejected", "reason": req.reason})
+                     data=kyc_data)
+    await _queue_telegram_notification(
+        user_id,
+        kyc_type,
+        "Décision KYC",
+        "Le statut de la vérification KYC a été mis à jour.",
+        kyc_data,
+    )
     await audit(admin["id"], admin["username"], act,
                 target_user_id=user_id, target_username=target["username"],
                 details={"reason": req.reason})

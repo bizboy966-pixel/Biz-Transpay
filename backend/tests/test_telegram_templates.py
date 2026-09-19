@@ -136,3 +136,78 @@ def test_security_alert_escapes_untrusted_route_content():
 
     assert "<script>" not in text
     assert "&lt;script&gt;" in text
+
+
+def test_admin_login_template_is_masked_and_explicit(monkeypatch):
+    async def user_summary(_user_id):
+        return {
+            "name": "Administrateur",
+            "username": "owner",
+            "email": "a***@e***.com",
+        }
+
+    monkeypatch.setattr(server, "_telegram_user_summary", user_summary)
+    text = asyncio.run(server._telegram_notification_text(
+        "admin-1",
+        "admin_login",
+        "Connexion administrateur",
+        "body",
+        {
+            "ip": "203.0.113.42",
+            "unusual": True,
+            "detected_at": "2026-09-19T10:00:00+00:00",
+        },
+    ))
+
+    assert "CONNEXION ADMINISTRATEUR" in text
+    assert "caractéristiques inhabituelles" in text
+    assert "203.0.113.xxx" in text
+    assert "203.0.113.42" not in text
+
+
+def test_kyc_template_includes_status_and_rejection_reason(monkeypatch):
+    async def user_summary(_user_id):
+        return {
+            "name": "Client",
+            "username": "client",
+            "email": "c***@e***.com",
+        }
+
+    monkeypatch.setattr(server, "_telegram_user_summary", user_summary)
+    text = asyncio.run(server._telegram_notification_text(
+        "user-1",
+        "kyc_rejected",
+        "Décision KYC",
+        "body",
+        {
+            "status": "rejected",
+            "reason": "<document illisible>",
+            "reviewed_at": "2026-09-19T10:00:00+00:00",
+        },
+    ))
+
+    assert "KYC — REJETÉ" in text
+    assert "&lt;document illisible&gt;" in text
+    assert "<document illisible>" not in text
+
+
+def test_provider_fee_catalog_uses_admin_values():
+    result = server._public_fee_provider_mobile_money(
+        [{
+            "country": "TG",
+            "country_label": "Togo",
+            "code": "moov_tg",
+            "name": "Moov Togo",
+            "currency": "XOF",
+            "fee_pct": 2.25,
+            "fee_fixed": 50,
+            "min": 100,
+            "max": 500000,
+        }],
+        "paydunya",
+    )
+
+    assert result["enabled"] is True
+    assert result["operators"][0]["provider"] == "paydunya"
+    assert result["operators"][0]["fee_pct"] == 2.25
+    assert result["operators"][0]["fee_fixed"] == 50

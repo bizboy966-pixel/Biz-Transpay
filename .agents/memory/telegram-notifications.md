@@ -39,3 +39,15 @@ claims about an attacker gaining access.
 **How to apply:** Include the masked source, target, time, outcome and a specific
 response recommendation. Deduplicate repeated alerts so an attack cannot flood
 the Telegram channel.
+
+Administrative authentication is the only successful login event sent to the
+Telegram operations chat. User logins remain in-app security events; KYC
+submission, approval, rejection, and resubmission decisions are admin-only
+Telegram alerts with masked account details.
+
+**Why:** The operations chat is for platform-owner actions and review queues,
+not a feed of every customer session.
+
+**How to apply:** Route admin login and KYC lifecycle alerts through the
+allowlisted asynchronous queue, keep user notifications and SSE fan-out
+separate, and mask IP addresses and contact fields.
