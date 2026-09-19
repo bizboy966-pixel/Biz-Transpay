@@ -488,6 +488,7 @@ function MobileMoneyForm({ onSuccess }) {
   const [psrAssetError, setPsrAssetError] = useState('');
   const [loading, setLoading] = useState(false);
   const psrPollRef = useRef(null);
+  const depositIdempotencyRef = useRef(null);
   const { user } = useAuth();
 
   useEffect(() => () => {
@@ -570,6 +571,10 @@ function MobileMoneyForm({ onSuccess }) {
     }
     setLoading(true);
     try {
+      if (!depositIdempotencyRef.current) {
+        depositIdempotencyRef.current = window.crypto?.randomUUID?.()
+          || `deposit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      }
       const request = {
         amount: baseAmount,
         currency: selectedOp?.currency || 'XOF',
@@ -579,6 +584,7 @@ function MobileMoneyForm({ onSuccess }) {
         operator,
         phone_number: phone.trim(),
         fee_bearer: feeBearer,
+        idempotency_key: depositIdempotencyRef.current,
         ...(otp.trim() ? { otp: otp.trim() } : {}),
       };
       const { data } = await api.post('/deposits/mobile-money/start', request);
@@ -620,11 +626,14 @@ function MobileMoneyForm({ onSuccess }) {
         ...data,
         operator_name: selectedOp?.name || selectedOp?.label || operator,
         total_fee: data.total_fee ?? totalFee,
-        amount_to_pay: data.charged_amount ?? totalToPay,
-        amount_credited: data.wallet_credit_amount ?? data.amount_net ?? creditedAmount,
+        amount_to_pay: data.charged_amount ?? data.amount_to_pay ?? data.amount,
+        amount_credited: data.wallet_credit_amount ?? data.amount_net ?? data.amount_credited,
         fee_bearer: feeBearer,
       });
     } catch (err) {
+      if (err.response?.status && err.response.status < 500) {
+        depositIdempotencyRef.current = null;
+      }
       toast.error(err.response?.data?.detail || 'Erreur lors du dépôt');
     } finally { setLoading(false); }
   };

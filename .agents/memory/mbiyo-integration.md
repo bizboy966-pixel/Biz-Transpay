@@ -26,3 +26,16 @@ Permissive response guessing can also turn malformed fields into false balances.
 **How to apply:** Validate required identity and monetary fields, reject unknown
 shapes, use finite decimal arithmetic for totals, and never derive provider
 funds from the local transaction ledger when the live Mbiyo API is available.
+
+An accepted request can lose its HTTP response before the local system receives
+the provider transaction ID. Keep that operation pending and idempotent; never
+refund or resubmit it merely because of a timeout or provider 5xx.
+
+**Why:** Retrying or refunding an ambiguous submission can create a duplicate
+collection or payout. Conversely, leaving it unbound can strand real customer
+funds indefinitely.
+
+**How to apply:** Persist the local order before the network call. A signed
+callback may bind a missing provider ID only after a server-side status read
+confirms that its order ID equals the pending local ID. All terminal outcomes
+must then pass through the same invariant-checking reconciler.

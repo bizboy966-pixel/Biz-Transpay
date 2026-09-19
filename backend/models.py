@@ -182,7 +182,10 @@ class TransferRequest(BaseModel):
     bank: Optional[str] = None
     fee_bearer: Optional[Literal["sender", "receiver"]] = "sender"
     amount: float
-    currency: Literal["XOF", "XAF", "USDT"]
+    currency: Literal[
+        "XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX", "TZS", "KES",
+        "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP", "USDT"
+    ]
     description: Optional[str] = ""
     metadata: Optional[dict] = None
     idempotency_key: Optional[str] = None

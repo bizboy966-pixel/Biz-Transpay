@@ -36,6 +36,12 @@ def test_documented_ussd_and_post_init_flows():
     assert mbiyo.payment_flow({"country": "BF", "network": "orange"}, 1234)["ussd_code"] == "*144*4*6*1234#"
 
 
+def test_provider_amount_rounding_is_deterministic_and_non_xof_safe():
+    assert mbiyo.normalize_amount("BF", 1002) == 1000
+    assert mbiyo.normalize_amount("BF", 1003) == 1005
+    assert mbiyo.normalize_amount("GH", 1002) == 1002
+
+
 def test_credentials_encrypt_round_trip():
     encrypted = mbiyo.encrypt_secret("merchant-secret", "session-secret")
     assert encrypted != "merchant-secret"

@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
 import httpx
@@ -68,6 +69,14 @@ LIMITS = {
     "ZA": (10, 50000), "ZM": (0.01, 0), "EG": (1, 50000),
 }
 CD_USD_LIMITS = (0.10, 2500)
+ROUNDING_COUNTRIES = {"BF", "BJ", "CI", "CM", "GN", "ML", "TG"}
+
+
+def normalize_amount(country: str, amount: float) -> float:
+    value = Decimal(str(amount))
+    if str(country).upper() in ROUNDING_COUNTRIES:
+        value = (value / Decimal("5")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * Decimal("5")
+    return float(value)
 
 
 class MbiyoError(Exception):

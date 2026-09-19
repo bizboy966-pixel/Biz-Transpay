@@ -3393,8 +3393,7 @@ def _public_transfer_config(cfg: dict) -> dict:
         "enabled": False,
         "operators": public_ops,
     }
-    # Mbiyo payout routes are configured with the provider catalogue and are
-    # exposed under the same customer contract, using provider-prefixed codes.
+    # Mbiyo payout routes use the same provider-neutral customer contract.
     mb_cfg = cfg.get("mbiyo") or {}
     if global_enabled and mb_cfg.get("enabled"):
         for op in mb_cfg.get("operators", []):
@@ -3403,14 +3402,14 @@ def _public_transfer_config(cfg: dict) -> dict:
             public_ops.append({
                 "country": op.get("country"),
                 "country_label": op.get("country_label") or mbiyo.COUNTRY_LABELS.get(op.get("country")),
-                "code": op.get("code"), "name": op.get("name") or op.get("code"),
+                "code": str(op.get("code") or "").lower().removeprefix("mbiyo_"),
+                "name": op.get("name") or op.get("code"),
                 "currency": op.get("currency"), "min": float(op.get("min", 0) or 0),
                 "max": float(op.get("max", 0) or 0) or None,
                 "fee_pct": float(op.get("gateway_fee_pct", op.get("fee_pct", 0)) or 0)
                     + float(op.get("platform_fee_pct", 0) or 0),
                 "fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0)
                     + float(op.get("platform_fee_fixed", 0) or 0), "active": True,
-                "provider": "mbiyo",
             })
     result["mobile_money"]["enabled"] = bool(global_enabled and public_ops)
     result["mobile_money"]["operators"] = public_ops
@@ -3608,7 +3607,7 @@ async def transfer(req: TransferRequest, request: Request,
     if req.transfer_type == "biz_to_bank":
         raise HTTPException(410, "Le transfert bancaire n'est plus disponible sur Biz-transPay.")
 
-    field = "balance_xof" if req.currency == "XOF" else ("balance_xaf" if req.currency == "XAF" else "balance_usdt")
+    field = f"balance_{req.currency.lower()}"
     if u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
@@ -3688,8 +3687,6 @@ async def transfer(req: TransferRequest, request: Request,
     # -------- BIZ TO MOBILE --------
     if req.transfer_type == "biz_to_mobile":
         mm_cfg = cfg.get("mobile_money", {})
-        if not mm_cfg.get("enabled"):
-            raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
         if not req.country or not req.operator:
             raise HTTPException(400, "Pays et opérateur requis")
         mb_cfg = await get_mbiyo_config(decrypt=True)
@@ -3702,6 +3699,9 @@ async def transfer(req: TransferRequest, request: Request,
             _active_operator(mm_cfg.get("operators") or [], req.country, req.operator)
             if (cfg.get("paydunya") or {}).get("enabled") else None
         )
+        if not mm_cfg.get("enabled") and not (
+                mb_cfg.get("enabled") and mb_cfg.get("_api_key") and mb_op):
+            raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
         if mb_op and paydunya_op:
             raise HTTPException(409, "Code opérateur présent chez plusieurs prestataires")
         if not mb_op and not paydunya_op:
@@ -3721,25 +3721,44 @@ async def transfer(req: TransferRequest, request: Request,
             op = mb_op
             if str(op.get("currency")).upper() != req.currency.upper():
                 raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
-            if req.amount < float(op.get("min", 0) or 0) or req.amount > float(op.get("max", 0) or 10**12):
+            processed_amount = mbiyo.normalize_amount(req.country, req.amount)
+            if processed_amount < float(op.get("min", 0) or 0) or processed_amount > float(op.get("max", 0) or 10**12):
                 raise HTTPException(400, "Montant hors des limites autorisées")
-            fees = paydunya.calculate_fees(req.amount, op, req.fee_bearer or "sender")
+            fees = paydunya.calculate_fees(processed_amount, op, req.fee_bearer or "sender")
+            provider_payout_amount = mbiyo.normalize_amount(
+                req.country, fees["wallet_credit_amount"])
+            if fees["fee_bearer"] == "client":
+                fees["charged_amount"] = provider_payout_amount + fees["total_fee"]
+            else:
+                rounded_total_fee = max(0.0, processed_amount - provider_payout_amount)
+                gateway_fee = min(float(fees["gateway_fee"]), rounded_total_fee)
+                fees.update({
+                    "gateway_fee": gateway_fee,
+                    "platform_fee": rounded_total_fee - gateway_fee,
+                    "total_fee": rounded_total_fee,
+                    "charged_amount": processed_amount,
+                })
+            fees["wallet_credit_amount"] = provider_payout_amount
             if u.get(field, 0) < fees["charged_amount"]:
                 raise HTTPException(400, "Solde insuffisant (frais inclus)")
             callback_base = (os.environ.get("OFFICIAL_DOMAIN")
                              or _paydunya_callback_base(request)).rstrip("/")
             tx_out = await record_tx(
-                uid, "transfer", "out", req.amount, req.currency,
+                uid, "transfer", "out", processed_amount, req.currency,
                 status="pending", counterparty=req.recipient, description=req.description,
                 metadata={"transfer_type": "biz_to_mobile", "provider": "mbiyo",
                           "country": req.country.upper(), "operator": req.operator,
+                           "network": op.get("network"),
                           "operator_name": op.get("name"), "fee": fees["total_fee"],
                           "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
                           "recipient_gets": fees["wallet_credit_amount"],
                           "total_debit": fees["charged_amount"], "fee_snapshot": fees,
                           "idempotency_key": mobile_idempotency_key,
                           "request_fingerprint": mobile_request_fingerprint,
-                          "debit_phase": "pending"})
+                           "debit_phase": "pending"})
+            await db.transactions.update_one(
+                {"id": tx_out.id}, {"$set": {"metadata.order_id": tx_out.id}}
+            )
             debited = await db.users.update_one(
                 {"id": uid, field: {"$gte": fees["charged_amount"]}},
                 {"$inc": {field: -fees["charged_amount"]},
@@ -3754,7 +3773,7 @@ async def transfer(req: TransferRequest, request: Request,
             try:
                 response = await mbiyo.MbiyoClient(
                     mb_cfg["_api_key"], mb_cfg.get("base_url", mbiyo.BASE_URL)).payout(
-                    amount=fees["wallet_credit_amount"], currency=req.currency.upper(),
+                    amount=provider_payout_amount, currency=req.currency.upper(),
                     payment_method="mobile_money", order_id=tx_out.id,
                     callback_url=f"{callback_base}/api/webhooks/mbiyo?ref={tx_out.id}",
                     metadata={"network": op.get("network"),
@@ -3771,39 +3790,46 @@ async def transfer(req: TransferRequest, request: Request,
                                                 "metadata.mbiyo_status": provider_status,
                                                 "metadata.next_reconcile_at": now_iso()}})
                 if provider_status in mbiyo.SUCCESS_STATUSES:
-                    await _complete_mbiyo_withdrawal(tx_out.id, provider_status)
+                    fresh_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
+                    await _reconcile_mbiyo_withdrawal(fresh_tx)
                 elif provider_status in mbiyo.FAILURE_STATUSES:
-                    await _refund_mobile_withdrawal(tx_out.id, provider_status)
+                    fresh_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
+                    await _reconcile_mbiyo_withdrawal(fresh_tx)
             except mbiyo.MbiyoError as exc:
-                await _refund_mobile_withdrawal(tx_out.id, exc.message)
+                if exc.status < 500:
+                    await _refund_mobile_withdrawal(tx_out.id, exc.message)
                 await db.transactions.update_one(
                     {"id": tx_out.id},
                     {"$set": {"metadata.error": str(exc)[:240],
-                              "metadata.provider_status": exc.status}})
+                              "metadata.provider_status": exc.status,
+                              "metadata.submission_unknown": exc.status >= 500}})
                 message_lower = exc.message.lower()
                 if "insufficient" in message_lower and "balance" in message_lower:
                     detail = (
-                        "Le solde de décaissement Mbiyo pour cet opérateur est "
+                        "Le solde de décaissement pour cet opérateur est "
                         "insuffisant. Votre solde Biz-transPay a été remboursé.")
                 else:
                     detail = (
-                        f"Mbiyo a refusé le retrait : {exc.message}. "
-                        "Votre solde Biz-transPay a été remboursé.")
+                        ("Le retrait Mobile Money a été refusé. Votre solde "
+                         "Biz-transPay a été remboursé." if exc.status < 500 else
+                         "Le retrait est en cours de vérification."))
                 raise HTTPException(
                     400 if exc.status < 500 else 502, detail)
             except Exception as exc:
-                await _refund_mobile_withdrawal(tx_out.id, str(exc))
                 await db.transactions.update_one(
                     {"id": tx_out.id},
-                    {"$set": {"metadata.error": str(exc)[:240]}})
+                    {"$set": {"metadata.error": str(exc)[:240],
+                              "metadata.submission_unknown": True}})
                 raise HTTPException(
                     502,
-                    "Mbiyo est temporairement indisponible. Votre solde "
-                    "Biz-transPay a été remboursé.")
+                    "Le retrait est en cours de vérification.")
             return {"transaction": (await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})),
-                    "fee": fees["total_fee"], "total_debit": fees["charged_amount"],
+                    "fee": fees["total_fee"], "processed_amount": processed_amount,
+                    "total_debit": fees["charged_amount"],
                     "recipient_gets": fees["wallet_credit_amount"], "operator": op.get("name")}
         op = paydunya_op
+        if req.currency.upper() not in PAYDUNYA_WALLET_CURRENCIES:
+            raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
         # Reject a disabled PayDunya route before recording or debiting the
         # withdrawal. Mbiyo has already been dispatched in the branch above.
         pcfg = await get_paydunya_config(decrypt=True)
@@ -4454,6 +4480,7 @@ class MobileMoneyDepositRequest(BaseModel):
     operator: str           # code, e.g. mtn_bj, moov_tg, orange_ci
     phone_number: str       # e.g. "97000001"
     otp: Optional[str] = Field(None, min_length=1, max_length=32)
+    idempotency_key: Optional[str] = Field(None, min_length=8, max_length=120)
     fee_bearer: Literal["sender", "receiver", "client", "merchant"] = "client"
     description: Optional[str] = None
 
@@ -4524,22 +4551,64 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         cfg.get("catalog") or [], req.country, req.operator)
     if not op:
         raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
+    if req.idempotency_key:
+        previous = await db.momo_deposits.find_one(
+            {"user_id": uid, "idempotency_key": req.idempotency_key}, {"_id": 0}
+        )
+        if previous:
+            return _public_momo_deposit(previous)
     currency = str(op.get("currency") or req.currency).upper()
     if currency not in mbiyo.CURRENCIES.get(req.country.upper(), ()):
         raise HTTPException(400, "Devise invalide pour cet opérateur")
     if currency != req.currency.upper():
         raise HTTPException(400, f"Devise invalide pour cet opérateur : {currency}")
     minimum, maximum = float(op.get("min", 0)), float(op.get("max", 0) or 10**12)
-    if req.amount < minimum or req.amount > maximum:
+    processed_amount = mbiyo.normalize_amount(req.country, req.amount)
+    if processed_amount < minimum or processed_amount > maximum:
         raise HTTPException(400, f"Montant hors limites ({minimum:g} - {maximum:g} {currency})")
-    fees = paydunya.calculate_fees(req.amount, op,
+    fees = paydunya.calculate_fees(processed_amount, op,
                                    "merchant" if req.fee_bearer in ("merchant", "receiver") else "client")
+    provider_submitted_amount = mbiyo.normalize_amount(
+        req.country, fees["charged_amount"])
+    if fees["fee_bearer"] == "client":
+        rounded_total_fee = max(0.0, provider_submitted_amount - processed_amount)
+        gateway_fee = min(float(fees["gateway_fee"]), rounded_total_fee)
+        platform_fee = rounded_total_fee - gateway_fee
+        fees.update({
+            "gateway_fee": gateway_fee,
+            "platform_fee": platform_fee,
+            "total_fee": rounded_total_fee,
+            "charged_amount": provider_submitted_amount,
+            "wallet_credit_amount": processed_amount,
+        })
+    else:
+        # Merchant-borne fees do not change the amount collected from the payer.
+        provider_submitted_amount = processed_amount
+        fees["charged_amount"] = processed_amount
     payment_flow = mbiyo.payment_flow({**op, "country": req.country}, req.amount)
     dep_id = new_id()
     callback_base = (os.environ.get("OFFICIAL_DOMAIN")
                      or _paydunya_callback_base(request)).rstrip("/")
     callback = f"{callback_base}/api/webhooks/mbiyo?ref={dep_id}"
     parts = (req.full_name or "Client").strip().split(" ", 1)
+    pending_doc = {
+        "id": dep_id, "user_id": uid, "amount": processed_amount,
+        "requested_amount": req.amount, "processed_amount": processed_amount,
+        "provider_submitted_amount": provider_submitted_amount,
+        "charged_amount": fees["charged_amount"],
+        "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
+        "total_fee": fees["total_fee"],
+        "wallet_credit_amount": fees["wallet_credit_amount"],
+        "fee_snapshot": fees, "fee_bearer": fees["fee_bearer"],
+        "currency": currency, "email": req.email, "full_name": req.full_name,
+        "country": req.country.upper(), "operator": req.operator,
+        "operator_name": op.get("name"), "operator_snapshot": dict(op),
+        "phone_number": req.phone_number, "provider": "mbiyo",
+        "status": "pending", "submission_unknown": False,
+        "idempotency_key": req.idempotency_key,
+        "created_at": now_iso(),
+    }
+    await db.momo_deposits.insert_one(pending_doc)
     try:
         metadata = {"network": op.get("network"),
                     "phone_number": req.phone_number,
@@ -4548,26 +4617,53 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             metadata["om_otp"] = req.otp
         response = await mbiyo.MbiyoClient(
             cfg["_api_key"], cfg.get("base_url", mbiyo.BASE_URL)).payin(
-                amount=fees["charged_amount"], currency=currency,
+                amount=provider_submitted_amount, currency=currency,
                 payment_method="mobile_money", order_id=dep_id,
                 callback_url=callback,
                  metadata=metadata)
     except mbiyo.MbiyoError as exc:
-        raise HTTPException(400 if exc.status < 500 else 502,
-                            "La passerelle Mobile Money a refusé la demande.")
+        if exc.status < 500:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "failed", "provider_status": "rejected"}},
+            )
+            raise HTTPException(400, "La passerelle Mobile Money a refusé la demande.")
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"submission_unknown": True,
+                      "provider_status": "unknown", "error": str(exc)[:240]}},
+        )
+        pending_doc.update(submission_unknown=True, provider_status="unknown")
+        return _public_momo_deposit(pending_doc)
+    except Exception as exc:
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"submission_unknown": True,
+                      "provider_status": "unknown", "error": str(exc)[:240]}},
+        )
+        pending_doc.update(submission_unknown=True, provider_status="unknown")
+        return _public_momo_deposit(pending_doc)
     data = response.get("data") if isinstance(response.get("data"), dict) else response
     provider_id = data.get("transaction_id") or data.get("id") or data.get("reference")
     if not provider_id:
-        raise HTTPException(502, "La passerelle n’a pas retourné de référence de transaction")
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"submission_unknown": True, "provider_status": "unknown"}},
+        )
+        pending_doc.update(submission_unknown=True, provider_status="unknown")
+        return _public_momo_deposit(pending_doc)
     doc = {
-        "id": dep_id, "user_id": uid, "amount": req.amount,
-        "requested_amount": fees["requested_amount"], "charged_amount": fees["charged_amount"],
+        "id": dep_id, "user_id": uid, "amount": processed_amount,
+        "requested_amount": req.amount, "processed_amount": processed_amount,
+        "provider_submitted_amount": provider_submitted_amount,
+        "charged_amount": fees["charged_amount"],
         "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
         "total_fee": fees["total_fee"], "wallet_credit_amount": fees["wallet_credit_amount"],
         "fee_snapshot": fees, "currency": currency, "email": req.email,
         "full_name": req.full_name, "country": req.country.upper(), "operator": req.operator,
         "operator_name": op.get("name"), "operator_snapshot": dict(op),
         "phone_number": req.phone_number, "fee_bearer": fees["fee_bearer"],
+        "idempotency_key": req.idempotency_key,
         "provider": "mbiyo", "mbiyo_transaction_id": str(provider_id),
         "payment_flow": payment_flow,
         **_mbiyo_response_fields(response),
@@ -4576,9 +4672,10 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "provider_status": mbiyo.status_value(response) or "pending",
         "created_at": now_iso(),
     }
-    await db.momo_deposits.insert_one(doc)
-    return {"id": dep_id, "status": doc["status"], "amount": req.amount,
-            "requested_amount": req.amount, "charged_amount": fees["charged_amount"],
+    await db.momo_deposits.update_one({"id": dep_id}, {"$set": doc})
+    return {"id": dep_id, "status": doc["status"], "amount": processed_amount,
+            "requested_amount": req.amount, "processed_amount": processed_amount,
+            "charged_amount": fees["charged_amount"],
             "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
             "currency": currency, "operator": {"code": req.operator, "label": op.get("name")},
             "phone_number": req.phone_number,
@@ -4822,13 +4919,14 @@ class PayDunyaInvoiceRequest(BaseModel):
 
 def _paydunya_callback_base(request: Request) -> str:
     """Return the externally reachable origin seen by PayDunya."""
-    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()
-    if forwarded_host:
-        forwarded_proto = (
-            request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
-        ).split(",")[0].strip()
-        return f"{forwarded_proto}://{forwarded_host}"
-    return str(request.base_url).rstrip("/")
+    official = str(os.environ.get("OFFICIAL_DOMAIN") or "").strip().rstrip("/")
+    if official:
+        return official if "://" in official else f"https://{official}"
+    preview = str(os.environ.get("REPLIT_DEV_DOMAIN") or "").strip().rstrip("/")
+    if preview:
+        return preview if "://" in preview else f"https://{preview}"
+    raise HTTPException(
+        503, "Le domaine public officiel doit être configuré pour les callbacks.")
 
 
 async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
@@ -5081,6 +5179,43 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
         cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)
     ).status(provider_id)
     status = mbiyo.status_value(response)
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    response_meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    def response_value(key: str):
+        return data.get(key) if data.get(key) not in (None, "") else response_meta.get(key)
+    expected_amount = d.get("processed_amount", d.get("amount"))
+    checks = {
+        "currency": (response_value("currency"), d.get("currency")),
+        "country_code": (response_value("country_code") or response_value("country"),
+                         d.get("country")),
+        "network": (response_value("network"), (d.get("operator_snapshot") or {}).get("network")),
+        "phone_number": (response_value("phone_number") or response_value("customer_phone"),
+                         d.get("phone_number")),
+        "amount": (response_value("amount"), d.get("provider_submitted_amount", expected_amount)),
+        "order_id": (response_value("order_id") or response_value("reference"), d.get("id")),
+    }
+    for key, (received, expected) in checks.items():
+        if received in (None, "") or expected in (None, ""):
+            if key in {"amount", "currency", "order_id"}:
+                await db.momo_deposits.update_one(
+                    {"id": dep_id, "status": "pending"},
+                    {"$set": {"status": "quarantined",
+                              "reconciliation_mismatch": f"missing_{key}"}},
+                )
+                return False
+            continue
+        if key == "phone_number":
+            mismatch = re.sub(r"\D", "", str(received))[-12:] != re.sub(r"\D", "", str(expected))[-12:]
+        elif key == "amount":
+            mismatch = abs(float(received) - float(expected)) > 1e-9
+        else:
+            mismatch = str(received).upper() != str(expected).upper()
+        if mismatch:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "quarantined", "reconciliation_mismatch": key}},
+            )
+            return False
     await db.momo_deposits.update_one(
         {"id": dep_id, "status": {"$ne": "approved"}},
         {"$set": _mbiyo_response_fields(response)},
@@ -5454,24 +5589,8 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
     if not d:
         raise HTTPException(404, "Not found")
     if d.get("provider") == "mbiyo" and d.get("status") == "pending":
-        cfg = await get_mbiyo_config(decrypt=True)
-        try:
-            response = await mbiyo.MbiyoClient(
-                cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)
-            ).status(d.get("mbiyo_transaction_id"))
-            status = mbiyo.status_value(response)
-            await db.momo_deposits.update_one(
-                {"id": deposit_id, "status": {"$ne": "approved"}},
-                {"$set": _mbiyo_response_fields(response)},
-            )
-            if status == "successful":
-                await _credit_momo_deposit(d)
-            elif status in ("failed", "cancelled"):
-                await db.momo_deposits.update_one(
-                    {"id": deposit_id, "status": {"$ne": "approved"}},
-                    {"$set": {"status": "failed", "provider_status": status}})
-        except mbiyo.MbiyoError:
-            pass
+        if d.get("mbiyo_transaction_id"):
+            await _reconcile_mbiyo_deposit(deposit_id)
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     elif d.get("status") in ("pending", "approved") or (
             d.get("status") == "failed" and d.get("retryable")):
@@ -5668,7 +5787,8 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
         existing = await db.webhook_events.find_one({"event_id": event_id, "processed": True})
         if existing:
             return {"received": True, "duplicate": True}
-        raise
+        # An earlier delivery may have arrived before its local transaction
+        # could be bound. Keep retrying the same verified event.
     try:
         verified = await mbiyo.MbiyoClient(
             cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)).status(provider_id)
@@ -5677,22 +5797,60 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
     status = mbiyo.status_value(verified)
     dep = await db.momo_deposits.find_one(
         {"provider": "mbiyo", "mbiyo_transaction_id": provider_id}, {"_id": 0})
-    if dep:
-        if status in mbiyo.SUCCESS_STATUSES and dep.get("status") != "approved":
-            await _credit_momo_deposit(dep)
-        elif status in mbiyo.FAILURE_STATUSES:
-            await db.momo_deposits.update_one({"id": dep["id"], "status": {"$ne": "approved"}},
-                                              {"$set": {"status": "failed", "retryable": False,
-                                                        "provider_status": status}})
     tx = await db.transactions.find_one(
         {"metadata.provider": "mbiyo",
          "metadata.mbiyo_transaction_id": provider_id}, {"_id": 0})
-    if tx and status in mbiyo.SUCCESS_STATUSES:
-        await _complete_mbiyo_withdrawal(tx["id"], status)
-    elif tx and status in mbiyo.FAILURE_STATUSES:
-        await _refund_mobile_withdrawal(tx["id"], status)
-    await db.webhook_events.update_one({"event_id": event_id},
-                                       {"$set": {"processed": True, "processed_at": now_iso()}})
+    verified_data = (
+        verified.get("data") if isinstance(verified.get("data"), dict) else verified)
+    verified_meta = (
+        verified_data.get("metadata")
+        if isinstance(verified_data.get("metadata"), dict) else {})
+    verified_order_id = str(
+        verified_data.get("order_id")
+        or verified_meta.get("order_id")
+        or verified_data.get("reference")
+        or "")
+    # A transport failure can hide the provider transaction ID from the
+    # initiation response. The signed callback carries both that ID and our
+    # local order ID, allowing a one-time, server-verified binding.
+    if not dep and not tx and ref and hmac.compare_digest(verified_order_id, ref):
+        dep = await db.momo_deposits.find_one(
+            {"id": ref, "provider": "mbiyo", "status": "pending",
+             "mbiyo_transaction_id": {"$in": [None, ""]}},
+            {"_id": 0},
+        )
+        if dep:
+            await db.momo_deposits.update_one(
+                {"id": ref, "provider": "mbiyo", "status": "pending",
+                 "mbiyo_transaction_id": {"$in": [None, ""]}},
+                {"$set": {"mbiyo_transaction_id": provider_id,
+                          "provider_reference": provider_id,
+                          "submission_unknown": False}},
+            )
+            dep["mbiyo_transaction_id"] = provider_id
+        else:
+            tx = await db.transactions.find_one(
+                {"id": ref, "metadata.provider": "mbiyo", "status": "pending",
+                 "metadata.mbiyo_transaction_id": {"$in": [None, ""]}},
+                {"_id": 0},
+            )
+            if tx:
+                await db.transactions.update_one(
+                    {"id": ref, "metadata.provider": "mbiyo", "status": "pending",
+                     "metadata.mbiyo_transaction_id": {"$in": [None, ""]}},
+                    {"$set": {"metadata.mbiyo_transaction_id": provider_id,
+                              "metadata.submission_unknown": False}},
+                )
+                tx.setdefault("metadata", {})["mbiyo_transaction_id"] = provider_id
+    matched = bool(dep or tx)
+    if dep:
+        await _reconcile_mbiyo_deposit(dep["id"])
+    if tx:
+        await _reconcile_mbiyo_withdrawal(tx)
+    if matched:
+        await db.webhook_events.update_one(
+            {"event_id": event_id},
+            {"$set": {"processed": True, "processed_at": now_iso()}})
     return {"received": True}
 
 
@@ -5910,8 +6068,7 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
     elif tx.get("status") != "refund_pending":
         return False
     currency = str(tx.get("currency") or "XOF").upper()
-    field = "balance_xof" if currency == "XOF" else (
-        "balance_xaf" if currency == "XAF" else "balance_usdt")
+    field = f"balance_{currency.lower()}"
     credited = await db.users.update_one(
         {"id": tx["user_id"], "withdrawal_refund_ids": {"$ne": tx_id}},
         {"$inc": {field: float(meta.get("total_debit", tx.get("amount", 0)))},
@@ -6004,6 +6161,46 @@ async def _reconcile_mbiyo_withdrawal(tx: dict) -> str:
     response = await mbiyo.MbiyoClient(
         cfg.get("_api_key", ""), cfg.get("base_url", mbiyo.BASE_URL)
     ).status(provider_id)
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    meta = tx.get("metadata") or {}
+    response_meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    def response_value(key: str):
+        return data.get(key) if data.get(key) not in (None, "") else response_meta.get(key)
+    checks = {
+        "currency": (response_value("currency"), tx.get("currency")),
+        "country_code": (response_value("country_code") or response_value("country"),
+                         meta.get("country") or meta.get("country_code")),
+        "network": (response_value("network"), meta.get("network")),
+        "phone_number": (response_value("phone_number") or response_value("recipient_phone"),
+                         meta.get("recipient_phone")),
+        "amount": (response_value("amount"), meta.get("recipient_gets")),
+        "order_id": (response_value("order_id") or response_value("reference"),
+                     tx.get("id")),
+    }
+    for key, (received, expected) in checks.items():
+        if received in (None, "") or expected in (None, ""):
+            if key in {"amount", "currency", "order_id"}:
+                await db.transactions.update_one(
+                    {"id": tx["id"], "status": "pending"},
+                    {"$set": {"metadata.quarantined": True,
+                              "metadata.reconciliation_mismatch": f"missing_{key}"}},
+                )
+                return "mismatch"
+            continue
+        if key == "phone_number":
+            normalize = lambda value: re.sub(r"\D", "", str(value))[-12:]
+            mismatch = normalize(received) != normalize(expected)
+        elif key == "amount":
+            mismatch = abs(float(received) - float(expected)) > 1e-9
+        else:
+            mismatch = str(received).upper() != str(expected).upper()
+        if mismatch:
+            await db.transactions.update_one(
+                {"id": tx["id"], "status": "pending"},
+                {"$set": {"metadata.reconciliation_mismatch": key,
+                          "metadata.quarantined": True}},
+            )
+            return "mismatch"
     status = mbiyo.status_value(response)
     if status in mbiyo.SUCCESS_STATUSES:
         await _complete_mbiyo_withdrawal(tx["id"], status)
@@ -7568,7 +7765,10 @@ async def merchant_get_payment(payment_id: str, request: Request):
          "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
     if momo:
         if momo.get("status") == "pending":
-            await _reconcile_momo_deposit(payment_id)
+            if momo.get("provider") == "mbiyo":
+                await _reconcile_mbiyo_deposit(payment_id)
+            else:
+                await _reconcile_momo_deposit(payment_id)
             momo = await db.momo_deposits.find_one(
                 {"id": payment_id, "user_id": merchant["id"],
                  "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or momo
@@ -7600,7 +7800,10 @@ async def merchant_get_payment_status(payment_id: str, request: Request):
          "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
     if momo:
         if momo.get("status") == "pending":
-            await _reconcile_momo_deposit(payment_id)
+            if momo.get("provider") == "mbiyo":
+                await _reconcile_mbiyo_deposit(payment_id)
+            else:
+                await _reconcile_momo_deposit(payment_id)
             momo = await db.momo_deposits.find_one(
                 {"id": payment_id, "user_id": merchant["id"],
                  "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or momo
@@ -7701,7 +7904,8 @@ async def _safe_reconcile(intent_id: str) -> None:
 # ==================== BIZPAY DIRECT (Mobile Money, no redirect) ====================
 class BizPayDirectRequest(BaseModel):
     amount: float = Field(..., gt=0)
-    currency: Literal["XOF", "XAF"]
+    currency: Literal["XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX",
+                      "TZS", "KES", "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP"]
     country: str = Field(..., min_length=2, max_length=2)
     operator: str = Field(..., min_length=2, max_length=64)
     customer_phone: str = Field(..., min_length=6, max_length=32)
@@ -7713,7 +7917,8 @@ class BizPayDirectRequest(BaseModel):
 
 class DeveloperCheckoutRequest(BaseModel):
     amount: float = Field(..., gt=0)
-    currency: Literal["XOF", "XAF"]
+    currency: Literal["XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX",
+                      "TZS", "KES", "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP"]
     country: str = Field(..., min_length=2, max_length=2)
     operator: str = Field(..., min_length=2, max_length=64)
     customer_phone: Optional[str] = Field(None, min_length=6, max_length=32)
@@ -7729,6 +7934,17 @@ async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]
     environment = merchant.get("_api_env", "test")
     # Sandbox only needs the admin catalogue.  Decrypting credentials here
     # must never make a test request depend on provider secrets.
+    try:
+        mb_cfg = await get_mbiyo_config(decrypt=environment == "live")
+    except (AttributeError, TypeError):
+        mb_cfg = {}
+    mb_op = _active_mbiyo_operator(
+        mb_cfg.get("catalog") or [], payload.country, payload.operator)
+    if mb_op and str(mb_op.get("currency", "")).upper() != payload.currency.upper():
+        mb_op = None
+    if mb_op and mb_cfg.get("enabled", False):
+        mb_cfg["_gateway_provider"] = "mbiyo"
+        return mb_cfg, mb_op
     cfg = await get_paydunya_config(decrypt=environment == "live")
     if not cfg.get("enabled"):
         raise BizAPIError(503, "Payment service is temporarily unavailable.",
@@ -7753,6 +7969,7 @@ async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]
     if maximum and payload.amount > maximum:
         raise BizAPIError(400, "Amount exceeds the maximum allowed.",
                           "AMOUNT_TOO_LARGE")
+    cfg["_gateway_provider"] = "paydunya"
     return cfg, op
 
 
@@ -7764,6 +7981,17 @@ async def _developer_withdrawal_operator(merchant: dict,
     provider credential.  The live transfer path remains responsible for
     choosing the actual provider.
     """
+    try:
+        mb_cfg = await get_mbiyo_config(decrypt=merchant.get("_api_env") == "live")
+    except (AttributeError, TypeError):
+        mb_cfg = {}
+    mb_op = _active_mbiyo_operator(
+        mb_cfg.get("catalog") or [], payload.country, payload.operator)
+    if mb_op and str(mb_op.get("currency", "")).upper() != payload.currency.upper():
+        mb_op = None
+    if mb_op and mb_cfg.get("enabled", False):
+        mb_cfg["_gateway_provider"] = "mbiyo"
+        return mb_cfg, mb_op
     cfg = await get_transfer_config()
     mobile_money = cfg.get("mobile_money") or {}
     if not mobile_money.get("enabled"):
@@ -7774,6 +8002,9 @@ async def _developer_withdrawal_operator(merchant: dict,
     if not op:
         raise BizAPIError(400, "The selected withdrawal method is unavailable.",
                           "PAYMENT_METHOD_UNAVAILABLE")
+    if payload.currency.upper() not in PAYDUNYA_WALLET_CURRENCIES:
+        raise BizAPIError(400, "The currency is not supported by this method.",
+                          "CURRENCY_NOT_SUPPORTED")
     currency = str(op.get("currency") or payload.currency).upper()
     if currency != payload.currency.upper():
         raise BizAPIError(400, "The currency is not supported by this method.",
@@ -7856,6 +8087,27 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
             {"_id": 1},
         ):
             raise BizAPIError(409, "Reference already used.", "REFERENCE_ALREADY_USED")
+        resolved_cfg, resolved_op = await _developer_operator(merchant, payload)
+        if resolved_cfg.get("_gateway_provider") == "mbiyo" and merchant.get("_api_env") == "live":
+            mb_req = MobileMoneyDepositRequest(
+                amount=payload.amount, currency=payload.currency,
+                email=payload.customer_email or "customer@checkout.invalid",
+                full_name=payload.customer_name, country=payload.country,
+                operator=payload.operator, phone_number=payload.customer_phone or "",
+                fee_bearer=payload.fee_bearer,
+                idempotency_key=idem,
+            )
+            result = await _create_mbiyo_deposit(mb_req, request, merchant["id"])
+            await db.momo_deposits.update_one(
+                {"id": result["id"]},
+                {"$set": {"merchant_id": merchant["id"], "source": "merchant_api",
+                          "environment": "live", "product": product,
+                          "merchant_reference": payload.reference or result["id"]}},
+            )
+            doc = await db.momo_deposits.find_one({"id": result["id"]}, {"_id": 0})
+            body = _developer_payment_view(doc)
+            await _idempotency_store(owner, idem, "POST", "/api/v1/checkout", 200, body)
+            return body
         req = PayDunyaInvoiceRequest(
             amount=payload.amount, currency=payload.currency,
             email=payload.customer_email or "customer@checkout.invalid",
@@ -7970,6 +8222,25 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
             raise BizAPIError(409, "Reference already used.", "REFERENCE_ALREADY_USED")
         fees = paydunya.calculate_fees(payload.amount, op, "client")
         dep_id = new_id()
+        if cfg.get("_gateway_provider") == "mbiyo" and merchant.get("_api_env") == "live":
+            mb_req = MobileMoneyDepositRequest(
+                amount=payload.amount, currency=payload.currency,
+                email=payload.customer_email or "customer@direct.invalid",
+                full_name="Client", country=payload.country, operator=payload.operator,
+                phone_number=payload.customer_phone or "",
+                idempotency_key=idem,
+            )
+            result = await _create_mbiyo_deposit(mb_req, request, merchant["id"])
+            await db.momo_deposits.update_one(
+                {"id": result["id"]},
+                {"$set": {"merchant_id": merchant["id"], "source": "merchant_api",
+                          "environment": "live", "product": "bizpay_direct",
+                          "merchant_reference": payload.reference or result["id"]}},
+            )
+            doc = await db.momo_deposits.find_one({"id": result["id"]}, {"_id": 0})
+            body = _developer_payment_view(doc)
+            await _idempotency_store(owner, idem, "POST", "/api/v1/direct-payments", 200, body)
+            return body
         if merchant.get("_api_env") == "test":
             now = now_iso()
             doc = {
@@ -8084,7 +8355,8 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
 
 class BizPushRequest(BaseModel):
     amount: float = Field(..., gt=0)
-    currency: Literal["XOF", "XAF"]
+    currency: Literal["XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX",
+                      "TZS", "KES", "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP"]
     country: str = Field(..., min_length=2, max_length=2)
     operator: str = Field(..., min_length=2, max_length=64)
     beneficiary_phone: str = Field(..., min_length=6, max_length=32)
@@ -8206,6 +8478,9 @@ async def developer_push_details(push_id: str, request: Request):
     )
     if not tx:
         raise BizAPIError(404, "Push not found.", "PUSH_NOT_FOUND")
+    if tx.get("status") == "pending" and (tx.get("metadata") or {}).get("provider") == "mbiyo":
+        await _reconcile_mbiyo_withdrawal(tx)
+        tx = await db.transactions.find_one({"id": push_id}, {"_id": 0}) or tx
     return _developer_push_view({"transaction": tx})
 
 
@@ -13697,6 +13972,11 @@ async def startup_db_client():
         # Idempotency-Key uniqueness per (user_id, key)
         await db.idempotency_keys.create_index(
             [("user_id", 1), ("key", 1)], unique=True)
+        await db.momo_deposits.create_index(
+            [("user_id", 1), ("idempotency_key", 1)],
+            name="uniq_momo_deposit_idempotency",
+            unique=True,
+            partialFilterExpression={"idempotency_key": {"$type": "string"}})
     except Exception:
         pass
     # This barrier is mandatory for financial requests. A partial index avoids

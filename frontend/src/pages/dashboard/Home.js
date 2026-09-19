@@ -10,6 +10,7 @@ import TransactionListItem from './TransactionListItem';
 import walletReferenceCard from '@/assets/wallet-reference-card.jpg';
 
 const RECENT_TRANSACTIONS_LIMIT = 5;
+const OFFICIAL_LOCAL_CURRENCIES = ['CDF', 'USD', 'GMD', 'GNF', 'UGX', 'TZS', 'KES', 'RWF', 'GHS', 'NGN', 'ZAR', 'ZMW', 'EGP'];
 
 export default function DashboardHome() {
   const { t } = useTranslation();
@@ -56,6 +57,9 @@ export default function DashboardHome() {
     { key: 'xof', curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
     { key: 'xaf', curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
     { key: 'crypto', curr: 'USDT', bal: user?.balance_usdt ?? 0, gradient: 'from-emerald-500 via-emerald-600 to-teal-700', shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]' },
+    ...OFFICIAL_LOCAL_CURRENCIES
+      .map((curr) => ({ key: curr.toLowerCase(), curr, bal: user?.[`balance_${curr.toLowerCase()}`] ?? 0 }))
+      .filter((w) => Number.isFinite(Number(w.bal)) && Number(w.bal) !== 0),
   ].filter((w) => !features || features[`wallet_${w.key}_enabled`] !== false);
 
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -120,9 +124,11 @@ export default function DashboardHome() {
                     ? 'bg-gradient-to-br from-[#36C1FF] to-[#1470ED]'
                     : b.curr === 'XAF'
                       ? 'bg-gradient-to-br from-[#B15CFF] to-[#7138E8]'
-                      : 'bg-gradient-to-br from-[#32D6A0] to-[#07966F]'
+                    : b.curr === 'USDT'
+                      ? 'bg-gradient-to-br from-[#32D6A0] to-[#07966F]'
+                      : 'bg-gradient-to-br from-[#FFB454] to-[#E66A21]'
                 }`}>
-                {b.curr === 'XOF' ? 'FCFA' : b.curr === 'XAF' ? 'CFA' : 'USDT'}
+                 {b.curr === 'XOF' ? 'FCFA' : b.curr === 'XAF' ? 'CFA' : b.curr}
               </span>
               <div
                 data-testid={`balance-value-${b.curr.toLowerCase()}`}

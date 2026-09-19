@@ -601,7 +601,7 @@ function MoMoLinkTracker({ payment }) {
         {ok && `Merci ! Le paiement a été confirmé.`}
         {failed && `La transaction a été refusée ou a expiré.`}
       </p>
-      {pending && <PaymentFlowCard flow={flow} amount={p.amount} currency={p.currency} />}
+      {pending && <PaymentFlowCard flow={flow} amount={p.amount_to_pay || p.charged_amount || p.amount} currency={p.currency} />}
       {needsPostInitOtp && (
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-left space-y-2">
           <label className="block text-[11px] font-bold text-blue-900">Code de validation</label>

@@ -27,12 +27,15 @@ export default function Transfer() {
   }, []);
 
   const opts = useMemo(() => {
-    // Mobile Money withdrawal requires at least one FCFA wallet + its
-    // withdrawal toggle to be on.
-    const mmOn = (
-      (features?.wallet_xof_enabled !== false && features?.withdrawal_xof_enabled !== false)
-      || (features?.wallet_xaf_enabled !== false && features?.withdrawal_xaf_enabled !== false)
-    );
+    // Mobile Money withdrawal requires an active operator backed by its
+    // matching local wallet and withdrawal toggle.
+    const mmOn = (config?.mobile_money?.operators || []).some((operator) => {
+      const currency = String(operator.currency || '').toLowerCase();
+      return operator.active === true
+        && currency
+        && features?.[`wallet_${currency}_enabled`] !== false
+        && features?.[`withdrawal_${currency}_enabled`] !== false;
+    });
     const providerAvailable = config?.mobile_money?.enabled === true
       && (config?.mobile_money?.operators || []).some((operator) => operator.active === true);
     const cryptoOn = features?.wallet_crypto_enabled !== false && features?.withdrawal_crypto_enabled !== false;
