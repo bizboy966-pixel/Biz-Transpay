@@ -8,6 +8,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import ComingSoon from '@/components/ComingSoon';
 import { OperatorLogo } from '@/components/PaymentBrand';
+import SelectionMenu from '@/components/SelectionMenu';
 import { COUNTRIES } from '@/constants/countries';
 
 const PSR_ASSET_IDS = {
@@ -644,14 +645,33 @@ function MobileMoneyForm({ onSuccess }) {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1.5">Pays</label>
-          <div className="relative">
-            <select data-testid="momo-country" value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); }} required
-              className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-sm outline-none focus:border-[#2563EB]">
-              <option value="">Sélectionnez un pays</option>
-              {catalog.map((c) => <option key={c.country} value={c.country}>{COUNTRIES.find((item) => item.code === c.country)?.flag || ''} {c.country_label}</option>)}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          </div>
+          <select
+            data-testid="momo-country"
+            value={country}
+            onChange={(e) => { setCountry(e.target.value); setOperator(''); }}
+            tabIndex="-1"
+            aria-hidden="true"
+            className="sr-only"
+          >
+            <option value="">Sélectionnez un pays</option>
+            {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
+          </select>
+          <SelectionMenu
+            value={country}
+            onChange={(value) => { setCountry(value); setOperator(''); }}
+            placeholder="Sélectionner"
+            testId="momo-country-picker"
+            options={catalog.map((c) => {
+              const known = COUNTRIES.find((item) => item.code === c.country);
+              return {
+                value: c.country,
+                label: c.country_label || known?.name || c.country,
+                flag: known?.flag || '🌐',
+              };
+            })}
+            renderValue={(option) => <span className="inline-flex items-center gap-2"><span>{option.flag}</span>{option.label}</span>}
+            renderOption={(option) => <span className="inline-flex items-center gap-2"><span className="text-base">{option.flag}</span><span className="truncate">{option.label}</span></span>}
+          />
         </div>
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1.5">Opérateur</label>
@@ -676,36 +696,30 @@ function MobileMoneyForm({ onSuccess }) {
               Aucun opérateur disponible pour ce pays
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Opérateurs Mobile Money">
-              {operators.map((o) => {
-                const selected = operator === o.code;
-                return (
-                  <button
-                    key={o.code}
-                    type="button"
-                    role="radio"
-                    aria-checked={selected}
-                    onClick={() => setOperator(o.code)}
-                    data-testid={`momo-operator-${o.code}`}
-                    className={`flex min-w-0 items-center gap-2 rounded-xl border px-2.5 py-2 text-left transition-colors ${
-                      selected
-                        ? 'border-[#2563EB] bg-blue-50 ring-2 ring-blue-100'
-                        : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
-                    }`}
-                  >
-                    <OperatorLogo
-                      operator={o.code}
-                      name={o.name || o.label}
-                      country={country}
-                      size="sm"
-                    />
-                    <span className="min-w-0 truncate text-[11px] font-semibold text-slate-700">
-                      {o.name || o.label || o.code}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+            <SelectionMenu
+              value={operator}
+              onChange={setOperator}
+              placeholder="Sélectionner"
+              testId="momo-operator-picker"
+              options={operators.map((o) => ({
+                value: o.code,
+                label: o.name || o.label || o.code,
+                operator: o,
+                testId: `momo-operator-${o.code}`,
+              }))}
+              renderValue={(option) => (
+                <span className="inline-flex min-w-0 items-center gap-2">
+                  <OperatorLogo operator={option.operator.code} name={option.label} country={country} size="sm" />
+                  <span className="truncate">{option.label}</span>
+                </span>
+              )}
+              renderOption={(option) => (
+                <span className="inline-flex min-w-0 items-center gap-2">
+                  <OperatorLogo operator={option.operator.code} name={option.label} country={country} size="sm" />
+                  <span className="truncate">{option.label}</span>
+                </span>
+              )}
+            />
           )}
         </div>
       </div>

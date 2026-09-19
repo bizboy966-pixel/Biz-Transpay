@@ -7,6 +7,8 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { COUNTRIES } from '@/constants/countries';
+import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
+import SelectionMenu from '@/components/SelectionMenu';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function Transfer() {
@@ -317,16 +319,32 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
       <Field label="Pays">
-        <div className="relative">
-          <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-xs font-semibold outline-none focus:border-[#2563EB] sm:px-4 sm:py-3 sm:text-sm">
-            {countries.map((countryCode) => {
-              const configured = operators.find((o) => o.country === countryCode);
-              const known = COUNTRIES.find((c) => c.code === countryCode);
-              return <option key={countryCode} value={countryCode}>{known?.flag || ''} {configured?.country_label || known?.name || countryCode}</option>;
-            })}
-          </select>
-          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-        </div>
+        <select data-testid="mm-country" value={country} onChange={(e) => setCountry(e.target.value)} tabIndex="-1" aria-hidden="true" className="sr-only">
+          <option value="">Sélectionnez un pays</option>
+          {countries.map((countryCode) => {
+            const configured = operators.find((o) => o.country === countryCode);
+            const known = COUNTRIES.find((c) => c.code === countryCode);
+            return <option key={countryCode} value={countryCode}>{configured?.country_label || known?.name || countryCode}</option>;
+          })}
+        </select>
+        <SelectionMenu
+          value={country}
+          onChange={setCountry}
+          placeholder="Sélectionner"
+          testId="mm-country-picker"
+          options={countries.map((countryCode) => {
+            const configured = operators.find((o) => o.country === countryCode);
+            const known = COUNTRIES.find((c) => c.code === countryCode);
+            return {
+              value: countryCode,
+              label: configured?.country_label || known?.name || countryCode,
+              code: countryCode,
+              flag: known?.flag || '🌐',
+            };
+          })}
+          renderValue={(option) => <CountryBadge code={option.code} label={option.label} />}
+          renderOption={(option) => <CountryBadge code={option.code} label={option.label} />}
+        />
       </Field>
 
       <Field label="Opérateur Mobile Money">
@@ -335,11 +353,34 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
         ) : (
           <>
             <div className="relative">
-              <select data-testid="mm-operator" value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!country || countryOps.length === 0}
-                className="w-full appearance-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 pr-10 text-xs font-semibold outline-none focus:border-[#2563EB] disabled:bg-slate-50 sm:px-4 sm:py-3 sm:text-sm">
+              <select data-testid="mm-operator" value={operator} onChange={(e) => setOperator(e.target.value)} disabled={!country || countryOps.length === 0} tabIndex="-1" aria-hidden="true" className="sr-only">
+                <option value="">Sélectionnez un opérateur</option>
                 {countryOps.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <SelectionMenu
+                value={operator}
+                onChange={setOperator}
+                placeholder="Sélectionner"
+                testId="mm-operator-picker"
+                disabled={!country || countryOps.length === 0}
+                options={countryOps.map((o) => ({
+                  value: o.code,
+                  label: o.name || o.code,
+                  operator: o,
+                }))}
+                renderValue={(option) => (
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <OperatorLogo operator={option.operator.code} name={option.label} country={country} size="sm" />
+                    <span className="truncate">{option.label}</span>
+                  </span>
+                )}
+                renderOption={(option) => (
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    <OperatorLogo operator={option.operator.code} name={option.label} country={country} size="sm" />
+                    <span className="truncate">{option.label}</span>
+                  </span>
+                )}
+              />
             </div>
           </>
         )}
