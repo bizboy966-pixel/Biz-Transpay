@@ -17,9 +17,20 @@ export function mobileMoneyFeePreview(amount, operator, bearer) {
   const currency = operator?.currency || 'XOF';
   const increment = Number(operator?.amount_increment) || 0;
   const base = normalizeIncrement(amount, increment, currency);
+  const hasSplitFees = [
+    'gateway_fee_pct',
+    'gateway_fee_fixed',
+    'platform_fee_pct',
+    'platform_fee_fixed',
+  ].some((key) => operator?.[key] !== undefined && operator?.[key] !== null);
+  const gatewayPct = hasSplitFees
+    ? Number(operator?.gateway_fee_pct || 0)
+    : Number(operator?.fee_pct || 0);
+  const gatewayFixed = hasSplitFees
+    ? Number(operator?.gateway_fee_fixed || 0)
+    : Number(operator?.fee_fixed || 0);
   const gateway = roundMobileMoney(
-    base * Number(operator?.gateway_fee_pct || 0) / 100
-      + Number(operator?.gateway_fee_fixed || 0),
+    base * gatewayPct / 100 + gatewayFixed,
     currency,
   );
   const platform = roundMobileMoney(

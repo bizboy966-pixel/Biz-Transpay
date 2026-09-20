@@ -8,6 +8,9 @@ import { Logo } from '@/components/Logo';
 import LinkLogo from '@/components/LinkLogo';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
+import SelectionMenu from '@/components/SelectionMenu';
+import { OperatorLogo } from '@/components/PaymentBrand';
+import { COUNTRIES } from '@/constants/countries';
 
 export default function PublicLink() {
   const { slug } = useParams();
@@ -440,18 +443,58 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Pays">
-         <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); setOtp(''); }} required
-            className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm bg-white">
-            <option value="">—</option>
+          <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); setOtp(''); }}
+            required tabIndex="-1" aria-hidden="true" className="sr-only">
+            <option value="">Sélectionnez un pays</option>
             {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
           </select>
+          <SelectionMenu
+            label="Sélectionner le pays"
+            value={country}
+            onChange={(value) => { setCountry(value); setOperator(''); setOtp(''); }}
+            placeholder="Sélectionner"
+            options={catalog.map((c) => {
+              const known = COUNTRIES.find((item) => item.code === c.country);
+              return {
+                value: c.country,
+                label: c.country_label || known?.name || c.country,
+                flag: known?.flag || '',
+              };
+            })}
+            renderValue={(option) => <span className="inline-flex items-center gap-2"><span>{option.flag}</span>{option.label}</span>}
+            renderOption={(option) => <span className="inline-flex items-center gap-2"><span className="text-base">{option.flag}</span><span className="truncate">{option.label}</span></span>}
+          />
         </Field>
         <Field label="Opérateur">
-         <select value={operator} onChange={(e) => { setOperator(e.target.value); setOtp(''); }} disabled={!country} required
-            className="w-full px-2 py-2 border border-slate-200 rounded-xl text-sm bg-white disabled:bg-slate-50">
-            <option value="">—</option>
+          <select value={operator} onChange={(e) => { setOperator(e.target.value); setOtp(''); }}
+            disabled={!country} required tabIndex="-1" aria-hidden="true" className="sr-only">
+            <option value="">Sélectionnez un opérateur</option>
             {operators.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
           </select>
+          <SelectionMenu
+            label="Sélectionner l’opérateur"
+            value={operator}
+            onChange={(value) => { setOperator(value); setOtp(''); }}
+            placeholder={country ? 'Sélectionner' : 'Choisissez un pays'}
+            disabled={!country}
+            options={operators.map((o) => ({
+              value: o.code,
+              label: o.name || o.label || o.code,
+              operator: o,
+            }))}
+            renderValue={(option) => (
+              <span className="inline-flex min-w-0 items-center gap-2">
+                <OperatorLogo operator={option.operator.code} name={option.label} country={country} size="sm" />
+                <span className="truncate">{option.label}</span>
+              </span>
+            )}
+            renderOption={(option) => (
+              <span className="inline-flex min-w-0 items-center gap-2.5">
+                <OperatorLogo operator={option.operator.code} name={option.label} country={country} size="sm" />
+                <span className="truncate">{option.label}</span>
+              </span>
+            )}
+          />
         </Field>
       </div>
       <Field label="Numéro Mobile Money">

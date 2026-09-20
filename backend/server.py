@@ -3018,7 +3018,7 @@ async def get_mbiyo_config(decrypt: bool = False) -> dict:
     return doc
 
 
-def _customer_fee_rates(op: dict) -> tuple[float, float]:
+def _customer_fee_components(op: dict) -> tuple[float, float, float, float]:
     """Normalize split and legacy provider fees for customer-facing previews."""
     gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
     platform_pct = float(op.get("platform_fee_pct", 0) or 0)
@@ -3028,6 +3028,13 @@ def _customer_fee_rates(op: dict) -> tuple[float, float]:
     platform_fixed = float(op.get("platform_fee_fixed", 0) or 0)
     if gateway_fixed == 0 and platform_fixed == 0 and op.get("fee_fixed") is not None:
         gateway_fixed = float(op.get("fee_fixed", 0) or 0)
+    return gateway_pct, gateway_fixed, platform_pct, platform_fixed
+
+
+def _customer_fee_rates(op: dict) -> tuple[float, float]:
+    gateway_pct, gateway_fixed, platform_pct, platform_fixed = (
+        _customer_fee_components(op)
+    )
     return gateway_pct + platform_pct, gateway_fixed + platform_fixed
 
 
@@ -3056,13 +3063,10 @@ def _mbiyo_public_config(cfg: dict, admin: bool = False) -> dict:
             "code": str(op.get("code") or "").removeprefix("mbiyo_"),
             "fee_pct": _customer_fee_rates(op)[0],
             "fee_fixed": _customer_fee_rates(op)[1],
-            "gateway_fee_pct": float(op.get("gateway_fee_pct", op.get("fee_pct", 0)) or 0),
-            "gateway_fee_fixed": float(
-                op.get("gateway_fee_fixed")
-                if op.get("gateway_fee_fixed") is not None
-                else op.get("fee_fixed", 0) or 0),
-            "platform_fee_pct": float(op.get("platform_fee_pct", 0) or 0),
-            "platform_fee_fixed": float(op.get("platform_fee_fixed", 0) or 0),
+            "gateway_fee_pct": _customer_fee_components(op)[0],
+            "gateway_fee_fixed": _customer_fee_components(op)[1],
+            "platform_fee_pct": _customer_fee_components(op)[2],
+            "platform_fee_fixed": _customer_fee_components(op)[3],
             "amount_increment": 5 if str(op.get("country") or "").upper()
                 in mbiyo.ROUNDING_COUNTRIES else 0,
             "payment_flow": mbiyo.payment_flow(op),
@@ -3135,14 +3139,10 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
                 # intentionally kept out of the public response.
                 "fee_pct": _customer_fee_rates(op)[0],
                 "fee_fixed": _customer_fee_rates(op)[1],
-                "gateway_fee_pct": float(
-                    op.get("gateway_fee_pct", op.get("fee_pct", 0)) or 0),
-                "gateway_fee_fixed": float(
-                    op.get("gateway_fee_fixed")
-                    if op.get("gateway_fee_fixed") is not None
-                    else op.get("fee_fixed", 0) or 0),
-                "platform_fee_pct": float(op.get("platform_fee_pct", 0) or 0),
-                "platform_fee_fixed": float(op.get("platform_fee_fixed", 0) or 0),
+                "gateway_fee_pct": _customer_fee_components(op)[0],
+                "gateway_fee_fixed": _customer_fee_components(op)[1],
+                "platform_fee_pct": _customer_fee_components(op)[2],
+                "platform_fee_fixed": _customer_fee_components(op)[3],
                 "amount_increment": 0,
                 "payment_flow": paydunya.payment_flow(op),
             }
@@ -4565,7 +4565,7 @@ def _provider_reference(payload: Any) -> Optional[str]:
     return None
 
 
-def _mbiyo_transaction_id(payload: Any) -> Optional[str]:
+def _mbiyo_transaction_id(payload: Any, allow_short_fields: bool = False) -> Optional[str]:
     """Extract only Mbiyo transaction identifiers, never a generic object id."""
     if not isinstance(payload, dict):
         return None
@@ -4574,8 +4574,13 @@ def _mbiyo_transaction_id(payload: Any) -> Optional[str]:
         value = payload.get(key)
         if value not in (None, ""):
             return str(value)
+    if allow_short_fields:
+        for key in ("id", "reference"):
+            value = payload.get(key)
+            if value not in (None, ""):
+                return str(value)
     for key in ("data", "transaction", "payment"):
-        found = _mbiyo_transaction_id(payload.get(key))
+        found = _mbiyo_transaction_id(payload.get(key), allow_short_fields=True)
         if found:
             return found
     return None

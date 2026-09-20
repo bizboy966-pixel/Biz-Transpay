@@ -50,3 +50,16 @@ overlapping routes fail unpredictably.
 route to be active, visible, non-archived, currency-matched, and payout-capable
 when applicable. Public-catalog de-duplication and execution must use the same
 tuple and deterministic priority.
+
+Mbiyo reconciliation must normalize transaction statuses and response
+containers while keeping provider transaction binding strict and unique.
+
+**Why:** Mbiyo may return terminal success and transaction fields under nested
+payment/transaction objects or alternate status keys; treating only one shape
+leaves paid deposits pending. Generic nested IDs are unsafe because they may
+identify a customer or another resource.
+
+**How to apply:** Extract only known transaction-ID aliases from known response
+containers, enforce uniqueness, verify the merchant order binding
+server-to-server, and route every success through the exactly-once wallet
+credit barrier.

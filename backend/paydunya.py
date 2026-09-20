@@ -326,15 +326,17 @@ def calculate_fees(amount: float, operator: dict, bearer: str) -> dict:
         and operator.get("fee_pct") is not None
     ):
         gateway_pct = operator.get("fee_pct", 0)
+    gateway_fixed = float(operator.get("gateway_fee_fixed", 0) or 0)
+    platform_fixed = float(operator.get("platform_fee_fixed", 0) or 0)
+    if (gateway_fixed == 0 and platform_fixed == 0
+            and operator.get("fee_fixed") is not None):
+        gateway_fixed = float(operator.get("fee_fixed", 0) or 0)
     gateway = quantize(
         amount_d * Decimal(str(gateway_pct)) / Decimal("100")
-        + Decimal(str(
-            operator.get("gateway_fee_fixed")
-            if operator.get("gateway_fee_fixed") is not None
-            else operator.get("fee_fixed", 0))))
+        + Decimal(str(gateway_fixed)))
     platform = quantize(
         amount_d * Decimal(str(operator.get("platform_fee_pct", 0))) / Decimal("100")
-        + Decimal(str(operator.get("platform_fee_fixed", 0))))
+        + Decimal(str(platform_fixed)))
     total = quantize(gateway + platform)
     client_pays = bearer in ("client", "sender")
     charged = quantize(amount_d + total) if client_pays else amount_d

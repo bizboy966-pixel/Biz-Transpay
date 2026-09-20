@@ -26,6 +26,18 @@ def test_fee_snapshot_client_and_merchant():
     assert merchant["wallet_credit_amount"] == 955
 
 
+def test_legacy_fixed_fee_matches_public_preview_semantics():
+    fees = paydunya.calculate_fees(
+        1000,
+        {"currency": "XOF", "fee_pct": 0, "fee_fixed": 25},
+        "client",
+    )
+    assert fees["gateway_fee"] == 25
+    assert fees["platform_fee"] == 0
+    assert fees["total_fee"] == 25
+    assert fees["charged_amount"] == 1025
+
+
 def test_modes_and_hosted_url_are_safe_defaults():
     modes = paydunya.default_modes()
     assert modes["softpay_direct"]["enabled"] is True

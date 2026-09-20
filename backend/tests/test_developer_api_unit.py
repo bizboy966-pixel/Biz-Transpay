@@ -64,6 +64,18 @@ def test_mbiyo_public_config_exposes_split_admin_fees():
     assert config["catalog"][0]["fee_fixed"] == 15
 
 
+def test_mbiyo_transaction_id_ignores_unrelated_nested_ids():
+    assert server._mbiyo_transaction_id({
+        "data": {
+            "transaction_id": "MBIYO-123",
+            "customer": {"id": "CUSTOMER-9"},
+        },
+    }) == "MBIYO-123"
+    assert server._mbiyo_transaction_id({
+        "data": {"customer": {"id": "CUSTOMER-9"}},
+    }) is None
+
+
 def test_provider_neutral_route_resolves_internal_mbiyo_code():
     catalog = [{
         "country": "GN", "code": "mbiyo_orange_gn",
