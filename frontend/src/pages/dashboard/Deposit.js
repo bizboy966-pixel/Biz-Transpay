@@ -900,18 +900,10 @@ function MobileMoneyTracker({ deposit }) {
     api.get(`/deposits/mobile-money/${d.id}`)
       .then(({ data }) => {
         if (active) {
-          setD(data.status === 'pending'
-            ? { ...data, status: 'failed', failed_reason: 'expired' }
-            : data);
+          setD(data);
         }
       })
-      .catch(() => {
-        if (active) {
-          setD((current) => current.status === 'pending'
-            ? { ...current, status: 'failed', failed_reason: 'expired' }
-            : current);
-        }
-      });
+      .catch(() => {});
     return () => { active = false; };
   }, [d.id, d.status, remainingSeconds]);
 
@@ -923,6 +915,9 @@ function MobileMoneyTracker({ deposit }) {
   }, [pending]);
   const operatorValue = typeof d.operator === 'object' ? (d.operator?.label || d.operator?.name || d.operator?.code) : d.operator;
   const operatorName = d.operator_name || d.operator_label || operatorValue || 'Mobile Money';
+  const fallbackCheckoutUrl = d.payment_fallback === 'hosted_checkout'
+    ? (d.redirect_url || d.checkout_url)
+    : '';
   const instructionValue = d.instructions || d.payment_instructions || d.pending_instructions || d.message;
   const instructions = Array.isArray(instructionValue)
     ? instructionValue.join(' ')
@@ -962,16 +957,28 @@ function MobileMoneyTracker({ deposit }) {
       {ok && <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-6 h-6 text-emerald-500" /></div>}
       {failed && <div className="mx-auto w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><XCircle className="w-6 h-6 text-red-500" /></div>}
       <h2 className="font-cabinet text-lg sm:text-xl font-extrabold text-slate-900">
-        {pending && 'Vérifiez votre téléphone'}
+        {pending && (fallbackCheckoutUrl ? 'Terminez le paiement sécurisé' : 'Vérifiez votre téléphone')}
         {ok && 'Paiement effectué avec succès'}
         {failed && 'Paiement échoué'}
       </h2>
       <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
-         {pending && instructions}
+         {pending && (fallbackCheckoutUrl
+           ? 'La demande directe a pris trop de temps. Utilisez le lien sécurisé PayDunya pour terminer ce même dépôt, sans en créer un second.'
+           : instructions)}
         {ok && `Votre portefeuille a été crédité de ${d.amount_net?.toLocaleString?.() || d.amount_net || d.amount} ${d.currency || 'XOF'} (net après frais).`}
         {failed && `La transaction a été refusée ou annulée. ${d.failed_reason ? '('+d.failed_reason+')' : ''}`}
       </p>
        {pending && <PaymentFlowCard flow={flow} amount={d.amount_to_pay || d.charged_amount || d.amount} currency={d.currency} />}
+       {pending && fallbackCheckoutUrl && (
+         <button
+           type="button"
+           onClick={() => window.location.assign(fallbackCheckoutUrl)}
+           data-testid="momo-hosted-checkout"
+           className="inline-flex items-center justify-center gap-2 rounded-full bg-[#2563EB] px-5 py-3 text-xs font-bold text-white hover:bg-[#1D4ED8]"
+         >
+           Continuer sur PayDunya <ArrowRight className="h-4 w-4" />
+         </button>
+       )}
        {needsPostInitOtp && (
          <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-left space-y-2">
            <label className="block text-[11px] font-bold text-blue-900">Code de validation</label>

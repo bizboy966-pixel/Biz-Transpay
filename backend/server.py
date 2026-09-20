@@ -4726,6 +4726,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "phone_number": req.phone_number, "provider": "mbiyo",
         "status": "pending", "submission_unknown": False,
         "idempotency_key": req.idempotency_key,
+        "request_fingerprint": _request_fingerprint(req),
         "created_at": created_at,
         "pending_expires_at": (
             datetime.fromisoformat(created_at.replace("Z", "+00:00"))
@@ -4839,31 +4840,80 @@ async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
     The route name is deliberately kept server-side. The browser receives only
     the UX action it must perform: phone confirmation, popup, or redirect.
     """
-    provider = await _resolve_deposit_provider(req.country, req.operator, req.currency)
-    if provider == "mbiyo":
-        return await _create_mbiyo_deposit(req, request, uid)
-    cfg = await get_paydunya_config()
-    public = _paydunya_public_config(cfg)
-    if not public.get("enabled") or not public.get("mobile_money_enabled"):
-        raise HTTPException(503, "Mobile Money temporairement indisponible")
+    idem_key = str(req.idempotency_key or "").strip()
+    fingerprint = _request_fingerprint(req)
+    reservation_key = f"momo-deposit:{idem_key}" if idem_key else ""
+    if idem_key:
+        previous = await db.momo_deposits.find_one(
+            {"user_id": uid, "idempotency_key": idem_key}, {"_id": 0})
+        if previous:
+            previous_fingerprint = previous.get("request_fingerprint")
+            if previous_fingerprint and previous_fingerprint != fingerprint:
+                raise HTTPException(
+                    409, "Cette clé d’idempotence appartient à un autre dépôt")
+            return _public_momo_deposit(previous)
+        try:
+            cached = await _idempotency_claim(
+                uid, reservation_key, "POST",
+                "/api/deposits/mobile-money/start", fingerprint)
+        except BizAPIError as exc:
+            raise HTTPException(
+                exc.status_code,
+                "Une demande de dépôt identique est déjà en cours.",
+            )
+        if cached and cached.get("body") is not None:
+            return cached["body"]
+    try:
+        provider = await _resolve_deposit_provider(
+            req.country, req.operator, req.currency)
+        if provider == "mbiyo":
+            result = await _create_mbiyo_deposit(req, request, uid)
+        else:
+            cfg = await get_paydunya_config()
+            public = _paydunya_public_config(cfg)
+            if not public.get("enabled") or not public.get("mobile_money_enabled"):
+                raise HTTPException(503, "Mobile Money temporairement indisponible")
 
-    modes = cfg.get("modes") if isinstance(cfg.get("modes"), dict) else {}
-    enabled = lambda key: bool(
-        (modes.get(key) or {}).get("enabled", False)
-        if isinstance(modes.get(key), dict) else modes.get(key, False)
-    )
-    if not modes or enabled("softpay_direct") or enabled("softpay"):
-        result = await create_mobile_money_deposit(req, request, uid)
-        return {**result, "payment_kind": result.get("payment_kind", "phone")}
-    if enabled("psr"):
-        result = await _create_paydunya_invoice_deposit(
-            req, uid, "psr", _paydunya_callback_base(request))
-        return {**result, "payment_kind": "popup"}
-    if enabled("par_redirect"):
-        result = await _create_paydunya_invoice_deposit(
-            req, uid, "par_redirect", _paydunya_callback_base(request))
-        return {**result, "payment_kind": "redirect"}
-    raise HTTPException(503, "Mobile Money temporairement indisponible")
+            modes = cfg.get("modes") if isinstance(cfg.get("modes"), dict) else {}
+            enabled = lambda key: bool(
+                (modes.get(key) or {}).get("enabled", False)
+                if isinstance(modes.get(key), dict) else modes.get(key, False)
+            )
+            if not modes or enabled("softpay_direct") or enabled("softpay"):
+                direct = await create_mobile_money_deposit(req, request, uid)
+                result = {
+                    **direct,
+                    "payment_kind": direct.get("payment_kind", "phone"),
+                }
+            elif enabled("psr"):
+                popup = await _create_paydunya_invoice_deposit(
+                    req, uid, "psr", _paydunya_callback_base(request))
+                result = {**popup, "payment_kind": "popup"}
+            elif enabled("par_redirect"):
+                redirect = await _create_paydunya_invoice_deposit(
+                    req, uid, "par_redirect", _paydunya_callback_base(request))
+                result = {**redirect, "payment_kind": "redirect"}
+            else:
+                raise HTTPException(503, "Mobile Money temporairement indisponible")
+    except HTTPException:
+        if reservation_key:
+            persisted = await db.momo_deposits.find_one(
+                {"user_id": uid, "idempotency_key": idem_key}, {"_id": 0, "id": 1})
+            if not persisted:
+                await _idempotency_release(uid, reservation_key, fingerprint)
+        raise
+    except Exception:
+        if reservation_key:
+            persisted = await db.momo_deposits.find_one(
+                {"user_id": uid, "idempotency_key": idem_key}, {"_id": 0, "id": 1})
+            if not persisted:
+                await _idempotency_release(uid, reservation_key, fingerprint)
+        raise
+    if reservation_key:
+        await _idempotency_store(
+            uid, reservation_key, "POST",
+            "/api/deposits/mobile-money/start", 200, result)
+    return result
 
 
 @api.post("/deposits/mobile-money")
@@ -4924,6 +4974,10 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
             customer={"firstname": first, "lastname": last, "email": req.email,
                       "phone_number": phone},
             callback_url=callback,
+            return_url=(
+                f"{callback_base}/api/deposits/paydunya/return?ref={dep_id}"
+            ),
+            cancel_url=f"{callback_base}/dashboard?paydunya=cancelled",
             description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
         token = paydunya.invoice_token(invoice)
@@ -4951,6 +5005,8 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
             "endpoint_slug": admin_op.get("endpoint_slug"),
             "operator_snapshot": dict(admin_op),
             "phone_number": phone, "fee_bearer": fees["fee_bearer"],
+            "idempotency_key": req.idempotency_key,
+            "request_fingerprint": _request_fingerprint(req),
             "paydunya_token": token,
             "paydunya_reference": invoice.get("reference") or invoice.get("invoice_id"),
             "checkout_url": paydunya.checkout_url(invoice),
@@ -5000,25 +5056,48 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
             "PayDunya deposit initiation failed status=%s message=%s",
             exc.status, str(exc.message or "")[:240],
         )
-        if "doc" in locals() and doc.get("paydunya_token"):
+        has_invoice = "doc" in locals() and doc.get("paydunya_token")
+        fallback_url = doc.get("checkout_url") if has_invoice else None
+        softpay_fallback = bool(
+            has_invoice and fallback_url and exc.status >= 500
+        )
+        if softpay_fallback:
+            safe_error = _paydunya_operation_error(exc)
+            softpay_fallback_error = safe_error
+            redirect_url = fallback_url
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {
+                    "retryable": False,
+                    "prompt_sent": False,
+                    "prompt_error": safe_error,
+                    "submission_unknown": True,
+                    "softpay_error_status": exc.status,
+                    "payment_fallback": "hosted_checkout",
+                    "redirect_url": fallback_url,
+                    "next_reconcile_at": now_iso(),
+                }},
+            )
+        elif has_invoice:
             safe_error = str(exc.message or "SoftPay provider error")[:240]
             await db.momo_deposits.update_one(
                 {"id": dep_id, "status": "pending"},
                 {"$set": {"status": "failed", "retryable": True,
                           "prompt_sent": False, "prompt_error": safe_error,
                           "failed_at": now_iso()}})
-        if cfg.get("mode") != "live" and (
-                "sandbox" in str(exc.message or "").lower()
-                or any(term in str(exc.message or "").lower()
-                       for term in ("password", "credential", "account", "customer"))):
+        if not softpay_fallback:
+            if cfg.get("mode") != "live" and (
+                    "sandbox" in str(exc.message or "").lower()
+                    or any(term in str(exc.message or "").lower()
+                           for term in ("password", "credential", "account", "customer"))):
+                raise HTTPException(
+                    503,
+                    _paydunya_operation_error(exc),
+                )
             raise HTTPException(
-                503,
+                400 if exc.status < 500 else 502,
                 _paydunya_operation_error(exc),
             )
-        raise HTTPException(
-            400 if exc.status < 500 else 502,
-            _paydunya_operation_error(exc),
-        )
     except Exception as exc:
         if "doc" in locals() and doc.get("paydunya_token"):
             await db.momo_deposits.update_one(
@@ -5046,12 +5125,27 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
          "auth_mode": "pin" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else None,
          "otp_required": admin_op.get("endpoint_slug") == "wizall-money-senegal",
          "challenge_status": "required" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else "pending",
-         "prompt_sent": True, "prompt_error": None,
+         "prompt_sent": not locals().get("softpay_fallback", False),
+         "prompt_error": (
+             locals().get("softpay_fallback_error")
+             if locals().get("softpay_fallback", False) else None),
+         "submission_unknown": bool(locals().get("softpay_fallback", False)),
+         "payment_fallback": (
+             "hosted_checkout"
+             if locals().get("softpay_fallback", False) else None),
+         "payment_kind": (
+             "redirect"
+             if locals().get("softpay_fallback", False)
+             or locals().get("redirect_url") else "phone"),
          "created_at": doc.get("created_at"),
          "pending_expires_at": doc.get("pending_expires_at"),
-         "message": ("Ouvrez le lien affiché et validez le paiement."
-                     if locals().get("redirect_url")
-                     else "Vérifiez votre téléphone et validez la demande."),
+         "message": (
+             "La demande téléphonique tarde. Ouvrez la page sécurisée "
+             "PayDunya pour terminer le paiement."
+             if locals().get("softpay_fallback", False)
+             else ("Ouvrez le lien affiché et validez le paiement."
+                   if locals().get("redirect_url")
+                   else "Vérifiez votre téléphone et validez la demande.")),
     }
 
 
@@ -5139,7 +5233,10 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
             customer={"firstname": first, "lastname": last, "email": req.email,
                       **({"phone_number": phone} if phone else {})},
             callback_url=callback,
-            return_url=req.return_url or f"{callback_base}/api/deposits/paydunya/return",
+            return_url=(
+                req.return_url
+                or f"{callback_base}/api/deposits/paydunya/return?ref={dep_id}"
+            ),
             cancel_url=f"{callback_base}/dashboard/deposit?paydunya=cancelled",
             description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
@@ -5179,6 +5276,8 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
         "endpoint_slug": selected.get("endpoint_slug") if selected else None,
         "operator_snapshot": dict(selected) if selected else None,
         "phone_number": phone, "fee_bearer": fees["fee_bearer"],
+        "idempotency_key": getattr(req, "idempotency_key", None),
+        "request_fingerprint": _request_fingerprint(req),
         "paydunya_token": token,
         "paydunya_reference": invoice.get("reference") or invoice.get("invoice_id"),
         "checkout_url": paydunya.checkout_url(invoice),
@@ -5324,7 +5423,10 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
         {"id": d["id"], "status": "pending"},
         {"$set": {
             "status": "failed",
-            "retryable": False,
+            # A PayDunya hosted checkout remains payable after our initial UX
+            # window. Keep reconciling it so a verified late payment is never
+            # lost; the wallet credit path remains exactly-once.
+            "retryable": d.get("provider") == "paydunya",
             "provider_status": "expired",
             "failed_reason": "expired",
             "failed_at": now,
@@ -5346,12 +5448,13 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
 async def _reconcile_momo_deposit(dep_id: str) -> bool:
     """Reconcile a pending PayDunya deposit server-to-server."""
     d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
-    if await _expire_momo_deposit_if_due(d):
+    if not d:
         return False
-    retryable_failed = d and d.get("status") == "failed" and d.get("retryable")
-    if not d or (d.get("status") not in ("pending", "approved") and not retryable_failed):
-        return bool(d and d.get("status") == "approved")
     if d.get("provider") != "paydunya" or not d.get("paydunya_token"):
+        return False
+    if d.get("status") == "approved":
+        return True
+    if d.get("status") not in ("pending", "failed"):
         return False
     if d.get("status") in ("pending", "failed"):
         try:
@@ -5362,6 +5465,7 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
                     token=d["paydunya_token"], amount=d.get("charged_amount", d.get("amount")),
                     currency=d.get("currency", "XOF"), deposit_id=d["id"]):
                 logger.warning("PayDunya confirmation rejected for %s", dep_id)
+                await _expire_momo_deposit_if_due(d)
                 return False
             receipt_url = response.get("receipt_url")
             if isinstance(receipt_url, str) and receipt_url.startswith(
@@ -5806,6 +5910,14 @@ def _public_momo_deposit(d: dict) -> dict:
         "instructions": _plain_payment_instructions(d.get("instructions")),
         "checkout_url": d.get("redirect_url") or d.get("checkout_url"),
         "redirect_url": d.get("redirect_url") or d.get("checkout_url"),
+        "payment_kind": (
+            "redirect"
+            if d.get("payment_fallback") == "hosted_checkout"
+            or d.get("redirect_url")
+            else "phone"
+        ),
+        "payment_fallback": d.get("payment_fallback"),
+        "submission_unknown": bool(d.get("submission_unknown")),
         "prompt_sent": bool(d.get("prompt_sent")),
         "prompt_error": _public_payment_error(d.get("prompt_error")),
         "failed_reason": _public_payment_error(
@@ -5921,10 +6033,14 @@ async def finalize_momo_deposit(
 
 
 @api.get("/deposits/paydunya/return")
-async def paydunya_payment_return(token: str):
+async def paydunya_payment_return(token: str = "", ref: str = ""):
     """Confirm a hosted payment before returning to the dashboard."""
-    d = await db.momo_deposits.find_one(
-        {"provider": "paydunya", "paydunya_token": token}, {"_id": 0})
+    lookup = (
+        {"provider": "paydunya", "id": ref}
+        if ref else
+        {"provider": "paydunya", "paydunya_token": token}
+    )
+    d = await db.momo_deposits.find_one(lookup, {"_id": 0})
     if not d:
         return RedirectResponse(
             url="/dashboard?paydunya=not_found", status_code=303)
@@ -5985,8 +6101,7 @@ async def paydunya_webhook(request: Request):
             if prior_event and prior_event.get("processed"):
                 return {"received": True, "duplicate": True}
     confirmed = False
-    if dep and (dep.get("status") in ("pending", "approved") or
-                (dep.get("status") == "failed" and dep.get("retryable"))):
+    if dep and dep.get("status") in ("pending", "approved", "failed"):
         confirmed = await _reconcile_momo_deposit(dep["id"])
     if confirmed:
         await db.webhook_events.update_one(
