@@ -341,6 +341,7 @@ async def _require_turnstile(
 _APP_STARTED_AT = datetime.now(timezone.utc)
 API_VERSION = "1.0.0"
 _paydunya_reconcile_task = None
+MOMO_PENDING_TIMEOUT_MINUTES = 10
 
 # ==================== V1 PUBLIC API HELPERS ====================
 # Normalized error format + error codes (IziChangePay-inspired).
@@ -4697,7 +4698,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "created_at": created_at,
         "pending_expires_at": (
             datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            + timedelta(minutes=15)
+            + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
         ).isoformat(),
     }
     await db.momo_deposits.insert_one(pending_doc)
@@ -4767,7 +4768,8 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "status": ("failed" if mbiyo.status_value(response) in mbiyo.FAILURE_STATUSES
                    else "pending"),
         "provider_status": mbiyo.status_value(response) or "pending",
-        "created_at": now_iso(),
+        "created_at": pending_doc["created_at"],
+        "pending_expires_at": pending_doc["pending_expires_at"],
     }
     await db.momo_deposits.update_one({"id": dep_id}, {"$set": doc})
     if mbiyo.status_value(response) in mbiyo.SUCCESS_STATUSES:
@@ -4881,6 +4883,7 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
     parts = (req.full_name or "").strip().split(" ", 1)
     first = parts[0] or "Client"
     last = parts[1] if len(parts) > 1 else first
+    created_at = now_iso()
     callback_base = (os.environ.get("OFFICIAL_DOMAIN")
                      or _paydunya_callback_base(request)).rstrip("/")
     callback = f"{callback_base}/api/webhooks/paydunya?ref={dep_id}"
@@ -4928,7 +4931,11 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
             "otp_required": admin_op.get("endpoint_slug") == "wizall-money-senegal",
             "challenge_status": "required" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else "pending",
             "prompt_sent": False, "prompt_error": None,
-            "created_at": now_iso(),
+             "created_at": created_at,
+             "pending_expires_at": (
+                 datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                 + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
+             ).isoformat(),
         }
         try:
             await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
@@ -5001,6 +5008,8 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
          "otp_required": admin_op.get("endpoint_slug") == "wizall-money-senegal",
          "challenge_status": "required" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else "pending",
          "prompt_sent": True, "prompt_error": None,
+         "created_at": doc.get("created_at"),
+         "pending_expires_at": doc.get("pending_expires_at"),
          "message": ("Ouvrez le lien affiché et validez le paiement."
                      if locals().get("redirect_url")
                      else "Vérifiez votre téléphone et validez la demande."),
@@ -5106,6 +5115,7 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
         datetime.now(timezone.utc) + timedelta(minutes=10)
         if psr_capability else None
     )
+    created_at = now_iso()
 
     doc = {
         "id": dep_id, "user_id": uid, "amount": req.amount,
@@ -5137,7 +5147,11 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
         "psr_capability_expires_at": (
             psr_capability_expires.isoformat() if psr_capability_expires else None),
         "psr_capability_used": False if psr_capability else None,
-        "created_at": now_iso(),
+        "created_at": created_at,
+        "pending_expires_at": (
+            datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
+        ).isoformat(),
     }
     try:
         await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
@@ -5156,6 +5170,8 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
         "gateway_fee": fees["gateway_fee"], "platform_fee": fees["platform_fee"],
         "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
         "currency": currency, "mode": flow,
+        "created_at": doc.get("created_at"),
+        "pending_expires_at": doc.get("pending_expires_at"),
     }
     # PAR intentionally exposes only the hosted URL as a provider artifact;
     # PSR exposes token + mode for the PayDunya client SDK.
@@ -5236,9 +5252,59 @@ async def get_paydunya_psr_token(deposit_id: str, capability: str):
     return response
 
 
+def _momo_pending_expiry(d: dict) -> Optional[datetime]:
+    """Return the server-side deadline for an in-flight Mobile Money deposit."""
+    raw = d.get("pending_expires_at")
+    if raw:
+        try:
+            return _as_utc(raw)
+        except (TypeError, ValueError):
+            pass
+    created = d.get("created_at")
+    if created:
+        try:
+            return _as_utc(created) + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
+    """Fail an unresolved payment once its ten-minute verification window ends."""
+    if not d or d.get("status") != "pending":
+        return False
+    expiry = _momo_pending_expiry(d)
+    if not expiry or expiry > datetime.now(timezone.utc):
+        return False
+    now = now_iso()
+    result = await db.momo_deposits.update_one(
+        {"id": d["id"], "status": "pending"},
+        {"$set": {
+            "status": "failed",
+            "retryable": False,
+            "provider_status": "expired",
+            "failed_reason": "expired",
+            "failed_at": now,
+        }},
+    )
+    link_payment_id = d.get("link_payment_id")
+    if link_payment_id:
+        await db.link_payments.update_one(
+            {"id": link_payment_id, "status": "pending"},
+            {"$set": {
+                "status": "failed",
+                "failed_reason": "expired",
+                "failed_at": now,
+            }},
+        )
+    return result.modified_count == 1
+
+
 async def _reconcile_momo_deposit(dep_id: str) -> bool:
     """Reconcile a pending PayDunya deposit server-to-server."""
     d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
+    if await _expire_momo_deposit_if_due(d):
+        return False
     retryable_failed = d and d.get("status") == "failed" and d.get("retryable")
     if not d or (d.get("status") not in ("pending", "approved") and not retryable_failed):
         return bool(d and d.get("status") == "approved")
@@ -5276,6 +5342,8 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
     """Verify a Mbiyo deposit server-to-server and credit it once."""
     d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
     if not d or d.get("provider") != "mbiyo":
+        return False
+    if await _expire_momo_deposit_if_due(d):
         return False
     if d.get("status") == "approved":
         return True
@@ -5724,8 +5792,7 @@ async def get_latest_pending_momo_deposit(
     d = docs[0]
     if d.get("provider") == "mbiyo" and d.get("status") == "pending":
         try:
-            if d.get("mbiyo_transaction_id"):
-                await _reconcile_mbiyo_deposit(d["id"])
+            await _reconcile_mbiyo_deposit(d["id"])
         except Exception:
             logger.exception("Latest Mbiyo deposit reconciliation failed for %s", d.get("id"))
         d = await db.momo_deposits.find_one({"id": d["id"], "user_id": uid}, {"_id": 0}) or d
@@ -5738,11 +5805,10 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
     if not d:
         raise HTTPException(404, "Not found")
     if d.get("provider") == "mbiyo" and d.get("status") == "pending":
-        if d.get("mbiyo_transaction_id"):
-            try:
-                await _reconcile_mbiyo_deposit(deposit_id)
-            except Exception:
-                logger.exception("Mbiyo status reconciliation failed for %s", deposit_id)
+        try:
+            await _reconcile_mbiyo_deposit(deposit_id)
+        except Exception:
+            logger.exception("Mbiyo status reconciliation failed for %s", deposit_id)
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     elif d.get("status") in ("pending", "approved") or (
             d.get("status") == "failed" and d.get("retryable")):
@@ -7176,7 +7242,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 **({"finalize_capability_hash": capability_hash,
                     "finalize_capability_expires_at": capability_expires}
                    if finalize_capability else {}),
-                "created_at": now_iso(),
+                 "created_at": result.get("created_at") or now_iso(),
+                 "pending_expires_at": result.get("pending_expires_at"),
             }
             await db.momo_deposits.update_one(
                 {"id": dep_id},
@@ -7262,6 +7329,11 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
 
     # Persist both local records before triggering SoftPay.  This makes a
     # callback immediately after the provider request observable locally.
+    created_at = now_iso()
+    pending_expires_at = (
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
+    ).isoformat()
     momo_doc = {
         "id": dep_id,
         "user_id": link["user_id"],  # credit the merchant
@@ -7288,7 +7360,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         "fee_bearer": fees["fee_bearer"], "paydunya_token": token,
         "paydunya_reference": ref, "checkout_url": checkout_url,
         "status": "pending", "prompt_sent": False,
-        "created_at": now_iso(), "source": "link_payment",
+         "created_at": created_at, "pending_expires_at": pending_expires_at,
+         "source": "link_payment",
         "link_payment_id": lp_id,
     }
     doc = {
@@ -7310,7 +7383,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
          "auth_mode": "pin" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else None,
          "otp_required": admin_op.get("endpoint_slug") == "wizall-money-senegal",
          "challenge_status": "required" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else "pending",
-        "created_at": now_iso(),
+         "created_at": created_at,
+         "pending_expires_at": pending_expires_at,
     }
     try:
         await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
@@ -9619,6 +9693,8 @@ def _public_link_payment_status(payment: dict) -> dict:
         "memo": payment.get("memo"),
         "memo_type": payment.get("memo_type"),
         "expires_at": payment.get("expires_at"),
+        "created_at": payment.get("created_at"),
+        "pending_expires_at": payment.get("pending_expires_at"),
     }
     if payment.get("method") == "mobile_money":
         out.update({

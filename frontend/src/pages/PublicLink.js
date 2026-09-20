@@ -11,6 +11,7 @@ import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
 import SelectionMenu from '@/components/SelectionMenu';
 import { OperatorLogo } from '@/components/PaymentBrand';
 import { COUNTRIES } from '@/constants/countries';
+import { MOMO_PENDING_SECONDS } from '@/constants/payment';
 
 export default function PublicLink() {
   const { slug } = useParams();
@@ -564,9 +565,10 @@ function MoMoLinkTracker({ payment }) {
   const [otp, setOtp] = useState('');
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState('');
+  const expiryCheckRef = useRef(null);
   const [remainingSeconds, setRemainingSeconds] = useState(() => {
     const expiry = new Date(payment.pending_expires_at || (
-      new Date(new Date(payment.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+      new Date(new Date(payment.created_at || Date.now()).getTime() + MOMO_PENDING_SECONDS * 1000)
     )).getTime();
     return Math.max(0, Math.ceil((expiry - Date.now()) / 1000));
   });
@@ -592,13 +594,41 @@ function MoMoLinkTracker({ payment }) {
   useEffect(() => {
     if (p.status !== 'pending') return undefined;
     const expiry = new Date(p.pending_expires_at || (
-      new Date(new Date(p.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+      new Date(new Date(p.created_at || Date.now()).getTime() + MOMO_PENDING_SECONDS * 1000)
     )).getTime();
     const tick = () => setRemainingSeconds(Math.max(0, Math.ceil((expiry - Date.now()) / 1000)));
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
   }, [p.created_at, p.pending_expires_at, p.status]);
+
+  useEffect(() => {
+    if (p.status !== 'pending' || remainingSeconds > 0) return undefined;
+    if (expiryCheckRef.current === p.id) return undefined;
+    expiryCheckRef.current = p.id;
+    let active = true;
+    fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/links/payments/${p.id}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (active) {
+          setP((current) => ({
+            ...current,
+            ...data,
+            ...(data.status === 'pending'
+              ? { status: 'failed', failed_reason: 'expired' }
+              : {}),
+          }));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setP((current) => current.status === 'pending'
+            ? { ...current, status: 'failed' }
+            : current);
+        }
+      });
+    return () => { active = false; };
+  }, [p.id, p.status, remainingSeconds]);
 
   const ok = p.status === 'paid';
   const failed = p.status === 'failed' || p.status === 'expired';

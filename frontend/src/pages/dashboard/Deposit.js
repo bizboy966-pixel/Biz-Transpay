@@ -10,6 +10,7 @@ import ComingSoon from '@/components/ComingSoon';
 import { OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
 import { COUNTRIES } from '@/constants/countries';
+import { ACTIVE_MOMO_DEPOSIT_KEY, MOMO_PENDING_SECONDS } from '@/constants/payment';
 import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
 
 const PSR_ASSET_IDS = {
@@ -124,15 +125,19 @@ export default function Deposit() {
 
   useEffect(() => {
     if (step !== 1 || deposit) return undefined;
+    const activeDepositId = sessionStorage.getItem(ACTIVE_MOMO_DEPOSIT_KEY);
+    if (!activeDepositId) return undefined;
     let active = true;
-    api.get('/deposits/mobile-money/pending')
+    api.get(`/deposits/mobile-money/${activeDepositId}`)
       .then(({ data }) => {
-        if (active && data?.id) {
+        if (active && data?.id && data.status === 'pending') {
           setDeposit({ ...data, __momo: true });
           setStep(3);
+        } else {
+          sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
         }
       })
-      .catch(() => {});
+      .catch(() => sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY));
     return () => { active = false; };
   }, [deposit, step]);
 
@@ -180,7 +185,11 @@ export default function Deposit() {
       {step === 2 && method === 'mobile_money' && (
         (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
         || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
-      ) && <MobileMoneyForm onSuccess={(d) => { setDeposit({ ...d, __momo: true }); setStep(3); }} />}
+      ) && <MobileMoneyForm onSuccess={(d) => {
+        sessionStorage.setItem(ACTIVE_MOMO_DEPOSIT_KEY, d.id);
+        setDeposit({ ...d, __momo: true });
+        setStep(3);
+      }} />}
       {step === 3 && deposit?.__momo && <MobileMoneyTracker deposit={deposit} />}
       {step === 3 && deposit && !deposit.__momo && <CryptoDepositTracker deposit={deposit} />}
       {step === 3 && !deposit && (
@@ -837,9 +846,10 @@ function MobileMoneyTracker({ deposit }) {
   const [otp, setOtp] = useState('');
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState('');
+  const expiryCheckRef = useRef(null);
   const [remainingSeconds, setRemainingSeconds] = useState(() => {
     const expiry = new Date(deposit.pending_expires_at || (
-      new Date(new Date(deposit.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+      new Date(new Date(deposit.created_at || Date.now()).getTime() + MOMO_PENDING_SECONDS * 1000)
     )).getTime();
     return Math.max(0, Math.ceil((expiry - Date.now()) / 1000));
   });
@@ -874,7 +884,7 @@ function MobileMoneyTracker({ deposit }) {
   useEffect(() => {
     if (d.status !== 'pending') return undefined;
     const expiry = new Date(d.pending_expires_at || (
-      new Date(new Date(d.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+      new Date(new Date(d.created_at || Date.now()).getTime() + MOMO_PENDING_SECONDS * 1000)
     )).getTime();
     const tick = () => setRemainingSeconds(Math.max(0, Math.ceil((expiry - Date.now()) / 1000)));
     tick();
@@ -882,9 +892,35 @@ function MobileMoneyTracker({ deposit }) {
     return () => clearInterval(timer);
   }, [d.created_at, d.pending_expires_at, d.status]);
 
+  useEffect(() => {
+    if (d.status !== 'pending' || remainingSeconds > 0) return undefined;
+    if (expiryCheckRef.current === d.id) return undefined;
+    expiryCheckRef.current = d.id;
+    let active = true;
+    api.get(`/deposits/mobile-money/${d.id}`)
+      .then(({ data }) => {
+        if (active) {
+          setD(data.status === 'pending'
+            ? { ...data, status: 'failed', failed_reason: 'expired' }
+            : data);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setD((current) => current.status === 'pending'
+            ? { ...current, status: 'failed', failed_reason: 'expired' }
+            : current);
+        }
+      });
+    return () => { active = false; };
+  }, [d.id, d.status, remainingSeconds]);
+
   const ok = d.status === 'approved';
   const failed = d.status === 'failed';
   const pending = !ok && !failed;
+  useEffect(() => {
+    if (!pending) sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
+  }, [pending]);
   const operatorValue = typeof d.operator === 'object' ? (d.operator?.label || d.operator?.name || d.operator?.code) : d.operator;
   const operatorName = d.operator_name || d.operator_label || operatorValue || 'Mobile Money';
   const instructionValue = d.instructions || d.payment_instructions || d.pending_instructions || d.message;

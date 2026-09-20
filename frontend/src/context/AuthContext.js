@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import api from '../api';
+import { ACTIVE_MOMO_DEPOSIT_KEY } from '../constants/payment';
 
 const AuthCtx = createContext(null);
 
@@ -35,6 +36,7 @@ export function AuthProvider({ children }) {
 
   const logout = () => {
     api.post('/auth/logout').catch(() => {});
+    sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
     setUser(null);
     window.location.href = '/';
   };
