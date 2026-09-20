@@ -122,6 +122,20 @@ export default function Deposit() {
   const [method, setMethod] = useState(null);
   const [deposit, setDeposit] = useState(null);
 
+  useEffect(() => {
+    if (step !== 1 || deposit) return undefined;
+    let active = true;
+    api.get('/deposits/mobile-money/pending')
+      .then(({ data }) => {
+        if (active && data?.id) {
+          setDeposit({ ...data, __momo: true });
+          setStep(3);
+        }
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [deposit, step]);
+
   // Guard: if the customer somehow lands on a step for a disabled wallet
   // (e.g. via browser back button), send them back to picker.
   useEffect(() => {
@@ -823,6 +837,12 @@ function MobileMoneyTracker({ deposit }) {
   const [otp, setOtp] = useState('');
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState('');
+  const [remainingSeconds, setRemainingSeconds] = useState(() => {
+    const expiry = new Date(deposit.pending_expires_at || (
+      new Date(new Date(deposit.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+    )).getTime();
+    return Math.max(0, Math.ceil((expiry - Date.now()) / 1000));
+  });
 
   useEffect(() => {
     if (d.status !== 'approved') return;
@@ -850,6 +870,17 @@ function MobileMoneyTracker({ deposit }) {
     }, 4000);
     return () => clearInterval(iv);
   }, [d.id, d.status]);
+
+  useEffect(() => {
+    if (d.status !== 'pending') return undefined;
+    const expiry = new Date(d.pending_expires_at || (
+      new Date(new Date(d.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+    )).getTime();
+    const tick = () => setRemainingSeconds(Math.max(0, Math.ceil((expiry - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [d.created_at, d.pending_expires_at, d.status]);
 
   const ok = d.status === 'approved';
   const failed = d.status === 'failed';
@@ -927,7 +958,16 @@ function MobileMoneyTracker({ deposit }) {
            {finalizeError && <p className="text-[11px] font-semibold text-red-700">{finalizeError}</p>}
          </div>
        )}
-       {pending && <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-[11px] text-blue-800">Restez sur cette page : le statut de la transaction est vérifié automatiquement.</div>}
+        {pending && (
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-[11px] text-blue-800">
+            <strong className="block text-blue-950">
+              {remainingSeconds > 0
+                ? `Vérification en cours — ${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, '0')}`
+                : 'Le délai initial est écoulé — vérification toujours en cours'}
+            </strong>
+            <span>Restez sur cette page : le statut est vérifié automatiquement.</span>
+          </div>
+        )}
     </div>
   );
 }

@@ -104,7 +104,7 @@ export default function SelectionMenu({
 
       {open && createPortal(
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/35 p-0 backdrop-blur-[2px] sm:p-6"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-[2px] sm:p-6"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) close();
           }}
@@ -115,7 +115,7 @@ export default function SelectionMenu({
             role="dialog"
             aria-modal="true"
             aria-labelledby={`${dialogId}-title`}
-            className="flex h-full w-full flex-col overflow-hidden border border-slate-200 bg-white shadow-2xl shadow-slate-950/20 sm:h-auto sm:max-h-[min(680px,calc(100dvh-3rem))] sm:max-w-lg sm:rounded-3xl"
+            className="flex max-h-[min(680px,calc(100dvh-2rem))] w-full max-w-lg flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-slate-950/20"
           >
             <div className="flex shrink-0 items-start justify-between border-b border-slate-100 px-5 py-4 sm:px-6">
               <div>

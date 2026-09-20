@@ -564,6 +564,12 @@ function MoMoLinkTracker({ payment }) {
   const [otp, setOtp] = useState('');
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState('');
+  const [remainingSeconds, setRemainingSeconds] = useState(() => {
+    const expiry = new Date(payment.pending_expires_at || (
+      new Date(new Date(payment.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+    )).getTime();
+    return Math.max(0, Math.ceil((expiry - Date.now()) / 1000));
+  });
   useEffect(() => {
     if (p.status !== 'pending') return;
     const iv = setInterval(async () => {
@@ -582,6 +588,17 @@ function MoMoLinkTracker({ payment }) {
     }, 4000);
     return () => clearInterval(iv);
   }, [p.id, p.status]);
+
+  useEffect(() => {
+    if (p.status !== 'pending') return undefined;
+    const expiry = new Date(p.pending_expires_at || (
+      new Date(new Date(p.created_at || Date.now()).getTime() + 15 * 60 * 1000)
+    )).getTime();
+    const tick = () => setRemainingSeconds(Math.max(0, Math.ceil((expiry - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [p.created_at, p.pending_expires_at, p.status]);
 
   const ok = p.status === 'paid';
   const failed = p.status === 'failed' || p.status === 'expired';
@@ -640,6 +657,16 @@ function MoMoLinkTracker({ payment }) {
         {failed && `La transaction a été refusée ou a expiré.`}
       </p>
       {pending && <PaymentFlowCard flow={flow} amount={p.amount_to_pay || p.charged_amount || p.amount} currency={p.currency} />}
+      {pending && (
+        <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-left text-[11px] text-blue-800">
+          <strong className="block text-blue-950">
+            {remainingSeconds > 0
+              ? `Vérification en cours — ${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, '0')}`
+              : 'Le délai initial est écoulé — vérification toujours en cours'}
+          </strong>
+          <span>Le statut est vérifié automatiquement. Ne fermez pas cette page.</span>
+        </div>
+      )}
       {needsPostInitOtp && (
         <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-left space-y-2">
           <label className="block text-[11px] font-bold text-blue-900">Code de validation</label>

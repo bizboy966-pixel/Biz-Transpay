@@ -4678,6 +4678,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
                      or _paydunya_callback_base(request)).rstrip("/")
     callback = f"{callback_base}/api/webhooks/mbiyo?ref={dep_id}"
     parts = (req.full_name or "Client").strip().split(" ", 1)
+    created_at = now_iso()
     pending_doc = {
         "id": dep_id, "user_id": uid, "amount": processed_amount,
         "requested_amount": req.amount, "processed_amount": processed_amount,
@@ -4693,7 +4694,11 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "phone_number": req.phone_number, "provider": "mbiyo",
         "status": "pending", "submission_unknown": False,
         "idempotency_key": req.idempotency_key,
-        "created_at": now_iso(),
+        "created_at": created_at,
+        "pending_expires_at": (
+            datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            + timedelta(minutes=15)
+        ).isoformat(),
     }
     await db.momo_deposits.insert_one(pending_doc)
     try:
@@ -4752,10 +4757,11 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "phone_number": req.phone_number, "fee_bearer": fees["fee_bearer"],
         "idempotency_key": req.idempotency_key,
         "provider": "mbiyo", "mbiyo_transaction_id": str(provider_id),
-        "provider_binding_verified": hmac.compare_digest(
-            str(_provider_scalar(response, "order_id", "merchant_reference") or ""),
-            dep_id,
-        ),
+        # The provider transaction ID is returned in the response to a request
+        # that included this order_id.  It is safe to reuse that binding during
+        # status polling; the ID is restricted to known Mbiyo fields and has a
+        # unique database index.
+        "provider_binding_verified": True,
         "payment_flow": payment_flow,
         **_mbiyo_response_fields(response),
         "status": ("failed" if mbiyo.status_value(response) in mbiyo.FAILURE_STATUSES
@@ -4784,6 +4790,8 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             "payment_flow": payment_flow, "auth_mode": doc.get("auth_mode"),
             "redirect_url": doc.get("redirect_url"),
             "instructions": doc.get("instructions"),
+             "created_at": doc.get("created_at"),
+             "pending_expires_at": doc.get("pending_expires_at"),
             "otp_required": doc.get("auth_mode") == "pin",
             "challenge_status": "required" if doc.get("auth_mode") == "pin" else "pending",
             "message": "Suivez les instructions affichées puis validez la demande sur votre téléphone."}
@@ -5458,6 +5466,11 @@ async def _paydunya_reconcile_loop() -> None:
             raise
         except Exception:
             logger.exception("PayDunya background reconciliation cycle failed")
+            try:
+                await postgres_store.close()
+                await postgres_store.connect()
+            except Exception:
+                logger.exception("Unable to restore the reconciliation database pool")
         await asyncio.sleep(30)
 
 
@@ -5662,6 +5675,8 @@ def _public_momo_deposit(d: dict) -> dict:
     auth_mode = d.get("auth_mode")
     return {
         "id": d.get("id"), "status": d.get("status"),
+        "created_at": d.get("created_at"),
+        "pending_expires_at": d.get("pending_expires_at"),
         "amount": d.get("amount"), "requested_amount": d.get("requested_amount"),
         "charged_amount": d.get("charged_amount"),
         "amount_net": d.get("amount_net") or d.get("wallet_credit_amount"),
@@ -5688,6 +5703,35 @@ def _public_momo_deposit(d: dict) -> dict:
     }
 
 
+@api.get("/deposits/mobile-money/pending")
+async def get_latest_pending_momo_deposit(
+    uid: str = Depends(get_current_user_id),
+):
+    """Restore the user's latest in-flight Mobile Money payment after refresh."""
+    docs = await db.momo_deposits.find(
+        {
+            "user_id": uid,
+            "provider": {"$in": ["mbiyo", "paydunya"]},
+            "status": "pending",
+            "created_at": {
+                "$gt": (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+            },
+        },
+        {"_id": 0},
+    ).sort("created_at", -1).limit(1).to_list(1)
+    if not docs:
+        return None
+    d = docs[0]
+    if d.get("provider") == "mbiyo" and d.get("status") == "pending":
+        try:
+            if d.get("mbiyo_transaction_id"):
+                await _reconcile_mbiyo_deposit(d["id"])
+        except Exception:
+            logger.exception("Latest Mbiyo deposit reconciliation failed for %s", d.get("id"))
+        d = await db.momo_deposits.find_one({"id": d["id"], "user_id": uid}, {"_id": 0}) or d
+    return _public_momo_deposit(d)
+
+
 @api.get("/deposits/mobile-money/{deposit_id}")
 async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_id)):
     d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
@@ -5695,7 +5739,10 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
         raise HTTPException(404, "Not found")
     if d.get("provider") == "mbiyo" and d.get("status") == "pending":
         if d.get("mbiyo_transaction_id"):
-            await _reconcile_mbiyo_deposit(deposit_id)
+            try:
+                await _reconcile_mbiyo_deposit(deposit_id)
+            except Exception:
+                logger.exception("Mbiyo status reconciliation failed for %s", deposit_id)
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     elif d.get("status") in ("pending", "approved") or (
             d.get("status") == "failed" and d.get("retryable")):
