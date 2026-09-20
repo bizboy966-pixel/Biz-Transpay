@@ -3212,10 +3212,13 @@ async def _resolve_deposit_provider(country: str, code: str,
                                     currency: Optional[str] = None) -> str:
     paydunya_cfg = await get_paydunya_config()
     mbiyo_cfg = await get_mbiyo_config()
-    paydunya_match = (
+    paydunya_route = (
         _active_operator(paydunya_cfg.get("catalog") or [], country, code)
-        if paydunya_cfg.get("enabled")
-        and _paydunya_credentials_configured(paydunya_cfg) else None
+        if paydunya_cfg.get("enabled") else None
+    )
+    paydunya_match = (
+        paydunya_route
+        if _paydunya_credentials_configured(paydunya_cfg) else None
     )
     mbiyo_match = (
         _active_mbiyo_operator(mbiyo_cfg.get("catalog") or [], country, code)
@@ -3227,6 +3230,8 @@ async def _resolve_deposit_provider(country: str, code: str,
     )
     if currency:
         wanted = currency.upper()
+        paydunya_route = paydunya_route if paydunya_route and str(
+            paydunya_route.get("currency", "")).upper() == wanted else None
         paydunya_match = paydunya_match if paydunya_match and str(
             paydunya_match.get("currency", "")).upper() == wanted else None
         mbiyo_match = mbiyo_match if mbiyo_match and str(
@@ -3239,6 +3244,12 @@ async def _resolve_deposit_provider(country: str, code: str,
         return "mbiyo"
     if paydunya_match:
         return "paydunya"
+    if paydunya_route:
+        raise HTTPException(
+            503,
+            "PayDunya est activé pour cet opérateur mais ses identifiants "
+            "ne sont pas configurés.",
+        )
     raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
 
 
@@ -4551,6 +4562,26 @@ def _public_payment_error(value: Any) -> Optional[str]:
     return "La demande de paiement n’a pas pu être traitée. Veuillez réessayer."
 
 
+def _paydunya_operation_error(exc: paydunya.PayDunyaError) -> str:
+    """Map provider failures to actionable, secret-free customer messages."""
+    message = str(exc.message or "").strip()
+    lowered = message.lower()
+    if "sandbox" in lowered and ("customer" in lowered or "client" in lowered):
+        return (
+            "Le compte client de test PayDunya n’est pas configuré. "
+            "Passez PayDunya en production ou configurez le client sandbox."
+        )
+    if exc.status in (401, 403) or any(
+            term in lowered
+            for term in ("credential", "private key", "master key", "token")):
+        return "Les identifiants PayDunya sont invalides ou incomplets."
+    if exc.status >= 500:
+        return "PayDunya est momentanément indisponible. Réessayez dans quelques instants."
+    if message:
+        return f"PayDunya a refusé la demande : {message[:180]}"
+    return "PayDunya a refusé la demande. Vérifiez la configuration de l’opérateur."
+
+
 def _provider_reference(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -4965,6 +4996,10 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
     except HTTPException:
         raise
     except paydunya.PayDunyaError as exc:
+        logger.warning(
+            "PayDunya deposit initiation failed status=%s message=%s",
+            exc.status, str(exc.message or "")[:240],
+        )
         if "doc" in locals() and doc.get("paydunya_token"):
             safe_error = str(exc.message or "SoftPay provider error")[:240]
             await db.momo_deposits.update_one(
@@ -4972,14 +5007,18 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
                 {"$set": {"status": "failed", "retryable": True,
                           "prompt_sent": False, "prompt_error": safe_error,
                           "failed_at": now_iso()}})
-        if cfg.get("mode") != "live" and any(term in exc.message.lower()
-                                             for term in ("password", "credential", "account")):
+        if cfg.get("mode") != "live" and (
+                "sandbox" in str(exc.message or "").lower()
+                or any(term in str(exc.message or "").lower()
+                       for term in ("password", "credential", "account", "customer"))):
             raise HTTPException(
                 503,
-                "Le compte de test exige des identifiants sandbox valides.",
+                _paydunya_operation_error(exc),
             )
-        raise HTTPException(400 if exc.status < 500 else 502,
-                            "La passerelle Mobile Money a refusé la demande.")
+        raise HTTPException(
+            400 if exc.status < 500 else 502,
+            _paydunya_operation_error(exc),
+        )
     except Exception as exc:
         if "doc" in locals() and doc.get("paydunya_token"):
             await db.momo_deposits.update_one(
@@ -5105,8 +5144,12 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
             description=req.description or f"Dépôt Biz-transPay {req.amount} {currency}",
         )
     except paydunya.PayDunyaError as exc:
+        logger.warning(
+            "PayDunya invoice creation failed status=%s message=%s",
+            exc.status, str(exc.message or "")[:240],
+        )
         raise HTTPException(400 if exc.status < 500 else 502,
-                            "La passerelle Mobile Money a refusé la demande.")
+                            _paydunya_operation_error(exc))
     token = paydunya.invoice_token(invoice)
     if not token:
         raise HTTPException(502, "La passerelle n’a pas retourné de référence de paiement")
