@@ -56,6 +56,17 @@ def test_webhook_signature_accepts_documented_hmac():
     assert not mbiyo.verify_signature(raw + b" ", signature, "webhook-secret")
 
 
+def test_status_value_supports_nested_provider_success_shapes():
+    assert mbiyo.status_value({
+        "status": "success",
+        "data": {"transaction": {"payment_status": "VALIDATED"}},
+    }) == "validated"
+    assert mbiyo.status_value({
+        "data": {"payment": {"transaction_status": "Successfully Completed"}},
+    }) == "successfully_completed"
+    assert {"validated", "successfully_completed"} <= mbiyo.SUCCESS_STATUSES
+
+
 def test_client_sends_bearer_and_exact_nested_payload(monkeypatch):
     calls = []
 

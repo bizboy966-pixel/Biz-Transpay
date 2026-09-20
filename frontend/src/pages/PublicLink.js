@@ -7,6 +7,7 @@ import api from '@/api';
 import { Logo } from '@/components/Logo';
 import LinkLogo from '@/components/LinkLogo';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
+import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
 
 export default function PublicLink() {
   const { slug } = useParams();
@@ -366,17 +367,11 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const flowNeedsOtp = Boolean(paymentFlow.before_submit && paymentFlow.otp_required);
   const baseAmount = Number(amount) || 0;
   const currency = selectedOp?.currency || 'XOF';
-  const roundMoney = (value) => ['XOF', 'XAF', 'GNF'].includes(currency)
-    ? Math.round(value)
-    : Math.round(value * 100) / 100;
-  const previewBase = roundMoney(baseAmount);
-  const feePct = Number(selectedOp?.fee_pct || 0);
-  const feeFixed = Number(selectedOp?.fee_fixed || 0);
-  const totalFee = roundMoney(previewBase * feePct / 100 + feeFixed);
-  const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
-  const creditedAmount = feeBearer === 'client'
-    ? previewBase
-    : Math.max(0, roundMoney(previewBase - totalFee));
+  const {
+    totalFee,
+    totalToPay,
+    creditedAmount,
+  } = mobileMoneyFeePreview(baseAmount, selectedOp, feeBearer);
 
   const submit = async (e) => {
     e.preventDefault();

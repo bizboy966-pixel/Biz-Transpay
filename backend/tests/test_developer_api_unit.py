@@ -49,6 +49,21 @@ def test_public_mobile_money_config_hides_provider_identity():
     assert "provider" not in fees["operators"][0]
 
 
+def test_mbiyo_public_config_exposes_split_admin_fees():
+    config = server._mbiyo_public_config({
+        "enabled": True,
+        "secret_key_encrypted": "configured",
+        "catalog": [{
+            "country": "TG", "code": "mbiyo_moov_tg", "network": "moov",
+            "name": "Moov Money", "currency": "XOF", "active": True,
+            "gateway_fee_pct": 1.5, "platform_fee_pct": 2,
+            "gateway_fee_fixed": 10, "platform_fee_fixed": 5,
+        }],
+    })
+    assert config["catalog"][0]["fee_pct"] == 3.5
+    assert config["catalog"][0]["fee_fixed"] == 15
+
+
 def test_provider_neutral_route_resolves_internal_mbiyo_code():
     catalog = [{
         "country": "GN", "code": "mbiyo_orange_gn",

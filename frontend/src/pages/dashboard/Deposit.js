@@ -10,6 +10,7 @@ import ComingSoon from '@/components/ComingSoon';
 import { OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
 import { COUNTRIES } from '@/constants/countries';
+import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
 
 const PSR_ASSET_IDS = {
   css: 'paydunya-psr-css',
@@ -517,17 +518,11 @@ function MobileMoneyForm({ onSuccess }) {
   const flowNeedsOtp = Boolean(paymentFlow.before_submit && paymentFlow.otp_required);
   const baseAmount = Number(amount) || 0;
   const currency = selectedOp?.currency || 'XOF';
-  const roundMoney = (value) => ['XOF', 'XAF', 'GNF'].includes(currency)
-    ? Math.round(value)
-    : Math.round(value * 100) / 100;
-  const previewBase = roundMoney(baseAmount);
-  const feePct = Number(selectedOp?.fee_pct || 0);
-  const feeFixed = Number(selectedOp?.fee_fixed || 0);
-  const totalFee = roundMoney(previewBase * feePct / 100 + feeFixed);
-  const totalToPay = feeBearer === 'client' ? roundMoney(previewBase + totalFee) : previewBase;
-  const creditedAmount = feeBearer === 'client'
-    ? previewBase
-    : Math.max(0, roundMoney(previewBase - totalFee));
+  const {
+    totalFee,
+    totalToPay,
+    creditedAmount,
+  } = mobileMoneyFeePreview(baseAmount, selectedOp, feeBearer);
   const beginPaymentStatusPolling = (trackedDeposit) => {
     if (psrPollRef.current) clearInterval(psrPollRef.current);
     let checking = false;
@@ -697,6 +692,7 @@ function MobileMoneyForm({ onSuccess }) {
             {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
           </select>
           <SelectionMenu
+            label="Sélectionner le pays"
             value={country}
             onChange={(value) => { setCountry(value); setOperator(''); setOtp(''); }}
             placeholder="Sélectionner"
@@ -706,7 +702,7 @@ function MobileMoneyForm({ onSuccess }) {
               return {
                 value: c.country,
                 label: c.country_label || known?.name || c.country,
-                flag: known?.flag || '🌐',
+                flag: known?.flag || '',
               };
             })}
             renderValue={(option) => <span className="inline-flex items-center gap-2"><span>{option.flag}</span>{option.label}</span>}
@@ -737,6 +733,7 @@ function MobileMoneyForm({ onSuccess }) {
             </div>
           ) : (
             <SelectionMenu
+              label="Sélectionner l’opérateur"
               value={operator}
                onChange={(value) => { setOperator(value); setOtp(''); }}
               placeholder="Sélectionner"

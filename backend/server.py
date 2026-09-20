@@ -3018,6 +3018,19 @@ async def get_mbiyo_config(decrypt: bool = False) -> dict:
     return doc
 
 
+def _customer_fee_rates(op: dict) -> tuple[float, float]:
+    """Normalize split and legacy provider fees for customer-facing previews."""
+    gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
+    platform_pct = float(op.get("platform_fee_pct", 0) or 0)
+    if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
+        gateway_pct = float(op.get("fee_pct", 0) or 0)
+    gateway_fixed = float(op.get("gateway_fee_fixed", 0) or 0)
+    platform_fixed = float(op.get("platform_fee_fixed", 0) or 0)
+    if gateway_fixed == 0 and platform_fixed == 0 and op.get("fee_fixed") is not None:
+        gateway_fixed = float(op.get("fee_fixed", 0) or 0)
+    return gateway_pct + platform_pct, gateway_fixed + platform_fixed
+
+
 def _mbiyo_public_config(cfg: dict, admin: bool = False) -> dict:
     secret_configured = bool(
         cfg.get("secret_key_encrypted") or cfg.get("api_key_encrypted")
@@ -3039,9 +3052,19 @@ def _mbiyo_public_config(cfg: dict, admin: bool = False) -> dict:
             result["enabled"] and result["configured"]) else []
         result["catalog"] = [{
             **{k: op.get(k) for k in ("country", "country_label",
-                                      "network", "name", "currency", "min", "max",
-                                      "fee_pct", "fee_fixed")},
+                                      "network", "name", "currency", "min", "max")},
             "code": str(op.get("code") or "").removeprefix("mbiyo_"),
+            "fee_pct": _customer_fee_rates(op)[0],
+            "fee_fixed": _customer_fee_rates(op)[1],
+            "gateway_fee_pct": float(op.get("gateway_fee_pct", op.get("fee_pct", 0)) or 0),
+            "gateway_fee_fixed": float(
+                op.get("gateway_fee_fixed")
+                if op.get("gateway_fee_fixed") is not None
+                else op.get("fee_fixed", 0) or 0),
+            "platform_fee_pct": float(op.get("platform_fee_pct", 0) or 0),
+            "platform_fee_fixed": float(op.get("platform_fee_fixed", 0) or 0),
+            "amount_increment": 5 if str(op.get("country") or "").upper()
+                in mbiyo.ROUNDING_COUNTRIES else 0,
             "payment_flow": mbiyo.payment_flow(op),
         } for op in active_catalog
           if op.get("active", True) and not op.get("archived", False)
@@ -3098,17 +3121,6 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
             if str(op.get("currency") or "").upper() in PAYDUNYA_WALLET_CURRENCIES
         ]
     else:
-        def customer_fee(op: dict) -> tuple[float, float]:
-            gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
-            platform_pct = float(op.get("platform_fee_pct", 0) or 0)
-            if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
-                gateway_pct = float(op.get("fee_pct", 0) or 0)
-            return (
-                gateway_pct + platform_pct,
-                float(op.get("gateway_fee_fixed", 0) or 0)
-                + float(op.get("platform_fee_fixed", 0) or 0),
-            )
-
         result["catalog"] = [
             {
                 "country": op.get("country"),
@@ -3121,8 +3133,17 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
                 "max": float(op.get("max", 0)) or None,
                 # One customer-facing fee preview; gateway/platform split is
                 # intentionally kept out of the public response.
-                "fee_pct": customer_fee(op)[0],
-                "fee_fixed": customer_fee(op)[1],
+                "fee_pct": _customer_fee_rates(op)[0],
+                "fee_fixed": _customer_fee_rates(op)[1],
+                "gateway_fee_pct": float(
+                    op.get("gateway_fee_pct", op.get("fee_pct", 0)) or 0),
+                "gateway_fee_fixed": float(
+                    op.get("gateway_fee_fixed")
+                    if op.get("gateway_fee_fixed") is not None
+                    else op.get("fee_fixed", 0) or 0),
+                "platform_fee_pct": float(op.get("platform_fee_pct", 0) or 0),
+                "platform_fee_fixed": float(op.get("platform_fee_fixed", 0) or 0),
+                "amount_increment": 0,
                 "payment_flow": paydunya.payment_flow(op),
             }
             for op in (cfg.get("catalog") or [])
@@ -3378,10 +3399,7 @@ def _public_transfer_config(cfg: dict) -> dict:
             continue
         if not op.get("withdraw_mode") or str(op.get("currency") or "").upper() != "XOF":
             continue
-        gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
-        platform_pct = float(op.get("platform_fee_pct", 0) or 0)
-        if gateway_pct == 0 and platform_pct == 0 and op.get("fee_pct") is not None:
-            gateway_pct = float(op.get("fee_pct") or 0)
+        fee_pct, fee_fixed = _customer_fee_rates(op)
         public_ops.append({
             "country": op.get("country"),
             "country_label": op.get("country_label")
@@ -3391,9 +3409,8 @@ def _public_transfer_config(cfg: dict) -> dict:
             "currency": op.get("currency") or "XOF",
             "min": float(op.get("min", 0) or 0),
             "max": float(op.get("max", 0) or 0) or None,
-            "fee_pct": gateway_pct + platform_pct,
-            "fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0)
-                + float(op.get("platform_fee_fixed", 0) or 0),
+            "fee_pct": fee_pct,
+            "fee_fixed": fee_fixed,
             "active": True,
         })
     result["mobile_money"] = {
@@ -3415,10 +3432,8 @@ def _public_transfer_config(cfg: dict) -> dict:
                 "name": op.get("name") or op.get("code"),
                 "currency": op.get("currency"), "min": float(op.get("min", 0) or 0),
                 "max": float(op.get("max", 0) or 0) or None,
-                "fee_pct": float(op.get("gateway_fee_pct", op.get("fee_pct", 0)) or 0)
-                    + float(op.get("platform_fee_pct", 0) or 0),
-                "fee_fixed": float(op.get("gateway_fee_fixed", 0) or 0)
-                    + float(op.get("platform_fee_fixed", 0) or 0), "active": True,
+                "fee_pct": _customer_fee_rates(op)[0],
+                "fee_fixed": _customer_fee_rates(op)[1], "active": True,
             })
     # Keep the first route for each public tuple: this is also the arbitration
     # priority used by payout execution.
@@ -4450,6 +4465,9 @@ async def deposits_config_public():
             "currency": op.get("currency") or "XOF",
             "fee_pct": float(op.get("fee_pct", 0) or 0),
             "fee_fixed": float(op.get("fee_fixed", 0) or 0),
+            **{key: op.get(key, 0) for key in (
+                "gateway_fee_pct", "gateway_fee_fixed",
+                "platform_fee_pct", "platform_fee_fixed", "amount_increment")},
             "min": float(op.get("min", 100)),
             "max": float(op.get("max", 0)) or None,
             "payment_flow": op.get("payment_flow") or {},
@@ -4466,6 +4484,9 @@ async def deposits_config_public():
             "currency": op.get("currency") or "XOF",
             "fee_pct": float(op.get("fee_pct", 0) or 0),
             "fee_fixed": float(op.get("fee_fixed", 0) or 0),
+            **{key: op.get(key, 0) for key in (
+                "gateway_fee_pct", "gateway_fee_fixed",
+                "platform_fee_pct", "platform_fee_fixed", "amount_increment")},
             "min": float(op.get("min", 100)), "max": float(op.get("max", 0)) or None,
             "payment_flow": op.get("payment_flow") or {},
         })
@@ -4540,6 +4561,41 @@ def _provider_reference(payload: Any) -> Optional[str]:
     for value in payload.values():
         found = _provider_reference(value)
         if found:
+            return found
+    return None
+
+
+def _mbiyo_transaction_id(payload: Any) -> Optional[str]:
+    """Extract only Mbiyo transaction identifiers, never a generic object id."""
+    if not isinstance(payload, dict):
+        return None
+    for key in ("transaction_id", "transactionId", "provider_transaction_id",
+                "providerTransactionId"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value)
+    for key in ("data", "transaction", "payment"):
+        found = _mbiyo_transaction_id(payload.get(key))
+        if found:
+            return found
+    return None
+
+
+def _provider_scalar(payload: Any, *keys: str) -> Any:
+    """Find a scalar transaction field in known provider response containers."""
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, "") and not isinstance(value, (dict, list)):
+            return value
+    metadata = payload.get("metadata")
+    found = _provider_scalar(metadata, *keys)
+    if found not in (None, ""):
+        return found
+    for key in ("data", "transaction", "payment"):
+        found = _provider_scalar(payload.get(key), *keys)
+        if found not in (None, ""):
             return found
     return None
 
@@ -4670,7 +4726,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         pending_doc.update(submission_unknown=True, provider_status="unknown")
         return _public_momo_deposit(pending_doc)
     data = response.get("data") if isinstance(response.get("data"), dict) else response
-    provider_id = data.get("transaction_id") or data.get("id") or data.get("reference")
+    provider_id = _mbiyo_transaction_id(response)
     if not provider_id:
         await db.momo_deposits.update_one(
             {"id": dep_id, "status": "pending"},
@@ -4691,6 +4747,10 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "phone_number": req.phone_number, "fee_bearer": fees["fee_bearer"],
         "idempotency_key": req.idempotency_key,
         "provider": "mbiyo", "mbiyo_transaction_id": str(provider_id),
+        "provider_binding_verified": hmac.compare_digest(
+            str(_provider_scalar(response, "order_id", "merchant_reference") or ""),
+            dep_id,
+        ),
         "payment_flow": payment_flow,
         **_mbiyo_response_fields(response),
         "status": ("failed" if mbiyo.status_value(response) in mbiyo.FAILURE_STATUSES
@@ -4699,6 +4759,15 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "created_at": now_iso(),
     }
     await db.momo_deposits.update_one({"id": dep_id}, {"$set": doc})
+    if mbiyo.status_value(response) in mbiyo.SUCCESS_STATUSES:
+        # Do not trust the initiation response alone. Re-read the transaction
+        # server-to-server and apply the same reconciliation/idempotency path
+        # used by callbacks and the background repair loop.
+        try:
+            await _reconcile_mbiyo_deposit(dep_id)
+            doc = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0}) or doc
+        except Exception:
+            logger.exception("Immediate Mbiyo deposit reconciliation failed for %s", dep_id)
     return {"id": dep_id, "status": doc["status"], "amount": processed_amount,
             "requested_amount": req.amount, "processed_amount": processed_amount,
             "charged_amount": fees["charged_amount"],
@@ -5206,23 +5275,28 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
     ).status(provider_id)
     status = mbiyo.status_value(response)
     data = response.get("data") if isinstance(response.get("data"), dict) else response
-    response_meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
-    def response_value(key: str):
-        return data.get(key) if data.get(key) not in (None, "") else response_meta.get(key)
+
+    def response_value(*keys: str):
+        return _provider_scalar(response, *keys)
     expected_amount = d.get("processed_amount", d.get("amount"))
     checks = {
         "currency": (response_value("currency"), d.get("currency")),
-        "country_code": (response_value("country_code") or response_value("country"),
+        "country_code": (response_value("country_code", "country"),
                          d.get("country")),
         "network": (response_value("network"), (d.get("operator_snapshot") or {}).get("network")),
-        "phone_number": (response_value("phone_number") or response_value("customer_phone"),
+        "phone_number": (response_value("phone_number", "customer_phone"),
                          d.get("phone_number")),
-        "amount": (response_value("amount"), d.get("provider_submitted_amount", expected_amount)),
-        "order_id": (response_value("order_id") or response_value("reference"), d.get("id")),
+        "amount": (response_value("amount", "paid_amount", "transaction_amount"),
+                   d.get("provider_submitted_amount", expected_amount)),
+        "order_id": (response_value("order_id", "merchant_reference", "reference"),
+                     d.get("id")),
     }
     for key, (received, expected) in checks.items():
         if received in (None, "") or expected in (None, ""):
-            if key in {"amount", "currency", "order_id"}:
+            binding_already_verified = (
+                key == "order_id" and d.get("provider_binding_verified") is True
+            )
+            if key in {"amount", "currency", "order_id"} and not binding_already_verified:
                 await db.momo_deposits.update_one(
                     {"id": dep_id, "status": "pending"},
                     {"$set": {"status": "quarantined",
@@ -5778,15 +5852,7 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
         payload = json.loads(raw or b"{}")
     except Exception:
         raise HTTPException(400, "Payload Mbiyo invalide")
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    provider_id = str(
-        data.get("transaction_id")
-        or data.get("transactionId")
-        or data.get("provider_transaction_id")
-        or data.get("providerTransactionId")
-        or data.get("reference")
-        or ""
-    )
+    provider_id = str(_mbiyo_transaction_id(payload) or "")
     if not provider_id and ref:
         local_tx = await db.transactions.find_one(
             {"id": ref, "metadata.provider": "mbiyo"},
@@ -5826,16 +5892,8 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
     tx = await db.transactions.find_one(
         {"metadata.provider": "mbiyo",
          "metadata.mbiyo_transaction_id": provider_id}, {"_id": 0})
-    verified_data = (
-        verified.get("data") if isinstance(verified.get("data"), dict) else verified)
-    verified_meta = (
-        verified_data.get("metadata")
-        if isinstance(verified_data.get("metadata"), dict) else {})
-    verified_order_id = str(
-        verified_data.get("order_id")
-        or verified_meta.get("order_id")
-        or verified_data.get("reference")
-        or "")
+    verified_order_id = str(_provider_scalar(
+        verified, "order_id", "merchant_reference", "reference") or "")
     # A transport failure can hide the provider transaction ID from the
     # initiation response. The signed callback carries both that ID and our
     # local order ID, allowing a one-time, server-verified binding.
@@ -5851,6 +5909,7 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
                  "mbiyo_transaction_id": {"$in": [None, ""]}},
                 {"$set": {"mbiyo_transaction_id": provider_id,
                           "provider_reference": provider_id,
+                          "provider_binding_verified": True,
                           "submission_unknown": False}},
             )
             dep["mbiyo_transaction_id"] = provider_id
@@ -14036,6 +14095,15 @@ async def startup_db_client():
             partialFilterExpression={"idempotency_key": {"$type": "string"}})
     except Exception:
         pass
+    try:
+        await db.momo_deposits.create_index(
+            "mbiyo_transaction_id",
+            name="uniq_mbiyo_deposit_transaction",
+            unique=True,
+            partialFilterExpression={"mbiyo_transaction_id": {"$type": "string"}},
+        )
+    except Exception:
+        logger.exception("Unable to initialize Mbiyo transaction uniqueness index")
     # This barrier is mandatory for financial requests. A partial index avoids
     # indexing historical transactions that do not carry an idempotency key.
     await db.transactions.create_index(

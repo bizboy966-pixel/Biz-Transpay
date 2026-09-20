@@ -328,7 +328,10 @@ def calculate_fees(amount: float, operator: dict, bearer: str) -> dict:
         gateway_pct = operator.get("fee_pct", 0)
     gateway = quantize(
         amount_d * Decimal(str(gateway_pct)) / Decimal("100")
-        + Decimal(str(operator.get("gateway_fee_fixed", 0))))
+        + Decimal(str(
+            operator.get("gateway_fee_fixed")
+            if operator.get("gateway_fee_fixed") is not None
+            else operator.get("fee_fixed", 0))))
     platform = quantize(
         amount_d * Decimal(str(operator.get("platform_fee_pct", 0))) / Decimal("100")
         + Decimal(str(operator.get("platform_fee_fixed", 0))))

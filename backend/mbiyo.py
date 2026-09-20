@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Optional
 
@@ -197,12 +198,30 @@ def verify_signature(raw_body: bytes, signature: str, secret: str) -> bool:
 
 
 def status_value(payload: dict) -> str:
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    return str((data or {}).get("status") or payload.get("status") or "").strip().lower()
+    """Return a normalized transaction status across Mbiyo response shapes."""
+    if not isinstance(payload, dict):
+        return ""
+    candidates = []
+    for key in ("data", "transaction", "payment"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            for nested_key in ("transaction", "payment"):
+                nested = value.get(nested_key)
+                if isinstance(nested, dict):
+                    candidates.append(nested)
+            candidates.append(value)
+    candidates.append(payload)
+    for item in candidates:
+        for key in ("status", "payment_status", "transaction_status", "status_code"):
+            value = item.get(key)
+            if value not in (None, ""):
+                return re.sub(r"[\s-]+", "_", str(value).strip().lower())
+    return ""
 
 
 SUCCESS_STATUSES = {
     "completed", "complete", "success", "successful", "sent", "paid", "succeeded",
+    "approved", "confirmed", "validated", "settled", "successfully_completed",
 }
 FAILURE_STATUSES = {
     "failed", "failure", "cancelled", "canceled", "rejected", "declined",
