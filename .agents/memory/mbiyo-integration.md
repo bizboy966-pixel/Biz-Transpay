@@ -63,3 +63,16 @@ identify a customer or another resource.
 containers, enforce uniqueness, verify the merchant order binding
 server-to-server, and route every success through the exactly-once wallet
 credit barrier.
+
+The provider selected when a payment is created is authoritative for every
+later status read, callback, retry, finalization, and reconciliation attempt.
+Never send a transaction created by one provider to another provider's verifier.
+
+**Why:** Multiple Mobile Money providers may be active at the same time, and a
+shared verifier could confirm the wrong transaction or leave a valid payment
+permanently pending.
+
+**How to apply:** Persist the provider on the payment record, dispatch through
+provider-specific adapters using that stored value, and reject/ignore any
+callback or status response that does not match the recorded provider and
+transaction identity.
