@@ -36,3 +36,17 @@ mtime_ms = 1789762738343
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/7383c31c-e6df-4941-b01f-cb7c6829972a/29945a5c-b8f0-498f-86ce-62db11926572"
 storage_version_token = "1789762781469194"
 content_type = "image/jpeg"
+
+[[outputs]]
+id = "MuDxXNrIQ7p7_S7r08IwY"
+uri = "file://screenshots/biz-transpay-api-docs-preview.pdf"
+type = "pdf"
+title = "Documentation API Biz-transPay"
+description = "PDF généré depuis le backend, avec paiements Mobile Money, vérification automatique MBIO, expiration à 10 minutes, idempotence et webhooks HMAC."
+logical_id = "1ccdfffe-b863-4cfc-873a-d98f8d556284"
+content_hash = "sha256:1b2303caec2aa3da7a104be207bf911b2d1e2f2645a9753b85d20f19509db62b"
+size = 16327
+mtime_ms = 1790041441318
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/1ccdfffe-b863-4cfc-873a-d98f8d556284/9fd932f1-3e87-4457-83d9-158a9daf6e62"
+storage_version_token = "1790041535438144"
+content_type = "application/pdf"

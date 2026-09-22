@@ -8209,27 +8209,53 @@ async def merchant_list_payments(request: Request,
     _require_merchant_scope(merchant, "payments:read")
     q: dict = {"merchant_id": merchant["id"],
                "environment": merchant.get("_api_env", "test")}
+    momo_q: dict = {
+        "user_id": merchant["id"],
+        **_api_environment_clause(merchant),
+        "product": {"$in": ["bizpay_checkout", "bizpay_direct"]},
+    }
     if status:
         q["status"] = status
+        momo_q["status"] = "approved" if status == "paid" else status
     if reference:
         q["reference"] = reference
-    total = await db.merchant_payments.count_documents(q)
-    docs = await db.merchant_payments.find(q, {"_id": 0}) \
-        .sort("created_at", -1).skip(offset).limit(limit + 1).to_list(limit + 1)
-    has_more = len(docs) > limit
-    docs = docs[:limit]
+        momo_q["reference"] = reference
+    crypto_total, momo_total = await asyncio.gather(
+        db.merchant_payments.count_documents(q),
+        db.momo_deposits.count_documents(momo_q),
+    )
+    fetch_limit = offset + limit + 1
+    crypto_docs, momo_docs = await asyncio.gather(
+        db.merchant_payments.find(q, {"_id": 0})
+        .sort("created_at", -1).limit(fetch_limit).to_list(fetch_limit),
+        db.momo_deposits.find(momo_q, {"_id": 0})
+        .sort("created_at", -1).limit(fetch_limit).to_list(fetch_limit),
+    )
+    combined = [
+        *[(_serialize_payment(doc), doc) for doc in crypto_docs],
+        *[(_developer_payment_view(doc), doc) for doc in momo_docs],
+    ]
+    combined.sort(
+        key=lambda item: str(item[1].get("created_at") or ""), reverse=True
+    )
+    page = combined[offset:offset + limit]
+    total = crypto_total + momo_total
+    has_more = offset + limit < total
 
     # Best-effort background reconcile for pending payments in the page —
     # fire-and-forget so the response stays snappy.
-    pending_ids = [d["izipay_intent_id"] for d in docs
+    pending_ids = [d["izipay_intent_id"] for _, d in page
                    if d.get("status") not in ("paid", "expired", "failed", "canceled")
                    and d.get("izipay_intent_id")]
     for intent_id in pending_ids[:10]:  # cap to avoid spamming upstream
         asyncio.create_task(_safe_reconcile(intent_id))
+    for _, payment in page[:10]:
+        if payment.get("provider") == "mbiyo" and payment.get("status") == "pending":
+            asyncio.create_task(_safe_reconcile_mbiyo(payment["id"]))
 
     return {
-        "data": [_serialize_payment(d) for d in docs],
-        "count": len(docs),
+        "data": [public for public, _ in page],
+        "count": len(page),
         "total": total,
         "offset": offset,
         "limit": limit,
@@ -8244,15 +8270,36 @@ async def merchant_search_payment(request: Request,
     Returns 404 if no payment matches. Sync with upstream before returning."""
     merchant = await _authenticate_merchant(request)
     _require_merchant_scope(merchant, "payments:read")
-    mp = await db.merchant_payments.find_one(
+    mp, momo = await asyncio.gather(
+        db.merchant_payments.find_one(
         {"merchant_id": merchant["id"], "environment": merchant.get("_api_env", "test"),
          "reference": reference},
         {"_id": 0},
         sort=[("created_at", -1)],
+        ),
+        db.momo_deposits.find_one(
+            {"user_id": merchant["id"], **_api_environment_clause(merchant),
+             "product": {"$in": ["bizpay_checkout", "bizpay_direct"]},
+             "reference": reference},
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        ),
     )
-    if not mp:
+    if not mp and not momo:
         raise BizAPIError(404, "No payment found for this reference",
                           "PAYMENT_NOT_FOUND")
+    if momo and (
+        not mp or str(momo.get("created_at") or "") >= str(mp.get("created_at") or "")
+    ):
+        if momo.get("status") == "pending":
+            if momo.get("provider") == "mbiyo":
+                await _reconcile_mbiyo_deposit(momo["id"])
+            else:
+                await _reconcile_momo_deposit(momo["id"])
+            momo = await db.momo_deposits.find_one(
+                {"id": momo["id"], "user_id": merchant["id"],
+                 **_api_environment_clause(merchant)}, {"_id": 0}) or momo
+        return _developer_payment_view(momo)
     if mp.get("status") not in ("paid", "expired", "failed", "canceled") \
             and mp.get("izipay_intent_id"):
         await _reconcile_intent(mp["izipay_intent_id"])
@@ -8270,7 +8317,6 @@ async def merchant_get_payment(payment_id: str, request: Request):
     """Full details for a single payment. Triggers an upstream sync when the
     payment is still pending so the returned data is always fresh."""
     merchant = await _authenticate_merchant(request)
-    _require_merchant_scope(merchant, "payments:read")
     _require_merchant_scope(merchant, "payments:read")
     momo = await db.momo_deposits.find_one(
         {"id": payment_id, "user_id": merchant["id"],
@@ -8305,7 +8351,6 @@ async def merchant_get_payment_status(payment_id: str, request: Request):
     """Lightweight status endpoint. Returns `{id, status, updated_at}` — cheaper
     than the full resource, ideal for repeated polling. Auto-syncs upstream."""
     merchant = await _authenticate_merchant(request)
-    _require_merchant_scope(merchant, "payments:read")
     _require_merchant_scope(merchant, "payments:read")
     momo = await db.momo_deposits.find_one(
         {"id": payment_id, "user_id": merchant["id"],
@@ -8432,6 +8477,15 @@ async def _safe_reconcile(intent_id: str) -> None:
         await _reconcile_intent(intent_id)
     except Exception as e:  # noqa: BLE001
         logger.warning("background reconcile failed for %s: %s", intent_id, e)
+
+
+async def _safe_reconcile_mbiyo(payment_id: str) -> None:
+    """Keep list responses fast while refreshing pending Mbiyo payments."""
+    try:
+        await _reconcile_mbiyo_deposit(payment_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("background Mbiyo reconcile failed for %s: %s",
+                       payment_id, exc)
 
 
 # ==================== BIZPAY DIRECT (Mobile Money, no redirect) ====================
@@ -11026,8 +11080,8 @@ async def playground_execute(req: PlaygroundRequest,
 @api.get("/documentation.pdf")
 async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     """Generate a professional PDF of the Biz-transPay API documentation.
-    Reflects the current architecture: crypto Pay-In + Payouts, polling only
-    (no webhooks). Kept in sync with the online /dashboard/api/docs page."""
+    Kept in sync with the developer API, Mobile Money reconciliation and
+    signed merchant webhooks described by /dashboard/api/docs."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import cm
@@ -11085,9 +11139,10 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     story.append(Paragraph("<b>Documentation officielle de l\'API</b>", styles["Bodybtp"]))
     story.append(Spacer(1, 6))
     story.append(p(f"Version 1.0 . Domaine : <b>{OFFICIAL}</b> . Base URL : <b>{API_BASE}/v1</b>"))
-    story.append(p("Encaissez des paiements crypto (Pay-In) et envoyez des retraits (Payouts) via "
-                   "une API REST simple. Aucune configuration de webhooks n\'est requise : "
-                   "vous interrogez nos endpoints /status pour connaitre l\'etat de chaque operation."))
+    story.append(p("Encaissez des paiements Mobile Money ou crypto via une API REST. "
+                   "Biz-transPay verifie automatiquement le statut aupres du prestataire, "
+                   "credite le compte exactement une fois et peut notifier votre serveur "
+                   "avec un webhook HMAC signe."))
     story.append(p("<b>Support</b> : depuis votre tableau de bord (> Support) ou par email."))
 
     # ---------------- Auth ----------------
@@ -11099,7 +11154,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
                    "ni versionnee dans un depot Git."))
 
     # ---------------- Keys ----------------
-    story.append(h2("2. Cles API"))
+    story.append(h2("2. Clés API"))
     story.append(p("Deux types de cles :"))
     story.append(_table([
         ["Prefixe", "Environnement", "Utilisation"],
@@ -11115,7 +11170,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     story.append(p("Encaissez des paiements crypto de vos clients. Notre systeme genere un lien de "
                    "checkout hoste, vous redirigez le client, puis vous verifiez le statut."))
 
-    story.append(h3("Creer un paiement"))
+    story.append(h3("Créer un paiement"))
     story.append(p(f"<b>POST</b> <font face=\"Courier\">{API_BASE}/v1/payments</font>"))
     story.append(code("""{
   "amount": 25.00,
@@ -11151,9 +11206,58 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
         ["canceled", "Annule via /cancel"],
     ], [3 * cm, 13.5 * cm]))
 
+    story.append(h2("4. Paiements Mobile Money"))
+    story.append(p("Utilisez POST /v1/payments avec payment_method=mobile_money, "
+                   "ou les produits /v1/checkout et /v1/direct-payments. "
+                   "Idempotency-Key est obligatoire afin qu'un retry reseau ne cree "
+                   "jamais une seconde transaction."))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/payments \\
+  -H "Authorization: Bearer sk_live_XXXXX" \\
+  -H "Idempotency-Key: order-2048-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"payment_method":"mobile_money","amount":500,
+       "currency":"XOF","country":"TG","operator":"togocom_tg",
+       "customer_phone":"22891978352","reference":"ORDER-2048"}}'"""))
+    story.append(p("Champs requis : amount, payment_method, currency, country, "
+                   "operator et customer_phone. Le numero peut etre national ou "
+                   "international : Biz-transPay reconnait les formats equivalents "
+                   "lors de la confirmation fournisseur."))
+    story.append(h3("Vérification et crédit automatiques"))
+    story.append(p("Conservez l'identifiant retourne puis appelez GET /v1/payments/{id}/status "
+                   "toutes les 4 a 5 secondes. Chaque lecture declenche une verification "
+                   "serveur-a-serveur. Des que le prestataire retourne successful, "
+                   "Biz-transPay repond paid, credite le compte exactement une fois et "
+                   "emet le webhook marchand configure."))
+    story.append(p("La fenetre de verification Mobile Money est de 10 minutes. Sans "
+                   "confirmation pendant cette fenetre, le paiement devient failed et "
+                   "la verification s'arrete."))
+    story.append(_table([
+        ["Statut public", "Signification"],
+        ["pending", "Verification automatique du prestataire en cours"],
+        ["paid", "Paiement confirme et compte credite exactement une fois"],
+        ["failed", "Refus fournisseur ou delai initial de 10 minutes expire"],
+    ], [3 * cm, 13.5 * cm]))
+
+    story.append(h2("5. Webhooks signés HMAC"))
+    story.append(p("Apres confirmation serveur-a-serveur, Biz-transPay envoie les "
+                   "changements de statut a vos endpoints actifs. Le paiement Mobile "
+                   "Money confirme utilise l'evenement mobile_money.payment.approved "
+                   "et expose le statut public paid."))
+    story.append(p("Verifiez X-BizTransPay-Signature sur la chaine "
+                   "X-BizTransPay-Timestamp + '.' + corps JSON brut. Conservez le "
+                   "polling /status comme reprise si votre endpoint est indisponible."))
+    story.append(code("""import crypto from 'node:crypto';
+const expected = 'sha256=' + crypto
+  .createHmac('sha256', process.env.BIZTRANSPAY_WEBHOOK_SECRET)
+  .update(timestamp + '.' + rawBody)
+  .digest('hex');
+if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+  throw new Error('Invalid webhook signature');
+}"""))
+
     # ---------------- Payouts ----------------
     story.append(PageBreak())
-    story.append(h2("4. Retraits (Payouts)"))
+    story.append(h2("6. Retraits (Payouts)"))
     story.append(p("Envoyez des crypto vers n\'importe quelle adresse externe. Le montant + frais est "
                    "debite du solde marchand puis relaye a la passerelle amont. Rembourse automatiquement "
                    "en cas de refus."))
@@ -11192,7 +11296,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
 
     # ---------------- Errors ----------------
     story.append(PageBreak())
-    story.append(h2("5. Gestion des erreurs"))
+    story.append(h2("7. Gestion des erreurs"))
     story.append(p("Toutes les erreurs suivent un format uniforme :"))
     story.append(code("""{
   "statusCode": 400,
@@ -11217,7 +11321,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
         ["IDEMPOTENCY_KEY_TOO_LONG", "Idempotency-Key superieur a 255 caracteres"],
     ], [6 * cm, 10.5 * cm]))
 
-    story.append(h3("Codes HTTP"))
+    story.append(h3("Codes de réponse HTTP"))
     story.append(_table([
         ["Code", "Signification"],
         ["200", "Succes"],
@@ -11233,7 +11337,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     ], [2 * cm, 14.5 * cm]))
 
     # ---------------- Idempotency + Rate limits ----------------
-    story.append(h2("6. Idempotence & Rate limits"))
+    story.append(h2("8. Idempotence & Rate limits"))
     story.append(p("Ajoutez un header <b>Idempotency-Key</b> (max 255 caracteres) a toute requete POST. "
                    "En cas de retry (timeout reseau, doublon), la meme cle retourne la reponse originale - "
                    "aucun doublon cote serveur. Fenetre : 24 heures."))
@@ -11243,7 +11347,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
 
     # ---------------- SDK Examples ----------------
     story.append(PageBreak())
-    story.append(h2("7. Exemples d\'integration"))
+    story.append(h2("9. Exemples d'intégration SDK"))
 
     story.append(h3("cURL"))
     story.append(code(f"""curl -X POST {API_BASE}/v1/payments \\
@@ -11314,6 +11418,15 @@ payment = requests.post(
 
 print('Redirect to:', payment['payment_url'])"""))
 
+    story.append(h3("Laravel"))
+    story.append(code("""$response = Http::withToken(env('BIZTRANSPAY_SECRET'))
+  ->withHeaders(['Idempotency-Key' => 'order-42-attempt-1'])
+  ->post('/api/v1/payments', [
+    'payment_method' => 'mobile_money',
+    'amount' => 500, 'currency' => 'XOF', 'country' => 'TG',
+    'operator' => 'togocom_tg', 'customer_phone' => '22891978352',
+  ]);"""))
+
     story.append(h3("Java"))
     story.append(code(f"""import java.net.http.*;
 import java.net.URI;
@@ -11347,7 +11460,7 @@ Console.WriteLine(payment["payment_url"]);"""))
 
     # ---------------- Footer ----------------
     story.append(PageBreak())
-    story.append(h2("8. Bonnes pratiques & FAQ"))
+    story.append(h2("10. Bonnes pratiques & FAQ"))
     story.append(p("- Toujours envoyer <b>Idempotency-Key</b> sur les POST pour eviter les doublons."))
     story.append(p("- Poller /status cote serveur, jamais depuis le navigateur (fuite de cle)."))
     story.append(p("- Stocker le champ <b>reference</b> pour rechercher plus tard via /search."))

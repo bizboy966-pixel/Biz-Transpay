@@ -113,7 +113,9 @@ class TestPdfDocumentation:
         required = [
             "Authentification", "Clés API", "Webhook", "HMAC",
             "Créer un paiement", "Codes de réponse HTTP",
-            "Exemples d'intégration SDK",
+            "Exemples d'intégration SDK", "Paiements Mobile Money",
+            "Vérification et crédit automatiques",
+            "mobile_money.payment.approved",
         ]
         for section in required:
             assert section in text, f"section missing: {section}\n---\n{text[:500]}"
@@ -124,6 +126,8 @@ class TestPdfDocumentation:
 
         # Signature verification snippet
         assert "createHmac" in text or "hmac.new" in text, "signature verification snippet missing"
+        assert "10 minutes" in text, "Mobile Money expiration rule missing"
+        assert "exactement une fois" in text, "exactly-once credit rule missing"
 
 
 if __name__ == "__main__":
