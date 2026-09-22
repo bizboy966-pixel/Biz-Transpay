@@ -76,3 +76,15 @@ permanently pending.
 provider-specific adapters using that stored value, and reject/ignore any
 callback or status response that does not match the recorded provider and
 transaction identity.
+
+The visible Mobile Money countdown is an initial confirmation window, not a
+provider failure deadline. Mbiyo deposits remain eligible for signed-callback
+and server-to-server reconciliation after the countdown reaches zero.
+
+**Why:** Mbiyo can receive and confirm funds after the initial user-interface
+window; marking the local deposit failed at that point strands paid funds and
+prevents the exactly-once wallet credit.
+
+**How to apply:** Keep unresolved Mbiyo collections pending and reconcile them
+for an extended period. Show that the initial delay elapsed without presenting
+it as a refusal, and expose merchant success consistently as `paid`.

@@ -201,20 +201,28 @@ def status_value(payload: dict) -> str:
     """Return a normalized transaction status across Mbiyo response shapes."""
     if not isinstance(payload, dict):
         return ""
+    containers = ("data", "result", "payload", "event", "transaction",
+                  "transaction_data", "payment")
     candidates = []
-    for key in ("data", "transaction", "payment"):
-        value = payload.get(key)
-        if isinstance(value, dict):
-            for nested_key in ("transaction", "payment"):
-                nested = value.get(nested_key)
-                if isinstance(nested, dict):
-                    candidates.append(nested)
-            candidates.append(value)
-    candidates.append(payload)
-    for item in candidates:
-        for key in ("status", "payment_status", "transaction_status", "status_code"):
+
+    def collect(item: Any) -> None:
+        if not isinstance(item, dict):
+            return
+        for key in containers:
             value = item.get(key)
-            if value not in (None, ""):
+            if isinstance(value, dict):
+                collect(value)
+            elif isinstance(value, list):
+                for nested in value:
+                    collect(nested)
+        candidates.append(item)
+
+    collect(payload)
+    for item in candidates:
+        for key in ("status", "state", "payment_status", "payment_state",
+                    "transaction_status", "transaction_state", "status_code"):
+            value = item.get(key)
+            if value not in (None, "") and not isinstance(value, (dict, list)):
                 return re.sub(r"[\s-]+", "_", str(value).strip().lower())
     return ""
 
@@ -222,6 +230,7 @@ def status_value(payload: dict) -> str:
 SUCCESS_STATUSES = {
     "completed", "complete", "success", "successful", "sent", "paid", "succeeded",
     "approved", "confirmed", "validated", "settled", "successfully_completed",
+    "processed", "paid_successfully", "payment_successful",
 }
 FAILURE_STATUSES = {
     "failed", "failure", "cancelled", "canceled", "rejected", "declined",

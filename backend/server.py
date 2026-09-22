@@ -8,6 +8,7 @@ import asyncio
 import json
 import copy
 import ipaddress
+import math
 import re
 import base64
 import socket
@@ -4611,10 +4612,18 @@ def _mbiyo_transaction_id(payload: Any, allow_short_fields: bool = False) -> Opt
             value = payload.get(key)
             if value not in (None, ""):
                 return str(value)
-    for key in ("data", "transaction", "payment"):
-        found = _mbiyo_transaction_id(payload.get(key), allow_short_fields=True)
-        if found:
-            return found
+    for key in ("data", "result", "payload", "event", "transaction",
+                "transaction_data", "payment"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            for item in value:
+                found = _mbiyo_transaction_id(item, allow_short_fields=True)
+                if found:
+                    return found
+        else:
+            found = _mbiyo_transaction_id(value, allow_short_fields=True)
+            if found:
+                return found
     return None
 
 
@@ -4630,7 +4639,8 @@ def _provider_scalar(payload: Any, *keys: str) -> Any:
     found = _provider_scalar(metadata, *keys)
     if found not in (None, ""):
         return found
-    for key in ("data", "transaction", "payment"):
+    for key in ("data", "result", "payload", "event", "transaction",
+                "transaction_data", "payment"):
         found = _provider_scalar(payload.get(key), *keys)
         if found not in (None, ""):
             return found
@@ -4662,7 +4672,8 @@ def _mbiyo_response_fields(response: dict) -> dict:
 
 
 async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request,
-                                uid: str):
+                                uid: str,
+                                record_context: Optional[dict] = None):
     cfg = await get_mbiyo_config(decrypt=True)
     if not cfg.get("enabled") or not cfg.get("_api_key"):
         raise HTTPException(503, "La passerelle Mobile Money n’est pas configurée")
@@ -4733,6 +4744,14 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
         ).isoformat(),
     }
+    if record_context:
+        pending_doc.update(record_context)
+        if pending_doc.get("source") == "merchant_api":
+            pending_doc["merchant_id"] = pending_doc.get("merchant_id") or uid
+            pending_doc["reference"] = pending_doc.get("reference") or dep_id
+            pending_doc["merchant_reference"] = (
+                pending_doc.get("merchant_reference") or pending_doc["reference"]
+            )
     await db.momo_deposits.insert_one(pending_doc)
     try:
         metadata = {"network": op.get("network"),
@@ -4748,11 +4767,18 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
                  metadata=metadata)
     except mbiyo.MbiyoError as exc:
         if exc.status < 500:
+            safe_reason = re.sub(r"[\r\n]+", " ", str(exc.message or "")).strip()[:180]
             await db.momo_deposits.update_one(
                 {"id": dep_id, "status": "pending"},
-                {"$set": {"status": "failed", "provider_status": "rejected"}},
+                {"$set": {"status": "failed", "provider_status": "rejected",
+                          "failed_reason": safe_reason or "provider_rejected",
+                          "provider_error_status": exc.status}},
             )
-            raise HTTPException(400, "La passerelle Mobile Money a refusé la demande.")
+            raise HTTPException(
+                400,
+                ("La passerelle Mobile Money a refusé la demande"
+                 + (f" : {safe_reason}" if safe_reason else ".")),
+            )
         await db.momo_deposits.update_one(
             {"id": dep_id, "status": "pending"},
             {"$set": {"submission_unknown": True,
@@ -4803,6 +4829,16 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "created_at": pending_doc["created_at"],
         "pending_expires_at": pending_doc["pending_expires_at"],
     }
+    if record_context:
+        doc.update({
+            key: pending_doc.get(key)
+            for key in (
+                "merchant_id", "source", "environment", "product", "reference",
+                "merchant_reference", "metadata", "link_payment_id",
+                "single_use_claim_id",
+            )
+            if pending_doc.get(key) is not None
+        })
     await db.momo_deposits.update_one({"id": dep_id}, {"$set": doc})
     if mbiyo.status_value(response) in mbiyo.SUCCESS_STATUSES:
         # Do not trust the initiation response alone. Re-read the transaction
@@ -4826,6 +4862,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             "instructions": doc.get("instructions"),
              "created_at": doc.get("created_at"),
              "pending_expires_at": doc.get("pending_expires_at"),
+            "pending_remaining_seconds": MOMO_PENDING_TIMEOUT_MINUTES * 60,
             "otp_required": doc.get("auth_mode") == "pin",
             "challenge_status": "required" if doc.get("auth_mode") == "pin" else "pending",
             "message": "Suivez les instructions affichées puis validez la demande sur votre téléphone."}
@@ -5419,6 +5456,16 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
     if not expiry or expiry > datetime.now(timezone.utc):
         return False
     now = now_iso()
+    if d.get("provider") == "mbiyo":
+        # This deadline only controls the visible countdown. A delayed Mbiyo
+        # confirmation remains payable and must continue through reconciliation.
+        await db.momo_deposits.update_one(
+            {"id": d["id"], "status": "pending",
+             "verification_window_elapsed_at": {"$exists": False}},
+            {"$set": {"verification_window_elapsed_at": now,
+                      "retryable": True}},
+        )
+        return False
     result = await db.momo_deposits.update_one(
         {"id": d["id"], "status": "pending"},
         {"$set": {
@@ -5521,9 +5568,7 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
     }
     for key, (received, expected) in checks.items():
         if received in (None, "") or expected in (None, ""):
-            binding_already_verified = (
-                key == "order_id" and d.get("provider_binding_verified") is True
-            )
+            binding_already_verified = d.get("provider_binding_verified") is True
             if key in {"amount", "currency", "order_id"} and not binding_already_verified:
                 await db.momo_deposits.update_one(
                     {"id": dep_id, "status": "pending"},
@@ -5569,7 +5614,7 @@ async def _paydunya_reconcile_loop() -> None:
     """Repair paid deposits even when the browser and provider callback vanish."""
     while True:
         try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
             cursor = db.momo_deposits.find(
                 {
                     "provider": {"$in": ["paydunya", "mbiyo"]},
@@ -5827,7 +5872,7 @@ async def _credit_momo_deposit(d: dict) -> None:
             "country": d.get("country"), "operator": d.get("operator"),
             "customer_email": d.get("email"), "customer_phone": d.get("phone_number"),
             "provider_reference": d.get("paydunya_reference")
-                or d.get("fedapay_reference"),
+                or d.get("fedapay_reference") or d.get("mbiyo_transaction_id"),
             "approved_at": _format_iso(datetime.now(timezone.utc))})
         await db.momo_deposits.update_one(
             {"id": dep_id}, {"$set": {"webhook_sent": True}})
@@ -5888,10 +5933,17 @@ def _public_momo_deposit(d: dict) -> dict:
     """Expose only generic challenge/status fields to a dashboard client."""
     flow = d.get("payment_flow") or {}
     auth_mode = d.get("auth_mode")
+    expiry = _momo_pending_expiry(d)
+    pending_remaining_seconds = (
+        max(0, math.ceil((expiry - datetime.now(timezone.utc)).total_seconds()))
+        if expiry else None
+    )
     return {
         "id": d.get("id"), "status": d.get("status"),
         "created_at": d.get("created_at"),
         "pending_expires_at": d.get("pending_expires_at"),
+        "pending_remaining_seconds": pending_remaining_seconds,
+        "verification_window_elapsed": bool(d.get("verification_window_elapsed_at")),
         "amount": d.get("amount"), "requested_amount": d.get("requested_amount"),
         "charged_amount": d.get("charged_amount"),
         "amount_net": d.get("amount_net") or d.get("wallet_credit_amount"),
@@ -6125,7 +6177,15 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
     if not mbiyo.verify_signature(raw, signature, cfg.get("_webhook_secret", "")):
         raise HTTPException(400, "Signature Mbiyo invalide")
     try:
-        payload = json.loads(raw or b"{}")
+        content_type = str(request.headers.get("content-type") or "").lower()
+        if "application/x-www-form-urlencoded" in content_type:
+            from urllib.parse import parse_qs
+            payload = {
+                key: values[-1] if len(values) == 1 else values
+                for key, values in parse_qs(raw.decode("utf-8")).items()
+            }
+        else:
+            payload = json.loads(raw or b"{}")
     except Exception:
         raise HTTPException(400, "Payload Mbiyo invalide")
     provider_id = str(_mbiyo_transaction_id(payload) or "")
@@ -6145,7 +6205,12 @@ async def mbiyo_webhook(request: Request, ref: str = Query("")):
         )
     if not provider_id:
         return {"received": True}
-    event_id = f"mbiyo:{provider_id}:{mbiyo.status_value(payload)}"
+    provider_event_id = _provider_scalar(payload, "event_id", "eventId", "webhook_id")
+    payload_digest = hashlib.sha256(raw).hexdigest()[:24]
+    event_id = (
+        f"mbiyo:event:{provider_event_id}"
+        if provider_event_id else f"mbiyo:{provider_id}:{payload_digest}"
+    )
     try:
         await db.webhook_events.create_index("event_id", unique=True, sparse=True)
         await db.webhook_events.insert_one({"event_id": event_id, "type": "mbiyo",
@@ -7359,6 +7424,7 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
             raise HTTPException(400, "Cet opérateur est désactivé.")
         single_use_claim = await _claim_single_use_link(link)
         dep_id = None
+        lp_id = new_id()
         try:
             mb_req = MobileMoneyDepositRequest(
                 amount=amount, currency=str(mb_op.get("currency") or "XOF"),
@@ -7367,7 +7433,12 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 fee_bearer=req.fee_bearer,
             )
             result = await _create_mbiyo_deposit(
-                mb_req, request, link["user_id"]
+                mb_req, request, link["user_id"],
+                record_context={
+                    "source": "link_payment",
+                    "link_payment_id": lp_id,
+                    "single_use_claim_id": single_use_claim,
+                },
             )
             dep_id = result["id"]
             dep = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
@@ -7379,7 +7450,6 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 {"$set": {"source": "link_payment", "link_payment_id": None,
                           "single_use_claim_id": single_use_claim}},
             )
-            lp_id = new_id()
             lp = {
                 "id": lp_id, "link_id": link["id"], "slug": req.slug,
                 "method": "mobile_money", "amount": amount,
@@ -7408,6 +7478,14 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 {"$set": {"link_payment_id": lp_id}},
             )
             await db.link_payments.insert_one(lp)
+            if result.get("status") == "approved":
+                # Immediate provider success can precede creation of the local
+                # link-payment row. Re-run the exactly-once credit finalizer now
+                # so its idempotent link ledger/counter side effects are repaired.
+                fresh_dep = await db.momo_deposits.find_one(
+                    {"id": dep_id}, {"_id": 0})
+                if fresh_dep:
+                    await _credit_momo_deposit(fresh_dep)
             public_result = _public_link_payment_status(lp)
             if finalize_capability:
                 public_result["finalize_capability"] = finalize_capability
@@ -7707,8 +7785,15 @@ def _require_merchant_scope(merchant: dict, scope: str) -> None:
 
 class MerchantPaymentRequest(BaseModel):
     amount: float
+    payment_method: Literal["crypto", "mobile_money"] = "crypto"
     coin: str = "USDT"
     accepted_networks: Optional[list[str]] = None
+    currency: Optional[str] = None
+    country: Optional[str] = Field(None, min_length=2, max_length=2)
+    operator: Optional[str] = Field(None, min_length=2, max_length=64)
+    customer_phone: Optional[str] = Field(None, min_length=6, max_length=32)
+    customer_name: str = Field("Client", min_length=1, max_length=120)
+    fee_bearer: Literal["client", "merchant"] = "client"
     reference: Optional[str] = None       # merchant's own reference
     customer_email: Optional[str] = None
     return_url: Optional[str] = None
@@ -7818,6 +7903,47 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
     merchant = await _authenticate_merchant(request)
     _require_merchant_scope(merchant, "checkout:create")
     owner = _developer_owner(merchant)
+    if payload.payment_method == "mobile_money":
+        missing = [
+            name for name, value in (
+                ("currency", payload.currency),
+                ("country", payload.country),
+                ("operator", payload.operator),
+                ("customer_phone", payload.customer_phone),
+            )
+            if not value
+        ]
+        if missing:
+            raise BizAPIError(
+                400,
+                "Missing Mobile Money fields: " + ", ".join(missing),
+                "MISSING_REQUIRED_FIELD",
+                details={"missing_fields": missing},
+            )
+        try:
+            mobile_payload = DeveloperCheckoutRequest(
+                amount=payload.amount,
+                currency=str(payload.currency).upper(),
+                country=str(payload.country).upper(),
+                operator=payload.operator,
+                customer_phone=payload.customer_phone,
+                customer_email=payload.customer_email,
+                customer_name=payload.customer_name,
+                fee_bearer=payload.fee_bearer,
+                reference=payload.reference,
+                return_url=payload.return_url,
+                metadata=payload.metadata,
+            )
+        except Exception as exc:
+            raise BizAPIError(
+                400, "Invalid Mobile Money payment request.",
+                "INVALID_PAYMENT_REQUEST",
+                details={"reason": str(exc)[:240]},
+            )
+        return await _developer_checkout(
+            mobile_payload, request, "bizpay_checkout",
+            idem_path="/api/v1/payments",
+        )
 
     # ---- Idempotency ----------------------------------------------------
     idem_key = (request.headers.get("Idempotency-Key")
@@ -8178,7 +8304,8 @@ async def merchant_get_payment_status(payment_id: str, request: Request):
             momo = await db.momo_deposits.find_one(
                 {"id": payment_id, "user_id": merchant["id"],
                  "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or momo
-        return {"id": momo["id"], "status": momo.get("status"),
+        return {"id": momo["id"],
+                "status": "paid" if momo.get("status") == "approved" else momo.get("status"),
                 "updated_at": _format_iso(momo.get("updated_at")
                                            or momo.get("created_at", ""))}
     mp = await db.merchant_payments.find_one(
@@ -8206,6 +8333,25 @@ async def merchant_check_completed(payment_id: str, request: Request):
     payment status is `paid`. Auto-syncs with upstream."""
     merchant = await _authenticate_merchant(request)
     _require_merchant_scope(merchant, "payments:read")
+    momo = await db.momo_deposits.find_one(
+        {"id": payment_id, "user_id": merchant["id"],
+         **_api_environment_clause(merchant),
+         "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
+    if momo:
+        if momo.get("status") == "pending":
+            if momo.get("provider") == "mbiyo":
+                await _reconcile_mbiyo_deposit(payment_id)
+            else:
+                await _reconcile_momo_deposit(payment_id)
+            momo = await db.momo_deposits.find_one(
+                {"id": payment_id, "user_id": merchant["id"],
+                 "environment": merchant.get("_api_env", "test")}, {"_id": 0}) or momo
+        public_status = "paid" if momo.get("status") == "approved" else momo.get("status")
+        return {
+            "id": momo["id"],
+            "completed": public_status == "paid",
+            "status": public_status,
+        }
     mp = await db.merchant_payments.find_one(
         {"id": payment_id, "merchant_id": merchant["id"],
          "environment": merchant.get("_api_env", "test")}, {"_id": 0})
@@ -8439,9 +8585,10 @@ def _sandbox_checkout_url(payment_id: str) -> str:
 
 
 def _developer_payment_view(doc: dict) -> dict:
+    public_status = "paid" if doc.get("status") == "approved" else doc.get("status", "pending")
     return {
         "id": doc["id"], "object": "payment", "product": doc.get("product"),
-        "status": doc.get("status", "pending"),
+        "status": public_status,
         "amount": _format_amount(doc.get("amount", 0)),
         "requested_amount": _format_amount(
             doc.get("requested_amount", doc.get("amount", 0))),
@@ -8467,7 +8614,8 @@ def _developer_payment_view(doc: dict) -> dict:
 
 
 async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Request,
-                              product: str) -> dict:
+                              product: str,
+                              idem_path: str = "/api/v1/checkout") -> dict:
     merchant = await _authenticate_merchant(request)
     _require_merchant_scope(merchant, "checkout:create")
     idem = (request.headers.get("Idempotency-Key") or "").strip()
@@ -8476,8 +8624,7 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
     fp = _request_fingerprint(payload)
     owner = _developer_owner(merchant)
     local_id = None
-    cached = await _idempotency_claim(owner, idem, "POST",
-                                      "/api/v1/checkout", fp)
+    cached = await _idempotency_claim(owner, idem, "POST", idem_path, fp)
     if cached and cached.get("body") is not None:
         return cached["body"]
     try:
@@ -8497,16 +8644,29 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
                 fee_bearer=payload.fee_bearer,
                 idempotency_key=idem,
             )
-            result = await _create_mbiyo_deposit(mb_req, request, merchant["id"])
+            result = await _create_mbiyo_deposit(
+                mb_req, request, merchant["id"],
+                record_context={
+                    "merchant_id": merchant["id"],
+                    "source": "merchant_api",
+                    "environment": "live",
+                    "product": product,
+                    "reference": payload.reference,
+                    "merchant_reference": payload.reference,
+                    "metadata": payload.metadata or {},
+                },
+            )
             await db.momo_deposits.update_one(
                 {"id": result["id"]},
                 {"$set": {"merchant_id": merchant["id"], "source": "merchant_api",
                           "environment": "live", "product": product,
-                          "merchant_reference": payload.reference or result["id"]}},
+                           "reference": payload.reference or result["id"],
+                           "merchant_reference": payload.reference or result["id"],
+                           "metadata": payload.metadata or {}}},
             )
             doc = await db.momo_deposits.find_one({"id": result["id"]}, {"_id": 0})
             body = _developer_payment_view(doc)
-            await _idempotency_store(owner, idem, "POST", "/api/v1/checkout", 200, body)
+            await _idempotency_store(owner, idem, "POST", idem_path, 200, body)
             return body
         req = PayDunyaInvoiceRequest(
             amount=payload.amount, currency=payload.currency,
@@ -8561,8 +8721,7 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
             )
             doc = await db.momo_deposits.find_one({"id": result["id"]}, {"_id": 0})
         body = _developer_payment_view(doc)
-        await _idempotency_store(owner, idem, "POST",
-                                 "/api/v1/checkout", 200, body)
+        await _idempotency_store(owner, idem, "POST", idem_path, 200, body)
         return body
     except Exception:
         if local_id:
@@ -8585,7 +8744,7 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
                             "provider_status_unknown": True})
                 try:
                     await _idempotency_store(
-                        owner, idem, "POST", "/api/v1/checkout", 200,
+                        owner, idem, "POST", idem_path, 200,
                         _developer_payment_view(doc))
                 except Exception:
                     pass
@@ -8630,12 +8789,25 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
                 phone_number=payload.customer_phone or "",
                 idempotency_key=idem,
             )
-            result = await _create_mbiyo_deposit(mb_req, request, merchant["id"])
+            result = await _create_mbiyo_deposit(
+                mb_req, request, merchant["id"],
+                record_context={
+                    "merchant_id": merchant["id"],
+                    "source": "merchant_api",
+                    "environment": "live",
+                    "product": "bizpay_direct",
+                    "reference": payload.reference,
+                    "merchant_reference": payload.reference,
+                    "metadata": payload.metadata or {},
+                },
+            )
             await db.momo_deposits.update_one(
                 {"id": result["id"]},
                 {"$set": {"merchant_id": merchant["id"], "source": "merchant_api",
                           "environment": "live", "product": "bizpay_direct",
-                          "merchant_reference": payload.reference or result["id"]}},
+                           "reference": payload.reference or result["id"],
+                           "merchant_reference": payload.reference or result["id"],
+                           "metadata": payload.metadata or {}}},
             )
             doc = await db.momo_deposits.find_one({"id": result["id"]}, {"_id": 0})
             body = _developer_payment_view(doc)

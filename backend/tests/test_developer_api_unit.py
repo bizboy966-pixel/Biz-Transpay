@@ -386,6 +386,51 @@ async def test_crypto_payment_sandbox_snapshots_fee(monkeypatch):
 
 
 @run_async
+async def test_legacy_payments_route_dispatches_mobile_money(monkeypatch):
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    captured = {}
+
+    async def fake_checkout(payload, req, product, idem_path="/api/v1/checkout"):
+        captured.update({
+            "payload": payload,
+            "product": product,
+            "idem_path": idem_path,
+        })
+        return {"id": "momo-1", "status": "pending"}
+
+    monkeypatch.setattr(server, "_developer_checkout", fake_checkout)
+    result = await server.merchant_create_payment(
+        server.MerchantPaymentRequest(
+            amount=1000,
+            payment_method="mobile_money",
+            currency="XOF",
+            country="TG",
+            operator="mbiyo_togocom_tg",
+            customer_phone="90123456",
+            reference="ORDER-1",
+        ),
+        request(headers={"Idempotency-Key": "mobile-test-key"}),
+    )
+
+    assert result == {"id": "momo-1", "status": "pending"}
+    assert captured["product"] == "bizpay_checkout"
+    assert captured["idem_path"] == "/api/v1/payments"
+    assert captured["payload"].currency == "XOF"
+    assert captured["payload"].customer_phone == "90123456"
+
+
+def test_developer_payment_view_normalizes_approved_to_paid():
+    view = server._developer_payment_view({
+        "id": "momo-1",
+        "status": "approved",
+        "amount": 1000,
+        "currency": "XOF",
+    })
+    assert view["status"] == "paid"
+
+
+@run_async
 async def test_crypto_payout_sandbox_snapshots_fee(monkeypatch):
     fake = FakeDB()
     monkeypatch.setattr(server, "db", fake)

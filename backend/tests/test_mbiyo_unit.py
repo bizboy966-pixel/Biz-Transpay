@@ -65,6 +65,12 @@ def test_status_value_supports_nested_provider_success_shapes():
         "data": {"payment": {"transaction_status": "Successfully Completed"}},
     }) == "successfully_completed"
     assert {"validated", "successfully_completed"} <= mbiyo.SUCCESS_STATUSES
+    assert mbiyo.status_value({
+        "payload": {"result": {"transaction_data": {
+            "payment_state": "Paid Successfully",
+        }}},
+    }) == "paid_successfully"
+    assert "paid_successfully" in mbiyo.SUCCESS_STATUSES
 
 
 def test_client_sends_bearer_and_exact_nested_payload(monkeypatch):

@@ -848,6 +848,9 @@ function MobileMoneyTracker({ deposit }) {
   const [finalizeError, setFinalizeError] = useState('');
   const expiryCheckRef = useRef(null);
   const [remainingSeconds, setRemainingSeconds] = useState(() => {
+    if (Number.isFinite(Number(deposit.pending_remaining_seconds))) {
+      return Math.max(0, Math.ceil(Number(deposit.pending_remaining_seconds)));
+    }
     const expiry = new Date(deposit.pending_expires_at || (
       new Date(new Date(deposit.created_at || Date.now()).getTime() + MOMO_PENDING_SECONDS * 1000)
     )).getTime();
@@ -883,6 +886,17 @@ function MobileMoneyTracker({ deposit }) {
 
   useEffect(() => {
     if (d.status !== 'pending') return undefined;
+    const serverRemaining = Number(d.pending_remaining_seconds);
+    if (Number.isFinite(serverRemaining)) {
+      const observedAt = Date.now();
+      const tick = () => setRemainingSeconds(Math.max(
+        0,
+        Math.ceil(serverRemaining - ((Date.now() - observedAt) / 1000)),
+      ));
+      tick();
+      const timer = setInterval(tick, 1000);
+      return () => clearInterval(timer);
+    }
     const expiry = new Date(d.pending_expires_at || (
       new Date(new Date(d.created_at || Date.now()).getTime() + MOMO_PENDING_SECONDS * 1000)
     )).getTime();
@@ -890,7 +904,7 @@ function MobileMoneyTracker({ deposit }) {
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
-  }, [d.created_at, d.pending_expires_at, d.status]);
+  }, [d.created_at, d.pending_expires_at, d.pending_remaining_seconds, d.status]);
 
   useEffect(() => {
     if (d.status !== 'pending' || remainingSeconds > 0) return undefined;
