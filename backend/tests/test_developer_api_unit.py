@@ -76,6 +76,14 @@ def test_mbiyo_transaction_id_ignores_unrelated_nested_ids():
     }) is None
 
 
+def test_mbiyo_phone_match_accepts_country_prefix_but_rejects_other_number():
+    assert server._same_mobile_number("22891978352", "91978352")
+    assert server._same_mobile_number("+228 91 97 83 52", "91978352")
+    assert server._same_mobile_number("00228 91 97 83 52", "+22891978352")
+    assert not server._same_mobile_number("22890978352", "91978352")
+    assert not server._same_mobile_number("8352", "91978352")
+
+
 def test_provider_neutral_route_resolves_internal_mbiyo_code():
     catalog = [{
         "country": "GN", "code": "mbiyo_orange_gn",

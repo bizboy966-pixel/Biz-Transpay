@@ -4647,6 +4647,27 @@ def _provider_scalar(payload: Any, *keys: str) -> Any:
     return None
 
 
+def _same_mobile_number(received: Any, expected: Any) -> bool:
+    """Compare national and international representations of one MSISDN."""
+    received_digits = re.sub(r"\D", "", str(received or ""))
+    expected_digits = re.sub(r"\D", "", str(expected or ""))
+    if received_digits.startswith("00"):
+        received_digits = received_digits[2:]
+    if expected_digits.startswith("00"):
+        expected_digits = expected_digits[2:]
+    if not received_digits or not expected_digits:
+        return False
+    if received_digits == expected_digits:
+        return True
+    shorter, longer = sorted(
+        (received_digits, expected_digits), key=len
+    )
+    # Mobile Money providers commonly add the country calling code to the
+    # national number submitted by the customer. Keep at least seven matching
+    # digits so an unrelated short suffix cannot satisfy the identity check.
+    return len(shorter) >= 7 and longer.endswith(shorter)
+
+
 def _new_finalize_capability() -> tuple[str, str, str]:
     token = secrets.token_urlsafe(32)
     return token, hashlib.sha256(token.encode()).hexdigest(), (
@@ -5568,7 +5589,7 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
                 return False
             continue
         if key == "phone_number":
-            mismatch = re.sub(r"\D", "", str(received))[-12:] != re.sub(r"\D", "", str(expected))[-12:]
+            mismatch = not _same_mobile_number(received, expected)
         elif key == "amount":
             mismatch = abs(float(received) - float(expected)) > 1e-9
         else:
@@ -5612,6 +5633,10 @@ async def _paydunya_reconcile_loop() -> None:
                     "$or": [
                         {"status": "pending"},
                         {"status": "failed", "retryable": True},
+                        # Repair deposits quarantined by the former strict
+                        # national-vs-international phone comparison.
+                        {"status": "quarantined",
+                         "reconciliation_mismatch": "phone_number"},
                     ],
                 },
                 {"_id": 0, "id": 1, "provider": 1},
@@ -5840,7 +5865,9 @@ async def _credit_momo_deposit(d: dict) -> None:
             ledger_id=f"{d.get('provider', 'paydunya')}-deposit-{dep_id}",
             metadata=metadata)
     await db.momo_deposits.update_one(
-        {"id": dep_id, "status": {"$in": ["pending", "approved", "failed"]}},
+        {"id": dep_id, "status": {
+            "$in": ["pending", "approved", "failed", "quarantined"]
+        }},
         {"$set": {"status": "approved", "approved_at": now_iso(),
                   "amount_gross": gross, "fee": fee,
                   "gateway_fee": gateway_fee, "platform_fee": platform_fee,

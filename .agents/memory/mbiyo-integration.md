@@ -87,3 +87,14 @@ than continued verification after the initial display expires.
 **How to apply:** Poll and process signed callbacks during the initial window.
 Credit a verified success exactly once; otherwise mark the dashboard and
 merchant-API payment failed at expiry and stop reconciling it.
+
+Mbiyo status responses may return the payer phone in international format even
+when BizTranspay submitted the national format. Treat equal digit strings and
+country-prefix suffix equivalents as the same MSISDN.
+
+**Why:** A verified successful payment was quarantined because Mbiyo returned
+the country calling code before the same national number.
+
+**How to apply:** Normalize formatting and an optional `00` prefix, require at
+least seven matching national digits, and retain independent amount, currency,
+order/reference, provider-ID, and exactly-once credit checks.
