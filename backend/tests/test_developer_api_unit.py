@@ -182,6 +182,7 @@ class FakeCollection:
 class FakeDB:
     def __init__(self):
         self.momo_deposits = FakeCollection()
+        self.link_payments = FakeCollection()
         self.merchant_payments = FakeCollection()
         self.merchant_payouts = FakeCollection()
         self.merchant_keys = FakeCollection()
@@ -428,6 +429,27 @@ def test_developer_payment_view_normalizes_approved_to_paid():
         "currency": "XOF",
     })
     assert view["status"] == "paid"
+
+
+@run_async
+async def test_expired_mbiyo_payment_fails_and_stops_retrying(monkeypatch):
+    fake = FakeDB()
+    fake.momo_deposits.docs.append({
+        "id": "momo-expired",
+        "provider": "mbiyo",
+        "status": "pending",
+        "pending_expires_at": "2000-01-01T00:00:00+00:00",
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    expired = await server._expire_momo_deposit_if_due(
+        dict(fake.momo_deposits.docs[0]))
+
+    assert expired is True
+    saved = fake.momo_deposits.docs[0]
+    assert saved["status"] == "failed"
+    assert saved["failed_reason"] == "expired"
+    assert saved["retryable"] is False
 
 
 @run_async

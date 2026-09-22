@@ -5456,16 +5456,6 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
     if not expiry or expiry > datetime.now(timezone.utc):
         return False
     now = now_iso()
-    if d.get("provider") == "mbiyo":
-        # This deadline only controls the visible countdown. A delayed Mbiyo
-        # confirmation remains payable and must continue through reconciliation.
-        await db.momo_deposits.update_one(
-            {"id": d["id"], "status": "pending",
-             "verification_window_elapsed_at": {"$exists": False}},
-            {"$set": {"verification_window_elapsed_at": now,
-                      "retryable": True}},
-        )
-        return False
     result = await db.momo_deposits.update_one(
         {"id": d["id"], "status": "pending"},
         {"$set": {
@@ -5614,7 +5604,7 @@ async def _paydunya_reconcile_loop() -> None:
     """Repair paid deposits even when the browser and provider callback vanish."""
     while True:
         try:
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
             cursor = db.momo_deposits.find(
                 {
                     "provider": {"$in": ["paydunya", "mbiyo"]},
@@ -5943,7 +5933,6 @@ def _public_momo_deposit(d: dict) -> dict:
         "created_at": d.get("created_at"),
         "pending_expires_at": d.get("pending_expires_at"),
         "pending_remaining_seconds": pending_remaining_seconds,
-        "verification_window_elapsed": bool(d.get("verification_window_elapsed_at")),
         "amount": d.get("amount"), "requested_amount": d.get("requested_amount"),
         "charged_amount": d.get("charged_amount"),
         "amount_net": d.get("amount_net") or d.get("wallet_credit_amount"),
