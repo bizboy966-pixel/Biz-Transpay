@@ -227,7 +227,7 @@ export default function ApiDocs() {
 
   const downloadPdf = async () => {
     try {
-      const response = await api.get('/api-keys/documentation.pdf', { responseType: 'blob' });
+      const response = await api.get('/documentation.pdf', { responseType: 'blob' });
       const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/pdf' }));
       const anchor = document.createElement('a');
       anchor.href = url;
