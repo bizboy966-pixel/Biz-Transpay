@@ -3573,15 +3573,19 @@ async def public_fees_config(uid: str = Depends(get_current_user_id)):
         )["operators"]
     )
     deposit_mobile_money["enabled"] = bool(deposit_mobile_money["operators"])
+    # Use the same provider-neutral catalogue and provider arbitration as the
+    # actual withdrawal flow. This includes Beyond Pay routes and fees without
+    # exposing provider names or showing duplicate routes to customers.
+    withdrawal_mobile_money = _public_transfer_config(
+        withdrawal
+    ).get("mobile_money") or {"enabled": False, "operators": []}
     return {
         "deposit": {
             "mobile_money": deposit_mobile_money,
             "crypto": _public_fee_crypto(deposit.get("crypto")),
         },
         "withdrawal": {
-            "mobile_money": _public_fee_mobile_money(
-                withdrawal.get("mobile_money"), withdrawal=True
-            ),
+            "mobile_money": withdrawal_mobile_money,
             "crypto": _public_fee_crypto(withdrawal.get("crypto")),
         },
         "conversion": {

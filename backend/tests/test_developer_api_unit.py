@@ -64,6 +64,78 @@ def test_mbiyo_public_config_exposes_split_admin_fees():
     assert config["catalog"][0]["fee_fixed"] == 15
 
 
+def test_public_withdrawal_config_exposes_beyond_pay_fees_without_provider_name():
+    config = server._public_transfer_config({
+        "mobile_money": {"enabled": True, "operators": []},
+        "paydunya": {"enabled": False},
+        "mbiyo": {
+            "enabled": True,
+            "operators": [{
+                "country": "TG", "country_label": "Togo",
+                "code": "mbiyo_tmoney_tg", "name": "TMoney",
+                "currency": "XOF", "active": True,
+                "gateway_fee_pct": 1.5, "platform_fee_pct": 0.5,
+                "gateway_fee_fixed": 10, "platform_fee_fixed": 15,
+                "min": 100, "max": 500000,
+            }],
+        },
+    })
+
+    mobile_money = config["mobile_money"]
+    assert mobile_money["enabled"] is True
+    assert len(mobile_money["operators"]) == 1
+    operator = mobile_money["operators"][0]
+    assert operator["code"] == "tmoney_tg"
+    assert operator["fee_pct"] == 2
+    assert operator["fee_fixed"] == 25
+    assert "provider" not in operator
+    assert "mbiyo" not in config
+    assert "paydunya" not in config
+
+
+@run_async
+async def test_customer_fee_grid_uses_effective_beyond_pay_withdrawal_catalog(
+        monkeypatch):
+    async def value(payload):
+        return payload
+
+    withdrawal = {
+        "mobile_money": {"enabled": True, "operators": []},
+        "paydunya": {"enabled": False},
+        "mbiyo": {
+            "enabled": True,
+            "operators": [{
+                "country": "BJ", "country_label": "Bénin",
+                "code": "mbiyo_mtn_bj", "name": "MTN MoMo",
+                "currency": "XOF", "active": True,
+                "gateway_fee_pct": 1, "platform_fee_pct": 2,
+                "gateway_fee_fixed": 5, "platform_fee_fixed": 10,
+                "min": 500, "max": 1000000,
+            }],
+        },
+        "crypto": {"enabled": False},
+    }
+    monkeypatch.setattr(
+        server, "get_deposit_config",
+        lambda: value({"crypto": {"enabled": False}}))
+    monkeypatch.setattr(
+        server, "get_transfer_config", lambda: value(withdrawal))
+    monkeypatch.setattr(
+        server, "get_paydunya_config", lambda: value({"enabled": False}))
+    monkeypatch.setattr(
+        server, "get_mbiyo_config", lambda: value({"enabled": False}))
+    monkeypatch.setattr(
+        server, "get_platform_config", lambda: value({}))
+
+    result = await server.public_fees_config(uid="customer-1")
+    mobile_money = result["withdrawal"]["mobile_money"]
+    assert mobile_money["enabled"] is True
+    assert mobile_money["operators"][0]["name"] == "MTN MoMo"
+    assert mobile_money["operators"][0]["fee_pct"] == 3
+    assert mobile_money["operators"][0]["fee_fixed"] == 15
+    assert "provider" not in mobile_money["operators"][0]
+
+
 def test_mbiyo_transaction_id_ignores_unrelated_nested_ids():
     assert server._mbiyo_transaction_id({
         "data": {
