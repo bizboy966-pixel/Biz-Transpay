@@ -208,6 +208,6 @@ def test_provider_fee_catalog_uses_admin_values():
     )
 
     assert result["enabled"] is True
-    assert result["operators"][0]["provider"] == "paydunya"
+    assert "provider" not in result["operators"][0]
     assert result["operators"][0]["fee_pct"] == 2.25
     assert result["operators"][0]["fee_fixed"] == 50

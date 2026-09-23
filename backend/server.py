@@ -63,6 +63,8 @@ CSRF_HEADER_NAME = "X-CSRF-Token"
 SESSION_MAX_AGE = 24 * 60 * 60
 SESSION_IDLE_SECONDS = 30 * 60
 REAUTH_MAX_AGE_SECONDS = 15 * 60
+MAX_ACTIVE_SESSIONS_PER_USER = 3
+_session_limit_lock = asyncio.Lock()
 ADMIN_ALLOWED_IPS = tuple(
     value.strip() for value in os.environ.get("ADMIN_ALLOWED_IPS", "").split(",")
     if value.strip()
@@ -195,6 +197,29 @@ async def _issue_session(user_id: str, request: Request, response: Response) -> 
         "ip": _auth_ip(request),
         "user_agent": (request.headers.get("user-agent") or "")[:300],
     })
+    # Sessions are account-scoped. Keep the three most recently created
+    # active sessions for this user and revoke the least recently active
+    # ones, never sessions belonging to another account.
+    async with _session_limit_lock:
+        active_sessions = await db.sessions.find(
+            {"user_id": user_id, "revoked_at": {"$exists": False}},
+            {"_id": 0, "id": 1},
+        ).sort(
+            [("last_activity_at", -1), ("created_at", -1)]
+        ).to_list(MAX_ACTIVE_SESSIONS_PER_USER + 1)
+        stale_ids = [
+            item["id"] for item in active_sessions[MAX_ACTIVE_SESSIONS_PER_USER:]
+            if item.get("id")
+        ]
+        if stale_ids:
+            await db.sessions.update_many(
+                {"user_id": user_id, "id": {"$in": stale_ids},
+                 "revoked_at": {"$exists": False}},
+                {"$set": {
+                    "revoked_at": datetime.now(timezone.utc),
+                    "revocation_reason": "session_limit",
+                }},
+            )
     _set_session_cookie(response, token)
     _set_csrf_cookie(response)
 
@@ -2121,28 +2146,9 @@ async def _complete_login(user: dict, request: Request) -> None:
                 "detected_at": now_iso(),
             },
         )
-    if unusual:
-        await notify(
-            user["id"], "security_alert", "Nouvelle connexion détectée",
-            "Une nouvelle connexion à votre compte Biz-transPay a été détectée.",
-            data={
-                "security_event": "unusual_login",
-                "outcome": (
-                    "Accès réussi avec des caractéristiques inhabituelles. "
-                    "Une attaque n’est pas confirmée."
-                ),
-                "solution": (
-                    "Vérifier immédiatement cette connexion. Si elle est inconnue, "
-                    "révoquer les sessions, changer le mot de passe et contrôler "
-                    "les opérations financières récentes."
-                ),
-                "path": "/api/auth/login",
-                "method": "POST",
-                "ip": ip,
-                "detected_at": now_iso(),
-            },
-            send_telegram=False,
-        )
+    # Regular users do not receive a notification for a successful login.
+    # The login remains in auth_events, and administrator security telemetry
+    # continues through the separate Telegram/admin channel above.
 
 
 async def _verify_user_totp(user: dict, code: str) -> bool:
@@ -3571,7 +3577,7 @@ def _public_fee_mobile_money(mobile_money: dict, withdrawal: bool = False) -> di
 
 
 def _public_fee_provider_mobile_money(
-    catalog: list[dict]
+    catalog: list[dict], provider: Optional[str] = None
 ) -> dict:
     """Normalize an active provider catalog for the customer fee grid."""
     operators = []

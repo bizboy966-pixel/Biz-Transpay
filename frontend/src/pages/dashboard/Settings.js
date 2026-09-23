@@ -99,7 +99,7 @@ export default function Settings({ embedded = false }) {
       </Section>
 
       <Section icon={Monitor} title="Sessions actives">
-        <p className="text-sm text-slate-500">Consultez les appareils connectés à votre compte et fermez immédiatement une session que vous ne reconnaissez pas.</p>
+        <p className="text-sm text-slate-500">Les sessions de ce compte uniquement sont affichées. Un maximum de trois sessions reste actif ; les plus anciennes sont fermées automatiquement.</p>
         {sessionsLoading ? <div className="text-sm text-slate-500">Chargement des sessions…</div> : (
           <div className="space-y-2">
             {sessions.map((session) => (
