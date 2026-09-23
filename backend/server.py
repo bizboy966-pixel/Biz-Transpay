@@ -1944,10 +1944,29 @@ def _csrf_error(code: str, message: str) -> JSONResponse:
     )
 
 
+def _is_public_payment_link_mutation(path: str) -> bool:
+    """Return whether a mutation is intentionally anonymous payment-link traffic.
+
+    These endpoints use Turnstile, route-aware rate limiting, one-time link
+    claims, and payment validation instead of an authenticated browser session.
+    A logged-in Biz-transPay user may still open a public link in the same
+    browser, so requiring that user's CSRF token here would break the public
+    payer flow.
+    """
+    if path in {"/api/links/pay", "/api/links/pay/mobile-money"}:
+        return True
+    return (
+        path.startswith("/api/links/payments/")
+        and (path.endswith("/finalize") or path.endswith("/mobile-money/finalize"))
+    )
+
+
 def _validate_csrf_request(request: Request) -> Optional[JSONResponse]:
     if request.method.upper() in {"GET", "HEAD", "OPTIONS"}:
         return None
     if not request.url.path.startswith("/api/"):
+        return None
+    if _is_public_payment_link_mutation(request.url.path):
         return None
     if request.url.path in {
         "/api/auth/login",
