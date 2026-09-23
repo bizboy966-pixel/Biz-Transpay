@@ -6,9 +6,11 @@ from pathlib import Path
 
 import pytest
 import httpx
+from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import paydunya
+import server
 from models import TransferRequest
 
 
@@ -121,6 +123,21 @@ def test_disbursement_business_error_is_not_reported_as_missing_token(monkeypatc
             withdraw_mode="t-money-togo", account_alias="90123456",
             callback_url="https://merchant.test/callback"))
     assert "application publiée" in exc.value.message
+
+
+def test_callback_base_uses_public_request_host_when_domain_is_unset(monkeypatch):
+    monkeypatch.delenv("OFFICIAL_DOMAIN", raising=False)
+    monkeypatch.delenv("REPLIT_DEV_DOMAIN", raising=False)
+    request = Request({
+        "type": "http",
+        "scheme": "https",
+        "server": ("biz-transppayy.com", 443),
+        "path": "/api/transfers",
+        "query_string": b"",
+        "headers": [(b"host", b"biz-transppayy.com")],
+    })
+
+    assert server._paydunya_callback_base(request) == "https://biz-transppayy.com"
 
 
 def test_transfer_request_preserves_provider_metadata():

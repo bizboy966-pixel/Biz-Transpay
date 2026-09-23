@@ -5279,6 +5279,24 @@ def _paydunya_callback_base(request: Request) -> str:
     official = str(os.environ.get("OFFICIAL_DOMAIN") or "").strip().rstrip("/")
     if official:
         return official if "://" in official else f"https://{official}"
+    # Published requests arrive through Replit's public host. Prefer that
+    # host over the workspace preview domain so provider callbacks remain
+    # reachable even when OFFICIAL_DOMAIN was not copied into the deployment.
+    forwarded_host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.hostname
+        or ""
+    )
+    request_host = (
+        urlparse(f"//{forwarded_host.split(',')[0].strip()}").hostname or ""
+    ).lower()
+    if (
+        request_host
+        and not request_host.endswith(".replit.dev")
+        and request_host not in {"localhost", "127.0.0.1", "::1"}
+    ):
+        return f"https://{request_host}"
     preview = str(os.environ.get("REPLIT_DEV_DOMAIN") or "").strip().rstrip("/")
     if preview:
         return preview if "://" in preview else f"https://{preview}"
