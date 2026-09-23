@@ -22,3 +22,9 @@ Public payment links use the server-selected direct Mobile Money route and stay 
 **Why:** Public links need to behave like the authenticated direct deposit while keeping the final pending/success state inside the platform.
 
 **How to apply:** Filter fixed-currency links to matching operators, allow universal links to resolve by the selected operator, and keep redirect-only provider details out of public responses.
+
+The sanitized public payment status must retain the payment method discriminator (`mobile_money` or `crypto`) so the browser chooses the matching tracker after creation.
+
+**Why:** Omitting the discriminator makes a successful Mobile Money start fall through to the crypto tracker even though the provider request returned `200`.
+
+**How to apply:** Treat `method` as required public UI routing metadata while continuing to omit provider credentials, mode names, and checkout URLs.

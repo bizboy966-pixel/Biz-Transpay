@@ -56,6 +56,7 @@ def test_public_mobile_money_status_does_not_expose_provider_checkout_url():
         "redirect_url": "https://provider.invalid/checkout",
         "checkout_url": "https://provider.invalid/invoice",
     })
+    assert result["method"] == "mobile_money"
     assert result["checkout_url"] is None
     assert result["redirect_url"] is None
 

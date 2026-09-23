@@ -79,7 +79,10 @@ export default function PublicLink() {
             </div>
 
             {step === 1 && (() => {
-              const cryptoOn = features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false;
+              const cryptoCurrency = link.currency === 'USDT' || link.currency === 'UNIVERSAL';
+              const cryptoOn = cryptoCurrency
+                && features?.wallet_crypto_enabled !== false
+                && features?.deposit_crypto_enabled !== false;
               const mmOn = (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
                           || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false);
               if (!features) return null;

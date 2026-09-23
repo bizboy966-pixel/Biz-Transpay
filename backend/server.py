@@ -10345,6 +10345,9 @@ def _public_link_payment_status(payment: dict) -> dict:
     """Expose only fields needed by a public checkout tracker."""
     out = {
         "id": payment.get("id"),
+        # The public client uses this discriminator to select the correct
+        # pending/success tracker after a payment is started.
+        "method": payment.get("method"),
         "status": payment.get("status"),
         "amount": payment.get("amount"),
         "currency": payment.get("currency"),
