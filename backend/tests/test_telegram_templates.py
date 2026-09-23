@@ -12,6 +12,19 @@ def test_telegram_masks_contact_information():
     assert server._telegram_mask_phone("002250501267353") == "002••••353"
 
 
+def test_provider_liquidity_detector_does_not_match_local_wallet_error():
+    assert server._is_provider_balance_insufficient(
+        "PayDunya: insufficient balance in provider wallet"
+    )
+    assert server._is_provider_balance_insufficient(
+        "Le solde du portefeuille de décaissement est insuffisant"
+    )
+    assert server._is_provider_balance_insufficient("insufficient liquidity")
+    assert not server._is_provider_balance_insufficient(
+        "Solde insuffisant (frais inclus)"
+    )
+
+
 def test_deposit_template_matches_operational_reference(monkeypatch):
     deposit = {
         "id": "DEP-1",
@@ -85,6 +98,51 @@ def test_withdrawal_template_shows_gross_net_and_provider(monkeypatch):
     assert "Montant net : <b>6\u202f978,24 XAF</b>" in text
     assert "Passerelle : <b>FedaPay</b>" in text
     assert "MTN Mobile Money" in text
+
+
+def test_withdrawal_manual_review_template_is_operational(monkeypatch):
+    transaction = {
+        "id": "TX-MANUAL-1",
+        "reference": "BTP-WIT-MANUAL-1",
+        "amount": "50000",
+        "currency": "XOF",
+        "created_at": "2026-09-23T10:00:00+00:00",
+        "metadata": {
+            "total_debit": "51000",
+            "recipient_gets": "50000",
+            "provider": "paydunya",
+            "operator_name": "T-Money Togo",
+            "manual_review_required": True,
+            "provider_balance_insufficient": True,
+            "recipient_phone": "+22890123456",
+        },
+    }
+
+    async def context(_data):
+        return transaction, None
+
+    async def parties(_transaction, _deposit):
+        return [
+            "━━━━ 👤 <b>EXPÉDITEUR</b> ━━━━",
+            "━━━━ 📱 <b>DESTINATAIRE</b> ━━━━",
+            "☎️ Téléphone : <code>+228••••456</code>",
+        ]
+
+    monkeypatch.setattr(server, "_telegram_transaction_context", context)
+    monkeypatch.setattr(server, "_telegram_party_lines", parties)
+    text = asyncio.run(server._telegram_notification_text(
+        "user-1",
+        "withdrawal_manual_review",
+        "Retrait en attente de validation",
+        "body",
+        {"transaction_id": "TX-MANUAL-1"},
+    ))
+
+    assert "⚠️ RETRAIT EN ATTENTE — FONDS PRESTATAIRE" in text
+    assert "Montant brut : <b>51\u202f000 XOF</b>" in text
+    assert "Montant net : <b>50\u202f000 XOF</b>" in text
+    assert "PayDunya" in text
+    assert "+22890123456" not in text
 
 
 def test_security_alert_reports_blocked_outcome_and_solution():

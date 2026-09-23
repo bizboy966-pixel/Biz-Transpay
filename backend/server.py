@@ -881,6 +881,7 @@ TELEGRAM_FINAL_NOTIFICATION_TYPES = {
     "deposit_success",
     "withdrawal_success",
     "withdrawal_failed",
+    "withdrawal_manual_review",
     "transfer_success",
     "exchange_success",
     "security_alert",
@@ -1149,6 +1150,7 @@ async def _telegram_notification_text(
         "deposit_success": "✅ PAIEMENT REÇU / DÉPÔT CONFIRMÉ",
         "withdrawal_success": "✅ RETRAIT VALIDÉ AUTOMATIQUEMENT",
         "withdrawal_failed": "❌ RETRAIT ÉCHOUÉ / REMBOURSÉ",
+        "withdrawal_manual_review": "⚠️ RETRAIT EN ATTENTE — FONDS PRESTATAIRE",
         "transfer_success": "✅ TRANSFERT CONFIRMÉ",
         "exchange_success": "✅ CONVERSION CONFIRMÉE",
     }
@@ -3894,9 +3896,34 @@ async def transfer(req: TransferRequest, request: Request,
                     fresh_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
                     await _reconcile_mbiyo_withdrawal(fresh_tx)
                 elif provider_status in mbiyo.FAILURE_STATUSES:
-                    fresh_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
-                    await _reconcile_mbiyo_withdrawal(fresh_tx)
+                    if _is_provider_balance_insufficient(
+                        json.dumps(response, ensure_ascii=False)
+                    ):
+                        await _hold_mobile_withdrawal_for_provider_funds(
+                            tx_out.id, provider="mbiyo",
+                            reason=json.dumps(response, ensure_ascii=False))
+                    else:
+                        fresh_tx = await db.transactions.find_one(
+                            {"id": tx_out.id}, {"_id": 0})
+                        await _reconcile_mbiyo_withdrawal(fresh_tx)
             except mbiyo.MbiyoError as exc:
+                if _is_provider_balance_insufficient(exc.message):
+                    latest_tx = await _hold_mobile_withdrawal_for_provider_funds(
+                        tx_out.id, provider="mbiyo", reason=exc.message)
+                    return {
+                        "transaction": latest_tx,
+                        "fee": fees["total_fee"],
+                        "processed_amount": processed_amount,
+                        "total_debit": fees["charged_amount"],
+                        "recipient_gets": fees["wallet_credit_amount"],
+                        "operator": op.get("name"),
+                        "pending_manual": True,
+                        "message": (
+                            "Le portefeuille du prestataire est momentanément "
+                            "insuffisant. Votre demande reste en attente de "
+                            "traitement par l'administrateur."
+                        ),
+                    }
                 if exc.status < 500:
                     await _refund_mobile_withdrawal(tx_out.id, exc.message)
                 await db.transactions.update_one(
@@ -3924,10 +3951,30 @@ async def transfer(req: TransferRequest, request: Request,
                 raise HTTPException(
                     502,
                     "Le retrait est en cours de vérification.")
-            return {"transaction": (await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})),
-                    "fee": fees["total_fee"], "processed_amount": processed_amount,
-                    "total_debit": fees["charged_amount"],
-                    "recipient_gets": fees["wallet_credit_amount"], "operator": op.get("name")}
+            latest_tx = await db.transactions.find_one(
+                {"id": tx_out.id}, {"_id": 0}
+            )
+            manual_review = bool(
+                (latest_tx or {}).get("metadata", {}).get("manual_review_required")
+            )
+            result = {
+                "transaction": latest_tx,
+                "fee": fees["total_fee"],
+                "processed_amount": processed_amount,
+                "total_debit": fees["charged_amount"],
+                "recipient_gets": fees["wallet_credit_amount"],
+                "operator": op.get("name"),
+            }
+            if manual_review:
+                result.update({
+                    "pending_manual": True,
+                    "message": (
+                        "Le portefeuille du prestataire est momentanément "
+                        "insuffisant. Votre demande reste en attente de "
+                        "traitement par l'administrateur."
+                    ),
+                })
+            return result
         op = paydunya_op
         if req.currency.upper() not in PAYDUNYA_WALLET_CURRENCIES:
             raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
@@ -4091,13 +4138,36 @@ async def transfer(req: TransferRequest, request: Request,
             )
             if submit_status in {"failed", "failure", "cancelled", "canceled",
                                  "rejected", "declined", "error"}:
-                await _refund_mobile_withdrawal(tx_out.id, submit_status)
-                raise HTTPException(400, "Le retrait Mobile Money a été refusé")
+                if _is_provider_balance_insufficient(
+                    json.dumps(submitted, ensure_ascii=False)
+                ):
+                    await _hold_mobile_withdrawal_for_provider_funds(
+                        tx_out.id, provider="paydunya",
+                        reason=json.dumps(submitted, ensure_ascii=False))
+                else:
+                    await _refund_mobile_withdrawal(tx_out.id, submit_status)
+                    raise HTTPException(400, "Le retrait Mobile Money a été refusé")
             if submit_status in {"success", "successful", "completed", "sent",
                                  "paid", "succeeded"}:
                 fresh = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
                 await _reconcile_mobile_withdrawal(fresh)
         except paydunya.PayDunyaError as exc:
+            if _is_provider_balance_insufficient(exc.message):
+                latest_tx = await _hold_mobile_withdrawal_for_provider_funds(
+                    tx_out.id, provider="paydunya", reason=exc.message)
+                return {
+                    "transaction": latest_tx,
+                    "fee": fee,
+                    "total_debit": total_debit,
+                    "recipient_gets": recipient_gets,
+                    "operator": op["name"],
+                    "pending_manual": True,
+                    "message": (
+                        "Le portefeuille du prestataire est momentanément "
+                        "insuffisant. Votre demande reste en attente de "
+                        "traitement par l'administrateur."
+                    ),
+                }
             # Submission may have reached PayDunya even when its response was
             # lost. Verify by token; otherwise keep the debit pending for the
             # callback instead of creating a double-spend refund.
@@ -4114,15 +4184,31 @@ async def transfer(req: TransferRequest, request: Request,
                            tx_out.reference, exc)
 
         latest_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0}) or tx_out.model_dump()
-        if latest_tx.get("status") == "pending":
+        manual_review = bool(
+            (latest_tx.get("metadata") or {}).get("manual_review_required")
+        )
+        if (
+            latest_tx.get("status") == "pending"
+            and not manual_review
+        ):
             await notify(uid, "withdrawal_pending",
                          "Retrait Mobile Money en cours",
                          f"Votre retrait de {req.amount:,.0f} {req.currency} est en cours de traitement.",
                          data={"transaction_id": tx_out.id, "reference": tx_out.reference,
                                "amount": req.amount, "currency": req.currency,
                                "transfer_type": "biz_to_mobile"})
-        return {"transaction": latest_tx, "fee": fee, "total_debit": total_debit,
-                "recipient_gets": recipient_gets, "operator": op["name"]}
+        result = {"transaction": latest_tx, "fee": fee, "total_debit": total_debit,
+                  "recipient_gets": recipient_gets, "operator": op["name"]}
+        if manual_review:
+            result.update({
+                "pending_manual": True,
+                "message": (
+                    "Le portefeuille du prestataire est momentanément insuffisant. "
+                    "Votre demande reste en attente de traitement par "
+                    "l'administrateur."
+                ),
+            })
+        return result
 
     # -------- BIZ TO BANK --------
     # -------- BIZ TO CRYPTO --------
@@ -6604,6 +6690,86 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
                 "source": "merchant_api",
             })
     return True
+
+
+def _is_provider_balance_insufficient(message: Any) -> bool:
+    """Recognize provider-liquidity failures without matching local wallet errors."""
+    raw = str(message or "").strip().lower()
+    normalized = unicodedata.normalize("NFKD", raw)
+    normalized = "".join(char for char in normalized
+                         if not unicodedata.combining(char))
+    if not normalized:
+        return False
+    patterns = (
+        "insufficient balance",
+        "insufficient funds",
+        "insufficient liquidity",
+        "not enough balance",
+        "not enough funds",
+        "wallet balance is too low",
+        "wallet balance too low",
+        "balance too low",
+        "provider balance",
+        "solde du portefeuille",
+        "solde de portefeuille",
+        "solde prestataire",
+        "solde de decaissement",
+        "fonds du prestataire",
+        "fonds insuffisant",
+    )
+    return any(pattern in normalized for pattern in patterns)
+
+
+async def _hold_mobile_withdrawal_for_provider_funds(
+    tx_id: str, provider: str, reason: str = ""
+) -> Optional[dict]:
+    """Keep a debited payout pending for an admin-led manual payout.
+
+    A provider-liquidity error proves that the provider could not fund the
+    payout, but it does not justify releasing the customer's reserved funds.
+    The admin can complete the payout manually and approve the transaction, or
+    reject it to trigger the existing exactly-once refund path.
+    """
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx:
+        return None
+    meta = tx.get("metadata") or {}
+    provider_status_field = (
+        "metadata.mbiyo_status" if provider == "mbiyo"
+        else "metadata.paydunya_status"
+    )
+    updates = {
+        "metadata.manual_review_required": True,
+        "metadata.provider_balance_insufficient": True,
+        "metadata.manual_review_reason": "provider_balance_insufficient",
+        "metadata.provider_error": str(reason or "")[:240],
+        "metadata.provider_name": provider,
+        provider_status_field: "awaiting_provider_funds",
+        "metadata.manual_review_at": now_iso(),
+    }
+    result = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"},
+        {"$set": updates, "$unset": {"metadata.next_reconcile_at": ""}},
+    )
+    if result.modified_count:
+        await notify(
+            tx["user_id"],
+            "withdrawal_manual_review",
+            "Retrait en attente de validation",
+            (
+                "Le portefeuille du prestataire est momentanément insuffisant. "
+                "Votre demande reste réservée et sera traitée par "
+                "l'administrateur."
+            ),
+            data={
+                "transaction_id": tx_id,
+                "reference": tx.get("reference"),
+                "amount": tx.get("amount"),
+                "currency": tx.get("currency"),
+                "transfer_type": "biz_to_mobile",
+            },
+        )
+    return await db.transactions.find_one({"id": tx_id}, {"_id": 0})
 
 
 async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:

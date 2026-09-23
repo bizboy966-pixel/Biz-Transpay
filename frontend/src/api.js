@@ -79,7 +79,14 @@ api.interceptors.response.use(
       if (err.response?.data) err.response.data.detail = msg;
     }
     if (err.response?.status === 401) {
-      if (!window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/register') && window.location.pathname !== '/') {
+      const pathName = window.location.pathname;
+      const isPublicPaymentLink = pathName === '/pay' || pathName.startsWith('/pay/');
+      if (
+        !isPublicPaymentLink
+        && !pathName.startsWith('/login')
+        && !pathName.startsWith('/register')
+        && pathName !== '/'
+      ) {
         window.location.href = '/login';
       }
     }

@@ -3,7 +3,7 @@ import { toast } from 'sonner';
 import {
   X, CheckCircle2, XCircle, User as UserIcon, Mail, MapPin, Phone,
   Wallet, Hash, Calendar, Clock, DollarSign, Percent, Copy,
-  ExternalLink, ShieldAlert, RefreshCw,
+  ExternalLink, ShieldAlert, AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import api from '@/api';
 
@@ -208,8 +208,27 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
               </div>
 
               {/* Additional info spanning full width */}
-              {(tx.description || meta.rejection_reason || tx.rejection_reason) && (
+              {(tx.description || meta.rejection_reason || tx.rejection_reason
+                || meta.manual_review_required) && (
                 <div className="md:col-span-2 mt-3 pt-3 border-t border-slate-100">
+                  {meta.manual_review_required && (
+                    <div className="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-[13px] text-amber-900 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
+                      <div>
+                        <div className="font-semibold">Validation manuelle requise</div>
+                        <div className="mt-0.5">
+                          Le portefeuille du prestataire est insuffisant.
+                          Effectuez le paiement manuellement, puis cliquez sur
+                          « Valider », ou utilisez « Rejeter » pour rembourser le client.
+                        </div>
+                        {meta.provider_error && (
+                          <div className="mt-1 text-[11px] text-amber-800 break-all">
+                            Réponse prestataire : {meta.provider_error}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                   {tx.description && <KV label="Description" value={tx.description} testid="kv-description" />}
                   {(tx.rejection_reason || meta.rejection_reason) && (
                     <div className="mt-2 p-3 rounded-lg bg-red-50 border border-red-200 text-[13px] text-red-800 flex items-start gap-2">
