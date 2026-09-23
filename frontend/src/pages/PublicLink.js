@@ -155,6 +155,7 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
   const [amount, setAmount] = useState(isFree ? String(link.min_amount || '') : String(link.amount));
   const [loading, setLoading] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
+  const turnstileRef = useRef(null);
 
   useEffect(() => {
     api.get('/crypto/assets').then(({ data }) => setAssets(data)).catch(() => {});
@@ -186,6 +187,7 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
       onSuccess(data);
     } catch (err) {
       setTurnstileToken('');
+      turnstileRef.current?.reset();
       const detail = err.response?.data?.detail;
       toast.error(typeof detail === 'string' ? detail : 'Erreur lors du paiement');
     } finally { setLoading(false); }
@@ -244,6 +246,7 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
       </Field>
 
       <TurnstileWidget
+        ref={turnstileRef}
         siteKey={turnstile.siteKey}
         action="payment"
         disabled={turnstile.loading || !turnstile.enabled}
@@ -359,11 +362,24 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [turnstileToken, setTurnstileToken] = useState('');
+  const turnstileRef = useRef(null);
 
   useEffect(() => {
     fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/config`).then(r => r.json())
-      .then(d => setCatalog(d.catalog || [])).catch(() => {});
-  }, []);
+      .then(d => {
+        const wanted = String(link.currency || 'XOF').toUpperCase();
+        const groups = (d.catalog || [])
+          .map((entry) => ({
+            ...entry,
+            operators: (entry.operators || []).filter((op) => (
+              wanted === 'UNIVERSAL'
+              || String(op.currency || '').toUpperCase() === wanted
+            )),
+          }))
+          .filter((entry) => entry.operators.length > 0);
+        setCatalog(groups);
+      }).catch(() => {});
+  }, [link.currency]);
   const countryEntry = catalog.find((c) => c.country === country);
   const operators = countryEntry?.operators || [];
   const selectedOp = operators.find((o) => o.code === operator);
@@ -418,15 +434,10 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
         data = await res.json();
       }
        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Erreur');
-       const redirectUrl = data.redirect_url || data.checkout_url;
-       if (data.payment_kind === 'redirect' || redirectUrl) {
-         if (!redirectUrl) throw new Error('Le lien de paiement n’a pas pu être préparé. Veuillez réessayer.');
-         window.location.assign(redirectUrl);
-         return;
-       }
       onSuccess({ ...data, fee_bearer: feeBearer });
     } catch (err) {
       setTurnstileToken('');
+       turnstileRef.current?.reset();
       setError(err.message || 'Erreur');
     }
     finally { setLoading(false); }
@@ -546,13 +557,16 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
           : 'Les frais sont déduits du paiement. Le marchand reçoit le montant net.'}
       </div>
       <TurnstileWidget
+        ref={turnstileRef}
         siteKey={turnstile.siteKey}
         action="payment"
         disabled={turnstile.loading || !turnstile.enabled}
         onToken={setTurnstileToken}
       />
       {error && <div className="p-2 rounded-lg bg-red-50 text-red-700 text-[11px]">{error}</div>}
-      <button type="submit" disabled={loading || (flowNeedsOtp && !otp.trim())} data-testid="momo-link-submit"
+      <button type="submit"
+        disabled={loading || !turnstile.enabled || !turnstileToken || (flowNeedsOtp && !otp.trim())}
+        data-testid="momo-link-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-2.5 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
         {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
       </button>

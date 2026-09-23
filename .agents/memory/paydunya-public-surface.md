@@ -16,3 +16,9 @@ When multiple Mobile Money providers are enabled, provider selection must be cap
 **Why:** A fixed provider priority can hide Mobile Money or fail a transaction even though another enabled provider can serve the selected operator.
 
 **How to apply:** Use the same readiness and flow checks for public catalog visibility and runtime dispatch. Keep arbitration and failure messages provider-neutral, and preserve existing idempotency barriers when adding fallback behavior.
+
+Public payment links use the server-selected direct Mobile Money route and stay on the Biz-transPay page. A `UNIVERSAL` link must resolve the operator's actual catalog currency rather than filtering by the literal link currency. Provider checkout URLs remain internal reconciliation data and are never returned as browser redirect instructions on the public link surface.
+
+**Why:** Public links need to behave like the authenticated direct deposit while keeping the final pending/success state inside the platform.
+
+**How to apply:** Filter fixed-currency links to matching operators, allow universal links to resolve by the selected operator, and keep redirect-only provider details out of public responses.

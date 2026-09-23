@@ -3287,7 +3287,7 @@ async def _resolve_deposit_provider(country: str, code: str,
                  or os.environ.get("MBIYO_SECRET_KEY")
                  or os.environ.get("MBIYO_API_KEY")) else None
     )
-    if currency:
+    if currency and str(currency).upper() not in {"UNIVERSAL", "ANY"}:
         wanted = currency.upper()
         paydunya_route = paydunya_route if paydunya_route and str(
             paydunya_route.get("currency", "")).upper() == wanted else None
@@ -7681,6 +7681,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         link, req.amount if link.get("amount_type") == "free" else None
     )
 
+    # A UNIVERSAL link lets the payer select any compatible Mobile Money
+    # currency. Fixed-currency links remain restricted by the resolver.
     link_currency = str(link.get("currency") or "XOF").upper()
     route_provider = await _resolve_deposit_provider(
         req.country, req.operator, link_currency,
@@ -10370,8 +10372,11 @@ def _public_link_payment_status(payment: dict) -> dict:
             "challenge_status": payment.get("challenge_status")
                 or ("required" if payment.get("auth_mode") == "pin" else "pending"),
             "instructions": _plain_payment_instructions(payment.get("instructions")),
-            "checkout_url": payment.get("redirect_url") or payment.get("checkout_url"),
-            "redirect_url": payment.get("redirect_url") or payment.get("checkout_url"),
+            # Public link payments stay on Biz-transPay. Provider checkout URLs
+            # are internal reconciliation data and must never trigger a browser
+            # redirect from the public checkout.
+            "checkout_url": None,
+            "redirect_url": None,
             "prompt_sent": bool(payment.get("prompt_sent")),
             "prompt_error": _public_payment_error(payment.get("prompt_error")),
         })
