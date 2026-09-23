@@ -64,6 +64,155 @@ def test_mbiyo_public_config_exposes_split_admin_fees():
     assert config["catalog"][0]["fee_fixed"] == 15
 
 
+@run_async
+async def test_deposit_provider_falls_back_to_beyond_pay_when_paydunya_has_no_mode(
+        monkeypatch):
+    async def value(payload):
+        return payload
+
+    shared_route = {
+        "country": "TG", "code": "tmoney_tg", "currency": "XOF",
+        "active": True,
+    }
+    monkeypatch.setattr(server, "get_paydunya_config", lambda: value({
+        "enabled": True,
+        "master_key_encrypted": "configured",
+        "private_key_encrypted": "configured",
+        "token_encrypted": "configured",
+        "modes": {
+            "softpay_direct": {"enabled": False},
+            "psr": {"enabled": False},
+            "par_redirect": {"enabled": False},
+        },
+        "catalog": [shared_route],
+    }))
+    monkeypatch.setattr(server, "get_mbiyo_config", lambda: value({
+        "enabled": True,
+        "secret_key_encrypted": "configured",
+        "catalog": [{**shared_route, "code": "mbiyo_tmoney_tg"}],
+    }))
+
+    assert await server._resolve_deposit_provider(
+        "TG", "tmoney_tg", "XOF"
+    ) == "mbiyo"
+
+
+@run_async
+async def test_deposit_provider_uses_paydunya_when_its_route_is_ready(
+        monkeypatch):
+    async def value(payload):
+        return payload
+
+    shared_route = {
+        "country": "TG", "code": "tmoney_tg", "currency": "XOF",
+        "active": True,
+    }
+    monkeypatch.setattr(server, "get_paydunya_config", lambda: value({
+        "enabled": True,
+        "master_key_encrypted": "configured",
+        "private_key_encrypted": "configured",
+        "token_encrypted": "configured",
+        "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [shared_route],
+    }))
+    monkeypatch.setattr(server, "get_mbiyo_config", lambda: value({
+        "enabled": True,
+        "secret_key_encrypted": "configured",
+        "catalog": [{**shared_route, "code": "mbiyo_tmoney_tg"}],
+    }))
+
+    assert await server._resolve_deposit_provider(
+        "TG", "tmoney_tg", "XOF"
+    ) == "paydunya"
+
+
+@run_async
+async def test_direct_deposit_route_does_not_use_redirect_only_paydunya(
+        monkeypatch):
+    async def value(payload):
+        return payload
+
+    shared_route = {
+        "country": "TG", "code": "tmoney_tg", "currency": "XOF",
+        "active": True,
+    }
+    monkeypatch.setattr(server, "get_paydunya_config", lambda: value({
+        "enabled": True,
+        "master_key_encrypted": "configured",
+        "private_key_encrypted": "configured",
+        "token_encrypted": "configured",
+        "modes": {
+            "softpay_direct": {"enabled": False},
+            "par_redirect": {"enabled": True},
+        },
+        "catalog": [shared_route],
+    }))
+    monkeypatch.setattr(server, "get_mbiyo_config", lambda: value({
+        "enabled": True,
+        "secret_key_encrypted": "configured",
+        "catalog": [{**shared_route, "code": "mbiyo_tmoney_tg"}],
+    }))
+
+    assert await server._resolve_deposit_provider(
+        "TG", "tmoney_tg", "XOF", required_mode="softpay_direct"
+    ) == "mbiyo"
+
+
+@run_async
+async def test_unavailable_deposit_route_error_does_not_expose_provider(
+        monkeypatch):
+    async def value(payload):
+        return payload
+
+    monkeypatch.setattr(server, "get_paydunya_config", lambda: value({
+        "enabled": True,
+        "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [{
+            "country": "TG", "code": "tmoney_tg",
+            "currency": "XOF", "active": True,
+        }],
+    }))
+    monkeypatch.setattr(server, "get_mbiyo_config", lambda: value({
+        "enabled": False, "catalog": [],
+    }))
+
+    with pytest.raises(HTTPException) as exc:
+        await server._resolve_deposit_provider(
+            "TG", "tmoney_tg", "XOF"
+        )
+    assert exc.value.status_code == 503
+    assert "paydunya" not in str(exc.value.detail).lower()
+    assert "mbiyo" not in str(exc.value.detail).lower()
+
+
+def test_public_withdrawal_config_keeps_distinct_active_provider_routes():
+    config = server._public_transfer_config({
+        "mobile_money": {
+            "enabled": True,
+            "operators": [{
+                "country": "TG", "code": "t-money-togo",
+                "name": "TMoney", "currency": "XOF", "active": True,
+                "withdraw_mode": "t-money-togo",
+            }],
+        },
+        "paydunya": {"enabled": True},
+        "mbiyo": {
+            "enabled": True,
+            "operators": [{
+                "country": "TG", "code": "mbiyo_moov_tg",
+                "name": "Moov Money", "currency": "XOF", "active": True,
+            }],
+        },
+    })
+
+    operators = config["mobile_money"]["operators"]
+    assert config["mobile_money"]["enabled"] is True
+    assert {operator["code"] for operator in operators} == {
+        "t-money-togo", "moov_tg",
+    }
+    assert all("provider" not in operator for operator in operators)
+
+
 def test_public_withdrawal_config_exposes_beyond_pay_fees_without_provider_name():
     config = server._public_transfer_config({
         "mobile_money": {"enabled": True, "operators": []},

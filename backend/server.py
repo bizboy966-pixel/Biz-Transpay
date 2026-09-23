@@ -3088,6 +3088,34 @@ def _paydunya_credentials_configured(cfg: dict) -> bool:
     )
 
 
+def _paydunya_payin_mode_enabled(
+    cfg: dict, required_mode: Optional[str] = None
+) -> bool:
+    """Return whether PayDunya has at least one usable deposit mode."""
+    if required_mode:
+        return paydunya.mode_is_enabled(cfg, required_mode)
+    modes = cfg.get("modes")
+    if not isinstance(modes, dict):
+        # Legacy configurations predate selectable modes and use SoftPay.
+        return True
+    return any(
+        bool(raw.get("enabled", False)) if isinstance(raw, dict) else bool(raw)
+        for mode in paydunya.PAY_IN_MODES
+        if (raw := modes.get(mode, {})) is not None
+    )
+
+
+def _paydunya_payin_ready(
+    cfg: dict, *, require_credentials: bool = True,
+    required_mode: Optional[str] = None,
+) -> bool:
+    return bool(
+        cfg.get("enabled")
+        and _paydunya_payin_mode_enabled(cfg, required_mode)
+        and (not require_credentials or _paydunya_credentials_configured(cfg))
+    )
+
+
 def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
     configured = _paydunya_credentials_configured(cfg)
     modes = cfg.get("modes")
@@ -3210,7 +3238,8 @@ def _active_mbiyo_operator(
 
 
 async def _resolve_deposit_provider(country: str, code: str,
-                                    currency: Optional[str] = None) -> str:
+                                    currency: Optional[str] = None,
+                                    required_mode: Optional[str] = None) -> str:
     paydunya_cfg = await get_paydunya_config()
     mbiyo_cfg = await get_mbiyo_config()
     paydunya_route = (
@@ -3219,7 +3248,9 @@ async def _resolve_deposit_provider(country: str, code: str,
     )
     paydunya_match = (
         paydunya_route
-        if _paydunya_credentials_configured(paydunya_cfg) else None
+        if _paydunya_payin_ready(
+            paydunya_cfg, required_mode=required_mode
+        ) else None
     )
     mbiyo_match = (
         _active_mbiyo_operator(mbiyo_cfg.get("catalog") or [], country, code)
@@ -3246,11 +3277,18 @@ async def _resolve_deposit_provider(country: str, code: str,
     if paydunya_match:
         return "paydunya"
     if paydunya_route:
-        raise HTTPException(
-            503,
-            "PayDunya est activé pour cet opérateur mais ses identifiants "
-            "ne sont pas configurés.",
-        )
+        if not _paydunya_credentials_configured(paydunya_cfg):
+            raise HTTPException(
+                503,
+                "Le service Mobile Money est temporairement indisponible "
+                "pour cet opérateur.",
+            )
+        if not _paydunya_payin_mode_enabled(paydunya_cfg, required_mode):
+            raise HTTPException(
+                503,
+                "Le service Mobile Money est temporairement indisponible "
+                "pour cet opérateur.",
+            )
     raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
 
 
@@ -3772,7 +3810,7 @@ async def transfer(req: TransferRequest, request: Request,
             raise HTTPException(
                 503,
                 "Le retrait automatique Mobile Money nécessite l'application "
-                "publiée. PayDunya refuse les callbacks de prévisualisation.")
+                "publiée. Les callbacks de prévisualisation ne sont pas acceptés.")
 
         if mb_op:
             op = mb_op
@@ -3893,7 +3931,8 @@ async def transfer(req: TransferRequest, request: Request,
         if (not pcfg.get("enabled")
                 or not _paydunya_credentials_configured(pcfg)
                 or not op.get("withdraw_mode")):
-            raise HTTPException(503, "PayDunya n'est pas configuré pour les retraits")
+            raise HTTPException(
+                503, "Le service de retrait Mobile Money n'est pas configuré")
         operator_currency = str(op.get("currency") or "").upper()
         if operator_currency and operator_currency != req.currency.upper():
             raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
@@ -4573,18 +4612,18 @@ def _paydunya_operation_error(exc: paydunya.PayDunyaError) -> str:
     lowered = message.lower()
     if "sandbox" in lowered and ("customer" in lowered or "client" in lowered):
         return (
-            "Le compte client de test PayDunya n’est pas configuré. "
-            "Passez PayDunya en production ou configurez le client sandbox."
+            "Le compte client de test Mobile Money n’est pas configuré. "
+            "Passez le service en production ou configurez le client sandbox."
         )
     if exc.status in (401, 403) or any(
             term in lowered
             for term in ("credential", "private key", "master key", "token")):
-        return "Les identifiants PayDunya sont invalides ou incomplets."
+        return "Le service Mobile Money est temporairement mal configuré."
     if exc.status >= 500:
-        return "PayDunya est momentanément indisponible. Réessayez dans quelques instants."
+        return "Le service Mobile Money est momentanément indisponible. Réessayez dans quelques instants."
     if message:
-        return f"PayDunya a refusé la demande : {message[:180]}"
-    return "PayDunya a refusé la demande. Vérifiez la configuration de l’opérateur."
+        return "La passerelle Mobile Money a refusé la demande."
+    return "La passerelle Mobile Money a refusé la demande."
 
 
 def _provider_reference(payload: Any) -> Optional[str]:
@@ -5203,7 +5242,7 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
          "pending_expires_at": doc.get("pending_expires_at"),
          "message": (
              "La demande téléphonique tarde. Ouvrez la page sécurisée "
-             "PayDunya pour terminer le paiement."
+              "pour terminer le paiement."
              if locals().get("softpay_fallback", False)
              else ("Ouvrez le lien affiché et validez le paiement."
                    if locals().get("redirect_url")
@@ -7435,7 +7474,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
 
     link_currency = str(link.get("currency") or "XOF").upper()
     route_provider = await _resolve_deposit_provider(
-        req.country, req.operator, link_currency)
+        req.country, req.operator, link_currency,
+        required_mode="softpay_direct")
     if route_provider == "mbiyo":
         mb_cfg = await get_mbiyo_config(decrypt=True)
         mb_op = _active_mbiyo_operator(
@@ -7536,7 +7576,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         )
     currency = (admin_op.get("currency") or "XOF").upper()
     if currency not in PAYDUNYA_WALLET_CURRENCIES:
-        raise HTTPException(400, "Devise PayDunya non prise en charge par le portefeuille")
+        raise HTTPException(
+            400, "Devise Mobile Money non prise en charge par le portefeuille")
     min_amt = float(admin_op.get("min", 100))
     max_amt = float(admin_op.get("max", 0)) or None
     if amount < min_amt:
@@ -7645,7 +7686,7 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
     try:
         await db.momo_deposits.create_index("paydunya_token", unique=True, sparse=True)
         if await db.momo_deposits.find_one({"paydunya_token": token}, {"_id": 1}):
-            raise HTTPException(409, "Cette facture PayDunya existe déjà")
+            raise HTTPException(409, "Cette facture Mobile Money existe déjà")
         await db.momo_deposits.insert_one(momo_doc)
         try:
             await db.link_payments.insert_one(dict(doc))
@@ -8521,7 +8562,9 @@ class DeveloperCheckoutRequest(BaseModel):
     metadata: Optional[dict] = None
 
 
-async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]:
+async def _developer_operator(
+    merchant: dict, payload: Any, required_mode: Optional[str] = None
+) -> tuple[dict, dict]:
     environment = merchant.get("_api_env", "test")
     # Sandbox only needs the admin catalogue.  Decrypting credentials here
     # must never make a test request depend on provider secrets.
@@ -8534,8 +8577,9 @@ async def _developer_operator(merchant: dict, payload: Any) -> tuple[dict, dict]
     if mb_op and str(mb_op.get("currency", "")).upper() != payload.currency.upper():
         mb_op = None
     cfg = await get_paydunya_config(decrypt=environment == "live")
-    if cfg.get("enabled") and (
-        environment != "live" or _paydunya_credentials_configured(cfg)
+    if _paydunya_payin_ready(
+        cfg, require_credentials=environment == "live",
+        required_mode=required_mode if environment == "live" else None,
     ):
         op = next((item for item in cfg.get("catalog", [])
                    if str(item.get("country", "")).upper() == payload.country.upper()
@@ -8708,7 +8752,8 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
             {"_id": 1},
         ):
             raise BizAPIError(409, "Reference already used.", "REFERENCE_ALREADY_USED")
-        resolved_cfg, resolved_op = await _developer_operator(merchant, payload)
+        resolved_cfg, resolved_op = await _developer_operator(
+            merchant, payload, required_mode="par_redirect")
         if resolved_cfg.get("_gateway_provider") == "mbiyo" and merchant.get("_api_env") == "live":
             mb_req = MobileMoneyDepositRequest(
                 amount=payload.amount, currency=payload.currency,
@@ -8752,7 +8797,8 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
             description=f"BizPay Checkout {payload.reference or ''}".strip(),
         )
         if merchant.get("_api_env") == "test":
-            _, op = await _developer_operator(merchant, payload)
+            _, op = await _developer_operator(
+                merchant, payload, required_mode="par_redirect")
             fees = paydunya.calculate_fees(payload.amount, op, payload.fee_bearer)
             dep_id = new_id()
             now = now_iso()
@@ -8846,7 +8892,8 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
     if cached and cached.get("body") is not None:
         return cached["body"]
     try:
-        cfg, op = await _developer_operator(merchant, payload)
+        cfg, op = await _developer_operator(
+            merchant, payload, required_mode="softpay_direct")
         if payload.reference and await db.momo_deposits.find_one(
             {"user_id": merchant["id"], "environment": merchant.get("_api_env", "test"),
              "merchant_reference": payload.reference},
