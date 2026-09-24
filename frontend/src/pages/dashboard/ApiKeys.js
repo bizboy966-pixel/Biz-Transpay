@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import api from '@/api';
 
 const API_BASE = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
-const FULL_API_SCOPES = ['checkout:create', 'direct:create', 'push:create', 'payments:read'];
+const FULL_API_SCOPES = ['checkout:create', 'psr:create', 'direct:create', 'push:create', 'payments:read'];
 
 /* ----------------------------- shared UI bits ---------------------------- */
 const Badge = ({ tone = 'slate', children }) => {
@@ -133,7 +133,8 @@ function CreateKeyModal({ open, onClose, onCreated }) {
             <div className="mt-2 space-y-2">
               {[
                 ['checkout:create', 'BizPay Checkout · PAR', 'Créer un paiement avec redirection vers la page hébergée'],
-                ['direct:create', 'BizPay Direct · PSR / SoftPay', 'Déclencher un paiement Mobile Money sans redirection'],
+                ['psr:create', 'BizPay PSR', 'Créer une session pour le SDK de paiement intégré'],
+                ['direct:create', 'BizPay Direct · SoftPay', 'Déclencher une confirmation Mobile Money sans redirection'],
                 ['push:create', 'BizPUSH', 'Envoyer de l’argent à un bénéficiaire'],
                 ['payments:read', 'Statuts et automatisation', 'Lire les statuts pour confirmer, traiter ou rejeter côté serveur'],
               ].map(([value, label, description]) => (
@@ -154,8 +155,8 @@ function CreateKeyModal({ open, onClose, onCreated }) {
              <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 text-[11px] leading-relaxed text-blue-900">
                <strong>Ces cases sont des autorisations, pas un mode automatique.</strong>
                <ul className="mt-1 list-disc space-y-1 pl-4">
-                 <li>PAR décoché : votre clé ne peut pas appeler <code className="font-mono">/checkout</code> ; votre code doit utiliser <code className="font-mono">/direct-payments</code> pour le PSR / SoftPay.</li>
-                 <li>PAR et PSR / SoftPay cochés : une même clé peut utiliser les deux. Votre intégration choisit le parcours pour chaque commande.</li>
+                  <li>Chaque parcours a son autorisation : <code className="font-mono">checkout:create</code> pour <code className="font-mono">/checkout</code>, <code className="font-mono">psr:create</code> pour <code className="font-mono">/psr</code> et <code className="font-mono">direct:create</code> pour <code className="font-mono">/direct-payments</code>.</li>
+                  <li>PAR redirige vers la page de paiement hébergée. PSR utilise le SDK de paiement intégré. Direct déclenche SoftPay sans redirection.</li>
                  <li><code className="font-mono">payments:read</code> décoché : Biz-transPay confirme toujours le paiement en interne, mais votre serveur ne peut plus lire le statut pour valider automatiquement la commande.</li>
                </ul>
              </div>
@@ -259,7 +260,7 @@ export default function ApiKeys() {
             </div>
             <h1 className="mt-3 font-cabinet text-2xl md:text-3xl font-extrabold">Vos clés API</h1>
             <p className="mt-2 text-sm md:text-base text-slate-300 leading-relaxed">
-               Intégrez les paiements Mobile Money avec BizPay Checkout, BizPay Direct et BizPUSH
+               Intégrez les paiements Mobile Money avec Checkout, PSR, Direct et BizPUSH
                via une API REST conçue pour les flux asynchrones.
                Utilisez vos clés <span className="text-blue-300 font-semibold">sk_test_…</span> en test, puis passez en
                <span className="text-emerald-300 font-semibold"> sk_live_…</span> en production. Les webhooks signés vous notifient automatiquement.
@@ -367,7 +368,7 @@ export default function ApiKeys() {
       </div>
 
       {/* Quick start */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
           <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Checkout</div>
           <div className="mt-2 font-cabinet font-bold text-slate-900">Rediriger un client</div>
@@ -381,8 +382,20 @@ export default function ApiKeys() {
           </pre>
         </div>
         <div className="p-5 rounded-2xl bg-white border border-slate-200">
-          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">Direct & PUSH</div>
-          <div className="mt-2 font-cabinet font-bold text-slate-900">Piloter vos flux Mobile Money</div>
+          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">BizPay PSR</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Intégrer le SDK de paiement</div>
+          <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
+{`curl -X POST ${API_BASE}/psr \\
+  -H "Authorization: Bearer sk_test_..." \\
+  -H "Idempotency-Key: order-42-v1" \\
+  -d '{ "amount": 8900, "currency": "XOF",
+        "country": "TG", "operator": "tmoney_tg",
+        "customer_name": "Afi Mensah" }'`}
+          </pre>
+        </div>
+        <div className="p-5 rounded-2xl bg-white border border-slate-200">
+          <div className="text-[12px] font-semibold text-slate-500 uppercase tracking-wider">BizPay Direct · SoftPay</div>
+          <div className="mt-2 font-cabinet font-bold text-slate-900">Déclencher une confirmation</div>
           <pre className="mt-3 p-3 rounded-lg bg-slate-950 text-emerald-200 font-mono text-[11px] overflow-x-auto">
 {`curl -X POST ${API_BASE}/direct-payments \\
   -H "Authorization: Bearer sk_test_..." \\

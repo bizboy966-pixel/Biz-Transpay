@@ -424,7 +424,8 @@ def merchant(scopes=None, uid="merchant-a", env="test"):
     return {
         "id": uid, "account_type": "merchant", "_api_env": env,
         "_api_scopes": scopes or [
-            "checkout:create", "direct:create", "push:create", "payments:read"
+            "checkout:create", "direct:create", "psr:create", "push:create",
+            "payments:read"
         ],
         "kyc_status": "verified",
     }
@@ -459,6 +460,26 @@ async def test_mutations_require_idempotency_key(monkeypatch):
 
 
 @run_async
+async def test_idempotency_key_cannot_be_reused_on_another_payment_route(monkeypatch):
+    fake = FakeDB()
+    fake.idempotency_keys.docs.append({
+        "user_id": "merchant-a:test", "key": "shared-attempt",
+        "method": "POST", "path": "/api/v1/direct-payments",
+        "fingerprint": "same-payload", "body": {"id": "direct-payment"},
+        "expires_at": (server.datetime.now(server.timezone.utc)
+                       + server.timedelta(hours=1)).isoformat(),
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    with pytest.raises(server.BizAPIError) as exc:
+        await server._idempotency_claim(
+            "merchant-a:test", "shared-attempt", "POST", "/api/v1/psr",
+            "same-payload")
+
+    assert exc.value.code == "IDEMPOTENCY_KEY_REUSED"
+
+
+@run_async
 async def test_scope_is_refused(monkeypatch):
     monkeypatch.setattr(server, "_authenticate_merchant",
                         lambda req: asyncio.sleep(
@@ -467,6 +488,22 @@ async def test_scope_is_refused(monkeypatch):
         await server.developer_direct_payment(
             payload_direct(), request(headers={"Idempotency-Key": "direct-1"}))
     assert exc.value.code == "API_SCOPE_REQUIRED"
+
+
+@run_async
+async def test_psr_requires_its_own_scope(monkeypatch):
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(
+                            0, result=merchant(["direct:create"])))
+    with pytest.raises(server.BizAPIError) as exc:
+        await server.developer_psr_payment(
+            server.DeveloperCheckoutRequest(
+                amount=1000, currency="XOF", country="TG",
+                operator="moov_tg"),
+            request(headers={"Idempotency-Key": "psr-scope-key"}),
+        )
+    assert exc.value.code == "API_SCOPE_REQUIRED"
+    assert exc.value.details["required_scope"] == "psr:create"
 
 
 @run_async
@@ -576,6 +613,169 @@ async def test_direct_sandbox_has_no_provider_call_and_replays(monkeypatch):
     assert second == first
     assert len(fake.momo_deposits.docs) == 1
     assert fake.momo_deposits.docs[0]["environment"] == "test"
+
+
+@run_async
+async def test_psr_sandbox_is_local_and_uses_its_own_scope(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(
+        server, "_developer_operator",
+        lambda *args, **kwargs: asyncio.sleep(0, result=(
+            {"_gateway_provider": "paydunya"},
+            {"country": "TG", "code": "tmoney_tg", "currency": "XOF",
+             "fee_pct": 2, "min": 100, "max": 500000},
+        )),
+    )
+    monkeypatch.setattr(server.paydunya, "create_invoice",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("sandbox must not call provider")))
+    monkeypatch.setattr(server, "_create_paydunya_invoice_deposit",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("sandbox must not create provider invoice")))
+    saved = {}
+
+    async def claim(*args):
+        return None
+
+    async def store(*args):
+        saved["body"] = args[-1]
+
+    monkeypatch.setattr(server, "_idempotency_claim", claim)
+    monkeypatch.setattr(server, "_idempotency_store", store)
+    result = await server.developer_psr_payment(
+        server.DeveloperCheckoutRequest(
+            amount=1000, currency="XOF", country="TG", operator="tmoney_tg",
+            customer_name="Afi Mensah", reference="psr-test-1"),
+        request(headers={"Idempotency-Key": "psr-test-key"}),
+    )
+
+    assert result["product"] == "bizpay_psr"
+    assert result["psr_token_url"] is None
+    assert result["simulation_endpoint"].endswith("/complete")
+    assert result["checkout_url"] is None
+    assert result["fee"] == "20.00"
+    assert fake.momo_deposits.docs[0]["environment"] == "test"
+    assert fake.momo_deposits.docs[0]["source"] == "merchant_api"
+    assert saved["body"]["psr_token_url"] is None
+
+
+@run_async
+async def test_psr_live_returns_ephemeral_capability_and_reissues_on_replay(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    live = merchant(env="live")
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=live))
+    monkeypatch.setattr(
+        server, "_developer_operator",
+        lambda *args, **kwargs: asyncio.sleep(0, result=(
+            {"_gateway_provider": "paydunya"},
+            {"country": "TG", "code": "tmoney_tg", "currency": "XOF",
+             "fee_pct": 2},
+        )),
+    )
+    calls = []
+
+    async def create(req, uid, flow, callback, idempotency_key=None):
+        calls.append((req, uid, flow, callback, idempotency_key))
+        await fake.momo_deposits.insert_one({
+            "id": "psr-live-1", "user_id": uid, "merchant_id": uid,
+            "environment": "live", "product": "bizpay_psr",
+            "paydunya_flow": flow, "status": "pending", "amount": 1000,
+            "currency": "XOF", "checkout_url": "https://provider.invalid/hidden",
+            "idempotency_key": idempotency_key,
+        })
+        return {
+            "id": "psr-live-1",
+            "psr_token_url": "/api/deposits/paydunya/psr/psr-live-1/token/first-capability",
+        }
+
+    monkeypatch.setattr(server, "_create_paydunya_invoice_deposit", create)
+    monkeypatch.setattr(server.secrets, "token_urlsafe",
+                        lambda *args: "fresh-capability")
+    saved = {}
+
+    async def claim(*args):
+        return ({"body": saved["body"]} if saved else None)
+
+    async def store(*args):
+        saved["body"] = args[-1]
+
+    monkeypatch.setattr(server, "_idempotency_claim", claim)
+    monkeypatch.setattr(server, "_idempotency_store", store)
+    req = request(headers={"Idempotency-Key": "psr-live-key"})
+    payload = server.DeveloperCheckoutRequest(
+        amount=1000, currency="XOF", country="TG", operator="tmoney_tg",
+        customer_name="Afi Mensah", reference="psr-live-1")
+    first = await server.developer_psr_payment(payload, req)
+    second = await server.developer_psr_payment(payload, req)
+
+    assert len(calls) == 1
+    assert calls[0][2] == "psr"
+    assert first["psr_token_url"].endswith("first-capability")
+    assert second["psr_token_url"].endswith("fresh-capability")
+    assert first["checkout_url"] is None
+    assert saved["body"]["psr_token_url"] is None
+    stored = fake.momo_deposits.docs[0]
+    assert stored["product"] == "bizpay_psr"
+    assert stored["environment"] == "live"
+    assert stored["reference"] == "psr-live-1"
+    assert stored["psr_capability_hash"] == server.hashlib.sha256(
+        b"fresh-capability").hexdigest()
+    assert "first-capability" not in str(stored)
+
+
+@run_async
+async def test_shared_payment_reads_find_psr_records(monkeypatch):
+    fake = FakeDB()
+    fake.momo_deposits.docs.append({
+        "id": "psr-paid", "user_id": "merchant-a", "merchant_id": "merchant-a",
+        "environment": "test", "product": "bizpay_psr", "status": "approved",
+        "amount": 1000, "currency": "XOF", "reference": "PSR-REF",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+
+    full = await server.merchant_get_payment("psr-paid", request("GET"))
+    status = await server.merchant_get_payment_status("psr-paid", request("GET"))
+    completed = await server.merchant_check_completed("psr-paid", request("GET"))
+    search = await server.merchant_search_payment(
+        request("GET"), reference="PSR-REF")
+
+    assert full["product"] == "bizpay_psr"
+    assert full["status"] == "paid"
+    assert status["status"] == "paid"
+    assert completed["completed"] is True
+    assert search["id"] == "psr-paid"
+
+
+@run_async
+async def test_sandbox_completion_accepts_psr_records(monkeypatch):
+    fake = FakeDB()
+    fake.momo_deposits.docs.append({
+        "id": "psr-test", "user_id": "merchant-a", "merchant_id": "merchant-a",
+        "environment": "test", "product": "bizpay_psr", "status": "pending",
+        "amount": 1000, "currency": "XOF", "reference": "PSR-TEST",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    delivered = []
+
+    async def deliver(*args):
+        delivered.append(args)
+
+    monkeypatch.setattr(server, "_deliver_webhook", deliver)
+    result = await server.complete_sandbox_payment(
+        "psr-test", request(headers={"Authorization": "Bearer sk_test_dummy"}))
+
+    assert result["status"] == "paid"
+    assert fake.momo_deposits.docs[0]["status"] == "paid"
+    assert len(delivered) == 1
 
 
 @run_async
@@ -897,6 +1097,23 @@ async def test_key_creation_rejects_unknown_scope(monkeypatch):
             uid="merchant-a", request=request())
     assert exc.value.status_code == 422
     assert exc.value.detail["code"] == "INVALID_API_SCOPE"
+
+
+@run_async
+async def test_key_creation_accepts_psr_scope(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_ensure_api_keys",
+                        lambda *args: asyncio.sleep(0, result={}))
+
+    result = await server.create_merchant_key(
+        server.CreateMerchantKeyReq(
+            name="PSR client flow", scopes=["psr:create"]),
+        uid="merchant-a", request=request(),
+    )
+
+    assert result["scopes"] == ["psr:create"]
+    assert fake.merchant_keys.docs[0]["scopes"] == ["psr:create"]
 
 
 @run_async

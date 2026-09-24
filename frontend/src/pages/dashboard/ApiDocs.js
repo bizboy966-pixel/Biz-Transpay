@@ -7,8 +7,9 @@ import api from '../../api';
 const API = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
 
 const products = [
-  { id: 'checkout', name: 'BizPay Checkout · PAR', label: 'Redirection', tone: 'blue', path: '/checkout', description: 'Créez une session PAR et redirigez votre client vers la page de paiement Biz-transPay.' },
-  { id: 'direct', name: 'BizPay Direct · PSR / SoftPay', label: 'Sans redirection', tone: 'emerald', path: '/direct-payments', description: 'Déclenchez un paiement PSR / SoftPay Mobile Money depuis votre propre interface, sans redirection.' },
+  { id: 'checkout', name: 'BizPay Checkout · PAR', label: 'Redirection', tone: 'blue', path: '/checkout', description: 'Créez une session PAR et redirigez votre client vers la page de paiement du prestataire.' },
+  { id: 'psr', name: 'BizPay PSR', label: 'SDK intégré', tone: 'violet', path: '/psr', description: 'Créez une session PSR et remettez son jeton à usage unique au SDK de paiement intégré.' },
+  { id: 'direct', name: 'BizPay Direct · SoftPay', label: 'Confirmation téléphone', tone: 'emerald', path: '/direct-payments', description: 'Déclenchez une confirmation Mobile Money depuis votre serveur, sans redirection.' },
   { id: 'push', name: 'BizPUSH', label: 'Envoi automatisé', tone: 'amber', path: '/push', description: 'Envoyez des fonds à un bénéficiaire et suivez le traitement en arrière-plan.' },
 ];
 
@@ -62,6 +63,59 @@ session = requests.post(
     },
 ).json()
 print(session['checkout_url'])`,
+  },
+  psr: {
+    curl: `curl -X POST ${API}/psr \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY" \\
+  -H "Idempotency-Key: order-2048-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{"amount":12500,"currency":"XOF","country":"TG","operator":"tmoney_tg","customer_name":"Afi Mensah","customer_email":"client@example.com","reference":"ORDER-2048"}'`,
+    js: `const response = await fetch('${API}/psr', {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer sk_live_YOUR_KEY',
+    'Idempotency-Key': 'order-2048-attempt-1',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({ amount: 12500, currency: 'XOF', country: 'TG', operator: 'tmoney_tg', customer_name: 'Afi Mensah', reference: 'ORDER-2048' }),
+});
+const session = await response.json();
+// Send this short-lived URL to your client app, then pass its token
+// to the official PayDunya PSR SDK. Never send your API key to the client.
+const tokenResponse = await fetch(new URL(session.psr_token_url, '${API}'));
+const psrCredentials = await tokenResponse.json();`,
+    php: `<?php
+$ch = curl_init('${API}/psr');
+curl_setopt_array($ch, [
+  CURLOPT_POST => true,
+  CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => [
+    'Authorization: Bearer sk_live_YOUR_KEY',
+    'Idempotency-Key: order-2048-attempt-1',
+    'Content-Type: application/json',
+  ],
+  CURLOPT_POSTFIELDS => json_encode([
+    'amount' => 12500, 'currency' => 'XOF', 'country' => 'TG',
+    'operator' => 'tmoney_tg', 'customer_name' => 'Afi Mensah',
+    'reference' => 'ORDER-2048',
+  ]),
+]);
+$session = json_decode(curl_exec($ch), true);
+curl_close($ch);
+echo $session['psr_token_url']; // Forward to your client app`,
+    python: `import requests
+
+session = requests.post(
+    '${API}/psr',
+    json={'amount': 12500, 'currency': 'XOF', 'country': 'TG',
+          'operator': 'tmoney_tg', 'customer_name': 'Afi Mensah',
+          'reference': 'ORDER-2048'},
+    headers={
+        'Authorization': 'Bearer sk_live_YOUR_KEY',
+        'Idempotency-Key': 'order-2048-attempt-1',
+    },
+).json()
+print(session['psr_token_url'])  # Forward to your client app`,
   },
   direct: {
     curl: `curl -X POST ${API}/direct-payments \\
@@ -195,7 +249,7 @@ function ProductExample({ product }) {
   const item = products.find((entry) => entry.id === product);
   return <section id={product} className="scroll-mt-24">
     <div className="flex flex-wrap items-center gap-2">
-      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${item.tone === 'blue' ? 'bg-blue-100 text-blue-700' : item.tone === 'emerald' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>{item.label}</span>
+      <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${item.tone === 'blue' ? 'bg-blue-100 text-blue-700' : item.tone === 'violet' ? 'bg-violet-100 text-violet-700' : item.tone === 'emerald' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>{item.label}</span>
       <span className="font-mono text-xs text-slate-400">POST {item.path}</span>
     </div>
     <h2 className="mt-2 font-cabinet text-2xl font-extrabold text-slate-900">{item.name}</h2>
@@ -213,6 +267,7 @@ function ProductExample({ product }) {
         </div>
       ))}
     </div>
+    {product === 'psr' && <Info icon={ShieldCheck} title="Échange sécurisé avec le SDK" tone="blue">En live, <code>psr_token_url</code> est une URL temporaire à usage unique. Votre serveur la transmet à l’application cliente, qui la récupère auprès de Biz-transPay puis remet le jeton au SDK PSR officiel. N’exposez jamais votre clé API. En test, aucun prestataire n’est appelé : utilisez <code>simulation_endpoint</code> depuis votre serveur.</Info>}
   </section>;
 }
 
@@ -221,7 +276,8 @@ export default function ApiDocs() {
   const [query, setQuery] = useState('');
   const sections = useMemo(() => [
     ['start', 'Démarrage'], ['auth', 'Authentification'], ['environments', 'Test et live'],
-    ['checkout', 'BizPay Checkout · PAR'], ['direct', 'BizPay Direct · PSR / SoftPay'], ['push', 'BizPUSH'],
+    ['checkout', 'BizPay Checkout · PAR'], ['psr', 'BizPay PSR'],
+    ['direct', 'BizPay Direct · SoftPay'], ['push', 'BizPUSH'],
     ['status', 'Statuts et suivi'], ['webhooks', 'Webhooks signés'], ['errors', 'Erreurs'],
   ].filter(([, label]) => !query.trim() || label.toLowerCase().includes(query.toLowerCase())), [query]);
 
@@ -277,16 +333,16 @@ export default function ApiDocs() {
           <section id="start" className="scroll-mt-24">
           <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700"><Code2 className="h-3 w-3" /> API REST · v1</div>
           <h1 className="mt-3 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900 md:text-4xl">Paiements Mobile Money, sans détour.</h1>
-           <p className="mt-3 text-[15px] leading-relaxed text-slate-700">Trois produits pour couvrir le parcours complet : une page hébergée, un paiement dans votre interface, ou un envoi automatisé. Les cases de la clé API autorisent les produits, mais ne choisissent pas le parcours à votre place : votre code peut utiliser PAR, PSR / SoftPay, ou les deux avec la même clé.</p>
-          <div className="mt-6 grid gap-3 md:grid-cols-3">{products.map((product) => <a href={`#${product.id}`} key={product.id} className="rounded-xl border border-slate-200 bg-white p-4 hover:-translate-y-0.5 hover:border-blue-300 transition-transform"><div className="font-cabinet text-sm font-bold text-slate-900">{product.name}</div><div className="mt-1 text-xs leading-relaxed text-slate-500">{product.description}</div><div className="mt-3 font-mono text-[11px] text-blue-700">POST {product.path}</div></a>)}</div>
-           <Info icon={ShieldCheck} title="Parcours entièrement automatique" tone="blue">Pour chaque commande, votre serveur appelle <code>POST /checkout</code>, <code>POST /direct-payments</code> ou le chemin compatible <code>POST /payments</code> avec <code>payment_method: "mobile_money"</code> et une <code>Idempotency-Key</code>. Biz-transPay interroge automatiquement le prestataire pendant la fenêtre initiale, normalise les numéros au format national ou international, puis passe le paiement à <code>paid</code> et crédite le compte exactement une fois dès que le prestataire confirme <code>successful</code>. Après 10 minutes sans confirmation, le statut devient <code>failed</code> et la vérification s’arrête.</Info>
+           <p className="mt-3 text-[15px] leading-relaxed text-slate-700">Quatre intégrations distinctes : PAR redirige vers la page de paiement hébergée, PSR utilise le SDK intégré, Direct déclenche SoftPay et BizPUSH envoie des fonds. Les autorisations de clé sont séparées pour chacun des parcours de paiement.</p>
+          <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{products.map((product) => <a href={`#${product.id}`} key={product.id} className="rounded-xl border border-slate-200 bg-white p-4 hover:-translate-y-0.5 hover:border-blue-300 transition-transform"><div className="font-cabinet text-sm font-bold text-slate-900">{product.name}</div><div className="mt-1 text-xs leading-relaxed text-slate-500">{product.description}</div><div className="mt-3 font-mono text-[11px] text-blue-700">POST {product.path}</div></a>)}</div>
+           <Info icon={ShieldCheck} title="Vérification serveur-à-serveur" tone="blue">Après la création par <code>/checkout</code>, <code>/psr</code>, <code>/direct-payments</code> ou <code>/payments</code> avec <code>payment_method: "mobile_money"</code>, conservez l’identifiant et interrogez <code>GET /payments/{'{id}'}/status</code>. Biz-transPay confirme le résultat auprès du prestataire, passe le paiement à <code>paid</code> et crédite le compte exactement une fois. Après 10 minutes sans confirmation, le statut devient <code>failed</code>.</Info>
         </section>
 
-         <section id="auth" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Authentification</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Envoyez la clé secrète dans l'en-tête Bearer. Les clés secrètes restent sur votre serveur : ne les placez jamais dans une application mobile ou un navigateur.</p><CodeBlock code={`Authorization: Bearer sk_test_YOUR_KEY\nContent-Type: application/json`} /><Info icon={KeyRound} title="Une clé, plusieurs intégrations" tone="blue">Lors de sa création, choisissez les intégrations nécessaires : <code>checkout:create</code> pour PAR, <code>direct:create</code> pour PSR / SoftPay, <code>push:create</code> pour BizPUSH et <code>payments:read</code> pour consulter les statuts et automatiser votre traitement. Le webhook est facultatif.</Info><Info icon={KeyRound} title="Clé et idempotence" tone="amber">Ajoutez une <code>Idempotency-Key</code> unique par tentative métier sur chaque requête POST. Une nouvelle tentative réseau avec la même clé ne créera pas un second paiement.</Info></section>
+         <section id="auth" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Authentification</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Envoyez la clé secrète dans l'en-tête Bearer. Les clés secrètes restent sur votre serveur : ne les placez jamais dans une application mobile ou un navigateur.</p><CodeBlock code={`Authorization: Bearer sk_test_YOUR_KEY\nContent-Type: application/json`} /><Info icon={KeyRound} title="Une clé, plusieurs intégrations" tone="blue">Lors de sa création, choisissez les intégrations nécessaires : <code>checkout:create</code> pour PAR, <code>psr:create</code> pour PSR, <code>direct:create</code> pour Direct / SoftPay, <code>push:create</code> pour BizPUSH et <code>payments:read</code> pour consulter les statuts. Le webhook est facultatif.</Info><Info icon={KeyRound} title="Clé et idempotence" tone="amber">Ajoutez une <code>Idempotency-Key</code> unique par tentative métier sur chaque requête POST. Une nouvelle tentative réseau avec la même clé ne créera pas un second paiement.</Info></section>
          <section id="environments" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Test et live</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">La base URL reste la même. L'environnement est porté par le préfixe de la clé : <code className="font-mono text-blue-700">sk_test_</code> simule le parcours sans appel fournisseur, débit ou crédit réel ; <code className="font-mono text-emerald-700">sk_live_</code> traite les opérations de production. Les données et clés d'idempotence des deux environnements sont isolées. Créez et révoquez vos clés depuis <Link to="/dashboard/api" className="font-semibold text-blue-700 underline">Clés API</Link>.</p><Info icon={ShieldCheck} title="Simuler un paiement confirmé" tone="blue">Après avoir créé un Checkout ou un paiement Direct avec une clé test, appelez le chemin <code>simulation_endpoint</code> renvoyé dans la réponse avec la même clé. Biz-transPay passera l'opération à <code>paid</code> et enverra un webhook de test, sans modifier aucun solde réel.</Info><Info icon={ShieldCheck} title="Numéro Mobile Money" tone="emerald">Vous pouvez envoyer <code>customer_phone</code> au format national ou international. Exemple Togo : <code>91978352</code>, <code>22891978352</code> et <code>+228 91 97 83 52</code>. Biz-transPay compare ces formats de façon sûre lors de la confirmation fournisseur.</Info><CodeBlock code={`curl -X POST ${API}/test/payments/PAYMENT_ID/complete \\
   -H "Authorization: Bearer sk_test_YOUR_KEY"`} /></section>
 
-        <div className="space-y-14 mt-12"><ProductExample product="checkout" /><ProductExample product="direct" /><ProductExample product="push" /></div>
+        <div className="space-y-14 mt-12"><ProductExample product="checkout" /><ProductExample product="psr" /><ProductExample product="direct" /><ProductExample product="push" /></div>
 
           <section id="status" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Statuts et suivi</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Une réponse d'acceptation indique que la demande est enregistrée, pas nécessairement que l'argent est arrivé. Conservez l'identifiant et interrogez <code>GET /payments/{'{id}'}/status</code> toutes les 4 à 5 secondes. Chaque lecture déclenche une vérification serveur-à-serveur chez le prestataire. Lorsque celui-ci renvoie <code>successful</code>, Biz-transPay met automatiquement le paiement à <code>paid</code>, crédite le compte exactement une fois et envoie le webhook marchand configuré. Si aucune confirmation n'est obtenue avant la fin des 10 minutes, le statut devient <code>failed</code> et la vérification s'arrête.</p><CodeBlock code={statusCode} /><div className="grid gap-3 sm:grid-cols-3">{[['pending', 'Vérification fournisseur en cours'], ['paid', 'Confirmé et crédité automatiquement'], ['failed', 'Refusé ou délai de 10 minutes expiré']].map(([key, text]) => <div key={key} className="rounded-xl border border-slate-200 bg-white p-3"><code className="font-mono text-xs font-bold text-slate-900">{key}</code><p className="mt-1 text-xs text-slate-500">{text}</p></div>)}</div></section>
           <section id="webhooks" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Webhooks signés <span className="text-base font-semibold text-slate-400">(recommandés)</span></h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Biz-transPay confirme d'abord le statut directement auprès du prestataire, puis envoie le résultat à votre endpoint. Un paiement Mobile Money confirmé produit l'événement <code>mobile_money.payment.approved</code> avec le statut public <code>paid</code>, la référence marchande, les montants, la devise et la référence fournisseur. La signature HMAC se trouve dans <code>X-BizTransPay-Signature</code>, l'heure dans <code>X-BizTransPay-Timestamp</code> et le type dans <code>X-BizTransPay-Event</code>. Conservez aussi le polling comme reprise si votre endpoint est temporairement indisponible.</p><Info icon={Webhook} title="Source de vérité" tone="emerald">Ne validez jamais une commande à partir d'une redirection navigateur ou d'une notification Mobile Money seule. Acceptez le webhook signé ou vérifiez <code>GET /payments/{'{id}'}/status</code> côté serveur, puis exigez <code>paid</code>.</Info><CodeBlock code={`const signature = req.headers['x-biztranspay-signature'];

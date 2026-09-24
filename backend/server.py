@@ -491,6 +491,12 @@ async def _idempotency_claim(user_id: str, key: str, method: str, path: str,
         return None
     existing = await _idempotency_lookup(user_id, key)
     if existing:
+        if (
+            (existing.get("method") and existing["method"] != method)
+            or (existing.get("path") and existing["path"] != path)
+        ):
+            raise BizAPIError(409, "Idempotency-Key was already used on another operation.",
+                              "IDEMPOTENCY_KEY_REUSED")
         if fingerprint and existing.get("fingerprint") not in (None, fingerprint):
             raise BizAPIError(409, "Idempotency-Key was already used for another request.",
                               "IDEMPOTENCY_KEY_REUSED")
@@ -507,6 +513,16 @@ async def _idempotency_claim(user_id: str, key: str, method: str, path: str,
         })
     except DuplicateKeyError:
         existing = await _idempotency_lookup(user_id, key)
+        if existing and (
+            (existing.get("method") and existing["method"] != method)
+            or (existing.get("path") and existing["path"] != path)
+        ):
+            raise BizAPIError(409, "Idempotency-Key was already used on another operation.",
+                              "IDEMPOTENCY_KEY_REUSED")
+        if existing and fingerprint and existing.get("fingerprint") not in (
+                None, fingerprint):
+            raise BizAPIError(409, "Idempotency-Key was already used for another request.",
+                              "IDEMPOTENCY_KEY_REUSED")
         if existing and existing.get("body") is not None:
             return existing
         raise BizAPIError(409, "An identical request is already being processed.",
@@ -5411,7 +5427,8 @@ def _paydunya_callback_base(request: Request) -> str:
 
 async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
                                            uid: str, flow: str,
-                                           callback_base_url: str = "") -> dict:
+                                           callback_base_url: str = "",
+                                           idempotency_key: Optional[str] = None) -> dict:
     """Create a pending local row plus a PayDunya invoice.
 
     This helper deliberately does not approve or credit anything.  Approval is
@@ -5506,7 +5523,7 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
         "endpoint_slug": selected.get("endpoint_slug") if selected else None,
         "operator_snapshot": dict(selected) if selected else None,
         "phone_number": phone, "fee_bearer": fees["fee_bearer"],
-        "idempotency_key": getattr(req, "idempotency_key", None),
+        "idempotency_key": idempotency_key,
         "request_fingerprint": _request_fingerprint(req),
         "paydunya_token": token,
         "paydunya_reference": invoice.get("reference") or invoice.get("invoice_id"),
@@ -8005,8 +8022,10 @@ async def _authenticate_merchant(request: Request) -> dict:
             pass
         user["_api_env"] = env
         user["_api_key_id"] = mkey["id"]
-        user["_api_scopes"] = mkey.get("scopes") or [
-            "checkout:create", "direct:create", "push:create", "payments:read"
+        scopes = mkey.get("scopes")
+        user["_api_scopes"] = scopes if scopes is not None else [
+            "checkout:create", "direct:create", "psr:create", "push:create",
+            "payments:read"
         ]
         return user
     # Fallback to legacy single-doc schema
@@ -8034,7 +8053,8 @@ async def _authenticate_merchant(request: Request) -> dict:
     # Keys issued by the legacy schema predate scopes.  Treat them as fully
     # enabled so existing integrations continue to work unchanged.
     user["_api_scopes"] = [
-        "checkout:create", "direct:create", "push:create", "payments:read"
+        "checkout:create", "direct:create", "psr:create", "push:create",
+        "payments:read"
     ]
     return user
 
@@ -8045,7 +8065,8 @@ def _require_merchant_scope(merchant: dict, scope: str) -> None:
     # a deliberately restricted key and must not gain implicit privileges.
     scopes = merchant.get("_api_scopes")
     if scopes is None:
-        scopes = ["checkout:create", "direct:create", "push:create", "payments:read"]
+        scopes = ["checkout:create", "direct:create", "psr:create",
+                  "push:create", "payments:read"]
     if "*" not in scopes and scope not in scopes:
         raise BizAPIError(
             403,
@@ -8396,7 +8417,7 @@ async def complete_sandbox_payment(payment_id: str, request: Request):
         doc = await collection.find_one(
             {"id": payment_id, "merchant_id": merchant["id"],
              "environment": "test",
-             "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}},
+             "product": {"$in": ["bizpay_checkout", "bizpay_direct", "bizpay_psr"]}},
             {"_id": 0})
     if not doc:
         raise BizAPIError(404, "Test payment not found.", "PAYMENT_NOT_FOUND")
@@ -8468,7 +8489,7 @@ async def merchant_list_payments(request: Request,
     momo_q: dict = {
         "user_id": merchant["id"],
         **_api_environment_clause(merchant),
-        "product": {"$in": ["bizpay_checkout", "bizpay_direct"]},
+        "product": {"$in": ["bizpay_checkout", "bizpay_direct", "bizpay_psr"]},
     }
     if status:
         q["status"] = status
@@ -8535,7 +8556,7 @@ async def merchant_search_payment(request: Request,
         ),
         db.momo_deposits.find_one(
             {"user_id": merchant["id"], **_api_environment_clause(merchant),
-             "product": {"$in": ["bizpay_checkout", "bizpay_direct"]},
+             "product": {"$in": ["bizpay_checkout", "bizpay_direct", "bizpay_psr"]},
              "reference": reference},
             {"_id": 0},
             sort=[("created_at", -1)],
@@ -8577,7 +8598,7 @@ async def merchant_get_payment(payment_id: str, request: Request):
     momo = await db.momo_deposits.find_one(
         {"id": payment_id, "user_id": merchant["id"],
          **_api_environment_clause(merchant),
-         "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
+          "product": {"$in": ["bizpay_checkout", "bizpay_direct", "bizpay_psr"]}}, {"_id": 0})
     if momo:
         if momo.get("status") == "pending":
             if momo.get("provider") == "mbiyo":
@@ -8611,7 +8632,7 @@ async def merchant_get_payment_status(payment_id: str, request: Request):
     momo = await db.momo_deposits.find_one(
         {"id": payment_id, "user_id": merchant["id"],
          **_api_environment_clause(merchant),
-         "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
+          "product": {"$in": ["bizpay_checkout", "bizpay_direct", "bizpay_psr"]}}, {"_id": 0})
     if momo:
         if momo.get("status") == "pending":
             if momo.get("provider") == "mbiyo":
@@ -8653,7 +8674,7 @@ async def merchant_check_completed(payment_id: str, request: Request):
     momo = await db.momo_deposits.find_one(
         {"id": payment_id, "user_id": merchant["id"],
          **_api_environment_clause(merchant),
-         "product": {"$in": ["bizpay_checkout", "bizpay_direct"]}}, {"_id": 0})
+          "product": {"$in": ["bizpay_checkout", "bizpay_direct", "bizpay_psr"]}}, {"_id": 0})
     if momo:
         if momo.get("status") == "pending":
             if momo.get("provider") == "mbiyo":
@@ -8933,7 +8954,10 @@ def _developer_payment_view(doc: dict) -> dict:
             if doc.get("total_fee", doc.get("fee")) is not None else None,
         "fee_bearer": doc.get("fee_bearer"),
         "currency": doc.get("currency"), "reference": doc.get("reference"),
-        "checkout_url": doc.get("checkout_url"),
+        "checkout_url": (
+            None if doc.get("product") == "bizpay_psr"
+            else doc.get("checkout_url")
+        ),
         "country": doc.get("country"), "operator": doc.get("operator"),
         "created_at": _format_iso(doc.get("created_at", "")),
         "updated_at": _format_iso(doc.get("updated_at") or doc.get("created_at", "")),
@@ -9087,6 +9111,195 @@ async def _developer_checkout(payload: DeveloperCheckoutRequest, request: Reques
 @api.post("/v1/checkout")
 async def developer_checkout(payload: DeveloperCheckoutRequest, request: Request):
     return await _developer_checkout(payload, request, "bizpay_checkout")
+
+
+async def _refresh_merchant_psr_capability(
+    payment_id: str, merchant_id: str, environment: str
+) -> Optional[str]:
+    """Issue a fresh, single-use browser handoff without persisting its secret."""
+    capability = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    result = await db.momo_deposits.update_one(
+        {"id": payment_id, "merchant_id": merchant_id,
+         "environment": environment, "product": "bizpay_psr", "status": "pending"},
+        {"$set": {
+            "psr_capability_hash": hashlib.sha256(capability.encode()).hexdigest(),
+            "psr_capability_expires_at": (now + timedelta(minutes=10)).isoformat(),
+            "psr_capability_used": False,
+        }},
+    )
+    if result.modified_count != 1:
+        return None
+    return f"/api/deposits/paydunya/psr/{payment_id}/token/{capability}"
+
+
+@api.post("/v1/psr")
+async def developer_psr_payment(payload: DeveloperCheckoutRequest, request: Request):
+    """Create a PSR invoice for the merchant's client-side payment SDK."""
+    merchant = await _authenticate_merchant(request)
+    _require_merchant_scope(merchant, "psr:create")
+    idem = (request.headers.get("Idempotency-Key") or "").strip()
+    if not idem:
+        raise BizAPIError(400, "Idempotency-Key is required.",
+                          "IDEMPOTENCY_KEY_REQUIRED")
+    if len(idem) > 255:
+        raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
+                          "IDEMPOTENCY_KEY_TOO_LONG")
+
+    fp = _request_fingerprint(payload)
+    owner = _developer_owner(merchant)
+    environment = merchant.get("_api_env", "test")
+    cached = await _idempotency_claim(owner, idem, "POST", "/api/v1/psr", fp)
+    if cached and cached.get("body") is not None:
+        body = dict(cached["body"])
+        body["psr_token_url"] = None
+        if environment == "live" and body.get("id"):
+            body["psr_token_url"] = await _refresh_merchant_psr_capability(
+                body["id"], merchant["id"], environment)
+        return body
+
+    local_id = None
+    provider_submission_started = False
+
+    async def retain_pending_result() -> None:
+        nonlocal local_id
+        if not local_id:
+            possible = await db.momo_deposits.find_one(
+                {"user_id": merchant["id"],
+                 "idempotency_key": f"merchant-psr:{owner}:{idem}",
+                 "paydunya_flow": "psr"},
+                {"_id": 0},
+            )
+            if possible:
+                local_id = possible.get("id")
+        if not local_id:
+            return
+        await db.momo_deposits.update_one(
+            {"id": local_id, "user_id": merchant["id"]},
+            {"$set": {
+                "merchant_id": merchant["id"], "source": "merchant_api",
+                "reference": payload.reference or local_id,
+                "merchant_reference": payload.reference or local_id,
+                "environment": environment, "product": "bizpay_psr",
+                "metadata": payload.metadata or {}, "status": "pending",
+                "provider_status_unknown": True, "updated_at": now_iso(),
+            }},
+        )
+        doc = await db.momo_deposits.find_one(
+            {"id": local_id, "user_id": merchant["id"],
+             "environment": environment}, {"_id": 0})
+        if doc:
+            cached_body = _developer_payment_view(doc)
+            cached_body["psr_token_url"] = None
+            await _idempotency_store(
+                owner, idem, "POST", "/api/v1/psr", 200, cached_body)
+
+    try:
+        cfg, op = await _developer_operator(
+            merchant, payload, required_mode="psr")
+        if cfg.get("_gateway_provider") != "paydunya":
+            raise BizAPIError(
+                400, "PSR is unavailable for the selected payment method.",
+                "PAYMENT_METHOD_UNAVAILABLE")
+        if payload.reference and await db.momo_deposits.find_one(
+            {"user_id": merchant["id"], "environment": environment,
+             "merchant_reference": payload.reference},
+            {"_id": 1},
+        ):
+            raise BizAPIError(409, "Reference already used.",
+                              "REFERENCE_ALREADY_USED")
+        fees = paydunya.calculate_fees(payload.amount, op, payload.fee_bearer)
+
+        if environment == "test":
+            now = now_iso()
+            payment_id = new_id()
+            doc = {
+                "id": payment_id, "user_id": merchant["id"],
+                "merchant_id": merchant["id"], "source": "merchant_api",
+                "reference": payload.reference or payment_id,
+                "merchant_reference": payload.reference or payment_id,
+                "environment": "test", "product": "bizpay_psr",
+                "paydunya_flow": "psr", "amount": payload.amount,
+                "requested_amount": fees["requested_amount"],
+                "charged_amount": fees["charged_amount"],
+                "wallet_credit_amount": fees["wallet_credit_amount"],
+                "gateway_fee": fees["gateway_fee"],
+                "platform_fee": fees["platform_fee"],
+                "total_fee": fees["total_fee"], "fee_bearer": fees["fee_bearer"],
+                "fee_snapshot": fees, "currency": payload.currency,
+                "country": payload.country.upper(), "operator": payload.operator,
+                "phone_number": payload.customer_phone,
+                "email": payload.customer_email,
+                "status": "pending", "metadata": payload.metadata or {},
+                "simulation_endpoint":
+                    f"/api/v1/test/payments/{payment_id}/complete",
+                "created_at": now, "updated_at": now,
+            }
+            await db.momo_deposits.insert_one(doc)
+            body = _developer_payment_view(doc)
+            body["psr_token_url"] = None
+            await _idempotency_store(
+                owner, idem, "POST", "/api/v1/psr", 200, body)
+            return body
+
+        req = PayDunyaInvoiceRequest(
+            amount=payload.amount, currency=payload.currency,
+            email=payload.customer_email or "customer@psr.invalid",
+            full_name=payload.customer_name, country=payload.country,
+            operator=payload.operator, phone_number=payload.customer_phone,
+            fee_bearer=payload.fee_bearer,
+            description=f"BizPay PSR {payload.reference or ''}".strip(),
+            return_url=payload.return_url,
+        )
+        provider_submission_started = True
+        result = await _create_paydunya_invoice_deposit(
+            req, merchant["id"], "psr", _paydunya_callback_base(request),
+            idempotency_key=f"merchant-psr:{owner}:{idem}")
+        local_id = result["id"]
+        await db.momo_deposits.update_one(
+            {"id": local_id, "user_id": merchant["id"]},
+            {"$set": {
+                "merchant_id": merchant["id"], "source": "merchant_api",
+                "reference": payload.reference or local_id,
+                "merchant_reference": payload.reference or local_id,
+                "environment": "live", "product": "bizpay_psr",
+                "metadata": payload.metadata or {},
+                "updated_at": now_iso(),
+            }},
+        )
+        doc = await db.momo_deposits.find_one(
+            {"id": local_id, "user_id": merchant["id"],
+             "environment": "live"}, {"_id": 0})
+        body = _developer_payment_view(doc)
+        body["psr_token_url"] = result.get("psr_token_url")
+        cache_body = dict(body)
+        # This URL is a bearer capability; retries mint a new one instead.
+        cache_body["psr_token_url"] = None
+        await _idempotency_store(
+            owner, idem, "POST", "/api/v1/psr", 200, cache_body)
+        return body
+    except HTTPException as exc:
+        if provider_submission_started:
+            try:
+                await retain_pending_result()
+            except Exception as persist_exc:
+                logger.warning("PSR pending result could not be saved: %s",
+                               persist_exc)
+            if not local_id and exc.status_code < 500:
+                await _idempotency_release(owner, idem, fp)
+        else:
+            await _idempotency_release(owner, idem, fp)
+        raise
+    except Exception:
+        if local_id or provider_submission_started:
+            try:
+                await retain_pending_result()
+            except Exception as persist_exc:
+                logger.warning("PSR pending result could not be saved: %s",
+                               persist_exc)
+        elif not provider_submission_started:
+            await _idempotency_release(owner, idem, fp)
+        raise
 
 
 @api.post("/v1/direct-payments")
@@ -10932,8 +11145,9 @@ def _mkey_view(k: dict, reveal: Optional[str] = None) -> dict:
         "public_key": k.get("public_key"),
         "secret_hint": k.get("secret_hint"),
         "active": bool(k.get("active", True)),
-        "scopes": k.get("scopes") or [
-            "checkout:create", "direct:create", "push:create", "payments:read"
+        "scopes": k.get("scopes") if k.get("scopes") is not None else [
+            "checkout:create", "direct:create", "psr:create", "push:create",
+            "payments:read"
         ],
         "created_at": k.get("created_at"),
         "last_used_at": k.get("last_used_at"),
@@ -10958,7 +11172,8 @@ async def create_merchant_key(req: CreateMerchantKeyReq,
                                 request: Request = None):
     await _ensure_api_keys(uid, request)
     allowed_scopes = {
-        "checkout:create", "direct:create", "push:create", "payments:read"
+        "checkout:create", "direct:create", "psr:create", "push:create",
+        "payments:read"
     }
     scopes = req.scopes or sorted(allowed_scopes)
     invalid_scopes = sorted(set(scopes) - allowed_scopes)
@@ -11012,7 +11227,8 @@ async def update_merchant_key(key_id: str, req: UpdateMerchantKeyReq,
         raise HTTPException(400, "Aucune modification")
     if "scopes" in updates:
         allowed_scopes = {
-            "checkout:create", "direct:create", "push:create", "payments:read"
+            "checkout:create", "direct:create", "psr:create", "push:create",
+            "payments:read"
         }
         invalid_scopes = sorted(set(updates["scopes"]) - allowed_scopes)
         if invalid_scopes or not updates["scopes"]:
@@ -11475,8 +11691,25 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     ], [3 * cm, 13.5 * cm]))
 
     story.append(h2("4. Paiements Mobile Money"))
-    story.append(p("Utilisez POST /v1/payments avec payment_method=mobile_money, "
-                   "ou les produits /v1/checkout et /v1/direct-payments. "
+    story.append(p("Les trois parcours sont distincts : /v1/checkout pour PAR "
+                   "(redirection vers la page de paiement hébergée), /v1/psr pour "
+                   "le SDK PSR intégré, et /v1/direct-payments pour SoftPay sans "
+                   "redirection. Chaque parcours exige son scope dédié : "
+                   "checkout:create, psr:create ou direct:create."))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/psr \\
+  -H "Authorization: Bearer sk_live_XXXXX" \\
+  -H "Idempotency-Key: order-2048-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":12500,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","customer_name":"Afi Mensah",
+       "reference":"ORDER-2048"}}'"""))
+    story.append(p("La réponse PSR inclut psr_token_url, une URL temporaire à usage "
+                   "unique. Remettez-la à l’application cliente afin qu’elle récupère "
+                   "le jeton et le transmette au SDK officiel. La clé secrète reste "
+                   "sur votre serveur. En sandbox, utilisez simulation_endpoint : "
+                   "aucun appel fournisseur n’est effectué."))
+    story.append(p("Le chemin compatible /v1/payments avec "
+                   "payment_method=mobile_money reste disponible. "
                    "Idempotency-Key est obligatoire afin qu'un retry reseau ne cree "
                    "jamais une seconde transaction."))
     story.append(code(f"""curl -X POST {API_BASE}/v1/payments \\
