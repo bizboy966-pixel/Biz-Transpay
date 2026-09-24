@@ -1412,9 +1412,10 @@ async def test_live_direct_timeout_is_durable_and_unknown(monkeypatch):
                             "master_key_encrypted": "configured",
                             "private_key_encrypted": "configured",
                             "token_encrypted": "configured",
-                            "catalog": [{"country": "TG", "code": "moov_tg",
+                            "catalog": [{"country": "TG", "code": "togocel_tg",
                                          "currency": "XOF", "min": 100, "max": 500000,
-                                         "active": True}],
+                                          "active": True,
+                                          "endpoint_slug": "t-money-togo"}],
                         }))
     monkeypatch.setattr(server.paydunya, "create_invoice",
                         lambda *a, **k: asyncio.sleep(0, result={"token": "live-token"}))
@@ -1422,7 +1423,10 @@ async def test_live_direct_timeout_is_durable_and_unknown(monkeypatch):
     monkeypatch.setattr(server.paydunya, "checkout_url",
                         lambda value: "/provider-url-must-not-leak")
 
+    softpay_calls = []
+
     async def timeout(*args, **kwargs):
+        softpay_calls.append(kwargs)
         raise server.paydunya.PayDunyaError(504, "timeout")
 
     monkeypatch.setattr(server.paydunya, "softpay_payment", timeout)
@@ -1438,8 +1442,11 @@ async def test_live_direct_timeout_is_durable_and_unknown(monkeypatch):
     monkeypatch.setattr(server, "_idempotency_store", store)
     with pytest.raises(server.BizAPIError):
         await server.developer_direct_payment(
-            payload_direct(reference="live-timeout"),
+            payload_direct(operator="tmoney_tg",
+                           customer_phone="+228 90 12 34 56",
+                           reference="live-timeout"),
             request(headers={"Idempotency-Key": "live-timeout-key"}))
+    assert softpay_calls[0]["phone"] == "90123456"
     assert len(fake.momo_deposits.docs) == 1
     doc = fake.momo_deposits.docs[0]
     assert doc["environment"] == "live"

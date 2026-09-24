@@ -10876,6 +10876,13 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
             await _idempotency_store(owner, idem, "POST",
                                      "/api/v1/direct-payments", 200, body)
             return body
+        provider_phone = payload.customer_phone
+        if (cfg.get("_gateway_provider") == "paydunya"
+                and payload.country.upper() == "TG"):
+            try:
+                provider_phone = paydunya.normalize_togo_phone(provider_phone)
+            except ValueError as exc:
+                raise BizAPIError(400, str(exc), "INVALID_PHONE_NUMBER")
         base = _paydunya_callback_base(request)
         customer_name = "Client"
         try:
@@ -10920,7 +10927,7 @@ async def developer_direct_payment(payload: BizPayDirectRequest, request: Reques
             await db.momo_deposits.insert_one(doc)
             await paydunya.softpay_payment(
                 cfg, invoice_token=token, operator=op,
-                phone=payload.customer_phone, amount=fees["charged_amount"],
+                phone=provider_phone, amount=fees["charged_amount"],
                 currency=payload.currency, customer_name=customer_name,
                 customer_email=payload.customer_email or "customer@direct.invalid",
             )
