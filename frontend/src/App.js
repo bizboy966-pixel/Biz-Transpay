@@ -90,6 +90,7 @@ function App() {
           <Route path="/pay/:slug" element={<PublicLink />} />
           <Route path="/payment/success" element={<PaymentSuccess />} />
           <Route path="/payment/cancel" element={<PaymentCancel />} />
+          <Route path="/docs" element={<ApiDocs publicMode />} />
           <Route path="/dashboard" element={<Protected><DashboardLayout /></Protected>}>
             <Route index element={<DashboardHome />} />
             <Route path="transactions" element={<Transactions />} />

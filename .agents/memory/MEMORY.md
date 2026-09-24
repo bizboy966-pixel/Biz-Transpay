@@ -28,3 +28,4 @@
 - [Telegram notification delivery](telegram-notifications.md) — platform notifications use a non-blocking Telegram queue with an allowlisted, redacted event payload.
 - [Developer API safety](developer-api-safety.md) — sandbox keys never reach providers or wallets; ambiguous upstream submissions retain their idempotency claim.
 - [KYC image payloads](kyc-image-payloads.md) — compress multiple identity photos client-side before sending base64 data to avoid request-size failures.
+- [Public developer documentation](public-developer-documentation.md) — separate technical country eligibility from configured availability and expose only provider-neutral integration data.

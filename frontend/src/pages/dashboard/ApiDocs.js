@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, BookOpen, Check, Code2, Copy, Download, KeyRound, Menu, ShieldCheck, Webhook, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, Check, Code2, Copy, Download, KeyRound, Menu, Share2, ShieldCheck, Webhook, X } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../api';
+import SupportedCountryCatalog from '../../components/developer/SupportedCountryCatalog';
 
 const API = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
 
@@ -407,12 +408,12 @@ function ProductExample({ product }) {
   </section>;
 }
 
-export default function ApiDocs() {
+export default function ApiDocs({ publicMode = false } = {}) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [query, setQuery] = useState('');
   const sections = useMemo(() => [
     ['start', 'Démarrage'], ['auth', 'Authentification'], ['environments', 'Test et live'],
-    ['crypto-payin', 'Pay-In crypto'],
+    ['crypto-payin', 'Pay-In crypto'], ['countries', 'Pays et opérateurs'],
     ['checkout', 'BizPay Checkout · PAR'], ['psr', 'BizPay PSR'],
     ['direct', 'BizPay Direct · SoftPay'], ['push', 'Retrait Mobile Money'],
     ['crypto-payout', 'Retrait crypto'], ['contracts', 'Champs et réponses'],
@@ -436,6 +437,29 @@ export default function ApiDocs() {
     }
   };
 
+  const copyPublicLink = async () => {
+    const link = `${window.location.origin}/docs`;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        const field = document.createElement('textarea');
+        field.value = link;
+        field.setAttribute('readonly', '');
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.appendChild(field);
+        field.select();
+        const copied = document.execCommand('copy');
+        field.remove();
+        if (!copied) throw new Error('Clipboard unavailable');
+      }
+      toast.success('Lien public copié');
+    } catch {
+      toast.error('Le lien n’a pas pu être copié.');
+    }
+  };
+
   return <div className="api-docs-page min-h-screen bg-slate-50" data-testid="api-docs-page">
     <style>{`
       @media print {
@@ -455,9 +479,12 @@ export default function ApiDocs() {
     <header className="api-docs-header sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center gap-4 px-5 py-3">
         <button type="button" onClick={() => setMobileOpen((value) => !value)} className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 lg:hidden">{mobileOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}</button>
-        <Link to="/dashboard/api" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" /> Retour aux clés</Link>
+        <Link to={publicMode ? '/' : '/dashboard/api'} className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" />{publicMode ? 'Accueil' : 'Retour aux clés'}</Link>
         <div className="hidden items-center gap-2 md:flex"><BookOpen className="h-4 w-4 text-blue-600" /><span className="font-cabinet text-sm font-extrabold text-slate-900">API Biz-transPay <span className="font-normal text-slate-400">v1</span></span></div>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher dans la documentation" className="ml-auto hidden w-64 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-blue-500 md:block" />
+        <button type="button" onClick={copyPublicLink} data-testid="btn-copy-public-docs-link" className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">
+          <Share2 className="h-3.5 w-3.5" /><span className="hidden sm:inline">Copier le lien</span>
+        </button>
         <button type="button" onClick={downloadPdf} data-testid="btn-download-api-pdf" className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-slate-700">
           <Download className="h-3.5 w-3.5" /> <span className="hidden sm:inline">Télécharger le PDF</span><span className="sm:hidden">PDF</span>
         </button>
@@ -475,6 +502,7 @@ export default function ApiDocs() {
           <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{products.map((product) => <a href={`#${product.id}`} key={product.id} className="rounded-xl border border-slate-200 bg-white p-4 hover:-translate-y-0.5 hover:border-blue-300 transition-transform"><div className="font-cabinet text-sm font-bold text-slate-900">{product.name}</div><div className="mt-1 text-xs leading-relaxed text-slate-500">{product.description}</div><div className="mt-3 font-mono text-[11px] text-blue-700">POST {product.path}</div></a>)}</div>
             <Info icon={ShieldCheck} title="Vérification serveur-à-serveur" tone="blue">Après chaque dépôt, conservez l’identifiant et vérifiez son statut par <code>GET /payments/{'{id}'}/status</code>. Un retrait Mobile Money se suit sur <code>GET /push/{'{id}'}/status</code> et un retrait crypto sur <code>GET /payouts/{'{id}'}/status</code>. Un statut <code>pending</code> ou <code>processing</code> n’est pas une confirmation de réussite.</Info>
         </section>
+        <SupportedCountryCatalog />
 
           <section id="auth" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Authentification</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Envoyez la clé secrète dans l'en-tête Bearer. Les clés secrètes restent sur votre serveur : ne les placez jamais dans une application mobile ou un navigateur. Toutes les routes ci-dessous sont relatives à <code>{API}</code>.</p><CodeBlock code={`Authorization: Bearer sk_test_YOUR_KEY\nContent-Type: application/json`} /><ApiTable headers={['Scope', 'Accès']} rows={[
             [<code>checkout:create</code>, 'Créer des dépôts crypto, des sessions PAR et des paiements Mobile Money via la route compatible /payments.'],
@@ -516,7 +544,8 @@ export default function ApiDocs() {
             ]} />
             <p className="mt-2 text-[13px] leading-relaxed text-slate-600">PAR renvoie <code>checkout_url</code> pour la page hébergée. PSR renvoie <code>psr_token_url</code>, un lien temporaire à usage unique à transmettre à votre application cliente; le SDK reçoit ensuite le jeton. Ne transmettez jamais la clé secrète à l’application. Les réponses Mobile Money exposent notamment <code>requested_amount</code>, <code>charged_amount</code>, <code>wallet_credit_amount</code>, <code>gateway_fee</code>, <code>platform_fee</code>, <code>fee</code> et <code>fee_bearer</code>. Les frais dépendent de l’opérateur et de sa configuration; utilisez les montants retournés pour le rapprochement.</p>
             <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Dépôt Mobile Money Direct / SoftPay</h3>
-            <p className="mt-2 text-[13px] leading-relaxed text-slate-700"><code>POST /direct-payments</code> exige les mêmes <code>amount</code>, <code>currency</code>, <code>country</code> et <code>operator</code>, ainsi qu’un <code>customer_phone</code> (6 à 32 caractères). <code>customer_email</code>, <code>reference</code> (1 à 128 caractères), <code>return_url</code> et <code>metadata</code> sont facultatifs. Ce parcours déclenche la demande de confirmation sur le téléphone; il ne redirige pas vers un checkout.</p>
+             <p className="mt-2 text-[13px] leading-relaxed text-slate-700"><code>POST /direct-payments</code> exige les mêmes <code>amount</code>, <code>currency</code>, <code>country</code> et <code>operator</code>, ainsi qu’un <code>customer_phone</code> (6 à 32 caractères). <code>customer_email</code>, <code>reference</code> (1 à 128 caractères), <code>return_url</code> et <code>metadata</code> sont facultatifs. Le parcours lance une demande de confirmation téléphone depuis le serveur : ne redirigez pas automatiquement le client vers une page opérateur. Gardez-le sur votre écran d’attente et confirmez le résultat avec le webhook signé ou <code>GET /payments/{'{id}'}/status</code>. Un statut <code>pending</code> reste en attente; réutilisez la même clé d’idempotence lors d’une reprise.</p>
+             <Info icon={ShieldCheck} title="Parcours de transaction Direct" tone="blue">Dans le parcours Direct de Biz-transPay, le client reste sur Biz-transPay pendant la demande SoftPay; le suivi met à jour cette même transaction, sans redirection automatique vers le checkout de l’opérateur. Pour votre propre intégration API, gardez le client sur votre écran d’attente et vérifiez le statut avant toute action métier.</Info>
             <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Dépôt crypto</h3>
             <ApiTable headers={['Champ', 'Type / valeur', 'Requis']} rows={[
               [<code>amount</code>, 'Nombre supérieur ou égal à 1.', 'Oui'],

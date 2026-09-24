@@ -296,6 +296,10 @@ def _turnstile_config() -> tuple[str, str, set[str]]:
 async def turnstile_config():
     """Expose only the public Turnstile site key to the browser."""
     _secret, site_key, _hostnames = _turnstile_config()
+    minimum = safe_limit(operator.get("min"))
+    maximum = safe_limit(operator.get("max"))
+    if maximum == 0:
+        maximum = None
     return {
         "enabled": bool(_secret and site_key),
         "site_key": site_key or None,
@@ -13181,8 +13185,168 @@ async def playground_execute(req: PlaygroundRequest,
     }
 
 
+def _documentation_money_route(
+    operator: dict, payment_flow: Optional[dict] = None
+) -> Optional[dict]:
+    """Whitelist country/operator fields for the public integration catalogue."""
+    country = str(operator.get("country") or "").upper()
+    currency = str(operator.get("currency") or "").upper()
+    code = str(operator.get("code") or operator.get("withdraw_mode") or "").strip()
+    code = re.sub(r"^mbiyo_", "", code, flags=re.IGNORECASE)
+    if not re.fullmatch(r"[A-Z]{2}", country):
+        return None
+    if not re.fullmatch(r"[A-Z0-9]{3,12}", currency):
+        return None
+    if not code or len(code) > 64:
+        return None
+
+    def safe_limit(value: Any) -> Optional[float]:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or number < 0:
+            return None
+        return int(number) if number.is_integer() else number
+
+    flow = payment_flow if isinstance(payment_flow, dict) else None
+    flow_kind = str((flow or {}).get("kind") or "").lower()
+    if flow and flow_kind not in {"phone_confirmation", "ussd", "otp", "redirect"}:
+        flow_kind = "phone_confirmation"
+    minimum = safe_limit(operator.get("min"))
+    maximum = safe_limit(operator.get("max"))
+    if maximum == 0:
+        maximum = None
+    result = {
+        "country": country,
+        "country_label": str(
+            operator.get("country_label")
+            or paydunya.COUNTRY_LABELS.get(
+                country, mbiyo.COUNTRY_LABELS.get(country, country))
+        )[:80],
+        "operator_code": code,
+        "operator_name": str(
+            operator.get("name") or operator.get("network") or code
+        )[:100],
+        "currency": currency,
+        "minimum": minimum,
+        "maximum": maximum,
+    }
+    if flow is not None:
+        result["customer_flow"] = flow_kind
+    return result
+
+
+def _documentation_money_groups(routes: list[dict]) -> list[dict]:
+    countries: dict[str, dict] = {}
+    for route in routes:
+        safe_route = _documentation_money_route(
+            route, route.get("payment_flow"))
+        if not safe_route:
+            continue
+        country = safe_route["country"]
+        group = countries.setdefault(country, {
+            "country": country,
+            "country_label": safe_route["country_label"],
+            "routes": [],
+        })
+        key = (safe_route["operator_code"], safe_route["currency"])
+        existing = next((
+            item for item in group["routes"]
+            if (item["operator_code"], item["currency"]) == key
+        ), None)
+        if existing:
+            existing.update({
+                key: value for key, value in safe_route.items()
+                if value not in (None, "")
+            })
+        else:
+            group["routes"].append(safe_route)
+    return [
+        {
+            **countries[country],
+            "routes": sorted(
+                countries[country]["routes"],
+                key=lambda item: (item["currency"], item["operator_name"].lower(),
+                                  item["operator_code"].lower()),
+            ),
+        }
+        for country in sorted(countries)
+    ]
+
+
+async def _public_documentation_catalog_data() -> dict:
+    """Return public country/operator coverage without provider credentials."""
+    paydunya_cfg = await get_paydunya_config()
+    mbiyo_cfg = await get_mbiyo_config()
+    transfer_cfg = await get_transfer_config()
+    public_payin = await deposits_config_public()
+    public_payout = _public_transfer_config(transfer_cfg)
+
+    payin_eligible = []
+    payin_eligible.extend(
+        {**op, "payment_flow": paydunya.payment_flow(op)}
+        for op in paydunya.default_catalog()
+    )
+    payin_eligible.extend(
+        {**op, "payment_flow": paydunya.payment_flow(op)}
+        for op in paydunya_cfg.get("catalog") or []
+    )
+    payin_eligible.extend(
+        {**op, "payment_flow": mbiyo.payment_flow(op)}
+        for op in mbiyo.default_catalog()
+    )
+    payin_eligible.extend(
+        {**op, "payment_flow": mbiyo.payment_flow(op)}
+        for op in mbiyo_cfg.get("catalog") or []
+    )
+    payin_available = [
+        {**operator, "country": country.get("country"),
+         "country_label": country.get("country_label")}
+        for country in public_payin.get("catalog") or []
+        for operator in country.get("operators") or []
+    ]
+
+    payout_eligible = [
+        operator for operator in paydunya.default_withdrawal_catalog()
+        if operator.get("withdraw_mode")
+        and str(operator.get("currency") or "").upper() == "XOF"
+    ]
+    payout_eligible.extend(
+        operator for operator in (
+            (transfer_cfg.get("mobile_money") or {}).get("operators") or []
+        )
+        if operator.get("withdraw_mode")
+        and str(operator.get("currency") or "").upper() == "XOF"
+    )
+    payout_eligible.extend(mbiyo.default_catalog())
+    payout_eligible.extend(mbiyo_cfg.get("catalog") or [])
+    payout_eligible.extend(
+        (transfer_cfg.get("mbiyo") or {}).get("operators") or []
+    )
+    payout_available = (
+        (public_payout.get("mobile_money") or {}).get("operators") or []
+    )
+
+    return {
+        "payin": {
+            "eligible": _documentation_money_groups(payin_eligible),
+            "available": _documentation_money_groups(payin_available),
+        },
+        "payout": {
+            "eligible": _documentation_money_groups(payout_eligible),
+            "available": _documentation_money_groups(payout_available),
+        },
+    }
+
+
+@api.get("/documentation/catalog")
+async def public_documentation_catalog():
+    return await _public_documentation_catalog_data()
+
+
 @api.get("/documentation.pdf")
-async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
+async def download_api_docs_pdf():
     """Generate a professional PDF of the Biz-transPay API documentation.
     Kept in sync with the developer API, Mobile Money reconciliation and
     signed merchant webhooks described by /dashboard/api/docs."""
@@ -13191,6 +13355,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     from reportlab.lib.units import cm
     from reportlab.lib.colors import HexColor
     from reportlab.lib.enums import TA_LEFT
+    from xml.sax.saxutils import escape as xml_escape
     from reportlab.platypus import (
         SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Preformatted,
     )
@@ -13237,6 +13402,7 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
         ]))
         return t
 
+    country_catalog = await _public_documentation_catalog_data()
     story = []
     # ---------------- Cover ----------------
     story.append(h1("Biz-transPay"))
@@ -13247,6 +13413,8 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
                    "les retraits Mobile Money BizPUSH et les retraits crypto. Les parcours "
                    "PAR, PSR et Direct sont distincts; les deux types de retrait ont des "
                    "routes, des statuts et des règles de notification séparés."))
+    story.append(p(f"Documentation partageable : <b>{xml_escape(OFFICIAL)}/docs</b>. "
+                   f"Catalogue pays public : <b>{xml_escape(OFFICIAL)}/api/documentation/catalog</b>."))
     story.append(p("<b>Support</b> : depuis votre tableau de bord (> Support) ou par email."))
 
     # ---------------- Auth ----------------
@@ -13380,6 +13548,13 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
                    "elle exige aussi customer_phone, currency, country et operator et "
                    "l'en-tête Idempotency-Key. Pour une nouvelle intégration Mobile Money, "
                    "choisissez explicitement PAR, PSR ou Direct."))
+    story.append(p("Pour le parcours Direct, le client reste sur la page d'attente Biz-transPay "
+                   "(ou sur votre propre écran d'attente pour une intégration marchande) pendant "
+                   "la demande SoftPay; le suivi met à jour cette même transaction, sans "
+                   "redirection automatique vers le checkout de l'opérateur. Vérifiez par "
+                   "GET /v1/payments/{id}/status ou le webhook signé. Si une réponse est "
+                   "incertaine, réutilisez la même Idempotency-Key; ne créez pas un deuxième "
+                   "dépôt et ne considérez pas pending comme payé."))
     story.append(code("""{
   "id": "pay_...",
   "object": "payment",
@@ -13424,6 +13599,97 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
         ["paid", "Paiement confirme et compte credite exactement une fois"],
         ["failed", "Refus fournisseur ou delai initial de 10 minutes expire"],
     ], [3 * cm, 13.5 * cm]))
+
+    def documentation_catalog_table(groups):
+        show_flow = any(
+            route.get("customer_flow")
+            for group in groups for route in (group.get("routes") or [])
+        )
+        header = ["Pays", "Opérateur et code API", "Devise", "Limites"]
+        if show_flow:
+            header.append("Parcours client")
+        rows = [header]
+        for group in groups:
+            operators = group.get("routes") or []
+            if not operators:
+                continue
+            country_cell = (
+                f"<b>{xml_escape(str(group.get('country_label') or ''))}</b><br/>"
+                f"<font name='Courier'>{xml_escape(str(group.get('country') or ''))}</font>"
+            )
+            for index, operator in enumerate(operators):
+                minimum = operator.get("minimum")
+                maximum = operator.get("maximum")
+                limits = (
+                    f"{minimum if minimum is not None else 'selon opérateur'}"
+                    f" – {maximum if maximum is not None else 'selon opérateur'}"
+                )
+                flow_labels = {
+                    "phone_confirmation": "Validation téléphone",
+                    "ussd": "USSD",
+                    "otp": "Code de validation",
+                    "redirect": "Confirmation opérateur",
+                }
+                op_cell = (
+                    f"{xml_escape(str(operator.get('operator_name') or ''))}<br/>"
+                    f"<font name='Courier'>{xml_escape(str(operator.get('operator_code') or ''))}</font>"
+                )
+                row = [
+                    Paragraph(country_cell, styles["Bodybtp"]) if index == 0 else "",
+                    Paragraph(op_cell, styles["Bodybtp"]),
+                    xml_escape(str(operator.get("currency") or "")),
+                    xml_escape(limits),
+                ]
+                if show_flow:
+                    row.append(xml_escape(flow_labels.get(
+                        operator.get("customer_flow"), "Validation téléphone")))
+                rows.append(row)
+        if len(rows) == 1:
+            return p("Aucun opérateur n'est actuellement configuré.")
+        col_widths = [3.1 * cm, 5.2 * cm, 1.7 * cm, 3.2 * cm]
+        if show_flow:
+            col_widths.append(3.3 * cm)
+        table = Table(rows, colWidths=col_widths, repeatRows=1, splitByRow=1)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#F1F5F9")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("GRID", (0, 0), (-1, -1), 0.4, HexColor("#E2E8F0")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        return table
+
+    story.append(PageBreak())
+    story.append(h2("Pays, opérateurs et méthodes d'intégration"))
+    story.append(p("Les listes « éligibles » recensent les pays et opérateurs/méthodes pris en "
+                   "charge par le catalogue d'intégration. Les listes « disponibles » reflètent "
+                   "les routes actuellement activées et configurées; elles peuvent donc varier. "
+                   "Les moyens locaux comprennent Mobile Money et d'autres méthodes telles que "
+                   "EFT lorsqu'elles sont proposées. Utilisez le code et la devise de la ligne."))
+    story.append(h3("Dépôts — routes éligibles"))
+    story.append(documentation_catalog_table(
+        country_catalog["payin"]["eligible"]))
+    story.append(h3("Dépôts — routes actuellement disponibles"))
+    story.append(documentation_catalog_table(
+        country_catalog["payin"]["available"]))
+    story.append(p("Intégration Mobile Money : POST /v1/direct-payments pour une demande de "
+                   "confirmation téléphone; POST /v1/checkout pour le parcours PAR; POST /v1/psr "
+                   "pour le parcours avec SDK. La disponibilité de PAR et PSR dépend de la route "
+                   "et de la configuration du compte. Pour chaque création, envoyez country, "
+                   "operator, currency et Idempotency-Key comme dans les exemples ci-dessus."))
+    story.append(h3("Retraits — routes éligibles"))
+    story.append(documentation_catalog_table(
+        country_catalog["payout"]["eligible"]))
+    story.append(h3("Retraits — routes actuellement disponibles"))
+    story.append(documentation_catalog_table(
+        country_catalog["payout"]["available"]))
+    story.append(p("Intégration : POST /v1/push avec country, operator, currency, amount "
+                   "et beneficiary_phone. Vérifiez ensuite GET /v1/push/{id}/status; "
+                   "completed est le statut de réussite."))
 
     story.append(h2("5. Webhooks signés HMAC"))
     story.append(p("Configurez l'URL, le secret et les événements dans la section API du "
