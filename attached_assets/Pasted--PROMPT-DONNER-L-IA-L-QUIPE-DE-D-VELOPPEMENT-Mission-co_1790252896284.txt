@@ -1,0 +1,442 @@
+# PROMPT À DONNER À L’IA / À L’ÉQUIPE DE DÉVELOPPEMENT
+
+## Mission : concevoir l’API d’intégration complète de Biz-transPay
+
+Nous devons concevoir et intégrer une **API développeur professionnelle pour Biz-transPay**, destinée aux e-commerçants, développeurs, entreprises et plateformes qui souhaitent automatiser leurs **paiements entrants (Pay-In)** et leurs **paiements sortants (Pay-Out)**.
+
+L’objectif est de créer une expérience d’intégration **très simple pour le marchand**, avec une documentation claire, des identifiants API, des environnements Sandbox/Live et plusieurs méthodes d’intégration.
+
+### 1. Principe général
+
+Étudie d’abord en profondeur la documentation officielle du prestataire de référence que nous avons indiqué (**PayJunia**). Reproduis **la logique d’intégration, l’organisation de la documentation, les principes d’authentification, la structure des requêtes/réponses, les méthodes de paiement, les statuts, les erreurs et le parcours développeur** lorsque cela est techniquement et légalement possible.
+
+⚠️ **Ne copie pas leur code propriétaire, leurs clés, leurs secrets, leurs marques ou leurs identifiants.**
+Nous voulons reprendre **le principe et l’expérience développeur**, mais toute l’API, tous les endpoints, toutes les clés et toutes les transactions doivent appartenir à **Biz-transPay**.
+
+Avant toute modification du projet, analyse l’architecture actuelle de Biz-transPay et préserve les fonctionnalités existantes.
+
+---
+
+# 2. API propre à Biz-transPay
+
+L'intégration finale doit utiliser exclusivement les identifiants générés par Biz-transPay.
+
+Prévoir, selon ce que l’architecture finale justifie :
+
+* **Clé publique**
+* **Clé secrète**
+* **Clé principale / API Key**
+* **Token d’accès**
+* Identifiant marchand
+* Identifiant de transaction
+* Identifiant de requête
+* Secret de signature, si nécessaire
+
+Ne crée pas plusieurs systèmes d’authentification inutiles.
+
+Détermine, après étude de l’architecture de référence, **quelles clés sont réellement nécessaires et à quoi chacune sert**.
+
+La documentation doit expliquer simplement :
+
+> Cette clé sert à identifier votre compte.
+> Cette clé sert à authentifier votre serveur.
+> Cette clé ne doit jamais être exposée dans le frontend.
+> Ce token sert à autoriser une requête.
+
+---
+
+# 3. Deux environnements
+
+Créer deux environnements distincts :
+
+### 🧪 Sandbox
+
+Utilisé pour :
+
+* tester les dépôts ;
+* tester les retraits ;
+* tester les différents opérateurs ;
+* tester les erreurs ;
+* tester les statuts ;
+* tester les intégrations API.
+
+### 🚀 Live
+
+Utilisé pour les transactions réelles.
+
+Les identifiants Sandbox et Live doivent être **totalement séparés**.
+
+Un marchand ne doit jamais pouvoir utiliser accidentellement une clé Sandbox pour effectuer une transaction réelle.
+
+---
+
+# 4. Trois méthodes d’intégration
+
+Lorsqu’un marchand crée son intégration, il doit pouvoir choisir **la méthode d’intégration qu’il souhaite utiliser**.
+
+Prévoir les trois méthodes de Biz-transPay correspondant au modèle étudié dans la documentation de référence :
+
+### Méthode 1 — Paiement Soft
+
+Une méthode simple permettant au marchand d'intégrer rapidement le paiement dans sa plateforme.
+
+Exemple :
+
+**Client → plateforme du marchand → Biz-transPay → opérateur → confirmation → plateforme du marchand**
+
+La documentation doit expliquer :
+
+* création du paiement ;
+* montant ;
+* devise ;
+* pays ;
+* opérateur ;
+* numéro du client ;
+* référence marchand ;
+* URL de retour si nécessaire ;
+* récupération du statut ;
+* gestion des erreurs.
+
+---
+
+### Méthode 2 — Paiement Direct / API Directe
+
+Cette méthode doit permettre au marchand d'effectuer les opérations directement depuis son propre backend.
+
+Exemple :
+
+**Plateforme marchand → API Biz-transPay → opérateur → résultat → API Biz-transPay → plateforme marchand**
+
+Cette méthode doit notamment permettre :
+
+* Pay-In ;
+* Pay-Out ;
+* consultation du statut ;
+* consultation d’une transaction ;
+* vérification d’une transaction ;
+* consultation du solde lorsque prévu ;
+* gestion des bénéficiaires lorsque nécessaire.
+
+---
+
+### Méthode 3 — API d’intégration avancée
+
+Créer une méthode destinée aux développeurs qui veulent intégrer Biz-transPay profondément dans leur application.
+
+Elle doit permettre notamment :
+
+* paiements automatiques ;
+* dépôts automatiques ;
+* retraits automatiques ;
+* suivi automatique des transactions ;
+* récupération des statuts ;
+* intégration dans une plateforme e-commerce ;
+* intégration dans une application mobile ;
+* intégration dans un logiciel SaaS ;
+* automatisation des opérations.
+
+---
+
+# 5. Pay-In automatique
+
+L'API Biz-transPay doit permettre à une plateforme externe d'effectuer automatiquement un paiement entrant.
+
+Exemple :
+
+```text
+Client
+   ↓
+Plateforme du marchand
+   ↓
+API Biz-transPay
+   ↓
+Pays + opérateur + numéro + montant
+   ↓
+Traitement du paiement
+   ↓
+Statut
+   ↓
+Plateforme du marchand
+```
+
+Le marchand doit pouvoir envoyer les informations nécessaires via son backend.
+
+La réponse API doit être structurée et contenir au minimum, lorsque disponible :
+
+* statut ;
+* référence Biz-transPay ;
+* référence marchand ;
+* montant ;
+* devise ;
+* frais ;
+* pays ;
+* opérateur ;
+* date ;
+* message ;
+* identifiant unique de transaction.
+
+---
+
+# 6. Pay-Out automatique
+
+L’API doit également permettre à une plateforme d'effectuer automatiquement des retraits/paiements vers ses utilisateurs.
+
+Exemple :
+
+```text
+Plateforme marchand
+       ↓
+API Biz-transPay
+       ↓
+Demande de Pay-Out
+       ↓
+Vérification
+       ↓
+Traitement
+       ↓
+Opérateur / réseau
+       ↓
+Statut final
+       ↓
+Plateforme marchand
+```
+
+Le marchand doit pouvoir envoyer :
+
+* montant ;
+* devise ;
+* pays ;
+* opérateur ;
+* numéro du bénéficiaire ;
+* référence de la plateforme ;
+* éventuellement motif/description.
+
+Le système doit effectuer les contrôles nécessaires avant d'autoriser le Pay-Out.
+
+---
+
+# 7. Webhooks
+
+Ne suppose surtout pas que Biz-transPay n’a pas besoin de Webhooks.
+
+**Étudie précisément le fonctionnement de la solution de référence.**
+
+Si leur système utilise des Webhooks, implémente un système équivalent dans Biz-transPay.
+
+Si leur fonctionnement repose principalement sur la consultation du statut, reproduis ce principe tout en conservant une architecture fiable pour Biz-transPay.
+
+Si Biz-transPay utilise des Webhooks, prévoir :
+
+* signature ;
+* secret ;
+* vérification de l’authenticité ;
+* événements ;
+* statut de transaction ;
+* protection contre les doublons ;
+* protection contre les attaques par rejeu ;
+* idempotence ;
+* journalisation ;
+* possibilité de réessayer une notification.
+
+Exemple :
+
+```text
+Biz-transPay
+      ↓
+Webhook
+      ↓
+Serveur du marchand
+      ↓
+Vérification de signature
+      ↓
+Traitement
+      ↓
+Réponse HTTP
+```
+
+---
+
+# 8. Statuts des transactions
+
+Créer un système de statuts cohérent.
+
+Par exemple :
+
+```text
+PENDING
+SUCCESS
+FAILED
+CANCELLED
+EXPIRED
+```
+
+Mais **ne pas imposer aveuglément ces noms** : étudier la documentation de référence et définir les statuts réellement nécessaires pour Biz-transPay.
+
+Chaque statut doit être documenté avec :
+
+* sa signification ;
+* ce que le marchand doit faire ;
+* si l’argent peut être considéré comme reçu ;
+* si une nouvelle requête peut être effectuée ;
+* si le statut est définitif ou temporaire.
+
+---
+
+# 9. Idempotence obligatoire
+
+C’est extrêmement important pour une API financière.
+
+Si un marchand envoie deux fois la même requête à cause d’un problème réseau, Biz-transPay ne doit pas créer deux transactions.
+
+Prévoir par exemple :
+
+```text
+Idempotency-Key
+```
+
+La même clé doit permettre de retrouver la transaction déjà créée.
+
+---
+
+# 10. Documentation développeur
+
+Créer une documentation très professionnelle.
+
+Elle doit être organisée simplement, par exemple :
+
+```text
+Démarrage
+│
+├── Présentation
+├── Sandbox
+├── Live
+├── Authentification
+├── API Keys
+│
+├── Pay-In
+│   ├── Paiement Soft
+│   ├── Paiement Direct
+│   └── API avancée
+│
+├── Pay-Out
+│   ├── Retrait Direct
+│   └── Retrait automatique
+│
+├── Transactions
+│   ├── Créer
+│   ├── Consulter
+│   └── Vérifier
+│
+├── Webhooks
+├── Statuts
+├── Erreurs
+├── Codes HTTP
+├── Sécurité
+└── Exemples d’intégration
+```
+
+---
+
+# 11. Expérience du développeur
+
+L'objectif est qu'un développeur puisse faire :
+
+**Créer son compte → obtenir ses clés → choisir sa méthode → copier le code → configurer son serveur → effectuer un test → passer en Live.**
+
+La documentation doit fournir des exemples concrets dans les langages pertinents, notamment :
+
+* JavaScript / Node.js ;
+* PHP ;
+* Python ;
+* éventuellement cURL.
+
+Chaque exemple doit être **fonctionnel avec les véritables endpoints Biz-transPay**.
+
+Ne mettre aucun faux endpoint présenté comme réel.
+
+---
+
+# 12. Tableau de bord développeur
+
+Dans le compte marchand Biz-transPay, créer une section :
+
+## API & Développeur
+
+Elle doit permettre de :
+
+* créer une application ;
+* choisir Sandbox ou Live ;
+* générer les clés ;
+* régénérer une clé ;
+* révoquer une clé ;
+* consulter les clés actives ;
+* configurer les Webhooks si utilisés ;
+* consulter les événements ;
+* consulter les logs API ;
+* consulter les erreurs ;
+* tester une requête ;
+* consulter la documentation.
+
+Les secrets doivent être affichés de manière sécurisée et ne doivent jamais être exposés inutilement.
+
+---
+
+# 13. Intégration automatique dans une plateforme
+
+Le résultat final doit permettre à un développeur d'intégrer Biz-transPay dans **n'importe quelle plateforme compatible**.
+
+Exemple :
+
+```text
+SITE E-COMMERCE
+       ↓
+API Biz-transPay
+       ↓
+PAY-IN
+       ↓
+Paiement client
+```
+
+et :
+
+```text
+SITE E-COMMERCE
+       ↓
+API Biz-transPay
+       ↓
+PAY-OUT
+       ↓
+Paiement automatique du client
+```
+
+Ainsi, un marchand qui possède son propre site, application ou plateforme peut utiliser **les identifiants Biz-transPay** pour automatiser ses transactions sans intervention manuelle.
+
+---
+
+# 14. Règle fondamentale
+
+**Biz-transPay doit reprendre l'expérience et la logique d'intégration de la solution de référence, mais devenir une API totalement indépendante.**
+
+Donc :
+
+❌ aucune clé PayJunia/solution de référence ;
+❌ aucun token externe ;
+❌ aucune URL externe pour traiter les transactions ;
+❌ aucun nom de marque externe dans l'API ;
+❌ aucune dépendance cachée ;
+
+mais :
+
+✅ clés Biz-transPay ;
+✅ endpoints Biz-transPay ;
+✅ transactions Biz-transPay ;
+✅ statuts Biz-transPay ;
+✅ Pay-In Biz-transPay ;
+✅ Pay-Out Biz-transPay ;
+✅ documentation Biz-transPay ;
+✅ Sandbox Biz-transPay ;
+✅ Live Biz-transPay.
+
+**Avant de coder, analyse d'abord la documentation officielle de la solution de référence et l'architecture actuelle de Biz-transPay. Ensuite, présente l'architecture proposée endpoint par endpoint et explique clairement comment un marchand créera ses clés, choisira sa méthode d'intégration, lancera un Pay-In, lancera un Pay-Out et recevra le résultat. Ne supprime aucune fonctionnalité existante de Biz-transPay.**
+
+Je n’ai pas trouvé de documentation publique fiable correspondant au nom **« PayJunia »** dans ma recherche actuelle ; je ne veux donc pas inventer ses méthodes ou ses mécanismes. Il faudra utiliser **le lien exact de sa documentation** si « PayJunia » est bien le nom du prestataire de référence.
