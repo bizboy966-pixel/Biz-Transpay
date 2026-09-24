@@ -57,6 +57,33 @@ class PasswordRecoveryRequest(BaseModel):
     turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(..., min_length=32, max_length=128)
+    new_password: str = Field(..., min_length=1, max_length=72)
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
+
+
+class TransactionEmailSettingsUpdate(BaseModel):
+    enabled: bool = False
+    withdrawal_otp_enabled: Optional[bool] = None
+    sender_email: Optional[EmailStr] = None
+    event_types: List[Literal[
+        "deposit_confirmed", "withdrawal_success", "payment_final"
+    ]] = Field(default_factory=list, max_length=3)
+    content_fields: List[Literal[
+        "event_status", "amount_currency", "reference", "event_time"
+    ]] = Field(default_factory=list, max_length=4)
+
+
+class TransferOtpCancelRequest(BaseModel):
+    challenge_id: str = Field(..., min_length=1, max_length=128)
+
+
 class UserPublic(BaseModel):
     id: str
     full_name: str
@@ -190,6 +217,8 @@ class TransferRequest(BaseModel):
     metadata: Optional[dict] = None
     idempotency_key: Optional[str] = None
     turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
+    withdrawal_otp_challenge_id: Optional[str] = Field(None, min_length=1, max_length=128)
+    withdrawal_otp_code: Optional[str] = Field(None, min_length=1, max_length=6)
     # Crypto/Binance fields
     crypto: Optional[str] = None       # e.g. "USDT", "BTC", "ETH"
     network: Optional[str] = None      # e.g. "TRC20", "BEP20", "ERC20", "SOLANA"

@@ -65,7 +65,7 @@ export default function RecoverAccount() {
               <ShieldCheck className="w-6 h-6" />
             </div>
             <h1 className="mt-4 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900">Récupérer le compte</h1>
-            <p className="mt-2 text-slate-600 text-sm">Utilisez un code de récupération MFA à usage unique.</p>
+            <p className="mt-2 text-slate-600 text-sm">Utilisez un code de récupération MFA à usage unique. Cette méthode reste disponible même si vous demandez aussi un lien par e-mail.</p>
           </div>
           <label className="text-sm font-semibold text-slate-700 mb-2 block">E-mail ou identifiant</label>
           <input value={form.identifier} onChange={(e) => set('identifier', e.target.value)} autoComplete="username" required className="bt-field mb-4" />
@@ -86,6 +86,7 @@ export default function RecoverAccount() {
             onToken={setTurnstileToken}
           />
           <button type="submit" disabled={loading} className="bt-button-primary mt-7 w-full font-bold py-3.5">{loading ? 'Réinitialisation…' : 'Réinitialiser le mot de passe'}</button>
+          <p className="mt-4 text-center text-sm text-slate-500"><Link to="/recover" className="text-[#2563EB] font-semibold">Demander un lien de réinitialisation par e-mail</Link></p>
           <p className="mt-6 text-center text-sm text-slate-500"><Link to="/login" className="text-[#2563EB] font-semibold">Retour à la connexion</Link></p>
         </form>
       </main>

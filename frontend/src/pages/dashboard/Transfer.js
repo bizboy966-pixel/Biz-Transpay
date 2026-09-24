@@ -118,6 +118,159 @@ export default function Transfer() {
   );
 }
 
+function useWithdrawalEmailOtp(onDone, transferType) {
+  const [challenge, setChallenge] = useState(null);
+  const [requestPayload, setRequestPayload] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const start = async (payload) => {
+    const { data } = await api.post('/transfers', payload);
+    if (data?.withdrawal_otp_required) {
+      setRequestPayload(payload);
+      setChallenge(data);
+      return true;
+    }
+    onDone(data, { type: transferType });
+    return false;
+  };
+
+  const confirm = async (code, turnstileToken) => {
+    if (!challenge || !requestPayload) return;
+    setConfirming(true);
+    try {
+      const { data } = await api.post('/transfers', {
+        ...requestPayload,
+        withdrawal_otp_challenge_id: challenge.challenge_id,
+        withdrawal_otp_code: code,
+        turnstile_token: turnstileToken,
+      });
+      setChallenge(null);
+      setRequestPayload(null);
+      onDone(data, { type: transferType });
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (!challenge) return;
+    await api.post('/transfers/email-otp/cancel', {
+      challenge_id: challenge.challenge_id,
+    });
+    setChallenge(null);
+    setRequestPayload(null);
+  };
+
+  return { challenge, requestPayload, confirming, start, confirm, cancel };
+}
+
+function WithdrawalEmailOtpPanel({
+  challenge, requestPayload, confirming, turnstile, onConfirm, onCancel,
+}) {
+  const turnstileRef = useRef(null);
+  const [code, setCode] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
+  const [canceling, setCanceling] = useState(false);
+
+  const confirm = async () => {
+    if (!/^\d{6}$/.test(code) || !turnstileToken) {
+      toast.error('Saisissez le code à 6 chiffres et terminez la vérification anti-bot.');
+      return;
+    }
+    try {
+      await onConfirm(code, turnstileToken);
+    } catch (error) {
+      setTurnstileToken('');
+      turnstileRef.current?.reset();
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : 'Code invalide ou expiré.');
+    }
+  };
+
+  const cancel = async () => {
+    setCanceling(true);
+    try {
+      await onCancel();
+    } catch {
+      toast.error('Impossible d’annuler la demande. Réessayez.');
+    } finally {
+      setCanceling(false);
+    }
+  };
+
+  const destination = String(requestPayload?.recipient || '');
+  const asset = requestPayload?.crypto || requestPayload?.currency || '';
+  return (
+    <section className="bg-white border border-slate-100 rounded-2xl p-5 sm:p-7 space-y-4" data-testid="withdrawal-email-otp">
+      <div className="mx-auto w-12 h-12 rounded-2xl bg-blue-50 text-[#2563EB] flex items-center justify-center">
+        <ShieldCheck className="w-6 h-6" />
+      </div>
+      <div className="text-center">
+        <h2 className="font-cabinet text-xl font-extrabold text-slate-900">Confirmer le transfert</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          Saisissez le code envoyé à l’adresse e-mail de votre compte
+          {challenge.email_hint ? <b> ({challenge.email_hint})</b> : ''}.
+          Le code ne peut être utilisé qu’une fois et expire au plus tard après 10 minutes.
+        </p>
+      </div>
+      <div className="rounded-xl bg-slate-50 border border-slate-100 p-3 text-sm text-slate-700">
+        <div><b>Montant :</b> {Number(requestPayload?.amount || 0).toLocaleString()} {asset}</div>
+        {destination && (
+          <div className="mt-1 break-all">
+            <b>Destinataire :</b> {destination.length > 42 ? `${destination.slice(0, 22)}…${destination.slice(-12)}` : destination}
+          </div>
+        )}
+      </div>
+      <label htmlFor="withdrawal-email-otp" className="block text-sm font-semibold text-slate-700">
+        Code reçu par e-mail
+      </label>
+      <input
+        id="withdrawal-email-otp"
+        data-testid="withdrawal-email-otp-input"
+        type="text"
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        pattern="[0-9]{6}"
+        maxLength={6}
+        value={code}
+        onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+        className="bt-field text-center text-xl tracking-[0.45em] font-mono"
+        placeholder="••••••"
+      />
+      <TurnstileWidget
+        ref={turnstileRef}
+        siteKey={turnstile.siteKey}
+        action="withdrawal"
+        disabled={turnstile.loading || !turnstile.enabled}
+        onToken={setTurnstileToken}
+      />
+      <div className="flex flex-col sm:flex-row gap-2">
+        <button
+          type="button"
+          onClick={confirm}
+          disabled={confirming || code.length !== 6 || !turnstileToken}
+          className="bt-button-primary flex-1 py-3 font-bold disabled:opacity-50"
+          data-testid="withdrawal-email-otp-confirm"
+        >
+          {confirming ? 'Validation…' : 'Valider le transfert'}
+        </button>
+        <button
+          type="button"
+          onClick={cancel}
+          disabled={canceling || confirming}
+          className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 disabled:opacity-50"
+          data-testid="withdrawal-email-otp-cancel"
+        >
+          {canceling ? 'Annulation…' : 'Annuler'}
+        </button>
+      </div>
+      <p className="text-center text-xs text-slate-500">
+        Aucun mouvement n’est exécuté avant la validation de ce code.
+      </p>
+    </section>
+  );
+}
+
 // ------- BIZ TO BIZ -------
 function BizToBizForm({ onDone, balance, turnstile }) {
   const turnstileRef = useRef(null);
@@ -131,6 +284,7 @@ function BizToBizForm({ onDone, balance, turnstile }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
+  const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_biz');
 
   const lookup = async () => {
     setLookupErr(null); setRecipient(null);
@@ -153,12 +307,15 @@ function BizToBizForm({ onDone, balance, turnstile }) {
     }
     setPending(true);
     try {
-      const { data } = await api.post('/transfers', {
+      const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_biz', recipient: username || phone,
         recipient_phone: phone, amount: amt, currency, description,
         turnstile_token: turnstileToken,
       });
-      onDone(data, { type: 'biz_to_biz' });
+      if (needsEmailOtp) {
+        setTurnstileToken('');
+        turnstileRef.current?.reset();
+      }
     } catch (err) {
       setTurnstileToken('');
       turnstileRef.current?.reset();
@@ -166,6 +323,19 @@ function BizToBizForm({ onDone, balance, turnstile }) {
     }
     finally { setPending(false); }
   };
+
+  if (emailOtp.challenge) {
+    return (
+      <WithdrawalEmailOtpPanel
+        challenge={emailOtp.challenge}
+        requestPayload={emailOtp.requestPayload}
+        confirming={emailOtp.confirming}
+        turnstile={turnstile}
+        onConfirm={emailOtp.confirm}
+        onCancel={emailOtp.cancel}
+      />
+    );
+  }
 
   return (
     <div className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
@@ -264,6 +434,7 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
     () => window.crypto?.randomUUID?.()
       || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
+  const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_mobile');
 
   useEffect(() => {
     if (!country || !countries.includes(country)) setCountry(countries[0] || '');
@@ -297,13 +468,16 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
     }
     setPending(true);
     try {
-      const { data } = await api.post('/transfers', {
+      const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_mobile', recipient: phone, country, operator,
         fee_bearer: feeBearer, amount: amt, currency, description,
         idempotency_key: idempotencyKey,
         turnstile_token: turnstileToken,
       });
-      onDone(data, { type: 'biz_to_mobile' });
+      if (needsEmailOtp) {
+        setTurnstileToken('');
+        turnstileRef.current?.reset();
+      }
     } catch (err) {
       setTurnstileToken('');
       turnstileRef.current?.reset();
@@ -316,6 +490,19 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
     }
     finally { setPending(false); }
   };
+
+  if (emailOtp.challenge) {
+    return (
+      <WithdrawalEmailOtpPanel
+        challenge={emailOtp.challenge}
+        requestPayload={emailOtp.requestPayload}
+        confirming={emailOtp.confirming}
+        turnstile={turnstile}
+        onConfirm={emailOtp.confirm}
+        onCancel={emailOtp.cancel}
+      />
+    );
+  }
 
   if (!mmEnabled) return <SoonBanner text="Cette fonctionnalité sera activée prochainement." />;
 
@@ -479,6 +666,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
+  const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_crypto');
 
   // Live address validation
   const addressValidation = useMemo(() => {
@@ -549,7 +737,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
     }
     setPending(true);
     try {
-      const { data } = await api.post('/transfers', {
+      const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_crypto', recipient: walletAddress,
         recipient_name: fullName,
         crypto: cryptoCode, network: networkCode, wallet_address: walletAddress,
@@ -557,7 +745,10 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         idempotency_key: idempotencyRef.current.key,
         turnstile_token: turnstileToken,
       });
-      onDone(data, { type: 'biz_to_crypto' });
+      if (needsEmailOtp) {
+        setTurnstileToken('');
+        turnstileRef.current?.reset();
+      }
     } catch (err) {
       setTurnstileToken('');
       turnstileRef.current?.reset();
@@ -569,6 +760,19 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
     }
     finally { setPending(false); }
   };
+
+  if (emailOtp.challenge) {
+    return (
+      <WithdrawalEmailOtpPanel
+        challenge={emailOtp.challenge}
+        requestPayload={emailOtp.requestPayload}
+        confirming={emailOtp.confirming}
+        turnstile={turnstile}
+        onConfirm={emailOtp.confirm}
+        onCancel={emailOtp.cancel}
+      />
+    );
+  }
 
   if (!ccfg.enabled) return <SoonBanner text="Les transferts crypto seront disponibles prochainement." />;
   if (loadingCoins) return <div className="bg-white border border-slate-100 rounded-2xl p-8 text-center text-xs sm:text-sm text-slate-500">Chargement des cryptomonnaies…</div>;

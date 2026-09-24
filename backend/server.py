@@ -3,6 +3,7 @@ import os
 import logging
 import secrets
 import hashlib
+import hmac
 import uuid
 import asyncio
 import json
@@ -21,7 +22,10 @@ from typing import Any, Optional, List, Literal
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body, Response
+from fastapi import (
+    FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body, Response,
+    BackgroundTasks,
+)
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -42,10 +46,12 @@ from models import (  # noqa: E402
     KycSubmit, ApiKeys, WebhookConfig, UpdateProfile, ChangePassword,
     TicketCreate, Ticket, new_id, now_iso,
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
-    ReauthenticationRequest,
+    ReauthenticationRequest, PasswordResetRequest, PasswordResetConfirm,
+    TransactionEmailSettingsUpdate, TransferOtpCancelRequest,
 )
 import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token  # noqa: E402
+from email_delivery import send_resend_email  # noqa: E402
 from postgres_document_store import create_database  # noqa: E402
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
@@ -630,7 +636,12 @@ def _global_rate_profile(path: str, method: str) -> str:
         return "register"
     if p == "/api/auth/2fa/confirm" or p == "/api/auth/2fa/disable":
         return "otp"
-    if p in {"/api/auth/recover", "/api/settings/password"}:
+    if p in {
+        "/api/auth/recover",
+        "/api/auth/password-reset/request",
+        "/api/auth/password-reset/confirm",
+        "/api/settings/password",
+    }:
         return "password_reset"
     if p.startswith("/api/admin/"):
         return "admin"
@@ -892,6 +903,20 @@ async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
 _sse_subscribers: dict[str, list[asyncio.Queue]] = {}
 _telegram_queue: Optional[asyncio.Queue] = None
 _telegram_worker_task: Optional[asyncio.Task] = None
+_transaction_email_tasks: set[asyncio.Task] = set()
+TRANSACTION_EMAIL_DEFAULTS = {
+    "id": "transaction_email_settings",
+    "enabled": False,
+    "withdrawal_otp_enabled": False,
+    "sender_email": "",
+    "recipient_type": "transaction_user",
+    "event_types": [
+        "deposit_confirmed", "withdrawal_success", "payment_final",
+    ],
+    "content_fields": [
+        "event_status", "amount_currency", "reference", "event_time",
+    ],
+}
 TELEGRAM_MAX_MESSAGE_LENGTH = 3900
 TELEGRAM_FINAL_NOTIFICATION_TYPES = {
     "deposit_success",
@@ -1731,7 +1756,593 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
             pass
     if send_telegram:
         await _queue_telegram_notification(user_id, ntype, title, body, data)
+    email_event = {
+        "deposit_success": "deposit_confirmed",
+        "withdrawal_success": "withdrawal_success",
+        "transfer_success": "payment_final",
+        "payment_success": "payment_final",
+    }.get(ntype)
+    if email_event:
+        event_data = data or {}
+        _schedule_transaction_email(
+            user_id,
+            email_event,
+            str(event_data.get("deposit_id") or event_data.get("transaction_id") or ""),
+            "deposit" if email_event == "deposit_confirmed" else "transaction",
+        )
     return doc
+
+
+def _schedule_transaction_email(
+    user_id: str, event_type: str, entity_id: str, entity_kind: str
+) -> None:
+    """Schedule email work without making the caller wait on Resend or its DB."""
+    if not user_id or not entity_id or entity_kind not in {"deposit", "transaction"}:
+        return
+    try:
+        task = asyncio.create_task(_enqueue_transaction_email(
+            user_id, event_type, entity_id, entity_kind))
+        _transaction_email_tasks.add(task)
+        task.add_done_callback(_transaction_email_tasks.discard)
+    except RuntimeError:
+        # There is no running event loop during some administrative/test paths.
+        logger.warning("Transaction email could not be scheduled")
+
+
+async def _queue_email_for_transaction_record(
+    user_id: str, transaction_id: str
+) -> None:
+    try:
+        tx = await db.transactions.find_one(
+            {"id": transaction_id, "user_id": user_id}, {"_id": 0}
+        )
+        if not tx:
+            return
+        metadata = tx.get("metadata") or {}
+        if tx.get("type") == "deposit":
+            if not _transaction_email_record_is_final(
+                "deposit_confirmed", tx, "transaction"
+            ):
+                return
+            event_type = "deposit_confirmed"
+        elif tx.get("type") in {"payment", "link_payment"} and tx.get("direction") == "out":
+            if not _transaction_email_record_is_final(
+                "payment_final", tx, "transaction"
+            ):
+                return
+            event_type = "payment_final"
+        elif (
+            tx.get("type") == "transfer"
+            and tx.get("direction") == "out"
+            and metadata.get("transfer_type") == "biz_to_biz"
+        ):
+            if not _transaction_email_record_is_final(
+                "payment_final", tx, "transaction"
+            ):
+                return
+            event_type = "payment_final"
+        else:
+            if not _transaction_email_record_is_final(
+                "withdrawal_success", tx, "transaction"
+            ):
+                return
+            event_type = "withdrawal_success"
+        await _enqueue_transaction_email(
+            user_id, event_type, transaction_id, "transaction"
+        )
+    except Exception:
+        logger.warning("Transaction email event could not be classified")
+
+
+def _schedule_transaction_email_for_record(user_id: str, transaction_id: str) -> None:
+    try:
+        task = asyncio.create_task(
+            _queue_email_for_transaction_record(user_id, transaction_id)
+        )
+        _transaction_email_tasks.add(task)
+        task.add_done_callback(_transaction_email_tasks.discard)
+    except RuntimeError:
+        logger.warning("Transaction email could not be scheduled")
+
+
+async def _transaction_email_settings() -> dict:
+    saved = await db.settings.find_one(
+        {"id": TRANSACTION_EMAIL_DEFAULTS["id"]}, {"_id": 0}
+    )
+    return {**TRANSACTION_EMAIL_DEFAULTS, **(saved or {})}
+
+
+def _transaction_email_status(settings: dict) -> dict:
+    sender = str(settings.get("sender_email") or "").strip()
+    api_key_ready = bool(os.environ.get("RESEND_API_KEY", "").strip())
+    sender_ready = bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", sender))
+    return {
+        "enabled": bool(settings.get("enabled")),
+        "sender_email": sender,
+        "recipient_type": "transaction_user",
+        "event_types": list(settings.get("event_types") or []),
+        "content_fields": list(settings.get("content_fields") or []),
+        "resend_configured": api_key_ready,
+        "sender_configured": sender_ready,
+        "ready_to_send": api_key_ready and sender_ready,
+        "active": bool(settings.get("enabled") and api_key_ready and sender_ready),
+        "withdrawal_otp_enabled": bool(settings.get("withdrawal_otp_enabled")),
+        "withdrawal_otp_active": bool(
+            settings.get("withdrawal_otp_enabled")
+            and api_key_ready
+            and sender_ready
+        ),
+    }
+
+
+WITHDRAWAL_EMAIL_OTP_TTL = timedelta(minutes=10)
+WITHDRAWAL_EMAIL_OTP_RATE_WINDOW = timedelta(minutes=15)
+WITHDRAWAL_EMAIL_OTP_MAX_REQUESTS = 3
+WITHDRAWAL_EMAIL_OTP_MAX_ATTEMPTS = 5
+WITHDRAWAL_EMAIL_OTP_TRANSFER_TYPES = {
+    "biz_to_biz", "biz_to_mobile", "biz_to_crypto",
+}
+
+
+def _withdrawal_transfer_fingerprint(req: TransferRequest) -> str:
+    payload = req.model_dump(exclude={
+        "turnstile_token",
+        "withdrawal_otp_challenge_id",
+        "withdrawal_otp_code",
+    })
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _masked_account_email(email: str) -> str:
+    local, separator, domain = email.partition("@")
+    if not separator:
+        return ""
+    return f"{local[:1]}***@{domain}"
+
+
+async def _allow_withdrawal_email_otp_request(user_id: str) -> bool:
+    now = datetime.now(timezone.utc)
+    limits = db.withdrawal_email_otp_limits
+    await limits.delete_many({"expires_at": {"$lte": now}})
+    current = await limits.find_one({"id": user_id}, {"_id": 0})
+    if not current:
+        try:
+            await limits.insert_one({
+                "id": user_id,
+                "count": 1,
+                "window_started_at": now,
+                "expires_at": now + WITHDRAWAL_EMAIL_OTP_RATE_WINDOW,
+            })
+            return True
+        except DuplicateKeyError:
+            return False
+
+    window_start = _as_utc(current["window_started_at"])
+    if window_start + WITHDRAWAL_EMAIL_OTP_RATE_WINDOW <= now:
+        return bool((await limits.update_one(
+            {"id": user_id, "count": current.get("count", 0)},
+            {"$set": {
+                "count": 1,
+                "window_started_at": now,
+                "expires_at": now + WITHDRAWAL_EMAIL_OTP_RATE_WINDOW,
+            }},
+        )).modified_count)
+    if int(current.get("count", 0)) >= WITHDRAWAL_EMAIL_OTP_MAX_REQUESTS:
+        return False
+    return bool((await limits.update_one(
+        {"id": user_id, "count": current.get("count", 0)},
+        {"$inc": {"count": 1}},
+    )).modified_count)
+
+
+async def _create_withdrawal_email_otp(
+    user: dict, req: TransferRequest
+) -> dict:
+    settings = await _transaction_email_settings()
+    delivery = _transaction_email_status(settings)
+    secret = os.environ.get("SESSION_SECRET", "")
+    email = str(user.get("email") or "").strip()
+    if not delivery["ready_to_send"] or not secret or not email:
+        raise HTTPException(
+            503,
+            "La confirmation par e-mail est indisponible. Aucun retrait n’a été exécuté.",
+        )
+    if not await _allow_withdrawal_email_otp_request(user["id"]):
+        raise HTTPException(
+            429, "Trop de demandes de code. Réessayez dans quelques minutes."
+        )
+
+    challenge_id = new_id()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = datetime.now(timezone.utc) + WITHDRAWAL_EMAIL_OTP_TTL
+    code_hash = hmac.new(
+        secret.encode(),
+        f"{user['id']}:{challenge_id}:{code}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    await db.withdrawal_email_otps.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "user_id": user["id"],
+            "challenge_id": challenge_id,
+            "request_fingerprint": _withdrawal_transfer_fingerprint(req),
+            "code_hash": code_hash,
+            "attempts": 0,
+            "status": "sending",
+            "created_at": datetime.now(timezone.utc),
+            "expires_at": expires_at,
+        }, "$unset": {
+            "sent_at": "",
+            "used_at": "",
+            "cancelled_at": "",
+        }},
+        upsert=True,
+    )
+
+    text = (
+        f"Votre code de confirmation de retrait Biz-transPay est : {code}\n"
+        "Ce code expire dans 10 minutes et ne peut être utilisé qu’une fois. "
+        "Ne le partagez avec personne."
+    )
+    html = (
+        "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
+        "<h2>Confirmer votre opération</h2>"
+        f"<p>Code de confirmation : <strong>{code}</strong></p>"
+        "<p>Ce code expire dans 10 minutes et ne peut être utilisé qu’une fois. "
+        "Ne le partagez avec personne.</p></div>"
+    )
+    try:
+        await send_resend_email(
+            api_key=os.environ.get("RESEND_API_KEY", "").strip(),
+            sender=delivery["sender_email"],
+            recipient=email,
+            subject="Code de confirmation de retrait Biz-transPay",
+            text=text,
+            html=html,
+            idempotency_key=f"withdrawal-email-otp-{challenge_id}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        await db.withdrawal_email_otps.update_one(
+            {"id": user["id"], "challenge_id": challenge_id},
+            {"$set": {"status": "delivery_failed"}},
+        )
+        logger.warning("Withdrawal email OTP delivery failed (%s)", type(exc).__name__)
+        raise HTTPException(
+            503,
+            "Le code n’a pas pu être envoyé. Aucun retrait n’a été exécuté.",
+        ) from None
+
+    activated = await db.withdrawal_email_otps.update_one(
+        {"id": user["id"], "challenge_id": challenge_id, "status": "sending"},
+        {"$set": {"status": "active", "sent_at": datetime.now(timezone.utc)}},
+    )
+    if activated.modified_count != 1:
+        raise HTTPException(
+            409, "Cette demande a été remplacée. Relancez le retrait."
+        )
+    return {
+        "ok": True,
+        "withdrawal_otp_required": True,
+        "challenge_id": challenge_id,
+        "email_hint": _masked_account_email(email),
+        "expires_in_seconds": int(WITHDRAWAL_EMAIL_OTP_TTL.total_seconds()),
+        "message": "Un code a été envoyé à l’adresse e-mail de votre compte.",
+    }
+
+
+async def _consume_withdrawal_email_otp(
+    user_id: str, req: TransferRequest
+) -> None:
+    challenge_id = str(req.withdrawal_otp_challenge_id or "").strip()
+    code = str(req.withdrawal_otp_code or "").strip()
+    if not challenge_id or not re.fullmatch(r"\d{6}", code):
+        raise HTTPException(400, "Code invalide ou expiré.")
+
+    challenge = await db.withdrawal_email_otps.find_one(
+        {"id": user_id, "challenge_id": challenge_id}, {"_id": 0}
+    )
+    now = datetime.now(timezone.utc)
+    if (
+        not challenge
+        or challenge.get("status") != "active"
+        or not challenge.get("expires_at")
+        or _as_utc(challenge["expires_at"]) <= now
+        or int(challenge.get("attempts", 0)) >= WITHDRAWAL_EMAIL_OTP_MAX_ATTEMPTS
+        or challenge.get("request_fingerprint")
+        != _withdrawal_transfer_fingerprint(req)
+    ):
+        raise HTTPException(400, "Code invalide ou expiré.")
+
+    secret = os.environ.get("SESSION_SECRET", "")
+    if not secret:
+        raise HTTPException(503, "La confirmation par e-mail est indisponible.")
+    submitted_hash = hmac.new(
+        secret.encode(),
+        f"{user_id}:{challenge_id}:{code}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    stored_hash = str(challenge.get("code_hash") or "")
+    if not hmac.compare_digest(submitted_hash, stored_hash):
+        attempts = int(challenge.get("attempts", 0))
+        update = {"$inc": {"attempts": 1}}
+        if attempts + 1 >= WITHDRAWAL_EMAIL_OTP_MAX_ATTEMPTS:
+            update["$set"] = {"status": "locked"}
+        changed = await db.withdrawal_email_otps.update_one(
+            {
+                "id": user_id,
+                "challenge_id": challenge_id,
+                "status": "active",
+                "attempts": attempts,
+                "expires_at": {"$gt": now},
+            },
+            update,
+        )
+        if changed.modified_count != 1:
+            raise HTTPException(400, "Code invalide ou expiré.")
+        raise HTTPException(400, "Code invalide ou expiré.")
+
+    consumed = await db.withdrawal_email_otps.update_one(
+        {
+            "id": user_id,
+            "challenge_id": challenge_id,
+            "status": "active",
+            "code_hash": submitted_hash,
+            "request_fingerprint": _withdrawal_transfer_fingerprint(req),
+            "attempts": {"$lt": WITHDRAWAL_EMAIL_OTP_MAX_ATTEMPTS},
+            "expires_at": {"$gt": now},
+        },
+        {"$set": {"status": "used", "used_at": now}},
+    )
+    if consumed.modified_count != 1:
+        raise HTTPException(400, "Code invalide ou expiré.")
+
+
+def _configured_public_app_url() -> str:
+    """Use an explicitly configured public origin, never a request Host header."""
+    configured = [os.environ.get("PUBLIC_APP_URL", "")]
+    configured.extend(os.environ.get("CORS_ORIGINS", "").split(","))
+    for candidate in configured:
+        parsed = urlparse(str(candidate or "").strip().rstrip("/"))
+        if (
+            parsed.scheme == "https"
+            and parsed.netloc
+            and not parsed.username
+            and not parsed.password
+            and parsed.path in {"", "/"}
+            and not parsed.query
+            and not parsed.fragment
+        ):
+            return f"{parsed.scheme}://{parsed.netloc}"
+    return ""
+
+
+def _transaction_email_record_is_final(
+    event_type: str, record: dict, entity_kind: str
+) -> bool:
+    status = str(record.get("status") or "").lower()
+    if entity_kind == "deposit" or event_type == "deposit_confirmed":
+        return status in {"approved", "completed", "successful"}
+    if status not in {"completed", "successful", "paid"}:
+        return False
+    if event_type == "withdrawal_success":
+        metadata = record.get("metadata") or {}
+        return (
+            record.get("direction") == "out"
+            and record.get("type") in {"transfer", "withdrawal"}
+            and not (
+                record.get("type") == "transfer"
+                and metadata.get("transfer_type") == "biz_to_biz"
+            )
+        )
+    if event_type == "payment_final":
+        metadata = record.get("metadata") or {}
+        if record.get("direction") != "out":
+            return False
+        return (
+            record.get("type") in {"payment", "link_payment"}
+            or (
+                record.get("type") == "transfer"
+                and metadata.get("transfer_type") == "biz_to_biz"
+            )
+        )
+    return False
+
+
+async def _load_transaction_email_context(
+    user_id: str, event_type: str, entity_id: str, entity_kind: str
+) -> Optional[tuple[dict, dict]]:
+    if entity_kind == "deposit":
+        record = await db.momo_deposits.find_one(
+            {"id": entity_id, "user_id": user_id}, {"_id": 0}
+        )
+    else:
+        record = await db.transactions.find_one(
+            {"id": entity_id, "user_id": user_id}, {"_id": 0}
+        )
+    if not record or not _transaction_email_record_is_final(
+        event_type, record, entity_kind
+    ):
+        return None
+    user = await db.users.find_one(
+        {"id": user_id}, {"_id": 0, "id": 1, "email": 1}
+    )
+    if not user or not user.get("email"):
+        return None
+    return record, user
+
+
+def _transaction_email_content(
+    event_type: str, record: dict, entity_kind: str, content_fields: list[str]
+) -> tuple[str, str]:
+    event_labels = {
+        "deposit_confirmed": "Dépôt confirmé",
+        "withdrawal_success": "Retrait réussi",
+        "payment_final": "Paiement ou transfert réussi",
+    }
+    event_label = event_labels.get(event_type, "Transaction")
+    currency = str(record.get("currency") or "XOF").upper()[:12]
+    amount = record.get("amount_net", record.get("amount", 0))
+    try:
+        amount_text = f"{float(amount):,.2f} {currency}"
+    except (TypeError, ValueError):
+        amount_text = f"{currency}"
+    reference = str(record.get("reference") or record.get("id") or "")[:80]
+    event_time = (
+        record.get("approved_at")
+        or record.get("completed_at")
+        or record.get("paid_at")
+        or record.get("updated_at")
+        or record.get("created_at")
+        or ""
+    )
+    lines = []
+    for field, label, value in (
+        ("event_status", "Événement / statut", f"{event_label} — réussi"),
+        ("amount_currency", "Montant", amount_text),
+        ("reference", "Référence interne", reference),
+        ("event_time", "Date et heure", str(event_time)[:80]),
+    ):
+        if field in content_fields and value:
+            lines.append(f"{label} : {value}")
+    text = "Biz-transPay\n\n" + "\n".join(lines)
+    html_lines = "".join(
+        f"<p><strong>{html_escape(line.split(' : ', 1)[0])} :</strong> "
+        f"{html_escape(line.split(' : ', 1)[1])}</p>"
+        for line in lines
+    )
+    return text, (
+        "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
+        f"<h2>{html_escape(event_label)}</h2>{html_lines}</div>"
+    )
+
+
+async def _enqueue_transaction_email(
+    user_id: str, event_type: str, entity_id: str, entity_kind: str
+) -> None:
+    try:
+        settings = await _transaction_email_settings()
+        status = _transaction_email_status(settings)
+        if (
+            not status["active"]
+            or event_type not in settings.get("event_types", [])
+        ):
+            return
+        context = await _load_transaction_email_context(
+            user_id, event_type, entity_id, entity_kind
+        )
+        if not context:
+            return
+        outbox_id = hashlib.sha256(
+            f"transaction-email:{event_type}:{entity_kind}:{entity_id}".encode()
+        ).hexdigest()
+        await db.email_outbox.insert_one({
+            "id": outbox_id,
+            "user_id": user_id,
+            "event_type": event_type,
+            "entity_id": entity_id,
+            "entity_kind": entity_kind,
+            "status": "queued",
+            "created_at": now_iso(),
+        })
+    except DuplicateKeyError:
+        return
+    except Exception:
+        logger.warning("Transaction email could not be queued")
+        return
+    await _deliver_transaction_email(outbox_id)
+
+
+async def _deliver_transaction_email(outbox_id: str) -> None:
+    """Best-effort delivery; failures never propagate into a transaction path."""
+    try:
+        claimed = await db.email_outbox.update_one(
+            {"id": outbox_id, "status": "queued"},
+            {"$set": {"status": "sending", "started_at": now_iso()}},
+        )
+        if claimed.modified_count != 1:
+            return
+        outbox = await db.email_outbox.find_one(
+            {"id": outbox_id}, {"_id": 0}
+        )
+        settings = await _transaction_email_settings()
+        status = _transaction_email_status(settings)
+        if (
+            not outbox
+            or not status["active"]
+            or outbox.get("event_type") not in settings.get("event_types", [])
+        ):
+            await db.email_outbox.update_one(
+                {"id": outbox_id},
+                {"$set": {"status": "skipped", "finished_at": now_iso()}},
+            )
+            return
+        context = await _load_transaction_email_context(
+            outbox["user_id"],
+            outbox["event_type"],
+            outbox["entity_id"],
+            outbox["entity_kind"],
+        )
+        if not context:
+            await db.email_outbox.update_one(
+                {"id": outbox_id},
+                {"$set": {"status": "skipped", "finished_at": now_iso()}},
+            )
+            return
+        record, user = context
+        text, html = _transaction_email_content(
+            outbox["event_type"],
+            record,
+            outbox["entity_kind"],
+            settings.get("content_fields") or [],
+        )
+        await send_resend_email(
+            api_key=os.environ.get("RESEND_API_KEY", "").strip(),
+            sender=status["sender_email"],
+            recipient=user["email"],
+            subject="Mise à jour de votre transaction Biz-transPay",
+            text=text,
+            html=html,
+            idempotency_key=outbox_id,
+        )
+        await db.email_outbox.update_one(
+            {"id": outbox_id},
+            {"$set": {"status": "sent", "finished_at": now_iso()}},
+        )
+    except Exception as exc:  # noqa: BLE001
+        try:
+            await db.email_outbox.update_one(
+                {"id": outbox_id},
+                {"$set": {
+                    "status": "failed",
+                    "finished_at": now_iso(),
+                    "failure_type": type(exc).__name__[:80],
+                }},
+            )
+        except Exception:
+            pass
+        logger.warning("Resend transaction delivery failed (%s)", type(exc).__name__)
+
+
+async def _resume_transaction_email_outbox() -> None:
+    try:
+        pending = await db.email_outbox.find(
+            {"status": "queued"}, {"_id": 0, "id": 1}
+        ).to_list(200)
+        for item in pending:
+            if item.get("id"):
+                _schedule_transaction_email_delivery(item["id"])
+    except Exception:
+        logger.warning("Queued transaction emails could not be resumed")
+
+
+def _schedule_transaction_email_delivery(outbox_id: str) -> None:
+    try:
+        task = asyncio.create_task(_deliver_transaction_email(outbox_id))
+        _transaction_email_tasks.add(task)
+        task.add_done_callback(_transaction_email_tasks.discard)
+    except RuntimeError:
+        logger.warning("Queued transaction email could not be scheduled")
 
 
 
@@ -2128,6 +2739,122 @@ async def _record_login_failure(identifier: str, request: Request) -> None:
 async def _clear_login_account_failures(identifier: str) -> None:
     await db.auth_rate_limits.delete_one(
         {"scope": "account", "value_hash": _auth_hash(identifier)}
+    )
+
+
+PASSWORD_RESET_TOKEN_TTL = timedelta(minutes=30)
+PASSWORD_RESET_RATE_WINDOW = timedelta(minutes=15)
+PASSWORD_RESET_MAX_REQUESTS = 3
+PASSWORD_RESET_GENERIC_RESPONSE = {
+    "ok": True,
+    "message": (
+        "Si cette adresse est liée à un compte, un lien de réinitialisation "
+        "sera envoyé."
+    ),
+}
+
+
+async def _allow_password_reset_request(email: str) -> bool:
+    now = datetime.now(timezone.utc)
+    key = hashlib.sha256(email.strip().lower().encode()).hexdigest()
+    await db.password_reset_limits.delete_many({"expires_at": {"$lte": now}})
+    current = await db.password_reset_limits.find_one(
+        {"id": key}, {"_id": 0}
+    )
+    if not current:
+        try:
+            await db.password_reset_limits.insert_one({
+                "id": key,
+                "count": 1,
+                "window_started_at": now,
+                "expires_at": now + PASSWORD_RESET_RATE_WINDOW,
+            })
+            return True
+        except DuplicateKeyError:
+            # A simultaneous first request already created this email bucket.
+            return False
+
+    window_start = _as_utc(current["window_started_at"])
+    if window_start + PASSWORD_RESET_RATE_WINDOW <= now:
+        return bool((await db.password_reset_limits.update_one(
+            {"id": key, "count": current.get("count", 0)},
+            {"$set": {
+                "count": 1,
+                "window_started_at": now,
+                "expires_at": now + PASSWORD_RESET_RATE_WINDOW,
+            }},
+        )).modified_count)
+    if int(current.get("count", 0)) >= PASSWORD_RESET_MAX_REQUESTS:
+        return False
+    return bool((await db.password_reset_limits.update_one(
+        {"id": key, "count": current.get("count", 0)},
+        {"$inc": {"count": 1}},
+    )).modified_count)
+
+
+async def _prepare_password_reset_email(email: str) -> None:
+    """Resolve accounts and send after the generic response has been returned."""
+    try:
+        settings = await _transaction_email_settings()
+        status = _transaction_email_status(settings)
+        public_url = _configured_public_app_url()
+        if not status["ready_to_send"] or not public_url:
+            return
+        user = await db.users.find_one(
+            {"email": email.strip().lower()}, {"_id": 0, "id": 1, "email": 1}
+        )
+        if not user or not user.get("id") or not user.get("email"):
+            return
+
+        now = datetime.now(timezone.utc)
+        await db.password_reset_tokens.delete_many(
+            {"expires_at": {"$lte": now}}
+        )
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        await db.password_reset_tokens.insert_one({
+            "id": new_id(),
+            "user_id": user["id"],
+            "token_hash": token_hash,
+            "used": False,
+            "created_at": now,
+            "expires_at": now + PASSWORD_RESET_TOKEN_TTL,
+        })
+        reset_link = f"{public_url}/reset-password#token={token}"
+        safe_link = html_escape(reset_link, quote=True)
+        await send_resend_email(
+            api_key=os.environ.get("RESEND_API_KEY", "").strip(),
+            sender=status["sender_email"],
+            recipient=user["email"],
+            subject="Réinitialisation de votre mot de passe Biz-transPay",
+            text=(
+                "Une demande de réinitialisation du mot de passe a été reçue. "
+                f"Utilisez ce lien dans les 30 minutes : {reset_link}\n"
+                "Si vous n'êtes pas à l'origine de cette demande, ignorez ce message."
+            ),
+            html=(
+                "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
+                "<h2>Réinitialiser votre mot de passe</h2>"
+                "<p>Ce lien à usage unique expire dans 30 minutes.</p>"
+                f"<p><a href=\"{safe_link}\">Choisir un nouveau mot de passe</a></p>"
+                "<p>Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.</p>"
+                "</div>"
+            ),
+            idempotency_key=hashlib.sha256(
+                f"password-reset:{token_hash}".encode()
+            ).hexdigest(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Password reset email delivery failed (%s)", type(exc).__name__)
+
+
+async def _revoke_user_sessions(user_id: str, reason: str) -> None:
+    await db.sessions.update_many(
+        {"user_id": user_id, "revoked_at": {"$exists": False}},
+        {"$set": {
+            "revoked_at": datetime.now(timezone.utc),
+            "revocation_reason": reason,
+        }},
     )
 
 
@@ -2620,7 +3347,8 @@ async def disable_two_factor(req: TwoFactorDisableRequest,
 
 
 @api.post("/auth/recover")
-async def recover_account(req: PasswordRecoveryRequest, request: Request):
+async def recover_account(req: PasswordRecoveryRequest, request: Request,
+                          response: Response):
     await _require_turnstile(req.turnstile_token, request, "recover")
     identifier = req.identifier.lower().strip()
     await _check_login_security(identifier, request, None, None)
@@ -2649,8 +3377,109 @@ async def recover_account(req: PasswordRecoveryRequest, request: Request):
     )
     if claimed.modified_count != 1:
         raise HTTPException(401, "Informations de récupération invalides")
+    await _revoke_user_sessions(user["id"], "account_recovery")
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_at": now_iso()}},
+    )
+    _clear_session_cookie(response)
     await _clear_login_account_failures(identifier)
     return {"ok": True, "message": "Mot de passe réinitialisé. Connectez-vous de nouveau."}
+
+
+@api.post("/auth/password-reset/request")
+async def request_password_reset(
+    req: PasswordResetRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    await _require_turnstile(req.turnstile_token, request, "password_reset")
+    email = str(req.email).strip().lower()
+    if await _allow_password_reset_request(email):
+        # Account lookup and delivery run after the same generic response has
+        # been sent for both existing and unknown addresses.
+        background_tasks.add_task(_prepare_password_reset_email, email)
+    return dict(PASSWORD_RESET_GENERIC_RESPONSE)
+
+
+@api.post("/auth/password-reset/confirm")
+async def confirm_password_reset(
+    req: PasswordResetConfirm, request: Request, response: Response
+):
+    await _require_turnstile(
+        req.turnstile_token, request, "password_reset_confirm"
+    )
+    token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+    token_doc = await db.password_reset_tokens.find_one(
+        {"token_hash": token_hash, "used": False}, {"_id": 0}
+    )
+    now = datetime.now(timezone.utc)
+    if (
+        not token_doc
+        or not token_doc.get("user_id")
+        or not token_doc.get("expires_at")
+        or _as_utc(token_doc["expires_at"]) <= now
+    ):
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+
+    user = await db.users.find_one(
+        {"id": token_doc["user_id"]}, {"_id": 0}
+    )
+    if not user:
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+    password_errors = (
+        auth_security.admin_password_policy_errors(req.new_password)
+        if user.get("role") in ("admin", "super_admin")
+        else auth_security.password_policy_errors(req.new_password)
+    )
+    if password_errors:
+        raise HTTPException(
+            422, "Mot de passe insuffisant : " + ", ".join(password_errors)
+        )
+    if (
+        user.get("role") in ("admin", "super_admin")
+        and verify_password(req.new_password, user.get("password_hash", ""))
+    ):
+        raise HTTPException(
+            422, "Le mot de passe administrateur doit être différent de l'ancien."
+        )
+
+    claimed = await db.password_reset_tokens.update_one(
+        {
+            "id": token_doc["id"],
+            "user_id": user["id"],
+            "token_hash": token_hash,
+            "used": False,
+            "expires_at": {"$gt": now},
+        },
+        {"$set": {"used": True, "used_at": now}},
+    )
+    if claimed.modified_count != 1:
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+
+    # Revoke sessions before changing credentials. If revocation fails, the
+    # token is consumed and can be replaced by a fresh request, but old sessions
+    # are never left active alongside a successfully changed password.
+    await _revoke_user_sessions(user["id"], "password_reset")
+    password_update = await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "password_hash": hash_password(req.new_password),
+            "password_policy_version": 1,
+        }},
+    )
+    if password_update.modified_count != 1:
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_at": now}},
+    )
+    await _clear_login_account_failures(str(user.get("email") or ""))
+    _clear_session_cookie(response)
+    return {
+        "ok": True,
+        "message": "Mot de passe réinitialisé. Connectez-vous de nouveau.",
+    }
 
 
 @api.get("/auth/me", response_model=UserPublic)
@@ -3679,6 +4508,22 @@ async def public_fees_config(uid: str = Depends(get_current_user_id)):
 
 
 # ==================== TRANSFER ====================
+@api.post("/transfers/email-otp/cancel")
+async def cancel_transfer_email_otp(
+    req: TransferOtpCancelRequest,
+    uid: str = Depends(require_recent_auth),
+):
+    await db.withdrawal_email_otps.update_one(
+        {
+            "id": uid,
+            "challenge_id": req.challenge_id,
+            "status": "active",
+        },
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc)}},
+    )
+    return {"ok": True}
+
+
 @api.post("/transfers")
 async def transfer(req: TransferRequest, request: Request,
                    uid: str = Depends(require_recent_auth)):
@@ -3743,6 +4588,22 @@ async def transfer(req: TransferRequest, request: Request,
     )
     if req.transfer_type != "biz_to_crypto" and u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
+
+    if (
+        req.transfer_type in WITHDRAWAL_EMAIL_OTP_TRANSFER_TYPES
+        and not getattr(request.state, "merchant_api", False)
+    ):
+        email_settings = await _transaction_email_settings()
+        if email_settings.get("withdrawal_otp_enabled"):
+            if not _transaction_email_status(email_settings)["ready_to_send"]:
+                raise HTTPException(
+                    503,
+                    "La confirmation par e-mail est indisponible. Aucun retrait n’a été exécuté.",
+                )
+            if req.withdrawal_otp_code or req.withdrawal_otp_challenge_id:
+                await _consume_withdrawal_email_otp(uid, req)
+            else:
+                return await _create_withdrawal_email_otp(u, req)
 
     # Check global auto-withdrawals lock (all outbound external transfers)
     if req.transfer_type in ("biz_to_mobile", "biz_to_bank", "biz_to_crypto"):
@@ -4325,7 +5186,7 @@ async def transfer(req: TransferRequest, request: Request,
         idem_key = (req.idempotency_key or "").strip()
         if len(idem_key) < 8:
             raise HTTPException(400, "Une clé d'idempotence est requise pour les retraits crypto")
-        request_fingerprint = _request_fingerprint(req)
+        request_fingerprint = _withdrawal_transfer_fingerprint(req)
         cached = await _idempotency_claim(
             uid, idem_key, "POST", "/transfers/crypto", request_fingerprint)
         if cached and cached.get("body") is not None:
@@ -13297,6 +14158,8 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         return "platform:reset"
     if path.startswith("/admin/platform/config") or path.startswith("/admin/settings"):
         return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
+    if path.startswith("/admin/email-notifications"):
+        return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
     return "settings:read"
 
 
@@ -14939,6 +15802,9 @@ async def _notify_user(uid: str, title: str, message: str,
                 pass
     except Exception as e:  # noqa: BLE001
         logger.warning("_notify_user failed for %s: %s", uid, e)
+    transaction_id = str((metadata or {}).get("tx_id") or "")
+    if transaction_id:
+        _schedule_transaction_email_for_record(uid, transaction_id)
 
 
 def _tx_is_crypto(tx: dict) -> bool:
@@ -15503,6 +16369,79 @@ class AdminFeaturesReq(BaseModel):
     withdrawal_crypto_enabled: Optional[bool] = None
     api_enabled: Optional[bool] = None
     links_enabled: Optional[bool] = None
+
+
+@api.get("/admin/email-notifications")
+async def admin_get_email_notifications(admin=Depends(get_admin)):
+    settings = await _transaction_email_settings()
+    result = _transaction_email_status(settings)
+    result["password_reset_ready"] = bool(
+        result["ready_to_send"] and _configured_public_app_url()
+    )
+    return result
+
+
+@api.put("/admin/email-notifications")
+async def admin_update_email_notifications(
+    req: TransactionEmailSettingsUpdate,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    event_types = list(dict.fromkeys(req.event_types))
+    content_fields = list(dict.fromkeys(req.content_fields))
+    sender_email = str(req.sender_email or "").strip().lower()
+    current_settings = await _transaction_email_settings()
+    withdrawal_otp_enabled = (
+        bool(req.withdrawal_otp_enabled)
+        if req.withdrawal_otp_enabled is not None
+        else bool(current_settings.get("withdrawal_otp_enabled"))
+    )
+    candidate = {
+        **TRANSACTION_EMAIL_DEFAULTS,
+        "enabled": req.enabled,
+        "withdrawal_otp_enabled": withdrawal_otp_enabled,
+        "sender_email": sender_email,
+        "recipient_type": "transaction_user",
+        "event_types": event_types,
+        "content_fields": content_fields,
+    }
+    delivery_status = _transaction_email_status(candidate)
+    if req.enabled and not delivery_status["ready_to_send"]:
+        raise HTTPException(
+            409,
+            "Confirmez une adresse d’expédition et configurez RESEND_API_KEY "
+            "dans les Secrets Replit avant d’activer les envois.",
+        )
+    if withdrawal_otp_enabled and not delivery_status["ready_to_send"]:
+        raise HTTPException(
+            409,
+            "Confirmez une adresse d’expédition et configurez RESEND_API_KEY "
+            "dans les Secrets Replit avant d’activer la confirmation OTP.",
+        )
+    candidate["updated_at"] = now_iso()
+    candidate["updated_by"] = admin["id"]
+    await db.settings.replace_one(
+        {"id": TRANSACTION_EMAIL_DEFAULTS["id"]},
+        candidate,
+        upsert=True,
+    )
+    await audit(
+        admin["id"],
+        admin["username"],
+        "update_transaction_email_settings",
+        details={
+            "enabled": req.enabled,
+            "withdrawal_otp_enabled": withdrawal_otp_enabled,
+            "event_types": event_types,
+            "content_fields": content_fields,
+            "sender_configured": delivery_status["sender_configured"],
+        },
+    )
+    result = _transaction_email_status(candidate)
+    result["password_reset_ready"] = bool(
+        result["ready_to_send"] and _configured_public_app_url()
+    )
+    return result
 
 
 @api.get("/admin/settings/features")
@@ -16115,8 +17054,24 @@ async def startup_db_client():
             "expires_at", expireAfterSeconds=0, name="auth_challenges_ttl")
         await db.mfa_enrollments.create_index(
             "expires_at", expireAfterSeconds=0, name="mfa_enrollments_ttl")
+        await db.password_reset_tokens.create_index(
+            "expires_at", expireAfterSeconds=0, name="password_reset_tokens_ttl")
+        await db.password_reset_limits.create_index(
+            "expires_at", expireAfterSeconds=0, name="password_reset_limits_ttl")
     except Exception:
         logger.exception("Unable to initialize authentication security indexes")
+    try:
+        await db.withdrawal_email_otps.create_index(
+            "id", unique=True, name="withdrawal_email_otp_user")
+        await db.withdrawal_email_otps.create_index(
+            "expires_at", expireAfterSeconds=0, name="withdrawal_email_otp_ttl")
+        await db.withdrawal_email_otp_limits.create_index(
+            "id", unique=True, name="withdrawal_email_otp_limit_user")
+        await db.withdrawal_email_otp_limits.create_index(
+            "expires_at", expireAfterSeconds=0,
+            name="withdrawal_email_otp_limit_ttl")
+    except Exception:
+        logger.exception("Unable to initialize withdrawal email OTP indexes")
     try:
         await db.webhook_events.create_index("event_id", unique=True)
     except Exception:
@@ -16161,6 +17116,7 @@ async def startup_db_client():
         partialFilterExpression={
             "metadata.operation_id": {"$type": "string"},
         })
+    await _resume_transaction_email_outbox()
 
 
 @app.on_event("shutdown")

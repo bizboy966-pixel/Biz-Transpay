@@ -5,6 +5,8 @@ import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
 import Register from '@/pages/Register';
 import RecoverAccount from '@/pages/RecoverAccount';
+import RequestPasswordReset from '@/pages/RequestPasswordReset';
+import ResetPassword from '@/pages/ResetPassword';
 import PaymentSuccess from '@/pages/PaymentSuccess';
 import PaymentCancel from '@/pages/PaymentCancel';
 import PublicLink from '@/pages/PublicLink';
@@ -41,6 +43,7 @@ import AdminFees from '@/pages/admin/AdminFees';
 import AdminBenefits from '@/pages/admin/AdminBenefits';
 import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
 import AdminFunds from '@/pages/admin/AdminFunds';
+import AdminEmailNotifications from '@/pages/admin/AdminEmailNotifications';
 import ReauthGate from '@/components/ReauthGate';
 import '@/App.css';
 
@@ -81,7 +84,9 @@ function App() {
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
-          <Route path="/recover" element={<RecoverAccount />} />
+          <Route path="/recover" element={<RequestPasswordReset />} />
+          <Route path="/recover/mfa" element={<RecoverAccount />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/pay/:slug" element={<PublicLink />} />
           <Route path="/payment/success" element={<PaymentSuccess />} />
           <Route path="/payment/cancel" element={<PaymentCancel />} />
@@ -115,6 +120,7 @@ function App() {
             <Route path="transfer-config" element={<AdminTransferConfig />} />
             <Route path="deposit-config" element={<AdminDepositConfig />} />
             <Route path="support" element={<AdminSupport />} />
+            <Route path="email-notifications" element={<AdminEmailNotifications />} />
             <Route path="features" element={<AdminFeatures />} />
             <Route path="rates" element={<AdminRates />} />
             <Route path="fees" element={<AdminFees />} />
