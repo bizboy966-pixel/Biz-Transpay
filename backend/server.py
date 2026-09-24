@@ -10276,6 +10276,17 @@ class DeveloperCheckoutRequest(BaseModel):
     metadata: Optional[dict] = None
 
 
+def _validate_developer_operator_amount(payload: Any, operator: dict) -> None:
+    minimum = float(operator.get("min", 100))
+    if payload.amount < minimum:
+        raise BizAPIError(400, "Amount is below the minimum allowed.",
+                          "AMOUNT_TOO_SMALL")
+    maximum = float(operator.get("max", 0) or 0)
+    if maximum and payload.amount > maximum:
+        raise BizAPIError(400, "Amount exceeds the maximum allowed.",
+                          "AMOUNT_TOO_LARGE")
+
+
 async def _developer_operator(
     merchant: dict, payload: Any, required_mode: Optional[str] = None
 ) -> tuple[dict, dict]:
@@ -10310,12 +10321,14 @@ async def _developer_operator(
         if currency != payload.currency.upper():
             raise BizAPIError(400, "The currency is not supported by this method.",
                               "CURRENCY_NOT_SUPPORTED")
+        _validate_developer_operator_amount(payload, op)
         cfg["_gateway_provider"] = "paydunya"
         return cfg, op
     mbiyo_ready = mb_cfg.get("enabled", False) and (
         environment != "live" or bool(mb_cfg.get("_api_key"))
     )
     if mb_op and mbiyo_ready:
+        _validate_developer_operator_amount(payload, mb_op)
         mb_cfg["_gateway_provider"] = "mbiyo"
         return mb_cfg, mb_op
     if not cfg.get("enabled"):
@@ -10324,19 +10337,6 @@ async def _developer_operator(
     if not op:
         raise BizAPIError(400, "The selected payment method is unavailable.",
                           "PAYMENT_METHOD_UNAVAILABLE")
-    currency = str(op.get("currency") or payload.currency).upper()
-    if currency != payload.currency.upper():
-        raise BizAPIError(400, "The currency is not supported by this method.",
-                          "CURRENCY_NOT_SUPPORTED")
-    if payload.amount < float(op.get("min", 100)):
-        raise BizAPIError(400, "Amount is below the minimum allowed.",
-                          "AMOUNT_TOO_SMALL")
-    maximum = float(op.get("max", 0) or 0)
-    if maximum and payload.amount > maximum:
-        raise BizAPIError(400, "Amount exceeds the maximum allowed.",
-                          "AMOUNT_TOO_LARGE")
-    cfg["_gateway_provider"] = "paydunya"
-    return cfg, op
 
 
 async def _developer_withdrawal_operator(merchant: dict,

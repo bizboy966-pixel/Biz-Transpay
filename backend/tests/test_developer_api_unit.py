@@ -459,6 +459,51 @@ def payload_direct(**extra):
     return server.BizPayDirectRequest(**values)
 
 
+@pytest.mark.parametrize(
+    ("provider", "amount", "expected_code"),
+    [
+        ("paydunya", 499, "AMOUNT_TOO_SMALL"),
+        ("paydunya", 500001, "AMOUNT_TOO_LARGE"),
+        ("mbiyo", 499, "AMOUNT_TOO_SMALL"),
+        ("mbiyo", 500001, "AMOUNT_TOO_LARGE"),
+    ],
+)
+@run_async
+async def test_developer_operator_enforces_catalog_amount_limits(
+        monkeypatch, provider, amount, expected_code):
+    async def paydunya_config(decrypt=False):
+        enabled = provider == "paydunya"
+        return {
+            "enabled": enabled,
+            "modes": {"softpay_direct": {"enabled": True}},
+            "catalog": [{
+                "country": "TG", "code": "moov_tg", "currency": "XOF",
+                "min": 500, "max": 500000, "active": True,
+            }] if enabled else [],
+        }
+
+    async def mbiyo_config(decrypt=False):
+        enabled = provider == "mbiyo"
+        return {
+            "enabled": enabled,
+            "catalog": [{
+                "country": "TG", "code": "mbiyo_moov_tg", "currency": "XOF",
+                "min": 500, "max": 500000, "active": True,
+            }] if enabled else [],
+        }
+
+    monkeypatch.setattr(server, "get_paydunya_config", paydunya_config)
+    monkeypatch.setattr(server, "get_mbiyo_config", mbiyo_config)
+
+    with pytest.raises(server.BizAPIError) as exc:
+        await server._developer_operator(
+            merchant(env="test"), payload_direct(amount=amount),
+            required_mode="softpay_direct",
+        )
+
+    assert exc.value.code == expected_code
+
+
 @run_async
 async def test_mutations_require_idempotency_key(monkeypatch):
     monkeypatch.setattr(server, "_authenticate_merchant",
