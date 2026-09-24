@@ -6476,8 +6476,12 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
         "currency": currency,
         "operator": {"code": req.operator, "label": admin_op.get("name"),
                      "endpoint_slug": admin_op.get("endpoint_slug")},
-         "phone_number": phone, "checkout_url": locals().get("redirect_url") or doc["checkout_url"],
-         "redirect_url": locals().get("redirect_url"),
+          "phone_number": phone,
+          # SoftPay direct deposits stay on the Biz-transPay tracker. Keep any
+          # provider checkout URL only on the internal deposit record for
+          # reconciliation; it is not a browser action for this flow.
+          "checkout_url": None,
+          "redirect_url": None,
          "payment_flow": payment_flow,
          "auth_mode": "pin" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else None,
          "otp_required": admin_op.get("endpoint_slug") == "wizall-money-senegal",
@@ -6487,22 +6491,15 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
              locals().get("softpay_fallback_error")
              if locals().get("softpay_fallback", False) else None),
          "submission_unknown": bool(locals().get("softpay_fallback", False)),
-         "payment_fallback": (
-             "hosted_checkout"
-             if locals().get("softpay_fallback", False) else None),
-         "payment_kind": (
-             "redirect"
-             if locals().get("softpay_fallback", False)
-             or locals().get("redirect_url") else "phone"),
+          "payment_fallback": None,
+          "payment_kind": "phone",
          "created_at": doc.get("created_at"),
          "pending_expires_at": doc.get("pending_expires_at"),
          "message": (
-             "La demande téléphonique tarde. Ouvrez la page sécurisée "
-              "pour terminer le paiement."
+              "La confirmation prend du temps. Restez sur Biz-transPay et "
+              "ne relancez pas ce dépôt; son statut sera vérifié ici."
              if locals().get("softpay_fallback", False)
-             else ("Ouvrez le lien affiché et validez le paiement."
-                   if locals().get("redirect_url")
-                   else "Vérifiez votre téléphone et validez la demande.")),
+              else "Vérifiez votre téléphone et suivez la confirmation ici."),
     }
 
 
@@ -7268,6 +7265,10 @@ def _public_momo_deposit(d: dict) -> dict:
     """Expose only generic challenge/status fields to a dashboard client."""
     flow = d.get("payment_flow") or {}
     auth_mode = d.get("auth_mode")
+    direct_paydunya = (
+        d.get("provider") == "paydunya"
+        and d.get("paydunya_flow") == "softpay_direct"
+    )
     expiry = _momo_pending_expiry(d)
     pending_remaining_seconds = (
         max(0, math.ceil((expiry - datetime.now(timezone.utc)).total_seconds()))
@@ -7294,16 +7295,33 @@ def _public_momo_deposit(d: dict) -> dict:
             "completed" if d.get("status") in ("approved", "paid") else "pending"
         ),
         "instructions": _plain_payment_instructions(d.get("instructions")),
-        "checkout_url": d.get("redirect_url") or d.get("checkout_url"),
-        "redirect_url": d.get("redirect_url") or d.get("checkout_url"),
-        "payment_kind": (
-            "redirect"
-            if d.get("payment_fallback") == "hosted_checkout"
-            or d.get("redirect_url")
-            else "phone"
+        # A SoftPay direct request can carry a provider checkout URL as a
+        # fallback. It remains reconciliation data and must never redirect the
+        # wallet-deposit customer away from Biz-transPay.
+        "checkout_url": (
+            None if direct_paydunya
+            else d.get("redirect_url") or d.get("checkout_url")
         ),
-        "payment_fallback": d.get("payment_fallback"),
+        "redirect_url": (
+            None if direct_paydunya
+            else d.get("redirect_url") or d.get("checkout_url")
+        ),
+        "payment_kind": (
+            "phone" if direct_paydunya else (
+                "redirect"
+                if d.get("payment_fallback") == "hosted_checkout"
+                or d.get("redirect_url")
+                else "phone"
+            )
+        ),
+        "payment_fallback": None if direct_paydunya else d.get("payment_fallback"),
         "submission_unknown": bool(d.get("submission_unknown")),
+        "message": (
+            "La confirmation prend du temps. Restez sur Biz-transPay et "
+            "ne relancez pas ce dépôt; son statut sera vérifié ici."
+            if direct_paydunya and d.get("submission_unknown")
+            else None
+        ),
         "prompt_sent": bool(d.get("prompt_sent")),
         "prompt_error": _public_payment_error(d.get("prompt_error")),
         "failed_reason": _public_payment_error(

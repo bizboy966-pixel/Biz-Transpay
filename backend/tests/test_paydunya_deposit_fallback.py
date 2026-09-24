@@ -58,7 +58,7 @@ def _request():
     })
 
 
-def test_softpay_timeout_falls_back_to_hosted_checkout(monkeypatch):
+def test_softpay_timeout_keeps_tracker_inside_biztranspay(monkeypatch):
     fake_db = _DB()
     monkeypatch.setattr(server, "db", fake_db)
     config = {
@@ -121,16 +121,104 @@ def test_softpay_timeout_falls_back_to_hosted_checkout(monkeypatch):
     ))
 
     assert result["status"] == "pending"
-    assert result["payment_kind"] == "redirect"
-    assert result["payment_fallback"] == "hosted_checkout"
+    assert result["payment_kind"] == "phone"
+    assert result["payment_fallback"] is None
     assert result["prompt_sent"] is False
     assert result["submission_unknown"] is True
-    assert result["redirect_url"].startswith("https://app.paydunya.com/")
+    assert result["redirect_url"] is None
+    assert result["checkout_url"] is None
     stored = fake_db.momo_deposits.docs[0]
     assert stored["status"] == "pending"
     assert stored["payment_fallback"] == "hosted_checkout"
     assert stored["submission_unknown"] is True
     assert "failed_at" not in stored
+    public = server._public_momo_deposit(stored)
+    assert public["payment_kind"] == "phone"
+    assert public["payment_fallback"] is None
+    assert public["redirect_url"] is None
+    assert public["checkout_url"] is None
+    assert "ne relancez pas" in public["message"]
+
+
+def test_softpay_response_checkout_url_is_not_a_customer_redirect(monkeypatch):
+    fake_db = _DB()
+    monkeypatch.setattr(server, "db", fake_db)
+    config = {
+        "enabled": True,
+        "mode": "live",
+        "store_name": "Biz-transPay",
+        "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [{
+            "country": "TG",
+            "code": "togocel_tg",
+            "name": "TogoCom",
+            "currency": "XOF",
+            "endpoint_slug": "t-money-togo",
+            "active": True,
+            "min": 100,
+            "max": 500000,
+            "fee_pct": 0,
+        }],
+        "_credentials": {
+            "master_key": "configured",
+            "private_key": "configured",
+            "token": "configured",
+        },
+    }
+    monkeypatch.setattr(
+        server,
+        "get_paydunya_config",
+        lambda decrypt=False: asyncio.sleep(0, result=config),
+    )
+    monkeypatch.setattr(
+        server.paydunya,
+        "create_invoice",
+        lambda *args, **kwargs: asyncio.sleep(0, result={
+            "token": "invoice-token",
+            "checkout_url": "https://app.paydunya.com/checkout/invoice-token",
+        }),
+    )
+    monkeypatch.setattr(
+        server,
+        "_paydunya_public_config",
+        lambda config: {"enabled": True, "mobile_money_enabled": True},
+    )
+    monkeypatch.setattr(
+        server.paydunya, "checkout_url",
+        lambda response: "https://app.paydunya.com/checkout/softpay-response",
+    )
+    monkeypatch.setattr(
+        server.paydunya,
+        "softpay_payment",
+        lambda *args, **kwargs: asyncio.sleep(0, result={
+            "response_code": "00",
+            "checkout_url": "https://app.paydunya.com/checkout/softpay-response",
+        }),
+    )
+
+    result = asyncio.run(server.create_mobile_money_deposit(
+        server.MobileMoneyDepositRequest(
+            amount=1000,
+            currency="XOF",
+            email="buyer@example.test",
+            full_name="Test Buyer",
+            country="TG",
+            operator="togocel_tg",
+            phone_number="90112233",
+        ),
+        _request(),
+        "user-1",
+    ))
+
+    assert result["payment_kind"] == "phone"
+    assert result["redirect_url"] is None
+    assert result["checkout_url"] is None
+    stored = fake_db.momo_deposits.docs[0]
+    assert stored["redirect_url"].startswith("https://app.paydunya.com/")
+    public = server._public_momo_deposit(stored)
+    assert public["payment_kind"] == "phone"
+    assert public["redirect_url"] is None
+    assert public["checkout_url"] is None
 
 
 def test_customer_retry_reuses_the_same_deposit(monkeypatch):

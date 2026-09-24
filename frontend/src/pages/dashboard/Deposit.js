@@ -662,7 +662,7 @@ function MobileMoneyForm({ onSuccess }) {
       };
       const { data } = await api.post('/deposits/mobile-money/start', request);
       const redirectUrl = data.redirect_url || data.checkout_url;
-      if (data.payment_kind === 'redirect' || redirectUrl) {
+      if (data.payment_kind === 'redirect') {
         if (!redirectUrl) throw new Error('Le lien de paiement n’a pas pu être préparé. Veuillez réessayer.');
         window.location.assign(redirectUrl);
         return;
@@ -687,11 +687,6 @@ function MobileMoneyForm({ onSuccess }) {
         });
         beginPaymentStatusPolling(trackedDeposit);
         toast.success('Fenêtre de paiement ouverte');
-        return;
-      }
-      if (data.payment_kind === 'redirect') {
-        if (!data?.checkout_url) throw new Error('Le paiement n’a pas pu être initialisé. Veuillez réessayer.');
-        window.location.assign(data.checkout_url);
         return;
       }
       toast.success(data.message || 'Vérifiez votre téléphone');

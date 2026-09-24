@@ -23,6 +23,12 @@ Public payment links use the server-selected direct Mobile Money route and stay 
 
 **How to apply:** Filter fixed-currency links to matching operators, allow universal links to resolve by the selected operator, and keep redirect-only provider details out of public responses.
 
+Authenticated PayDunya SoftPay direct wallet deposits also keep their waiting and confirmation state inside Biz-transPay. Provider checkout URLs or timeout fallback markers for this flow are internal reconciliation data, not customer navigation actions. The browser follows the server-selected `payment_kind`, not the presence of a URL.
+
+**Why:** The owner expects direct deposits to remain in the app through confirmation; an automatic hosted-checkout fallback sends the customer away and obscures the in-app pending state.
+
+**How to apply:** For `softpay_direct`, return the generic phone action and reconcile the existing invoice server-side, including after an ambiguous timeout. Preserve separate PSR popup and explicitly selected PAR redirect behavior.
+
 The sanitized public payment status must retain the payment method discriminator (`mobile_money` or `crypto`) so the browser chooses the matching tracker after creation.
 
 **Why:** Omitting the discriminator makes a successful Mobile Money start fall through to the crypto tracker even though the provider request returned `200`.
