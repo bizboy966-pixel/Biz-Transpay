@@ -3566,8 +3566,7 @@ def _public_fee_crypto(crypto: dict) -> dict:
     }
     assets = []
     for code in sorted(codes):
-        gateway_pct = float(gateway.get(code, fees.get(code, 0)) or 0)
-        platform_pct = float(platform.get(code, 0) or 0)
+        gateway_pct, platform_pct = _crypto_fee_split_pct(crypto, code)
         fixed = float(gateway_fixed.get(code, 0) or 0) + float(platform_fixed.get(code, 0) or 0)
         assets.append({
             "code": code,
@@ -3738,8 +3737,11 @@ async def transfer(req: TransferRequest, request: Request,
     if req.transfer_type == "biz_to_bank":
         raise HTTPException(410, "Le transfert bancaire n'est plus disponible sur Biz-transPay.")
 
-    field = f"balance_{req.currency.lower()}"
-    if u.get(field, 0) < req.amount:
+    field = (
+        "balance_usdt" if req.transfer_type == "biz_to_crypto"
+        else f"balance_{req.currency.lower()}"
+    )
+    if req.transfer_type != "biz_to_crypto" and u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
     # Check global auto-withdrawals lock (all outbound external transfers)
@@ -3750,7 +3752,21 @@ async def transfer(req: TransferRequest, request: Request,
                 raise HTTPException(
                     503, "Les retraits automatiques sont temporairement désactivés")
             # keep the request as "pending" without debiting
-            pending_tx = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+            pending_amount = req.amount
+            pending_currency = req.currency
+            conversion_metadata = {}
+            if req.transfer_type == "biz_to_crypto":
+                coin = (req.crypto or "").strip().upper()
+                if not coin:
+                    raise HTTPException(400, "Crypto, réseau et adresse de portefeuille requis")
+                rate = await _crypto_usdt_rate(coin)
+                pending_amount = round(req.amount * rate, 6)
+                pending_currency = "USDT"
+                conversion_metadata = {
+                    "crypto_amount": req.amount, "crypto": coin,
+                    "usdt_rate": rate, "crypto_amount_usdt": pending_amount,
+                }
+            pending_tx = await record_tx(uid, "transfer", "out", pending_amount, pending_currency,
                                          status="pending", counterparty=req.recipient,
                                          description=req.description or "En attente de traitement manuel",
                                          metadata={"transfer_type": req.transfer_type,
@@ -3759,6 +3775,7 @@ async def transfer(req: TransferRequest, request: Request,
                                                    "recipient_name": req.recipient_name,
                                                    "crypto": req.crypto, "network": req.network,
                                                    "wallet_address": req.wallet_address,
+                                                    **conversion_metadata,
                                                    "auto_withdrawals_disabled": True})
             return {"transaction": pending_tx.model_dump(), "fee": 0,
                     "pending_manual": True,
@@ -4284,39 +4301,68 @@ async def transfer(req: TransferRequest, request: Request,
             raise HTTPException(400, f"Adresse invalide pour le réseau {req.network}")
         if req.amount < min_amt or req.amount > max_amt:
             raise HTTPException(400, f"Montant hors des limites autorisées ({min_amt} - {max_amt} {req.crypto})")
-        # Per-coin fee from admin config (defaults to 4% if not configured)
-        fees_map = (ccfg.get("fees") or {})
-        fees_gw_fixed = (ccfg.get("fees_gateway_fixed") or {})
-        fee_pct = float(fees_map.get(coin_upper, 4.0))  # stored as percent (e.g. 4.0 = 4%)
-        gw_fixed = float(fees_gw_fixed.get(coin_upper, 0) or 0)
-        # Gateway split: percent share + optional fixed amount (in the coin's native unit)
-        gateway_fee, platform_fee = await _crypto_platform_fee(coin_upper, "withdrawal", req.amount)
-        gateway_fee = round(gateway_fee + gw_fixed, 6)
-        # Total fee applied on the transaction = pct part + fixed gateway
-        fee = round(req.amount * (fee_pct / 100.0) + gw_fixed, 6)
-        total_debit = req.amount + fee if req.fee_bearer == "sender" else req.amount
-        recipient_gets = req.amount if req.fee_bearer == "sender" else req.amount - fee
-        # Debit user balance atomically.  The read above is only informative;
-        # this conditional update is the concurrency barrier.
-        transfer_operation_id = new_id()
-        if not await _debit_wallet_once(uid, field, total_debit,
-                                        f"crypto-transfer:{transfer_operation_id}"):
-            raise HTTPException(400, "Solde insuffisant (frais inclus)")
-        tx_out = await record_tx(uid, "transfer", "out", req.amount, req.currency,
+        if req.fee_bearer not in ("sender", "receiver"):
+            raise HTTPException(400, "Bénéficiaire des frais invalide")
+        rate = await _crypto_usdt_rate(coin_upper)
+        fee_components = await _crypto_withdrawal_fee_components(
+            coin_upper, req.amount)
+        fee_pct = fee_components["fee_pct"]
+        fee_coin = fee_components["fee"]
+        if fee_pct >= 100 or fee_coin >= req.amount:
+            raise HTTPException(503, "Configuration de frais invalide pour cet actif")
+        fee = round(fee_coin * rate, 6)
+        gateway_fee = round(fee_components["gateway_fee"] * rate, 6)
+        platform_fee = round(fee_components["platform_fee"] * rate, 6)
+        gateway_fee_fixed = fee_components["gateway_fee_fixed"]
+        platform_fee_fixed = fee_components["platform_fee_fixed"]
+        total_debit = round(
+            (req.amount + fee_coin if req.fee_bearer == "sender" else req.amount)
+            * rate, 6)
+        recipient_gets = (
+            req.amount if req.fee_bearer == "sender"
+            else round(req.amount - fee_coin, 6)
+        )
+        idem_key = (req.idempotency_key or "").strip()
+        if len(idem_key) < 8:
+            raise HTTPException(400, "Une clé d'idempotence est requise pour les retraits crypto")
+        request_fingerprint = _request_fingerprint(req)
+        cached = await _idempotency_claim(
+            uid, idem_key, "POST", "/transfers/crypto", request_fingerprint)
+        if cached and cached.get("body") is not None:
+            return cached["body"]
+
+        # Debit only the USDT wallet, using the locked conversion and fee values.
+        transfer_operation_id = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"crypto-transfer:{uid}:{idem_key}"
+        ).hex
+        if not await _debit_wallet_once(
+                uid, "balance_usdt", total_debit,
+                f"crypto-transfer:{transfer_operation_id}"):
+            await _idempotency_release(uid, idem_key, request_fingerprint)
+            raise HTTPException(400, "Solde USDT insuffisant (conversion et frais inclus)")
+        tx_out = await record_tx(uid, "transfer", "out", total_debit, "USDT",
                                  status="pending",
                                  counterparty=req.wallet_address, description=req.description,
                                  metadata={"transfer_type": "biz_to_crypto",
                                            "crypto": coin_upper, "network": net_upper,
                                            "asset_code": asset_code,
                                            "wallet_address": req.wallet_address,
-                                           "amount_gross": req.amount,
-                                           "gateway_fee_fixed": gw_fixed,
-                                           "fee": fee, "fee_pct": fee_pct,
+                                            "amount_gross": req.amount,
+                                            "amount_currency": coin_upper,
+                                            "usdt_rate": rate,
+                                            "fee_asset": fee_coin,
+                                            "fee_currency": "USDT",
+                                            "gateway_fee_fixed": gateway_fee_fixed,
+                                            "platform_fee_fixed": platform_fee_fixed,
+                                            "fee": fee, "fee_pct": fee_pct,
                                            "gateway_fee": gateway_fee,
                                            "platform_fee": platform_fee,
                                            "amount_net": recipient_gets,
                                            "fee_bearer": req.fee_bearer,
-                                           "recipient_gets": recipient_gets, "total_debit": total_debit,
+                                            "recipient_gets": recipient_gets,
+                                            "total_debit": total_debit,
+                                            "idempotency_key": idem_key,
+                                            "request_fingerprint": request_fingerprint,
                                             "recipient_name": req.recipient_name,
                                             "operation_id": transfer_operation_id},
                                   operation_id=f"crypto-transfer:{transfer_operation_id}")
@@ -4324,9 +4370,10 @@ async def transfer(req: TransferRequest, request: Request,
         # Call IzichangePay to actually send the crypto on-chain
         if not izipay.is_configured():
             # Refund and fail
-            await _refund_wallet_once(uid, field, total_debit,
+            await _refund_wallet_once(uid, "balance_usdt", total_debit,
                                       f"crypto-transfer:{transfer_operation_id}")
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
+            await _idempotency_release(uid, idem_key, request_fingerprint)
             raise HTTPException(503, "Passerelle crypto non configurée")
         coin_code = asset_code  # e.g. USDT.TRC20
         try:
@@ -4336,17 +4383,35 @@ async def transfer(req: TransferRequest, request: Request,
                 destination_address=req.wallet_address.strip(),
                 merchant_reference=tx_out.id,
                 metadata={"user_id": uid, "tx_id": tx_out.id},
+                idempotency_key=f"crypto-transfer-{transfer_operation_id}",
             )
         except izipay.IziPayError as e:
             # Log vendor-side detail server-side; return generic message to caller
             log_msg = f"IziPay payout rejected [{e.code}] {e.message}"
             print(log_msg)  # picked up by supervisor logs
-            # Refund on gateway rejection
-            await _refund_wallet_once(uid, field, total_debit,
-                                      f"crypto-transfer:{transfer_operation_id}")
-            await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed",
-                                                                          "metadata.error_code": e.code,
-                                                                          "metadata.error_internal": e.message}})
+            # Only a definite provider rejection releases the reserved funds.
+            if e.status < 500:
+                await _refund_wallet_once(
+                    uid, "balance_usdt", total_debit,
+                    f"crypto-transfer:{transfer_operation_id}")
+                await db.transactions.update_one({"id": tx_out.id}, {"$set": {
+                    "status": "failed", "metadata.error_code": e.code,
+                    "metadata.error_internal": e.message}})
+                await _idempotency_release(uid, idem_key, request_fingerprint)
+            else:
+                await db.transactions.update_one({"id": tx_out.id}, {"$set": {
+                    "metadata.provider_outcome_unknown": True,
+                    "metadata.provider_error_code": e.code}})
+                body = {
+                    "transaction": tx_out.model_dump(), "fee": fee,
+                    "total_debit": total_debit, "recipient_gets": recipient_gets,
+                    "crypto": coin_upper, "network": net_upper,
+                    "payout_id": None, "pending": True,
+                    "message": "Résultat du retrait en vérification. Le montant reste réservé.",
+                }
+                await _idempotency_store(
+                    uid, idem_key, "POST", "/transfers/crypto", 200, body)
+                return body
             # Sanitize address-related errors so the wallet address hint remains useful,
             # but don't expose internal codes.
             msg = e.message or ""
@@ -4354,7 +4419,22 @@ async def transfer(req: TransferRequest, request: Request,
                 user_msg = f"Adresse crypto invalide pour {req.crypto.upper()}/{req.network.upper()}. Vérifiez le format."
             else:
                 user_msg = "La passerelle crypto a refusé la transaction. Réessayez plus tard."
-            raise HTTPException(400 if e.status < 500 else 502, user_msg)
+            raise HTTPException(400, user_msg)
+        except Exception as e:
+            logger.exception("IziChangePay withdrawal outcome is unknown")
+            await db.transactions.update_one({"id": tx_out.id}, {"$set": {
+                "metadata.provider_outcome_unknown": True,
+                "metadata.provider_error": str(e)[:300]}})
+            body = {
+                "transaction": tx_out.model_dump(), "fee": fee,
+                "total_debit": total_debit, "recipient_gets": recipient_gets,
+                "crypto": coin_upper, "network": net_upper,
+                "payout_id": None, "pending": True,
+                "message": "Résultat du retrait en vérification. Le montant reste réservé.",
+            }
+            await _idempotency_store(
+                uid, idem_key, "POST", "/transfers/crypto", 200, body)
+            return body
         # Persist payout id for webhook correlation
         payout_id = payout.get("id") or payout.get("payoutId")
         upstream_status = (payout.get("status") or "").lower()
@@ -4371,15 +4451,21 @@ async def transfer(req: TransferRequest, request: Request,
         elif upstream_status in ("failed", "rejected", "error"):
             # Refund immediately on sync failure.
             await _refund_wallet_once(
-                uid, field, total_debit,
+                uid, "balance_usdt", total_debit,
                 f"crypto-transfer:{transfer_operation_id}")
             tx_update["status"] = "failed"
         await db.transactions.update_one({"id": tx_out.id}, {"$set": tx_update})
-        return {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
+        body = {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "crypto": req.crypto.upper(),
                 "network": req.network.upper(), "payout_id": payout_id,
                 "pending": True,
                 "message": "Transfert crypto en cours de traitement — confirmation on-chain sous quelques minutes."}
+        if upstream_status in ("failed", "rejected", "error"):
+            await _idempotency_release(uid, idem_key, request_fingerprint)
+        else:
+            await _idempotency_store(
+                uid, idem_key, "POST", "/transfers/crypto", 200, body)
+        return body
 
     raise HTTPException(400, "Type de transfert inconnu")
 
@@ -4520,21 +4606,43 @@ async def crypto_assets():
     except Exception:
         return []
     dep_cfg = await get_deposit_config()
-    hidden = set((((dep_cfg.get("crypto") or {}).get("hidden_coins")) or []))
+    dep_crypto = dep_cfg.get("crypto") or {}
+    if not dep_crypto.get("enabled", True):
+        return []
+    hidden = {str(c).upper() for c in (dep_crypto.get("hidden_coins") or [])}
+    deposit_fixed_gateway = dep_crypto.get("fees_gateway_fixed") or {}
+    deposit_fixed_platform = dep_crypto.get("fees_platform_fixed") or {}
+    rate_cfg = await get_platform_config()
     result = []
     for a in assets:
         if not a.get("isActive"):
             continue
-        code = (a.get("assetCode") or "").split(".")[0]
+        asset_code = str(a.get("assetCode") or "")
+        code = asset_code.split(".")[0].upper()
         if code in hidden:
             continue
+        rate = _configured_crypto_usdt_rate(rate_cfg, code)
+        if rate is None:
+            continue
+        fee_gateway_pct, fee_platform_pct = _crypto_fee_split_pct(dep_crypto, code)
         result.append({
-            "asset_code": a.get("assetCode"),
-            "coin": a.get("coin"),
+            "asset_code": asset_code,
+            "coin": code,
             "network": a.get("network"),
             "blockchain_name": a.get("blockchainName"),
+            "minimum": float(a.get("minimum") or 0),
+            "maximum": float(a.get("maximum") or 10**12),
             "memo_required": a.get("memoRequired", False),
             "memo_type": a.get("memoType"),
+            "usdt_rate": rate,
+            "credit_currency": "USDT",
+            "fee_pct": fee_gateway_pct + fee_platform_pct,
+            "gateway_fee_pct": fee_gateway_pct,
+            "platform_fee_pct": fee_platform_pct,
+            "gateway_fee_fixed": float(deposit_fixed_gateway.get(code, 0) or 0),
+            "platform_fee_fixed": float(deposit_fixed_platform.get(code, 0) or 0),
+            "fee_fixed": float(deposit_fixed_gateway.get(code, 0) or 0)
+                         + float(deposit_fixed_platform.get(code, 0) or 0),
         })
     return result
 
@@ -4548,24 +4656,126 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
     """
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
-    if req.amount < 1:
-        raise HTTPException(400, "Montant minimum : 1 USDT")
+    if not math.isfinite(float(req.amount)) or req.amount <= 0:
+        raise HTTPException(400, "Montant crypto invalide")
+
+    asset_code = req.asset_code.strip().upper()
+    if "." not in asset_code:
+        raise HTTPException(400, "Actif crypto invalide")
+    coin, network = asset_code.split(".", 1)
+    dep_cfg = await get_deposit_config()
+    dep_crypto = dep_cfg.get("crypto") or {}
+    if not dep_crypto.get("enabled", True):
+        raise HTTPException(403, "Les dépôts crypto sont désactivés")
+    if coin in {str(c).upper() for c in (dep_crypto.get("hidden_coins") or [])}:
+        raise HTTPException(400, "Cette cryptomonnaie n'est pas disponible")
+    try:
+        assets = await izipay.list_assets()
+    except Exception as e:
+        logger.warning("izipay asset validation failed: %s", e)
+        raise HTTPException(503, "Catalogue crypto temporairement indisponible")
+    asset = next((
+        item for item in assets
+        if str(item.get("assetCode") or "").upper() == asset_code
+        and item.get("isActive")
+    ), None)
+    if not asset:
+        raise HTTPException(400, "Cryptomonnaie ou réseau non pris en charge")
+    minimum = float(asset.get("minimum") or 0)
+    maximum = float(asset.get("maximum") or 10**12)
+    if req.amount < minimum or req.amount > maximum:
+        raise HTTPException(
+            400, f"Montant hors limites ({minimum} - {maximum} {coin})")
+
+    request_fingerprint = _request_fingerprint(req)
+    existing = await db.crypto_deposits.find_one(
+        {"user_id": uid, "idempotency_key": req.idempotency_key}, {"_id": 0})
+    if existing:
+        if existing.get("request_fingerprint") != request_fingerprint:
+            raise HTTPException(
+                409, "Cette clé d'idempotence appartient à un autre dépôt")
+        if existing.get("deposit_address") or existing.get("status") in (
+                "confirmed", "expired", "failed"):
+            return existing
+        rate = float(existing.get("usdt_rate") or 0)
+        fee_pct = float(existing.get("fee_pct") or 0)
+        fee_fixed = float(existing.get("fee_fixed") or 0)
+        gateway_fee_pct = float(existing.get("gateway_fee_pct") or 0)
+        platform_fee_pct = float(existing.get("platform_fee_pct") or 0)
+        gateway_fee_fixed = float(existing.get("gateway_fee_fixed") or 0)
+        platform_fee_fixed = float(existing.get("platform_fee_fixed") or 0)
+        if rate <= 0 or fee_pct >= 100:
+            raise HTTPException(503, "Taux ou frais de conversion indisponibles")
+        intent_id_local = existing["id"]
+    else:
+        rate = await _crypto_usdt_rate(coin)
+        fee_components = await _crypto_fee_components(coin, "deposit", req.amount)
+        fee_pct = fee_components["fee_pct"]
+        gateway_fee_pct, platform_fee_pct = _crypto_fee_split_pct(dep_crypto, coin)
+        gateway_fee_fixed = fee_components["gateway_fee_fixed"]
+        platform_fee_fixed = fee_components["platform_fee_fixed"]
+        fee_fixed = (
+            gateway_fee_fixed + platform_fee_fixed
+        )
+        fee_estimate_usdt = round(
+            (req.amount * fee_pct / 100.0 + fee_fixed) * rate, 6)
+        if fee_pct >= 100 or round(req.amount * rate - fee_estimate_usdt, 6) <= 0:
+            raise HTTPException(503, "Configuration de frais invalide pour cet actif")
+        claim = await _idempotency_claim(
+            uid, req.idempotency_key, "POST", "/deposits/crypto",
+            request_fingerprint)
+        if claim and claim.get("body") is not None:
+            return claim["body"]
+        intent_id_local = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"izipay-deposit:{uid}:{req.idempotency_key}",
+        ).hex
+        local_doc = {
+            "id": intent_id_local,
+            "user_id": uid,
+            "idempotency_key": req.idempotency_key,
+            "request_fingerprint": request_fingerprint,
+            "amount": req.amount,
+            "asset_code": asset_code,
+            "coin": coin,
+            "network": network,
+            "customer_email": req.email,
+            "customer_name": req.full_name,
+            "credit_currency": "USDT",
+            "usdt_rate": rate,
+            "fee_pct": fee_pct,
+            "fee_fixed": fee_fixed,
+            "gateway_fee_pct": gateway_fee_pct,
+            "platform_fee_pct": platform_fee_pct,
+            "gateway_fee_fixed": gateway_fee_fixed,
+            "platform_fee_fixed": platform_fee_fixed,
+            "status": "creating",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
+        try:
+            await db.crypto_deposits.insert_one(local_doc)
+        except DuplicateKeyError:
+            existing = await db.crypto_deposits.find_one(
+                {"id": intent_id_local, "user_id": uid}, {"_id": 0})
+            if not existing:
+                raise HTTPException(409, "Dépôt déjà en cours de création")
 
     # Split full name into first / last (izipay requires both)
     parts = (req.full_name or "").strip().split(maxsplit=1)
     first = parts[0] if parts else "Client"
     last = parts[1] if len(parts) > 1 else first
 
-    intent_id_local = new_id()
     try:
         intent = await izipay.create_direct_intent(
-            requested_coin=req.asset_code,
+            requested_coin=asset_code,
             amount=f"{req.amount:.6f}",
             first_name=first, last_name=last,
             email=req.email,
             refund_address=req.refund_address.strip(),
             merchant_reference=intent_id_local,
             metadata={"user_id": uid, "kind": "crypto_deposit"},
+            idempotency_key=f"izipay-deposit-{intent_id_local}",
         )
     except izipay.IziPayError as e:
         # Log full detail server-side, return sanitized message
@@ -4577,31 +4787,89 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
             user_msg = "Cryptomonnaie non prise en charge."
         else:
             user_msg = "La passerelle crypto a refusé la demande. Réessayez."
+        if e.status < 500:
+            await db.crypto_deposits.update_one(
+                {"id": intent_id_local, "user_id": uid,
+                 "status": {"$nin": ["confirmed", "expired"]}},
+                {"$set": {"status": "failed", "provider_error_code": e.code,
+                          "updated_at": now_iso()}})
+            await _idempotency_release(uid, req.idempotency_key,
+                                       request_fingerprint)
+        else:
+            await db.crypto_deposits.update_one(
+                {"id": intent_id_local, "user_id": uid,
+                 "status": {"$nin": ["confirmed", "expired", "failed"]}},
+                {"$set": {"status": "provider_unknown",
+                          "updated_at": now_iso()}})
         raise HTTPException(400 if e.status < 500 else 502, user_msg)
+    except Exception:
+        logger.exception("IziChangePay direct intent outcome is unknown")
+        await db.crypto_deposits.update_one(
+            {"id": intent_id_local, "user_id": uid,
+             "status": {"$nin": ["confirmed", "expired", "failed"]}},
+            {"$set": {"status": "provider_unknown",
+                      "updated_at": now_iso()}})
+        raise HTTPException(
+            502, "Résultat de la demande inconnu. Réessayez avec la même clé.")
+
+    provider_expiry = intent.get("expiresAt")
+    expires_at = None
+    if provider_expiry:
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                str(provider_expiry).replace("Z", "+00:00"))
+            if parsed_expiry.tzinfo is None:
+                parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+            expires_at = parsed_expiry.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError):
+            expires_at = None
+    if not expires_at:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
 
     doc = {
+        **(existing or {}),
         "id": intent_id_local,
         "user_id": uid,
+        "idempotency_key": req.idempotency_key,
+        "request_fingerprint": request_fingerprint,
         "amount": req.amount,
-        "asset_code": req.asset_code,
-        "coin": req.asset_code.split(".")[0],
-        "network": req.asset_code.split(".")[1] if "." in req.asset_code else None,
+        "asset_code": asset_code,
+        "coin": coin,
+        "network": network,
         "customer_email": req.email,
         "customer_name": req.full_name,
-        "credit_currency": "USDT",   # per user preference
+        "credit_currency": "USDT",
+        "usdt_rate": rate,
+        "fee_pct": fee_pct,
+        "fee_fixed": fee_fixed,
+        "gateway_fee_pct": gateway_fee_pct,
+        "platform_fee_pct": platform_fee_pct,
+        "gateway_fee_fixed": gateway_fee_fixed,
+        "platform_fee_fixed": platform_fee_fixed,
         "status": intent.get("status") or "pending",
         "izipay_intent_id": intent.get("id"),
         "deposit_address": intent.get("depositAddress"),
         "memo": intent.get("memo"),
         "memo_type": intent.get("memoType"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
-        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
-        "izipay_expires_at": intent.get("expiresAt"),
-        "created_at": now_iso(),
+        "expires_at": expires_at,
+        "izipay_expires_at": provider_expiry,
+        "created_at": (existing or {}).get("created_at") or now_iso(),
         "updated_at": now_iso(),
     }
-    await db.crypto_deposits.insert_one(doc)
+    if not doc["deposit_address"]:
+        await db.crypto_deposits.update_one(
+            {"id": intent_id_local},
+            {"$set": {**doc, "status": "provider_unknown"}},
+            upsert=True,
+        )
+        raise HTTPException(
+            502, "La passerelle n'a pas retourné d'adresse de dépôt. Réessayez.")
+    await db.crypto_deposits.update_one(
+        {"id": intent_id_local}, {"$set": doc}, upsert=True)
     doc.pop("_id", None)
+    await _idempotency_store(
+        uid, req.idempotency_key, "POST", "/deposits/crypto", 200, doc)
     return doc
 
 
@@ -6624,10 +6892,13 @@ async def _crypto_fee_pct(coin: str) -> float:
     dep_cfg = await get_deposit_config()
     dep_fees = (((dep_cfg.get("crypto") or {}).get("fees")) or {})
     if coin_up in dep_fees:
-        return float(dep_fees[coin_up])
+        gw_pct, pf_pct = _crypto_fee_split_pct(
+            (dep_cfg.get("crypto") or {}), coin_up)
+        return gw_pct + pf_pct
     cfg = await get_transfer_config()
-    fees = ((cfg.get("crypto") or {}).get("fees") or {})
-    return float(fees.get(coin_up, 4.0))
+    gw_pct, pf_pct = _crypto_fee_split_pct(
+        (cfg.get("crypto") or {}), coin_up)
+    return gw_pct + pf_pct
 
 
 def _apply_fee(amount: float, fee_pct: float) -> tuple[float, float]:
@@ -6650,15 +6921,55 @@ async def _crypto_platform_fee(coin: str, direction: str, gross: float) -> tuple
     else:
         cfg = await get_transfer_config()
     section = (cfg.get("crypto") or {})
-    fees = section.get("fees") or {}
-    fees_g = section.get("fees_gateway") or {}
-    fees_p = section.get("fees_platform") or {}
-    total = float(fees.get(coin_up, 4.0))
-    gw_pct = float(fees_g[coin_up]) if coin_up in fees_g else total
-    pf_pct = float(fees_p[coin_up]) if coin_up in fees_p else 0.0
+    gw_pct, pf_pct = _crypto_fee_split_pct(section, coin_up)
     gateway_fee = round(float(gross) * (gw_pct / 100.0), 6)
     platform_fee = round(float(gross) * (pf_pct / 100.0), 6)
     return gateway_fee, platform_fee
+
+
+def _crypto_fee_split_pct(section: dict, coin: str) -> tuple[float, float]:
+    """Return gateway/platform percentages while preserving legacy total fees."""
+    coin_up = (coin or "").upper()
+    fees = section.get("fees") or {}
+    fees_g = section.get("fees_gateway") or {}
+    fees_p = section.get("fees_platform") or {}
+    total_pct = float(fees.get(coin_up, 4.0) or 0)
+    platform_pct = float(fees_p.get(coin_up, 0) or 0)
+    gateway_pct = (
+        float(fees_g[coin_up] or 0)
+        if coin_up in fees_g
+        else max(0.0, total_pct - platform_pct)
+    )
+    return gateway_pct, platform_pct
+
+
+async def _crypto_fee_components(coin: str, direction: str, gross: float) -> dict:
+    """Compute fee components in the selected crypto's native units."""
+    cfg = (
+        await get_deposit_config()
+        if direction == "deposit"
+        else await get_transfer_config()
+    )
+    section = cfg.get("crypto") or {}
+    coin_up = (coin or "").upper()
+    gw_pct, pf_pct = _crypto_fee_split_pct(section, coin_up)
+    gw_fixed = float((section.get("fees_gateway_fixed") or {}).get(coin_up, 0) or 0)
+    pf_fixed = float((section.get("fees_platform_fixed") or {}).get(coin_up, 0) or 0)
+    gateway_fee = round(float(gross) * gw_pct / 100.0 + gw_fixed, 6)
+    platform_fee = round(float(gross) * pf_pct / 100.0 + pf_fixed, 6)
+    return {
+        "fee_pct": gw_pct + pf_pct,
+        "gateway_fee": gateway_fee,
+        "platform_fee": platform_fee,
+        "gateway_fee_fixed": gw_fixed,
+        "platform_fee_fixed": pf_fixed,
+        "fee": round(gateway_fee + platform_fee, 6),
+    }
+
+
+async def _crypto_withdrawal_fee_components(coin: str, gross: float) -> dict:
+    """Compatibility wrapper for existing withdrawal callers."""
+    return await _crypto_fee_components(coin, "withdrawal", gross)
 
 
 def _momo_platform_fee(op_cfg: dict, gross: float) -> tuple[float, float]:
@@ -7030,6 +7341,306 @@ async def _reconcile_mobile_withdrawal(tx: dict) -> str:
     return "pending"
 
 
+async def _claim_izipay_payment_settlement(
+    collection, payment_id: str, intent_id: str
+) -> Optional[dict]:
+    """Move a payable intent into a non-failure state before wallet credit."""
+    await collection.update_one(
+        {"id": payment_id, "status": {"$in": [
+            "creating", "pending", "initiated", "confirming",
+            "provider_unknown", "settling",
+        ]}},
+        {"$set": {"status": "settling", "izipay_intent_id": intent_id}},
+    )
+    row = await collection.find_one({"id": payment_id}, {"_id": 0})
+    return row if row and row.get("status") == "settling" else None
+
+
+async def _settle_izipay_payment(
+    merchant_ref: str, intent_id: Optional[str], tx_hash: Optional[str],
+    source: str,
+) -> bool:
+    """Convert a successful IziChangePay payment into a single USDT credit."""
+    d = await db.crypto_deposits.find_one({"id": merchant_ref}, {"_id": 0})
+    if d:
+        d = await _claim_izipay_payment_settlement(
+            db.crypto_deposits, merchant_ref, intent_id or "")
+        if not d:
+            return True
+        coin = str(d.get("coin") or "USDT").upper()
+        rate = float(d.get("usdt_rate") or await _crypto_usdt_rate(coin))
+        gross_asset = float(d.get("amount") or 0)
+        if "gateway_fee_pct" in d or "platform_fee_pct" in d:
+            gateway_pct = float(d.get("gateway_fee_pct") or 0)
+            platform_pct = float(d.get("platform_fee_pct") or 0)
+            gateway_fixed = float(d.get("gateway_fee_fixed") or 0)
+            platform_fixed = float(d.get("platform_fee_fixed") or 0)
+        else:
+            components = await _crypto_fee_components(
+                coin, "deposit", gross_asset)
+            dep_cfg = await get_deposit_config()
+            gateway_pct, platform_pct = _crypto_fee_split_pct(
+                dep_cfg.get("crypto") or {}, coin)
+            gateway_fixed = components["gateway_fee_fixed"]
+            platform_fixed = components["platform_fee_fixed"]
+        gateway_fee = round(
+            (gross_asset * gateway_pct / 100.0 + gateway_fixed) * rate, 6)
+        platform_fee = round(
+            (gross_asset * platform_pct / 100.0 + platform_fixed) * rate, 6)
+        fee = round(gateway_fee + platform_fee, 6)
+        gross_usdt = round(gross_asset * rate, 6)
+        net = round(gross_usdt - fee, 6)
+        if net <= 0:
+            raise HTTPException(503, "Dépôt en revue: frais ou taux de conversion invalides")
+        operation_id = f"izipay:deposit:{merchant_ref}"
+        await _credit_wallet_once(
+            d["user_id"], "balance_usdt", net, operation_id)
+        await db.crypto_deposits.update_one(
+            {"id": merchant_ref, "status": "settling"},
+            {"$set": {
+                "status": "confirmed", "updated_at": now_iso(),
+                "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                "amount_gross": gross_usdt, "amount_currency": "USDT",
+                "amount_gross_usdt": gross_usdt,
+                "amount_crypto": gross_asset,
+                "amount_crypto_currency": coin, "usdt_rate": rate,
+                "fee": fee, "fee_currency": "USDT",
+                "fee_pct": float(d.get("fee_pct") or gateway_pct + platform_pct),
+                "amount_net": net, "amount_net_currency": "USDT",
+                "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                "credit_operation_id": operation_id,
+            }},
+        )
+        await record_tx(
+            d["user_id"], "deposit", "in", net, "USDT",
+            status="completed",
+            description=f"Dépôt crypto {coin} · {d.get('network', '')}",
+            metadata={
+                "izipay_intent_id": intent_id, "coin": coin,
+                "network": d.get("network"), "asset_code": d.get("asset_code"),
+                "tx_hash": tx_hash, "deposit_address": d.get("deposit_address"),
+                "amount_gross": gross_usdt, "amount_crypto": gross_asset,
+                "usdt_rate": rate, "fee": fee, "fee_currency": "USDT",
+                "fee_pct": d.get("fee_pct"), "gateway_fee": gateway_fee,
+                "platform_fee": platform_fee, "amount_net": net,
+                "source": source,
+            },
+            operation_id=operation_id,
+        )
+        return True
+
+    lp = await db.link_payments.find_one({"id": merchant_ref}, {"_id": 0})
+    if lp:
+        lp = await _claim_izipay_payment_settlement(
+            db.link_payments, merchant_ref, intent_id or "")
+        if not lp:
+            return True
+        coin = str(lp.get("coin") or "USDT").upper()
+        rate = float(lp.get("usdt_rate") or await _crypto_usdt_rate(coin))
+        if lp.get("fee_currency") == "USDT":
+            fee = float(lp.get("fee") or 0)
+            gateway_fee = float(lp.get("gateway_fee") or 0)
+            platform_fee = float(lp.get("platform_fee") or 0)
+        else:
+            fee = round(float(lp.get("fee") or 0) * rate, 6)
+            gateway_fee = round(float(lp.get("gateway_fee") or 0) * rate, 6)
+            platform_fee = round(float(lp.get("platform_fee") or 0) * rate, 6)
+        gross_usdt = round(float(
+            lp.get("charged_amount_usdt")
+            or float(lp.get("charged_amount", lp.get("amount", 0))) * rate
+        ), 6)
+        net = round(float(
+            lp.get("wallet_credit_amount")
+            if lp.get("wallet_credit_amount") is not None
+            else float(lp.get("amount", gross_usdt)) - fee
+        ), 6)
+        if net <= 0:
+            raise HTTPException(503, "Paiement de lien en revue: montant net invalide")
+        link = await db.payment_links.find_one(
+            {"id": lp["link_id"]}, {"_id": 0})
+        if not link:
+            raise HTTPException(503, "Lien marchand introuvable pour le règlement")
+        operation_id = f"izipay:link:{merchant_ref}"
+        await _credit_wallet_once(
+            link["user_id"], "balance_usdt", net, operation_id)
+        await db.link_payments.update_one(
+            {"id": merchant_ref, "status": "settling"},
+            {"$set": {
+                "status": "paid", "paid_at": now_iso(),
+                "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                "amount_gross": gross_usdt, "amount_gross_currency": "USDT",
+                "amount_gross_usdt": gross_usdt,
+                "amount_crypto": float(
+                    lp.get("charged_amount") or lp.get("amount", 0)),
+                "amount_crypto_currency": coin, "usdt_rate": rate,
+                "fee": fee, "fee_currency": "USDT",
+                "amount_net": net, "amount_net_currency": "USDT",
+                "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                "credit_operation_id": operation_id,
+            }},
+        )
+        await db.payment_links.update_one(
+            {"id": link["id"],
+             "link_payment_operation_ids": {"$ne": merchant_ref}},
+            {"$inc": {"payments_received": 1, "total_received": net},
+             "$addToSet": {"link_payment_operation_ids": merchant_ref}},
+        )
+        if lp.get("single_use_claim_id"):
+            await db.payment_links.update_one(
+                {"id": link["id"],
+                 "single_use_claim_id": lp["single_use_claim_id"]},
+                {"$set": {"active": False}},
+            )
+        await record_tx(
+            link["user_id"], "link_payment", "in", net, "USDT",
+            status="completed",
+            description=f"Paiement lien: {link.get('title', '')} · {coin} {lp.get('network', '')}",
+            counterparty=lp.get("customer_email") or "client",
+            metadata={
+                "link_id": link["id"], "izipay_intent_id": intent_id,
+                "coin": coin, "network": lp.get("network"),
+                "asset_code": lp.get("asset_code"), "tx_hash": tx_hash,
+                "deposit_address": lp.get("deposit_address"),
+                "amount_gross": gross_usdt, "fee": fee,
+                "fee_pct": lp.get("fee_pct"), "gateway_fee": gateway_fee,
+                "platform_fee": platform_fee, "amount_net": net,
+                "usdt_rate": rate, "source": source,
+            },
+            operation_id=operation_id,
+        )
+        return True
+
+    mp = await db.merchant_payments.find_one(
+        {"id": merchant_ref}, {"_id": 0})
+    if mp:
+        mp = await _claim_izipay_payment_settlement(
+            db.merchant_payments, merchant_ref, intent_id or "")
+        if not mp:
+            return True
+        coin = str(mp.get("coin") or "USDT").upper()
+        rate = float(mp.get("usdt_rate") or await _crypto_usdt_rate(coin))
+        gross_usdt = round(float(
+            mp.get("amount_gross_usdt")
+            if mp.get("amount_gross_usdt") is not None
+            else float(mp.get("amount_gross", mp.get("amount", 0))) * rate
+        ), 6)
+        fee = round(float(
+            mp.get("fee")
+            if mp.get("fee_currency") == "USDT"
+            else float(mp.get("fee") or 0) * rate
+        ), 6)
+        gateway_fee = round(float(
+            mp.get("gateway_fee") or 0
+            if mp.get("fee_currency") == "USDT"
+            else float(mp.get("gateway_fee") or 0) * rate
+        ), 6)
+        platform_fee = round(float(
+            mp.get("platform_fee") or 0
+            if mp.get("fee_currency") == "USDT"
+            else float(mp.get("platform_fee") or 0) * rate
+        ), 6)
+        net = round(float(
+            mp.get("amount_net_usdt")
+            if mp.get("amount_net_usdt") is not None
+            else mp.get("amount_net")
+            if mp.get("amount_net") is not None
+            else gross_usdt - fee
+        ), 6)
+        if net <= 0:
+            raise HTTPException(503, "Paiement marchand en revue: montant net invalide")
+        operation_id = f"izipay:merchant-payment:{merchant_ref}"
+        await _credit_wallet_once(
+            mp["merchant_id"], "balance_usdt", net, operation_id)
+        await db.merchant_payments.update_one(
+            {"id": merchant_ref, "status": "settling"},
+            {"$set": {
+                "status": "paid", "paid_at": now_iso(),
+                "izipay_intent_id": intent_id, "tx_hash": tx_hash,
+                "amount_gross": gross_usdt, "amount_gross_usdt": gross_usdt,
+                "amount_net": net, "amount_net_usdt": net,
+                "fee": fee, "fee_currency": "USDT",
+                "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                "credit_operation_id": operation_id,
+            }},
+        )
+        await record_tx(
+            mp["merchant_id"], "payment", "in", net, "USDT",
+            status="completed", description="Paiement API marchand",
+            metadata={
+                "merchant_payment_id": mp["id"],
+                "external_reference": mp.get("reference"),
+                "provider_reference": mp.get("izipay_intent_id"),
+                "izipay_intent_id": intent_id, "coin": coin,
+                "tx_hash": tx_hash, "customer_email": mp.get("customer_email"),
+                "amount_gross": gross_usdt, "amount_crypto": mp.get("amount_gross"),
+                "usdt_rate": rate, "fee": fee, "fee_currency": "USDT",
+                "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                "fee_pct": mp.get("fee_pct"), "amount_net": net,
+                "source": source,
+            },
+            operation_id=operation_id,
+        )
+        claim = await db.merchant_payments.update_one(
+            {"id": merchant_ref, "merchant_webhook_claimed": {"$ne": True}},
+            {"$set": {"merchant_webhook_claimed": True}},
+        )
+        if claim.modified_count:
+            await _deliver_webhook(mp["merchant_id"], "payment.completed", {
+                "payment_id": mp["id"], "reference": mp.get("reference"),
+                "amount_gross": _format_amount(gross_usdt),
+                "amount_net": _format_amount(net),
+                "fee": _format_amount(fee), "fee_pct": mp.get("fee_pct"),
+                "coin": coin, "tx_hash": tx_hash,
+                "customer_email": mp.get("customer_email"),
+                "paid_at": _format_iso(datetime.now(timezone.utc)),
+            })
+        return True
+    return False
+
+
+async def _fail_izipay_payment(merchant_ref: str, provider_status: str) -> None:
+    """Apply a terminal provider failure without overriding settlement."""
+    status = "expired" if provider_status == "expired" else "failed"
+    allowed = [
+        "creating", "pending", "initiated", "confirming", "provider_unknown",
+    ]
+    d = await db.crypto_deposits.find_one({"id": merchant_ref}, {"_id": 0})
+    if d:
+        await db.crypto_deposits.update_one(
+            {"id": merchant_ref, "status": {"$in": allowed}},
+            {"$set": {"status": status, "provider_status": provider_status,
+                      "failed_at": now_iso(), "updated_at": now_iso()}},
+        )
+        return
+    lp = await db.link_payments.find_one({"id": merchant_ref}, {"_id": 0})
+    if lp:
+        result = await db.link_payments.update_one(
+            {"id": merchant_ref, "status": {"$in": allowed}},
+            {"$set": {"status": status, "provider_status": provider_status,
+                      "failed_at": now_iso()}},
+        )
+        if result.modified_count:
+            await _release_single_use_link(
+                lp["link_id"], lp.get("single_use_claim_id"))
+        return
+    mp = await db.merchant_payments.find_one(
+        {"id": merchant_ref}, {"_id": 0})
+    if mp:
+        result = await db.merchant_payments.update_one(
+            {"id": merchant_ref, "status": {"$in": allowed}},
+            {"$set": {"status": status, "provider_status": provider_status,
+                      "failed_at": now_iso()}},
+        )
+        if result.modified_count:
+            await _deliver_webhook(mp["merchant_id"], "payment.expired" if status == "expired"
+                                   else "payment.failed", {
+                "payment_id": mp["id"], "reference": mp.get("reference"),
+                "amount": _format_amount(mp.get("amount_gross_usdt")
+                                         or mp.get("amount", 0)),
+                "coin": mp.get("coin"), "reason": provider_status,
+            })
+
+
 async def _reconcile_intent(intent_id: str) -> None:
     """Fallback: query IziPay for the intent's current status. If it's
     completed but our webhook hasn't fired yet, finalize the deposit or link
@@ -7046,18 +7657,7 @@ async def _reconcile_intent(intent_id: str) -> None:
     merchant_ref = intent.get("merchantReference") or intent.get("merchant_reference")
     if status in ("expired", "failed", "rejected", "canceled", "cancelled", "irregular"):
         if merchant_ref:
-            link_payment = await db.link_payments.find_one(
-                {"id": merchant_ref, "status": {"$nin": ["paid", "failed", "expired"]}},
-                {"_id": 0})
-            if link_payment:
-                await db.link_payments.update_one(
-                    {"id": merchant_ref, "status": {"$nin": ["paid", "failed", "expired"]}},
-                    {"$set": {"status": "expired" if status == "expired" else "failed",
-                              "failed_at": now_iso(),
-                              "provider_status": status}},
-                )
-                await _release_single_use_link(
-                    link_payment["link_id"], link_payment.get("single_use_claim_id"))
+            await _fail_izipay_payment(merchant_ref, status)
         return
     if status not in ("completed", "confirmed", "paid", "success", "successful"):
         return
@@ -7065,126 +7665,8 @@ async def _reconcile_intent(intent_id: str) -> None:
     if not merchant_ref:
         return
 
-    # 1) Crypto deposit
-    d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
-    if d:
-        gross = float(d["amount"])
-        fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
-        fee, net = _apply_fee(gross, fee_pct)
-        gateway_fee, platform_fee = await _crypto_platform_fee(d.get("coin", "USDT"), "deposit", gross)
-        operation_id = f"izipay:deposit:{merchant_ref}"
-        await _credit_wallet_once(d["user_id"], "balance_usdt", net, operation_id)
-        await db.crypto_deposits.update_one(
-            {"id": merchant_ref, "status": {"$ne": "confirmed"}},
-            {"$set": {"status": "confirmed", "updated_at": now_iso(),
-                      "izipay_intent_id": intent_id, "tx_hash": tx_hash,
-                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                      "amount_net": net, "credit_operation_id": operation_id}}
-        )
-        await record_tx(d["user_id"], "deposit", "in", net, "USDT",
-                        status="completed",
-                        description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
-                        metadata={"izipay_intent_id": intent_id,
-                                  "coin": d.get("coin"), "network": d.get("network"),
-                                  "asset_code": d.get("asset_code"), "tx_hash": tx_hash,
-                                  "deposit_address": d.get("deposit_address"),
-                                  "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                                  "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                                  "amount_net": net, "source": "reconcile"},
-                        operation_id=operation_id)
-        return
-
-    # 2) Payment link
-    lp = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
-    if lp:
-        gross = float(lp.get("charged_amount", lp["amount"]))
-        if "charged_amount" in lp:
-            fee_pct = float(lp.get("fee_pct", 0))
-            fee = float(lp.get("fee", 0))
-            net = float(lp.get("wallet_credit_amount", lp.get("amount")))
-        else:
-            fee_pct = await _crypto_fee_pct(lp.get("coin", "USDT"))
-            fee, net = _apply_fee(gross, fee_pct)
-        gateway_fee, platform_fee = await _crypto_platform_fee(lp.get("coin", "USDT"), "deposit", gross)
-        link = await db.payment_links.find_one({"id": lp["link_id"]})
-        if link:
-            operation_id = f"izipay:link:{merchant_ref}"
-            await _credit_wallet_once(link["user_id"], "balance_usdt", net, operation_id)
-            await db.link_payments.update_one(
-                {"id": merchant_ref, "status": {"$ne": "paid"}},
-                {"$set": {"status": "paid", "paid_at": now_iso(),
-                          "izipay_intent_id": intent_id, "tx_hash": tx_hash,
-                          "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                          "amount_net": net, "credit_operation_id": operation_id}}
-            )
-            await db.payment_links.update_one(
-                {"id": link["id"], "link_payment_operation_ids": {"$ne": merchant_ref}},
-                {"$inc": {"payments_received": 1, "total_received": net},
-                 "$addToSet": {"link_payment_operation_ids": merchant_ref}}
-            )
-            await record_tx(link["user_id"], "link_payment", "in",
-                            net, "USDT", status="completed",
-                            description=f"Paiement lien: {link.get('title','')} · {lp.get('coin','')} {lp.get('network','')}",
-                            counterparty=lp.get("customer_email") or "client",
-                            metadata={"link_id": link["id"],
-                                      "izipay_intent_id": intent_id,
-                                      "coin": lp.get("coin"), "network": lp.get("network"),
-                                      "asset_code": lp.get("asset_code"), "tx_hash": tx_hash,
-                                      "deposit_address": lp.get("deposit_address"),
-                                      "amount_gross": gross, "fee": fee, "fee_pct": fee_pct,
-                                      "amount_net": net, "source": "reconcile"},
-                            operation_id=operation_id)
-
-    # 3) Merchant API crypto payment
-    mp = await db.merchant_payments.find_one(
-        {"id": merchant_ref, "status": {"$ne": "paid"}}, {"_id": 0})
-    if mp:
-        gross = float(mp.get("amount_gross", mp["amount"]))
-        if mp.get("fee") is not None and mp.get("amount_net") is not None:
-            fee_pct = float(mp.get("fee_pct") or 0)
-            fee = float(mp["fee"])
-            net = float(mp["amount_net"])
-            gateway_fee = float(mp.get("gateway_fee") or 0)
-            platform_fee = float(mp.get("platform_fee") or 0)
-        else:
-            fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
-            fee, net = _apply_fee(gross, fee_pct)
-            gateway_fee, platform_fee = await _crypto_platform_fee(
-                mp.get("coin", "USDT"), "deposit", gross)
-        operation_id = f"izipay:merchant-payment:{merchant_ref}"
-        await _credit_wallet_once(mp["merchant_id"], "balance_usdt", net, operation_id)
-        await db.merchant_payments.update_one(
-            {"id": merchant_ref, "status": {"$ne": "paid"}},
-            {"$set": {"status": "paid", "paid_at": now_iso(),
-                      "izipay_intent_id": intent_id, "tx_hash": tx_hash,
-                      "amount_gross": gross, "fee": fee,
-                      "fee_pct": fee_pct, "amount_net": net,
-                      "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                      "credit_operation_id": operation_id}},
-        )
-        await record_tx(
-            mp["merchant_id"], "payment", "in", net, "USDT",
-            status="completed", description="Paiement API marchand",
-            metadata={"merchant_payment_id": mp["id"],
-                      "external_reference": mp.get("reference"),
-                      "provider_reference": mp.get("izipay_intent_id"),
-                      "izipay_intent_id": intent_id, "coin": mp.get("coin"),
-                      "tx_hash": tx_hash, "customer_email": mp.get("customer_email"),
-                      "amount_gross": gross, "fee": fee,
-                      "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                      "fee_pct": fee_pct, "amount_net": net,
-                      "source": "reconcile"},
-            operation_id=operation_id)
-        await _deliver_webhook(mp["merchant_id"], "payment.completed", {
-            "payment_id": mp["id"],
-            "reference": mp.get("reference"),
-            "amount_gross": _format_amount(gross),
-            "amount_net": _format_amount(net),
-            "fee": _format_amount(fee),
-            "fee_pct": fee_pct, "coin": mp.get("coin"), "tx_hash": tx_hash,
-            "customer_email": mp.get("customer_email"),
-            "paid_at": _format_iso(datetime.now(timezone.utc)),
-        })
+    await _settle_izipay_payment(
+        merchant_ref, intent_id, tx_hash, source="reconcile")
 
 
 @api.post("/webhooks/izipay")
@@ -7207,17 +7689,23 @@ async def izipay_webhook(request: Request):
     ev_type = event.get("event") or event.get("type") or ""
     eid = izipay.event_id(event)
 
-    # Deduplicate — insert into a unique-indexed collection
+    # Deduplicate, but allow a previously failed processing attempt to retry.
+    payload_hash = hashlib.sha256(raw).hexdigest()
     try:
         await db.webhook_events.insert_one({
             "event_id": eid,
             "type": ev_type,
             "payload": event,
+            "payload_hash": payload_hash,
             "received_at": now_iso(),
             "processed": False,
         })
     except DuplicateKeyError:
-        return {"received": True, "duplicate": True}
+        prior = await db.webhook_events.find_one({"event_id": eid}, {"_id": 0})
+        if prior and prior.get("payload_hash") not in (None, payload_hash):
+            raise HTTPException(409, "Webhook event ID was reused with a different payload")
+        if prior and prior.get("processed"):
+            return {"received": True, "duplicate": True}
 
     data = event.get("data") or {}
     intent_id = data.get("intentId")
@@ -7226,172 +7714,17 @@ async def izipay_webhook(request: Request):
 
     try:
         if ev_type == "payment_intent.completed":
-            # Could be a crypto_deposit OR a payment-link payment
             if merchant_ref:
-                # 1) Crypto deposit?
-                d = await db.crypto_deposits.find_one({"id": merchant_ref, "status": {"$ne": "confirmed"}})
-                if d:
-                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
-                    gross = float(d["amount"])
-                    fee_pct = await _crypto_fee_pct(d.get("coin", "USDT"))
-                    fee, net = _apply_fee(gross, fee_pct)
-                    gateway_fee, platform_fee = await _crypto_platform_fee(d.get("coin", "USDT"), "deposit", gross)
-                    operation_id = f"izipay:deposit:{merchant_ref}"
-                    await _credit_wallet_once(d["user_id"], "balance_usdt", net, operation_id)
-                    await db.crypto_deposits.update_one(
-                        {"id": merchant_ref, "status": {"$ne": "confirmed"}},
-                        {"$set": {"status": "confirmed", "updated_at": now_iso(),
-                                  "izipay_intent_id": intent_id,
-                                  "tx_hash": tx_hash,
-                                  "amount_gross": gross, "fee": fee,
-                                  "fee_pct": fee_pct, "amount_net": net,
-                                  "gateway_fee": gateway_fee,
-                                  "platform_fee": platform_fee,
-                                  "credit_operation_id": operation_id}}
-                    )
-                    await record_tx(d["user_id"], "deposit", "in", net, "USDT",
-                                    status="completed",
-                                    description=f"Dépôt crypto {d.get('coin','')} · {d.get('network','')}",
-                                    metadata={"izipay_intent_id": intent_id,
-                                              "coin": d.get("coin"),
-                                              "network": d.get("network"),
-                                              "asset_code": d.get("asset_code"),
-                                              "tx_hash": tx_hash,
-                                              "deposit_address": d.get("deposit_address"),
-                                              "amount_gross": gross,
-                                              "fee": fee, "fee_pct": fee_pct,
-                                              "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                                              "amount_net": net},
-                                    operation_id=operation_id)
-                # 2) Payment link payment?
-                link_pay = await db.link_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
-                if link_pay:
-                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
-                    gross = float(link_pay.get("charged_amount", link_pay["amount"]))
-                    if "charged_amount" in link_pay:
-                        fee_pct = float(link_pay.get("fee_pct", 0))
-                        fee = float(link_pay.get("fee", 0))
-                        net = float(link_pay.get("wallet_credit_amount", link_pay.get("amount")))
-                    else:
-                        fee_pct = await _crypto_fee_pct(link_pay.get("coin", "USDT"))
-                        fee, net = _apply_fee(gross, fee_pct)
-                    gateway_fee, platform_fee = await _crypto_platform_fee(link_pay.get("coin", "USDT"), "deposit", gross)
-                    link = await db.payment_links.find_one({"id": link_pay["link_id"]})
-                    operation_id = f"izipay:link:{merchant_ref}"
-                    if link:
-                        await _credit_wallet_once(link["user_id"], "balance_usdt", net, operation_id)
-                    await db.link_payments.update_one(
-                        {"id": merchant_ref, "status": {"$ne": "paid"}},
-                        {"$set": {"status": "paid", "paid_at": now_iso(),
-                                  "izipay_intent_id": intent_id,
-                                  "tx_hash": tx_hash,
-                                  "amount_gross": gross, "fee": fee,
-                                  "fee_pct": fee_pct, "amount_net": net,
-                                  "credit_operation_id": operation_id}}
-                    )
-                    # Credit merchant NET amount
-                    if link:
-                        await db.payment_links.update_one(
-                            {"id": link["id"],
-                             "link_payment_operation_ids": {"$ne": merchant_ref}},
-                            {"$inc": {"payments_received": 1, "total_received": net},
-                             "$addToSet": {"link_payment_operation_ids": merchant_ref}}
-                        )
-                        if link_pay.get("single_use_claim_id"):
-                            await db.payment_links.update_one(
-                                {"id": link["id"],
-                                 "single_use_claim_id": link_pay["single_use_claim_id"]},
-                                {"$set": {"active": False}},
-                            )
-                        await record_tx(link["user_id"], "link_payment", "in",
-                                        net, "USDT", status="completed",
-                                        description=f"Paiement lien: {link.get('title','')} · {link_pay.get('coin','')} {link_pay.get('network','')}",
-                                        counterparty=link_pay.get("customer_email") or "client",
-                                        metadata={"link_id": link["id"],
-                                                  "izipay_intent_id": intent_id,
-                                                  "coin": link_pay.get("coin"),
-                                                  "network": link_pay.get("network"),
-                                                  "asset_code": link_pay.get("asset_code"),
-                                                  "tx_hash": tx_hash,
-                                                  "gateway_fee": gateway_fee,
-                                                  "platform_fee": platform_fee,
-                                                  "deposit_address": link_pay.get("deposit_address"),
-                                                  "amount_gross": gross,
-                                                   "fee": fee, "fee_pct": fee_pct,
-                                                   "amount_net": net},
-                                         operation_id=operation_id)
-                # 3) Merchant API payment?
-                mp = await db.merchant_payments.find_one({"id": merchant_ref, "status": {"$ne": "paid"}})
-                if mp:
-                    gross = float(mp["amount"])
-                    if mp.get("fee") is not None and mp.get("amount_net") is not None:
-                        fee_pct = float(mp.get("fee_pct") or 0)
-                        fee = float(mp["fee"])
-                        net = float(mp["amount_net"])
-                        gateway_fee = float(mp.get("gateway_fee") or 0)
-                        platform_fee = float(mp.get("platform_fee") or 0)
-                    else:
-                        fee_pct = await _crypto_fee_pct(mp.get("coin", "USDT"))
-                        fee, net = _apply_fee(gross, fee_pct)
-                        gateway_fee, platform_fee = await _crypto_platform_fee(
-                            mp.get("coin", "USDT"), "deposit", gross)
-                    tx_hash = data.get("txHash") or data.get("txhash") or data.get("transactionHash")
-                    operation_id = f"izipay:merchant-payment:{merchant_ref}"
-                    await _credit_wallet_once(mp["merchant_id"], "balance_usdt", net, operation_id)
-                    await db.merchant_payments.update_one(
-                        {"id": merchant_ref, "status": {"$ne": "paid"}},
-                        {"$set": {"status": "paid", "paid_at": now_iso(),
-                                  "izipay_intent_id": intent_id,
-                                  "tx_hash": tx_hash,
-                                  "amount_gross": gross, "fee": fee,
-                                  "fee_pct": fee_pct, "amount_net": net,
-                                  "credit_operation_id": operation_id}}
-                    )
-                    await record_tx(mp["merchant_id"], "payment", "in", net, "USDT",
-                                    status="completed", description="Paiement API marchand",
-                                    metadata={"merchant_payment_id": mp["id"],
-                                              "external_reference": mp.get("reference"),
-                                              "provider_reference": mp.get("izipay_intent_id"),
-                                              "izipay_intent_id": intent_id,
-                                              "coin": mp.get("coin"), "tx_hash": tx_hash,
-                                              "customer_email": mp.get("customer_email"),
-                                              "amount_gross": gross, "fee": fee,
-                                              "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                                               "fee_pct": fee_pct, "amount_net": net},
-                                     operation_id=operation_id)
-                    # Deliver HMAC-signed webhook to merchant
-                    await _deliver_webhook(mp["merchant_id"], "payment.completed", {
-                        "payment_id": mp["id"],
-                        "reference": mp.get("reference"),
-                        "amount_gross": _format_amount(gross),
-                        "amount_net": _format_amount(net),
-                        "fee": _format_amount(fee),
-                        "fee_pct": fee_pct,
-                        "coin": mp.get("coin"), "tx_hash": tx_hash,
-                        "customer_email": mp.get("customer_email"),
-                        "paid_at": _format_iso(datetime.now(timezone.utc)),
-                    })
+                tx_hash = (
+                    data.get("txHash") or data.get("txhash")
+                    or data.get("transactionHash")
+                )
+                await _settle_izipay_payment(
+                    merchant_ref, intent_id, tx_hash, source="webhook")
 
         elif ev_type == "payment_intent.expired":
             if merchant_ref:
-                await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "expired", "updated_at": now_iso()}})
-                link_pay = await db.link_payments.find_one(
-                    {"id": merchant_ref, "status": {"$ne": "paid"}}, {"_id": 0})
-                await db.link_payments.update_one(
-                    {"id": merchant_ref, "status": {"$ne": "paid"}},
-                    {"$set": {"status": "expired"}})
-                if link_pay:
-                    await _release_single_use_link(
-                        link_pay["link_id"], link_pay.get("single_use_claim_id"))
-                await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "expired"}})
-                # Deliver payment.expired webhook if this was a merchant_payment
-                mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
-                if mp:
-                    await _deliver_webhook(mp["merchant_id"], "payment.expired", {
-                        "payment_id": mp["id"], "reference": mp.get("reference"),
-                        "amount": _format_amount(mp.get("amount", 0)),
-                        "coin": mp.get("coin"),
-                    })
+                await _fail_izipay_payment(merchant_ref, "expired")
 
         elif ev_type in ("payment_intent.confirming", "payment_intent.confirmed_partial"):
             # Emitted by IziPay when the client's transaction was seen on-chain
@@ -7414,77 +7747,117 @@ async def izipay_webhook(request: Request):
                     })
 
         elif ev_type in ("payment_intent.failed", "payment_intent.rejected",
-                          "payment_intent.irregular"):
-            # Payment failed (irregular amount, chain rollback, refunded, etc.)
+                          "payment_intent.irregular", "payment_intent.canceled",
+                          "payment_intent.cancelled"):
             if merchant_ref:
-                await db.crypto_deposits.update_one({"id": merchant_ref}, {"$set": {"status": "failed", "updated_at": now_iso()}})
-                link_pay = await db.link_payments.find_one(
-                    {"id": merchant_ref, "status": {"$ne": "paid"}}, {"_id": 0})
-                await db.link_payments.update_one(
-                    {"id": merchant_ref, "status": {"$ne": "paid"}},
-                    {"$set": {"status": "failed"}})
-                if link_pay:
-                    await _release_single_use_link(
-                        link_pay["link_id"], link_pay.get("single_use_claim_id"))
-                await db.merchant_payments.update_one({"id": merchant_ref}, {"$set": {"status": "failed"}})
-                mp = await db.merchant_payments.find_one({"id": merchant_ref}, {"_id": 0})
-                if mp:
-                    await _deliver_webhook(mp["merchant_id"], "payment.failed", {
-                        "payment_id": mp["id"], "reference": mp.get("reference"),
-                        "amount": _format_amount(mp.get("amount", 0)),
-                        "coin": mp.get("coin"),
-                        "reason": ev_type.split(".", 1)[1] if "." in ev_type else "failed",
-                    })
+                await _fail_izipay_payment(
+                    merchant_ref, ev_type.split(".", 1)[1])
 
-        elif ev_type in ("payout.confirmed", "payout.completed"):
-            # merchant_reference on our side = tx id
+        elif ev_type in (
+            "payout.confirmed", "payout.completed", "payout.sent",
+            "payout.processing", "payout.failed", "payout.rejected",
+            "payout.canceled", "payout.cancelled",
+        ):
+            upstream_status = str(
+                data.get("status") or ev_type.split(".", 1)[1]).lower()
+            merchant_payout = None
             if merchant_ref:
-                tx = await db.transactions.find_one({"id": merchant_ref})
-                if tx and tx.get("status") != "completed":
+                merchant_payout = await db.merchant_payouts.find_one(
+                    {"id": merchant_ref}, {"_id": 0})
+            if not merchant_payout and payout_id:
+                merchant_payout = await db.merchant_payouts.find_one(
+                    {"izipay_payout_id": payout_id}, {"_id": 0})
+            if merchant_payout:
+                await _apply_merchant_payout_status(
+                    merchant_payout, upstream_status, data)
+            else:
+                tx = None
+                if merchant_ref:
+                    tx = await db.transactions.find_one({"id": merchant_ref})
+                if not tx and payout_id:
+                    tx = await db.transactions.find_one(
+                        {"metadata.izipay_payout_id": payout_id})
+                if tx:
+                    meta = tx.get("metadata") or {}
+                    new_status = _map_izipay_payout_status(
+                        upstream_status, tx.get("status"))
                     tx_hash = data.get("txHash") or data.get("txhash")
-                    await db.transactions.update_one(
-                        {"id": merchant_ref},
-                        {"$set": {"status": "completed",
-                                  "metadata.tx_hash": tx_hash,
-                                  "metadata.izipay_payout_id": payout_id or tx.get("metadata", {}).get("izipay_payout_id"),
-                                  "metadata.izipay_status": "confirmed"}}
-                    )
-                    meta = tx.get("metadata") or {}
-                    coin = meta.get("crypto") or ""
-                    network = meta.get("network") or ""
-                    await notify(tx["user_id"], "withdrawal_success",
-                                 "Retrait crypto confirmé",
-                                 f"Votre retrait de {tx['amount']:.6f} {coin} sur {network} a été confirmé on-chain.",
-                                 data={"transaction_id": tx["id"], "reference": tx.get("reference"),
-                                       "amount": tx["amount"], "currency": tx.get("currency", "USDT"),
-                                       "transfer_type": "biz_to_crypto",
-                                       "tx_hash": tx_hash, "coin": coin, "network": network})
-
-        elif ev_type in ("payout.failed", "payout.rejected"):
-            if merchant_ref:
-                tx = await db.transactions.find_one({"id": merchant_ref})
-                if tx and tx.get("status") != "failed":
-                    # Refund balance
-                    meta = tx.get("metadata") or {}
-                    total_debit = float(meta.get("total_debit", tx.get("amount", 0)))
-                    currency = tx.get("currency", "USDT")
-                    field = f"balance_{currency.lower()}"
-                    await _refund_wallet_once(
-                        tx["user_id"], field, total_debit,
-                        f"izipay-payout:{tx['id']}")
-                    await db.transactions.update_one({"id": merchant_ref},
-                                                     {"$set": {"status": "failed",
-                                                               "metadata.izipay_status": ev_type.split(".")[1],
-                                                               "metadata.error": data.get("reason", "")}})
-                    await notify(tx["user_id"], "withdrawal_failed",
-                                 "Retrait crypto échoué",
-                                 f"Votre retrait de {tx['amount']:.6f} {meta.get('crypto','')} a échoué. Votre solde a été remboursé.",
-                                 data={"transaction_id": tx["id"], "reference": tx.get("reference"),
-                                       "amount": tx["amount"], "currency": currency,
-                                       "reason": data.get("reason", "")})
+                    if new_status == "completed":
+                        changed = await db.transactions.update_one(
+                            {"id": tx["id"],
+                             "status": {"$nin": ["completed", "failed", "canceled"]}},
+                            {"$set": {
+                                "status": "completed",
+                                "metadata.tx_hash": tx_hash,
+                                "metadata.izipay_payout_id": payout_id
+                                    or meta.get("izipay_payout_id"),
+                                "metadata.izipay_status": upstream_status,
+                            }},
+                        )
+                        if changed.modified_count:
+                            coin = meta.get("crypto") or ""
+                            network = meta.get("network") or ""
+                            await notify(
+                                tx["user_id"], "withdrawal_success",
+                                "Retrait crypto confirmé",
+                                f"Votre retrait de {meta.get('recipient_gets', tx['amount']):.6f} "
+                                f"{coin} sur {network} a été confirmé on-chain.",
+                                data={"transaction_id": tx["id"],
+                                      "reference": tx.get("reference"),
+                                      "amount": tx["amount"],
+                                      "currency": tx.get("currency", "USDT"),
+                                      "transfer_type": "biz_to_crypto",
+                                      "tx_hash": tx_hash, "coin": coin,
+                                      "network": network},
+                            )
+                    elif new_status in ("failed", "canceled"):
+                        changed = await db.transactions.update_one(
+                            {"id": tx["id"],
+                             "status": {"$in": ["pending", "processing", "sent"]}},
+                            {"$set": {
+                                "status": new_status,
+                                "metadata.izipay_status": upstream_status,
+                                "metadata.error": data.get("reason", ""),
+                            }},
+                        )
+                        if changed.modified_count or (
+                                tx.get("status") == new_status
+                                and not meta.get("refunded_at")):
+                            total_debit = float(
+                                meta.get("total_debit", tx.get("amount", 0)))
+                            await _refund_wallet_once(
+                                tx["user_id"], "balance_usdt", total_debit,
+                                f"crypto-transfer:{meta.get('operation_id') or tx['id']}")
+                            await db.transactions.update_one(
+                                {"id": tx["id"], "metadata.refunded_at": {"$exists": False}},
+                                {"$set": {"metadata.refunded_at": now_iso()}})
+                            if changed.modified_count:
+                                await notify(
+                                    tx["user_id"], "withdrawal_failed",
+                                    "Retrait crypto échoué",
+                                    f"Votre retrait de {meta.get('recipient_gets', tx['amount']):.6f} "
+                                    f"{meta.get('crypto', '')} a échoué. Votre solde USDT a été remboursé.",
+                                    data={"transaction_id": tx["id"],
+                                          "reference": tx.get("reference"),
+                                          "amount": tx["amount"],
+                                          "currency": "USDT",
+                                          "reason": data.get("reason", "")},
+                                )
         # settlement.completed etc. — no local action for now (already credited on completion)
-    finally:
-        await db.webhook_events.update_one({"event_id": eid}, {"$set": {"processed": True, "processed_at": now_iso()}})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("IziChangePay webhook processing failed for %s", eid)
+        await db.webhook_events.update_one(
+            {"event_id": eid},
+            {"$set": {"processed": False, "last_error": str(e)[:300],
+                      "last_attempt_at": now_iso()}})
+        raise HTTPException(500, "Webhook processing failed; retry delivery")
+    else:
+        await db.webhook_events.update_one(
+            {"event_id": eid},
+            {"$set": {"processed": True, "processed_at": now_iso()},
+             "$unset": {"last_error": ""}})
 
     return {"received": True}
 
@@ -7498,54 +7871,192 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
     await _require_turnstile(req.turnstile_token, request, "payment")
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
-    link = await db.payment_links.find_one({"slug": req.slug, "active": True})
+    link = await db.payment_links.find_one({"slug": req.slug})
     if not link:
         raise HTTPException(404, "Lien introuvable ou inactif")
-    if link.get("currency") not in ("USDT", "UNIVERSAL"):
-        raise HTTPException(400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT/UNIVERSAL)")
+    asset_code = req.asset_code.strip().upper()
+    coin, separator, network = asset_code.partition(".")
+    if not separator:
+        raise HTTPException(400, "Actif crypto invalide")
+    lp_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"izipay-link:{link['id']}:{req.idempotency_key}",
+    ).hex
+    fingerprint_data = {
+        "link_id": link["id"],
+        "amount": req.amount if link.get("amount_type") == "free" else None,
+        "asset_code": asset_code,
+        "full_name": req.full_name.strip(),
+        "email": req.email.strip().lower(),
+        "refund_address": req.refund_address.strip(),
+    }
+    request_fingerprint = hashlib.sha256(json.dumps(
+        fingerprint_data, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    existing = await db.link_payments.find_one({"id": lp_id}, {"_id": 0})
+    if existing:
+        if existing.get("request_fingerprint") != request_fingerprint:
+            raise HTTPException(409, "Cette clé d'idempotence appartient à un autre paiement")
+        if existing.get("deposit_address") or existing.get("status") in (
+                "paid", "expired", "failed"):
+            return existing
+        amount = float(existing["amount"])
+        charged_amount = float(existing["charged_amount"])
+        wallet_credit_amount = float(existing["wallet_credit_amount"])
+        fee = float(existing.get("fee", 0) or 0)
+        fee_pct = float(existing.get("fee_pct", 0) or 0)
+        fee_fixed = float(existing.get("fee_fixed", 0) or 0)
+        rate = float(existing.get("usdt_rate", 0) or 0)
+        gateway_fee = float(existing.get("gateway_fee", 0) or 0)
+        platform_fee = float(existing.get("platform_fee", 0) or 0)
+        single_use_claim = existing.get("single_use_claim_id")
+    else:
+        if not link.get("active"):
+            raise HTTPException(404, "Lien introuvable ou inactif")
+        if link.get("currency") not in ("USDT", "UNIVERSAL"):
+            raise HTTPException(
+                400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT/UNIVERSAL)")
+        amount = await _ensure_link_can_be_paid(
+            link, req.amount if link.get("amount_type") == "free" else None
+        )
+        try:
+            assets = await izipay.list_assets()
+        except Exception as e:
+            logger.warning("IziChangePay link asset validation failed: %s", e)
+            raise HTTPException(503, "Catalogue crypto temporairement indisponible")
+        asset = next((
+            item for item in assets
+            if str(item.get("assetCode") or "").upper() == asset_code
+            and item.get("isActive")
+        ), None)
+        if not asset:
+            raise HTTPException(400, "Cryptomonnaie ou réseau non pris en charge")
+        rate = await _crypto_usdt_rate(coin)
+        amount_coin = round(amount / rate, 6)
+        if amount_coin < float(asset.get("minimum") or 0) or amount_coin > float(
+                asset.get("maximum") or 10**12):
+            raise HTTPException(
+                400, "Le montant du lien est hors des limites de cet actif crypto")
+        fee_components = await _crypto_fee_components(
+            coin, "deposit", amount_coin)
+        fee_pct = fee_components["fee_pct"]
+        fee_fixed = (
+            fee_components["gateway_fee_fixed"]
+            + fee_components["platform_fee_fixed"]
+        )
+        fee_coin = round(amount_coin * fee_pct / 100.0 + fee_fixed, 6)
+        fee = round(fee_coin * rate, 6)
+        if fee_pct >= 100 or fee >= amount:
+            raise HTTPException(503, "Configuration de frais invalide pour cet actif")
+        customer_pays_fee = link.get("fee_bearer", "customer") != "owner"
+        charged_amount = round(
+            (amount + fee if customer_pays_fee else amount) / rate, 6)
+        charged_amount_usdt = round(charged_amount * rate, 6)
+        wallet_credit_amount = amount if customer_pays_fee else round(amount - fee, 6)
+        gateway_fee = round(fee_components["gateway_fee"] * rate, 6)
+        platform_fee = round(fee_components["platform_fee"] * rate, 6)
+        single_use_claim = await _claim_single_use_link(link)
 
-    amount = await _ensure_link_can_be_paid(
-        link, req.amount if link.get("amount_type") == "free" else None
-    )
-    single_use_claim = await _claim_single_use_link(link)
-    fee_pct = await _crypto_fee_pct(req.asset_code.split(".")[0])
-    fee, fee_net = _apply_fee(amount, fee_pct)
-    customer_pays_fee = link.get("fee_bearer", "customer") != "owner"
-    charged_amount = round(amount + fee, 6) if customer_pays_fee else amount
-    wallet_credit_amount = amount if customer_pays_fee else fee_net
+        local_doc = {
+            "id": lp_id, "link_id": link["id"], "slug": req.slug,
+            "amount": amount, "amount_currency": "USDT",
+            "charged_amount": charged_amount,
+            "charged_amount_usdt": charged_amount_usdt,
+            "wallet_credit_amount": wallet_credit_amount,
+            "fee": fee, "fee_currency": "USDT",
+            "fee_pct": fee_pct, "fee_fixed": fee_fixed,
+            "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+            "fee_bearer": "client" if customer_pays_fee else "merchant",
+            "asset_code": asset_code, "coin": coin, "network": network,
+            "usdt_rate": rate, "credit_currency": "USDT",
+            "customer_email": req.email, "customer_name": req.full_name,
+            "refund_address": req.refund_address.strip(),
+            "single_use_claim_id": single_use_claim,
+            "idempotency_key": req.idempotency_key,
+            "request_fingerprint": request_fingerprint,
+            "status": "creating", "created_at": now_iso(),
+        }
+        try:
+            await db.link_payments.insert_one(local_doc)
+        except DuplicateKeyError:
+            existing = await db.link_payments.find_one({"id": lp_id}, {"_id": 0})
+            if not existing:
+                await _release_single_use_link(link["id"], single_use_claim)
+                raise HTTPException(409, "Paiement déjà en cours de création")
 
-    lp_id = new_id()
     parts = (req.full_name or "").strip().split(maxsplit=1)
     first = parts[0] if parts else "Client"
     last = parts[1] if len(parts) > 1 else first
 
     try:
         intent = await izipay.create_direct_intent(
-            requested_coin=req.asset_code,
+            requested_coin=asset_code,
             amount=f"{charged_amount:.6f}",
             first_name=first, last_name=last, email=req.email,
             refund_address=req.refund_address.strip(),
             merchant_reference=lp_id,
             metadata={"link_id": link["id"], "kind": "link_payment"},
+            idempotency_key=f"izipay-link-{lp_id}",
         )
     except izipay.IziPayError as e:
-        await _release_single_use_link(link["id"], single_use_claim)
         print(f"izipay link pay rejected [{e.code}] {e.message}")
         msg = (e.message or "").lower()
         if "address" in msg or "adresse" in msg:
             user_msg = "Adresse de remboursement invalide."
         else:
             user_msg = "La passerelle crypto a refusé la demande. Réessayez."
+        if e.status < 500:
+            await db.link_payments.update_one(
+                {"id": lp_id, "status": {"$nin": ["paid", "expired"]}},
+                {"$set": {"status": "failed", "provider_error_code": e.code,
+                          "failed_at": now_iso()}})
+            await _release_single_use_link(link["id"], single_use_claim)
+        else:
+            await db.link_payments.update_one(
+                {"id": lp_id, "status": "creating"},
+                {"$set": {"status": "provider_unknown"}})
         raise HTTPException(400 if e.status < 500 else 502, user_msg)
+    except Exception:
+        logger.exception("IziChangePay link intent outcome is unknown")
+        await db.link_payments.update_one(
+            {"id": lp_id, "status": "creating"},
+            {"$set": {"status": "provider_unknown"}})
+        raise HTTPException(
+            502, "Résultat de la demande inconnu. Réessayez avec la même clé.")
+
+    provider_expiry = intent.get("expiresAt")
+    expires_at = None
+    if provider_expiry:
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                str(provider_expiry).replace("Z", "+00:00"))
+            if parsed_expiry.tzinfo is None:
+                parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+            expires_at = parsed_expiry.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError):
+            expires_at = None
+    if not expires_at:
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    if not intent.get("depositAddress"):
+        await db.link_payments.update_one(
+            {"id": lp_id, "status": "creating"},
+            {"$set": {"status": "provider_unknown",
+                      "izipay_intent_id": intent.get("id")}})
+        raise HTTPException(
+            502, "La passerelle n'a pas retourné d'adresse de dépôt. Réessayez.")
 
     doc = {
+        **(existing or {}),
         "id": lp_id, "link_id": link["id"], "slug": req.slug,
-        "amount": amount, "charged_amount": charged_amount,
-        "wallet_credit_amount": wallet_credit_amount, "fee": fee,
-        "fee_pct": fee_pct, "fee_bearer": "client" if customer_pays_fee else "merchant",
-        "asset_code": req.asset_code,
-        "coin": req.asset_code.split(".")[0],
-        "network": req.asset_code.split(".")[1] if "." in req.asset_code else None,
+        "amount": amount, "amount_currency": "USDT",
+        "charged_amount": charged_amount,
+        "charged_amount_usdt": round(charged_amount * rate, 6),
+        "wallet_credit_amount": wallet_credit_amount,
+        "fee": fee, "fee_currency": "USDT",
+        "fee_pct": fee_pct, "fee_fixed": fee_fixed,
+        "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+        "asset_code": asset_code, "coin": coin, "network": network,
+        "usdt_rate": rate, "credit_currency": "USDT",
         "customer_email": req.email, "customer_name": req.full_name,
         "status": intent.get("status") or "pending",
         "izipay_intent_id": intent.get("id"),
@@ -7554,11 +8065,14 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
         "memo_type": intent.get("memoType"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
         "single_use_claim_id": single_use_claim,
-        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
-        "izipay_expires_at": intent.get("expiresAt"),
-        "created_at": now_iso(),
+        "idempotency_key": req.idempotency_key,
+        "request_fingerprint": request_fingerprint,
+        "expires_at": expires_at,
+        "izipay_expires_at": provider_expiry,
+        "created_at": (existing or {}).get("created_at") or now_iso(),
     }
-    await db.link_payments.insert_one(doc)
+    await db.link_payments.update_one(
+        {"id": lp_id}, {"$set": doc}, upsert=True)
     doc.pop("_id", None)
     return doc
 
@@ -8158,10 +8672,20 @@ def _serialize_payment(mp: dict) -> dict:
         "environment": mp.get("environment"),
         "status": mp.get("status"),
         "coin": mp.get("coin"),
+        "amount_currency": mp.get("amount_currency") or mp.get("coin"),
+        "wallet_credit_currency": mp.get("wallet_credit_currency", "USDT"),
+        "usdt_rate": mp.get("usdt_rate"),
         "amount": _format_amount(mp.get("amount", 0)),
+        "amount_crypto": _format_amount(mp.get("amount_crypto", mp.get("amount", 0))),
+        "amount_crypto_currency": mp.get("amount_currency") or mp.get("coin"),
         "amount_gross": _format_amount(mp.get("amount_gross", 0)) if mp.get("amount_gross") is not None else None,
+        "amount_gross_currency": mp.get("amount_gross_currency", "USDT"),
         "amount_net": _format_amount(mp.get("amount_net", 0)) if mp.get("amount_net") is not None else None,
+        "amount_net_currency": mp.get("amount_net_currency", "USDT"),
         "fee": _format_amount(mp.get("fee", 0)) if mp.get("fee") is not None else None,
+        "fee_currency": mp.get("fee_currency", "USDT"),
+        "fee_crypto": _format_amount(mp.get("fee_crypto", 0))
+            if mp.get("fee_crypto") is not None else None,
         "fee_pct": mp.get("fee_pct"),
         "gateway_fee": _format_amount(mp.get("gateway_fee", 0))
             if mp.get("gateway_fee") is not None else None,
@@ -8247,6 +8771,25 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
             raise BizAPIError(400, "Idempotency-Key must be 255 characters or fewer.",
                               "IDEMPOTENCY_KEY_TOO_LONG")
 
+    coin_upper = payload.coin.upper().strip()
+    if not math.isfinite(float(payload.amount)) or payload.amount <= 0:
+        raise BizAPIError(400, "Amount must be a positive finite value.",
+                          "INVALID_AMOUNT")
+    rate = await _crypto_usdt_rate(coin_upper)
+    fee_components = await _crypto_fee_components(
+        coin_upper, "deposit", payload.amount)
+    gross_usdt = round(payload.amount * rate, 6)
+    fee = round(fee_components["fee"] * rate, 6)
+    amount_net = round(gross_usdt - fee, 6)
+    if gross_usdt < 1:
+        raise BizAPIError(400, "Minimum amount: 1 USDT equivalent.",
+                          "AMOUNT_TOO_SMALL")
+    if fee_components["fee_pct"] >= 100 or amount_net <= 0:
+        raise BizAPIError(503, "Invalid fee configuration for this asset.",
+                          "INVALID_FEE_CONFIGURATION")
+    gateway_fee = round(fee_components["gateway_fee"] * rate, 6)
+    platform_fee = round(fee_components["platform_fee"] * rate, 6)
+
     if merchant.get("_api_env") == "test":
         cached = await _idempotency_claim(
             owner, idem_key, "POST", "/api/v1/payments", idem_fingerprint
@@ -8254,22 +8797,24 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         if cached and cached.get("body") is not None:
             return JSONResponse(status_code=cached.get("status_code", 200),
                                 content=cached["body"])
-        if payload.amount < 1:
-            raise BizAPIError(400, "Minimum amount: 1", "AMOUNT_TOO_SMALL")
-        fee_pct = await _crypto_fee_pct(payload.coin)
-        fee, amount_net = _apply_fee(payload.amount, fee_pct)
-        gateway_fee, platform_fee = await _crypto_platform_fee(
-            payload.coin, "deposit", payload.amount)
-        mp_id = new_id()
+        fee_pct = fee_components["fee_pct"]
+        mp_id = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"merchant-payment:{owner}:test:{idem_key}",
+        ).hex if idem_key else new_id()
         now = now_iso()
         doc = {
             "id": mp_id, "merchant_id": merchant["id"],
             "environment": "test", "product": "bizpay_checkout",
             "source": "merchant_api", "amount": payload.amount,
-            "amount_gross": payload.amount, "amount_net": amount_net,
-            "fee": fee, "fee_pct": fee_pct,
+            "amount_crypto": payload.amount, "amount_currency": coin_upper,
+            "amount_gross": gross_usdt, "amount_gross_usdt": gross_usdt,
+            "amount_net": amount_net, "amount_net_usdt": amount_net,
+            "wallet_credit_currency": "USDT", "usdt_rate": rate,
+            "fee": fee, "fee_currency": "USDT",
+            "fee_crypto": fee_components["fee"], "fee_pct": fee_pct,
             "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-            "coin": payload.coin.upper(), "reference": payload.reference or mp_id,
+            "coin": coin_upper, "reference": payload.reference or mp_id,
             "merchant_reference": payload.reference or mp_id,
             "status": "initiated", "payment_url": f"/checkout/{mp_id}",
             "simulation_endpoint": f"/api/v1/test/payments/{mp_id}/complete",
@@ -8283,12 +8828,7 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         return body
     if not izipay.is_configured():
         raise BizAPIError(503, "Crypto gateway not configured", "GATEWAY_UNAVAILABLE")
-    if payload.amount < 1:
-        raise BizAPIError(400, "Minimum amount: 1 USDT", "AMOUNT_TOO_SMALL")
-    fee_pct = await _crypto_fee_pct(payload.coin)
-    fee, amount_net = _apply_fee(payload.amount, fee_pct)
-    gateway_fee, platform_fee = await _crypto_platform_fee(
-        payload.coin, "deposit", payload.amount)
+    fee_pct = fee_components["fee_pct"]
     if idem_key:
         cached = await _idempotency_claim(
             owner, idem_key, "POST", "/api/v1/payments",
@@ -8297,13 +8837,36 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
             return JSONResponse(status_code=cached.get("status_code", 200),
                                 content=cached["body"])
 
-    mp_id = new_id()
+    mp_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"merchant-payment:{owner}:live:{idem_key}",
+    ).hex if idem_key else new_id()
     accepted_networks = [n.upper() for n in (payload.accepted_networks or ["TRC20", "BEP20", "ERC20"])]
-    accepted = [f"{payload.coin.upper()}.{n}" for n in accepted_networks]
+    accepted = [f"{coin_upper}.{n}" for n in accepted_networks]
+    now = now_iso()
+    pending = {
+        "id": mp_id, "merchant_id": merchant["id"],
+        "environment": "live", "product": "bizpay_checkout",
+        "source": "merchant_api", "amount": payload.amount,
+        "amount_crypto": payload.amount, "amount_currency": coin_upper,
+        "amount_gross": gross_usdt, "amount_gross_usdt": gross_usdt,
+        "amount_net": amount_net, "amount_net_usdt": amount_net,
+        "wallet_credit_currency": "USDT", "usdt_rate": rate,
+        "fee": fee, "fee_currency": "USDT",
+        "fee_crypto": fee_components["fee"], "fee_pct": fee_pct,
+        "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+        "coin": coin_upper, "reference": payload.reference or mp_id,
+        "merchant_reference": payload.reference or mp_id,
+        "customer_email": payload.customer_email,
+        "accepted_networks": accepted_networks,
+        "metadata": payload.metadata or {},
+        "status": "creating", "created_at": now,
+    }
+    await db.merchant_payments.insert_one(pending)
     try:
         intent = await izipay.create_payment_intent(
             amount_requested=f"{payload.amount:.6f}",
-            currency_requested=payload.coin.upper(),
+            currency_requested=coin_upper,
             requested_currency_type="crypto",
             accepted_coins=accepted,
             merchant_reference=mp_id,
@@ -8311,9 +8874,26 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
             metadata={"merchant_id": merchant["id"], "kind": "merchant_payment",
                       "merchant_reference": payload.reference or "",
                       **(payload.metadata or {})},
+            idempotency_key=f"merchant-payment-{mp_id}",
         )
     except izipay.IziPayError as e:
-        await _idempotency_release(owner, idem_key, idem_fingerprint)
+        if e.status < 500:
+            await db.merchant_payments.update_one(
+                {"id": mp_id, "status": "creating"},
+                {"$set": {"status": "failed", "failed_at": now_iso(),
+                          "provider_error_code": e.code}})
+            await _idempotency_release(owner, idem_key, idem_fingerprint)
+        else:
+            await db.merchant_payments.update_one(
+                {"id": mp_id, "status": "creating"},
+                {"$set": {"status": "pending",
+                          "provider_status_unknown": True}})
+            pending_doc = await db.merchant_payments.find_one(
+                {"id": mp_id}, {"_id": 0}) or pending
+            body = _serialize_payment(pending_doc)
+            if idem_key:
+                await _idempotency_store(
+                    owner, idem_key, "POST", "/api/v1/payments", 200, body)
         # Log full detail server-side.
         logger.warning("v1/payments gateway rejected [%s] %s", e.code, e.message)
         # Surface the upstream reason to the merchant so they can fix
@@ -8341,20 +8921,12 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
             },
         )
     except Exception as exc:  # ambiguous upstream outcome: retain reservation
-        pending = {
-            "id": mp_id, "merchant_id": merchant["id"],
-            "environment": "live", "product": "bizpay_checkout",
-            "source": "merchant_api", "amount": payload.amount,
-            "amount_gross": payload.amount, "amount_net": amount_net,
-            "fee": fee, "fee_pct": fee_pct,
-            "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-            "coin": payload.coin.upper(), "reference": payload.reference or mp_id,
-            "merchant_reference": payload.reference or mp_id,
-            "status": "pending", "provider_status_unknown": True,
-            "metadata": payload.metadata or {}, "created_at": now_iso(),
-        }
-        await db.merchant_payments.insert_one(pending)
-        body = _serialize_payment(pending)
+        await db.merchant_payments.update_one(
+            {"id": mp_id, "status": "creating"},
+            {"$set": {"status": "pending", "provider_status_unknown": True}})
+        pending_doc = await db.merchant_payments.find_one(
+            {"id": mp_id}, {"_id": 0}) or pending
+        body = _serialize_payment(pending_doc)
         if idem_key:
             await _idempotency_store(owner, idem_key, "POST",
                                      "/api/v1/payments", 200, body)
@@ -8363,20 +8935,39 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
                           "PAYMENT_STATUS_UNKNOWN")
 
     expires_dt = datetime.now(timezone.utc) + timedelta(minutes=10)
+    provider_expiry = intent.get("expiresAt")
+    if provider_expiry:
+        try:
+            parsed_expiry = datetime.fromisoformat(
+                str(provider_expiry).replace("Z", "+00:00"))
+            if parsed_expiry.tzinfo is None:
+                parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+            expires_dt = parsed_expiry.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            pass
     doc = {
+        **pending,
         "id": mp_id,
         "merchant_id": merchant["id"],
         "environment": "live",
         "product": "bizpay_checkout",
         "source": "merchant_api",
         "amount": payload.amount,
-        "amount_gross": payload.amount,
+        "amount_gross": gross_usdt,
+        "amount_gross_usdt": gross_usdt,
         "amount_net": amount_net,
+        "amount_net_usdt": amount_net,
+        "amount_crypto": payload.amount,
+        "amount_currency": coin_upper,
+        "wallet_credit_currency": "USDT",
+        "usdt_rate": rate,
         "fee": fee,
+        "fee_currency": "USDT",
+        "fee_crypto": fee_components["fee"],
         "fee_pct": fee_pct,
         "gateway_fee": gateway_fee,
         "platform_fee": platform_fee,
-        "coin": payload.coin.upper(),
+        "coin": coin_upper,
         "reference": payload.reference or mp_id,
         "merchant_reference": payload.reference or mp_id,
         "customer_email": payload.customer_email,
@@ -8385,13 +8976,21 @@ async def merchant_create_payment(payload: MerchantPaymentRequest, request: Requ
         "deposit_address": intent.get("depositAddress"),
         "amount_to_send": intent.get("amountToSend") or intent.get("amountCryptoExpected"),
         "expires_at": expires_dt.isoformat(),
-        "status": "initiated",
         "accepted_networks": accepted_networks,
-        "created_at": now_iso(),
     }
-    await db.merchant_payments.insert_one(doc)
+    doc.pop("status", None)
+    await db.merchant_payments.update_one(
+        {"id": mp_id, "status": {"$nin": ["paid", "failed", "expired"]}},
+        {"$set": doc},
+    )
+    await db.merchant_payments.update_one(
+        {"id": mp_id, "status": "creating"},
+        {"$set": {"status": "initiated"}},
+    )
+    final_doc = await db.merchant_payments.find_one(
+        {"id": mp_id}, {"_id": 0}) or {**pending, **doc}
 
-    body = _serialize_payment(doc)
+    body = _serialize_payment(final_doc)
     if idem_key:
         try:
             await _idempotency_store(owner, idem_key, "POST",
@@ -9721,11 +10320,20 @@ def _serialize_payout(po: dict) -> dict:
         "object": "payout",
         "status": po.get("status"),
         "amount": _format_amount(po.get("amount", 0)),
+        "amount_currency": po.get("coin"),
+        "amount_gross_usdt": _format_amount(po.get("amount_gross_usdt", 0))
+            if po.get("amount_gross_usdt") is not None else None,
+        "wallet_debit_currency": po.get("wallet_debit_currency", "USDT"),
         "amount_net": _format_amount(po.get("amount_net", 0))
             if po.get("amount_net") is not None else None,
+        "amount_net_currency": po.get("amount_net_currency") or po.get("coin"),
         "fee": _format_amount(po.get("fee", 0))
             if po.get("fee") is not None else None,
+        "fee_currency": po.get("fee_currency", "USDT"),
+        "fee_crypto": _format_amount(po.get("fee_crypto", 0))
+            if po.get("fee_crypto") is not None else None,
         "fee_pct": po.get("fee_pct"),
+        "usdt_rate": po.get("usdt_rate"),
         "total_debit": _format_amount(po.get("total_debit", 0))
             if po.get("total_debit") is not None else None,
         "coin": po.get("coin"),
@@ -9767,6 +10375,85 @@ def _map_izipay_payout_status(izi_status: str, current: Optional[str] = None) ->
     return current or "processing"
 
 
+async def _apply_merchant_payout_status(
+    payout: dict, upstream_status: str, event_data: Optional[dict] = None
+) -> None:
+    """Apply one provider payout state to the merchant record and USDT ledger."""
+    event_data = event_data or {}
+    payout_id = payout.get("id")
+    if not payout_id:
+        return
+    new_status = _map_izipay_payout_status(
+        upstream_status, payout.get("status"))
+    terminal = set(_TERMINAL_PAYOUT_STATUSES)
+    current = payout.get("status")
+    if current in terminal:
+        if current in ("failed", "canceled") and not payout.get("refunded_at"):
+            await _refund_wallet_once(
+                payout["merchant_id"], "balance_usdt",
+                float(payout.get("total_debit") or 0),
+                f"merchant-payout:{payout_id}")
+            await db.merchant_payouts.update_one(
+                {"id": payout_id, "status": current,
+                 "refunded_at": {"$exists": False}},
+                {"$set": {"refunded_at": now_iso()}})
+        return
+    if new_status in terminal:
+        changed = await db.merchant_payouts.update_one(
+            {"id": payout_id, "status": {"$nin": list(terminal)}},
+            {"$set": {
+                "status": new_status,
+                "izipay_status": upstream_status,
+                "tx_hash": event_data.get("txHash") or event_data.get("txhash"),
+                "completed_at": now_iso() if new_status == "completed" else None,
+                "failed_at": now_iso() if new_status in ("failed", "canceled") else None,
+                "error_code": event_data.get("errorCode") or event_data.get("code"),
+                "error_message": event_data.get("errorMessage")
+                    or event_data.get("reason") or event_data.get("message"),
+            }},
+        )
+        if not changed.modified_count:
+            return
+        if new_status in ("failed", "canceled"):
+            await _refund_wallet_once(
+                payout["merchant_id"], "balance_usdt",
+                float(payout.get("total_debit") or 0),
+                f"merchant-payout:{payout_id}")
+            await db.merchant_payouts.update_one(
+                {"id": payout_id, "status": new_status},
+                {"$set": {"refunded_at": now_iso()}})
+    else:
+        updates = {"status": new_status, "izipay_status": upstream_status}
+        if new_status == "sent" and not payout.get("sent_at"):
+            updates["sent_at"] = now_iso()
+        await db.merchant_payouts.update_one(
+            {"id": payout_id, "status": {"$nin": list(terminal)}},
+            {"$set": updates})
+
+    tx_status = (
+        "completed" if new_status == "completed"
+        else "failed" if new_status in ("failed", "canceled")
+        else "pending"
+    )
+    await db.transactions.update_one(
+        {"metadata.merchant_payout_id": payout_id,
+         "status": {"$nin": ["completed", "failed", "canceled"]}},
+        {"$set": {
+            "status": tx_status,
+            "metadata.izipay_status": upstream_status,
+            "metadata.tx_hash": event_data.get("txHash") or event_data.get("txhash"),
+        }},
+    )
+    if new_status in ("completed", "failed", "canceled"):
+        fresh = await db.merchant_payouts.find_one(
+            {"id": payout_id}, {"_id": 0}) or payout
+        await _deliver_webhook(
+            payout["merchant_id"],
+            "payout.completed" if new_status == "completed" else "payout.failed",
+            _serialize_payout(fresh),
+        )
+
+
 async def _reconcile_payout(izipay_payout_id: str) -> None:
     """Pull the latest state from IziChange for a payout and update our doc."""
     if not izipay_payout_id or not izipay.is_configured():
@@ -9780,26 +10467,7 @@ async def _reconcile_payout(izipay_payout_id: str) -> None:
     po = await db.merchant_payouts.find_one({"izipay_payout_id": izipay_payout_id})
     if not po:
         return
-    new_status = _map_izipay_payout_status(upstream_status, po.get("status"))
-    updates: dict = {"izipay_status": upstream_status}
-    if new_status != po.get("status"):
-        updates["status"] = new_status
-        if new_status == "sent" and not po.get("sent_at"):
-            updates["sent_at"] = now_iso()
-        if new_status == "completed" and not po.get("completed_at"):
-            updates["completed_at"] = now_iso()
-        if new_status == "failed" and not po.get("failed_at"):
-            updates["failed_at"] = now_iso()
-            updates["error_code"] = data.get("errorCode") or data.get("code")
-            updates["error_message"] = data.get("errorMessage") or data.get("message")
-            # Refund on newly discovered terminal failure.
-            refund_id = f"merchant-payout:{po['id']}"
-            refunded = await _refund_wallet_once(
-                po["merchant_id"], "balance_usdt",
-                float(po.get("total_debit") or 0), refund_id)
-            if refunded:
-                updates["refunded_at"] = now_iso()
-    await db.merchant_payouts.update_one({"id": po["id"]}, {"$set": updates})
+    await _apply_merchant_payout_status(po, upstream_status, data)
 
 
 async def _safe_reconcile_payout(izipay_payout_id: str) -> None:
@@ -9834,23 +10502,24 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         if cached and cached.get("body") is not None:
             return cached["body"]
         cfg = await get_transfer_config()
-        fees_map = ((cfg.get("crypto") or {}).get("fees") or {})
-        fees_gw_fixed = ((cfg.get("crypto") or {}).get("fees_gateway_fixed") or {})
         coin_upper = payload.coin.upper().strip()
-        fee_pct = float(fees_map.get(coin_upper, 4.0))
-        gw_fixed = float(fees_gw_fixed.get(coin_upper, 0) or 0)
-        fee = round(payload.amount * (fee_pct / 100.0) + gw_fixed, 6)
-        gateway_fee, platform_fee = await _crypto_platform_fee(
-            coin_upper, "withdrawal", payload.amount)
-        gateway_fee = round(gateway_fee + gw_fixed, 6)
+        rate = await _crypto_usdt_rate(coin_upper)
+        fee_components = await _crypto_withdrawal_fee_components(
+            coin_upper, payload.amount)
+        fee_pct = fee_components["fee_pct"]
+        fee_crypto = fee_components["fee"]
+        fee = round(fee_crypto * rate, 6)
+        gateway_fee = round(fee_components["gateway_fee"] * rate, 6)
+        platform_fee = round(fee_components["platform_fee"] * rate, 6)
         fee_bearer = (payload.fee_bearer or "sender").lower()
         if fee_bearer not in ("sender", "recipient"):
             raise BizAPIError(400, "fee_bearer must be 'sender' or 'recipient'.",
                               "INVALID_FEE_BEARER")
-        total_debit = round(payload.amount + fee, 6) \
-            if fee_bearer == "sender" else float(payload.amount)
+        total_debit = round(
+            (payload.amount + fee_crypto if fee_bearer == "sender"
+             else payload.amount) * rate, 6)
         recipient_gets = float(payload.amount) \
-            if fee_bearer == "sender" else round(payload.amount - fee, 6)
+            if fee_bearer == "sender" else round(payload.amount - fee_crypto, 6)
         po_id = new_id()
         now = now_iso()
         doc = {
@@ -9858,6 +10527,10 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "source": "merchant_api", "product": "bizpush",
             "status": "pending", "amount": payload.amount,
             "amount_net": recipient_gets, "fee": fee, "fee_pct": fee_pct,
+            "fee_crypto": fee_crypto, "wallet_debit_currency": "USDT",
+            "amount_gross_usdt": round(payload.amount * rate, 6),
+            "amount_net_currency": coin_upper,
+            "usdt_rate": rate, "fee_currency": "USDT",
             "fee_bearer": fee_bearer, "gateway_fee": gateway_fee,
             "platform_fee": platform_fee, "total_debit": total_debit,
             "coin": coin_upper, "network": payload.network.upper(),
@@ -9916,20 +10589,26 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
 
     # ---------- Compute fee ----------
     cfg = await get_transfer_config()
-    fees_map = ((cfg.get("crypto") or {}).get("fees") or {})
-    fees_gw_fixed = ((cfg.get("crypto") or {}).get("fees_gateway_fixed") or {})
-    fee_pct = float(fees_map.get(coin_upper, 4.0))
-    gw_fixed = float(fees_gw_fixed.get(coin_upper, 0) or 0)
-    fee = round(payload.amount * (fee_pct / 100.0) + gw_fixed, 6)
-    gateway_fee, platform_fee = await _crypto_platform_fee(coin_upper, "withdrawal", payload.amount)
-    gateway_fee = round(gateway_fee + gw_fixed, 6)
+    rate = await _crypto_usdt_rate(coin_upper)
+    fee_components = await _crypto_withdrawal_fee_components(
+        coin_upper, payload.amount)
+    fee_pct = fee_components["fee_pct"]
+    fee_crypto = fee_components["fee"]
+    fee = round(fee_crypto * rate, 6)
+    gateway_fee = round(fee_components["gateway_fee"] * rate, 6)
+    platform_fee = round(fee_components["platform_fee"] * rate, 6)
     fee_bearer = (payload.fee_bearer or "sender").lower()
     if fee_bearer not in ("sender", "recipient"):
         raise BizAPIError(400, "fee_bearer must be 'sender' or 'recipient'.",
                           "INVALID_FEE_BEARER")
-    total_debit = round(payload.amount + fee, 6) if fee_bearer == "sender" else float(payload.amount)
+    if fee_pct >= 100 or fee_crypto >= payload.amount:
+        raise BizAPIError(503, "Invalid fee configuration for this asset.",
+                          "INVALID_FEE_CONFIGURATION")
+    total_debit = round(
+        (payload.amount + fee_crypto if fee_bearer == "sender"
+         else payload.amount) * rate, 6)
     recipient_gets = float(payload.amount) if fee_bearer == "sender" \
-        else round(payload.amount - fee, 6)
+        else round(payload.amount - fee_crypto, 6)
 
     # ---------- Balance check ----------
     merchant_doc = await db.users.find_one({"id": uid}, {"_id": 0})
@@ -9965,10 +10644,16 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         "asset_code": asset_code,
         "destination_address": dest,
         "amount": float(payload.amount),
+        "amount_gross_usdt": round(float(payload.amount) * rate, 6),
         "amount_net": recipient_gets,
+        "amount_net_currency": coin_upper,
         "fee": fee,
+        "fee_crypto": fee_crypto,
+        "fee_currency": "USDT",
         "fee_pct": fee_pct,
         "fee_bearer": fee_bearer,
+        "wallet_debit_currency": "USDT",
+        "usdt_rate": rate,
         "total_debit": total_debit,
         "reference": payload.reference,
         "beneficiary_name": payload.beneficiary_name,
@@ -10007,17 +10692,32 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             idempotency_key=f"mpo-{po_id}",
         )
     except izipay.IziPayError as e:
-        # Refund merchant balance on gateway rejection.
-        await _refund_wallet_once(uid, "balance_usdt", total_debit,
-                                  f"merchant-payout:{po_id}")
-        await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
-            "status": "failed",
-            "failed_at": now_iso(),
-            "refunded_at": now_iso(),
-            "error_code": e.code,
-            "error_message": e.message,
-        }})
-        await _idempotency_release(owner, idem_key, idem_fingerprint)
+        if e.status < 500:
+            # A definite provider rejection is safe to refund and retry.
+            await _refund_wallet_once(uid, "balance_usdt", total_debit,
+                                      f"merchant-payout:{po_id}")
+            await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
+                "status": "failed",
+                "failed_at": now_iso(),
+                "refunded_at": now_iso(),
+                "error_code": e.code,
+                "error_message": e.message,
+            }})
+            await _idempotency_release(owner, idem_key, idem_fingerprint)
+        else:
+            # A server-side error may arrive after the provider accepted the
+            # payout. Keep the USDT reserved and preserve the idempotency claim.
+            await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
+                "status": "pending", "provider_status_unknown": True,
+                "error_code": e.code,
+            }})
+            pending = await db.merchant_payouts.find_one(
+                {"id": po_id}, {"_id": 0}) or doc
+            body = _serialize_payout(pending)
+            if idem_key:
+                await _idempotency_store(
+                    owner, idem_key, "POST", "/api/v1/payouts", 200, body)
+            return body
         # Classify error for the merchant.
         msg = (e.message or "").lower()
         if "address" in msg or "adresse" in msg:
@@ -10029,22 +10729,23 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
         else:
             code = "GATEWAY_REJECTED"
             user_msg = "The crypto gateway refused the payout. Please try again."
-        raise BizAPIError(400 if e.status < 500 else 502,
-                          user_msg, code,
+        raise BizAPIError(400, user_msg, code,
                           details={"gateway_code": e.code, "gateway_message": e.message})
     except Exception as e:  # noqa: BLE001
-        # Network / unknown error — refund and 502.
-        await _refund_wallet_once(uid, "balance_usdt", total_debit,
-                                  f"merchant-payout:{po_id}")
+        # The provider may have accepted the request before the connection
+        # failed. Keep the debit reserved for webhook/status reconciliation.
         await db.merchant_payouts.update_one({"id": po_id}, {"$set": {
-            "status": "failed",
-            "failed_at": now_iso(),
-            "refunded_at": now_iso(),
-            "error_message": str(e),
+            "status": "pending",
+            "provider_status_unknown": True,
+            "error_message": str(e)[:300],
         }})
-        await _idempotency_release(owner, idem_key, idem_fingerprint)
-        raise BizAPIError(502, "The crypto gateway is temporarily unreachable.",
-                          "GATEWAY_UNREACHABLE")
+        pending = await db.merchant_payouts.find_one(
+            {"id": po_id}, {"_id": 0}) or doc
+        body = _serialize_payout(pending)
+        if idem_key:
+            await _idempotency_store(
+                owner, idem_key, "POST", "/api/v1/payouts", 200, body)
+        return body
 
     upstream_id = upstream.get("id") or upstream.get("payoutId")
     upstream_status = (upstream.get("status") or "pending").lower()
@@ -10052,20 +10753,24 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
     upd_fields: dict = {
         "izipay_payout_id": upstream_id,
         "izipay_status": upstream_status,
-        "status": mapped_status,
+        "status": "pending",
     }
-    if mapped_status == "sent":
-        upd_fields["sent_at"] = now_iso()
     await db.merchant_payouts.update_one({"id": po_id}, {"$set": upd_fields})
+    await _apply_merchant_payout_status(
+        {**doc, **upd_fields}, upstream_status, upstream)
 
     # Log an internal transaction record too for admin visibility.
-    tx_status = "completed" if mapped_status == "completed" else ("failed" if mapped_status == "failed" else "pending")
+    tx_status = (
+        "completed" if mapped_status == "completed"
+        else "failed" if mapped_status in ("failed", "canceled")
+        else "pending"
+    )
     await db.transactions.insert_one({
         "id": new_id(),
         "user_id": uid,
         "type": "transfer",
         "direction": "out",
-        "amount": float(payload.amount),
+        "amount": total_debit,
         "currency": "USDT",
         "status": tx_status,
         "reference": po_id,
@@ -10079,9 +10784,14 @@ async def merchant_create_payout(payload: PayoutCreate, request: Request):
             "crypto": coin_upper, "network": net_upper,
             "asset_code": asset_code, "wallet_address": dest,
             "amount_gross": float(payload.amount),
+            "amount_gross_usdt": round(float(payload.amount) * rate, 6),
+            "amount_currency": coin_upper, "usdt_rate": rate,
             "fee": fee, "fee_pct": fee_pct,
+            "fee_crypto": fee_crypto, "fee_currency": "USDT",
             "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-            "gateway_fee_fixed": gw_fixed,
+            "gateway_fee_fixed": round(
+                fee_components["gateway_fee_fixed"] * rate, 6),
+            "gateway_fee_fixed_crypto": fee_components["gateway_fee_fixed"],
             "amount_net": recipient_gets,
             "fee_bearer": fee_bearer,
             "total_debit": total_debit,
@@ -10261,6 +10971,10 @@ DEFAULT_PLATFORM_CONFIG = {
         "XOF_XAF": 1.0,
         "XAF_XOF": 1.0,
     },
+    # Crypto rates are intentionally empty apart from USDT. Administrators
+    # must explicitly set each coin's USDT value before it can move money.
+    "crypto_usdt_rates": {"USDT": 1.0},
+    "crypto_usdt_rates_updated_at": None,
     "conversion_limits": {
         "USDT_XOF": {"min": 1, "max": 5000},
         "USDT_XAF": {"min": 1, "max": 5000},
@@ -10299,11 +11013,38 @@ async def get_platform_config() -> dict:
     for k, v in DEFAULT_PLATFORM_CONFIG.items():
         if k not in doc:
             doc[k] = v
-    for section in ("conversion_rates", "conversion_limits", "conversion_pairs_enabled"):
+    for section in (
+        "conversion_rates", "conversion_limits", "conversion_pairs_enabled",
+        "crypto_usdt_rates",
+    ):
         base = DEFAULT_PLATFORM_CONFIG[section]
         for kk, vv in base.items():
             doc.setdefault(section, {}).setdefault(kk, vv)
     return doc
+
+
+def _configured_crypto_usdt_rate(cfg: dict, coin: str) -> Optional[float]:
+    """Return the configured USDT value for one coin, or None if unavailable."""
+    code = (coin or "").strip().upper()
+    if code == "USDT":
+        return 1.0
+    raw = (cfg.get("crypto_usdt_rates") or {}).get(code)
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None
+
+
+async def _crypto_usdt_rate(coin: str) -> float:
+    if (coin or "").strip().upper() == "USDT":
+        return 1.0
+    cfg = await get_platform_config()
+    rate = _configured_crypto_usdt_rate(cfg, coin)
+    if rate is None:
+        raise HTTPException(
+            503, f"Taux {coin.upper()}→USDT non configuré. Contactez l'administrateur.")
+    return rate
 
 
 def _compute_fee(fcfg: dict, amount: float) -> float:
@@ -12952,6 +13693,7 @@ async def _record_admin_request(request: Request, status_code: int) -> None:
 
 class AdminConversionConfigReq(BaseModel):
     conversion_rates: Optional[dict] = None
+    crypto_usdt_rates: Optional[dict] = None
     conversion_limits: Optional[dict] = None
     conversion_pairs_enabled: Optional[dict] = None
     conversion_fee: Optional[dict] = None
@@ -12962,6 +13704,8 @@ async def admin_get_conversion_config(admin=Depends(get_admin)):
     cfg = await get_platform_config()
     return {
         "rates": cfg.get("conversion_rates") or {},
+        "crypto_usdt_rates": cfg.get("crypto_usdt_rates") or {"USDT": 1.0},
+        "crypto_usdt_rates_updated_at": cfg.get("crypto_usdt_rates_updated_at"),
         "limits": cfg.get("conversion_limits") or {},
         "pairs_enabled": cfg.get("conversion_pairs_enabled") or {},
         "fee": cfg.get("conversion_fee") or {},
@@ -12974,6 +13718,25 @@ async def admin_update_conversion_config(req: AdminConversionConfigReq, admin=De
     updates: dict = {}
     if req.conversion_rates is not None:
         updates["conversion_rates"] = req.conversion_rates
+    if req.crypto_usdt_rates is not None:
+        crypto_rates: dict[str, float] = {"USDT": 1.0}
+        for raw_coin, raw_rate in req.crypto_usdt_rates.items():
+            coin = str(raw_coin or "").strip().upper()
+            if coin == "USDT":
+                continue
+            if not re.fullmatch(r"[A-Z0-9]{2,16}", coin):
+                raise HTTPException(400, f"Code crypto invalide : {coin or '(vide)'}")
+            if raw_rate in (None, ""):
+                continue
+            try:
+                rate = float(raw_rate)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Taux USDT invalide pour {coin}")
+            if not math.isfinite(rate) or rate <= 0 or rate > 1e15:
+                raise HTTPException(400, f"Taux USDT invalide pour {coin}")
+            crypto_rates[coin] = rate
+        updates["crypto_usdt_rates"] = crypto_rates
+        updates["crypto_usdt_rates_updated_at"] = now_iso()
     if req.conversion_limits is not None:
         updates["conversion_limits"] = req.conversion_limits
     if req.conversion_pairs_enabled is not None:
@@ -13069,16 +13832,27 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
             pass
     cfg = await get_transfer_config()
     crypto_section = (cfg.get("crypto") or {})
-    fees = (crypto_section.get("fees") or {})
     fees_gw_fixed = (crypto_section.get("fees_gateway_fixed") or {})
-    hidden = set(crypto_section.get("hidden_coins") or [])
+    fees_pf_fixed = (crypto_section.get("fees_platform_fixed") or {})
+    hidden = {str(c).upper() for c in (crypto_section.get("hidden_coins") or [])}
+    rate_cfg = await get_platform_config()
     result = []
     for c in sorted(coins.keys()):
+        c = c.upper()
         if c in hidden:
             continue
+        usdt_rate = _configured_crypto_usdt_rate(rate_cfg, c)
+        if usdt_rate is None:
+            continue
         entry = coins[c]
-        entry["fee_pct"] = float(fees.get(c, 4.0))
+        gw_pct, pf_pct = _crypto_fee_split_pct(crypto_section, c)
+        entry["fee_pct"] = gw_pct + pf_pct
+        entry["gateway_fee_pct"] = gw_pct
+        entry["platform_fee_pct"] = pf_pct
         entry["gateway_fee_fixed"] = float(fees_gw_fixed.get(c, 0) or 0)
+        entry["platform_fee_fixed"] = float(fees_pf_fixed.get(c, 0) or 0)
+        entry["fee_fixed"] = entry["gateway_fee_fixed"] + entry["platform_fee_fixed"]
+        entry["usdt_rate"] = usdt_rate
         result.append(entry)
     return result
 
@@ -13131,11 +13905,10 @@ async def admin_crypto_coins(direction: str = "withdrawal",
     else:
         cfg = await get_transfer_config()
         section = cfg.get("crypto") or {}
-    fees = section.get("fees") or {}
-    fees_g = section.get("fees_gateway") or {}
-    fees_p = section.get("fees_platform") or {}
     fees_g_fixed = section.get("fees_gateway_fixed") or {}
-    hidden = set(section.get("hidden_coins") or [])
+    fees_p_fixed = section.get("fees_platform_fixed") or {}
+    hidden = {str(c).upper() for c in (section.get("hidden_coins") or [])}
+    rate_cfg = await get_platform_config()
     # Always include configured coins even if not returned by API (e.g. temporarily disabled)
     for c in fees:
         coins.setdefault(c, c)
@@ -13143,17 +13916,19 @@ async def admin_crypto_coins(direction: str = "withdrawal",
         coins.setdefault(c, c)
     result = []
     for c in sorted(coins.keys()):
-        total = float(fees.get(c, 4.0))
-        gw = float(fees_g[c]) if c in fees_g else total
-        pf = float(fees_p[c]) if c in fees_p else 0.0
+        c = c.upper()
+        gw, pf = _crypto_fee_split_pct(section, c)
         gw_fixed = float(fees_g_fixed[c]) if c in fees_g_fixed else 0.0
+        pf_fixed = float(fees_p_fixed[c]) if c in fees_p_fixed else 0.0
         result.append({
             "coin": c,
             "name": coins[c],
-            "fee_pct": total,
+            "fee_pct": gw + pf,
             "gateway_fee_pct": gw,
             "platform_fee_pct": pf,
             "gateway_fee_fixed": gw_fixed,
+            "platform_fee_fixed": pf_fixed,
+            "usdt_rate": _configured_crypto_usdt_rate(rate_cfg, c),
             "hidden": c in hidden,
         })
     return result

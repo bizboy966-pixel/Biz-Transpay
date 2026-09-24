@@ -16,10 +16,18 @@ const GROUPS = ['USDT → FCFA', 'FCFA → USDT', 'FCFA ↔ FCFA'];
 
 export default function AdminRates() {
   const [cfg, setCfg] = useState(null);
+  const [cryptoCoins, setCryptoCoins] = useState([]);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => { api.get('/admin/conversion/config').then(({ data }) => setCfg(data)).catch(() => toast.error('Erreur')); }, []);
+  useEffect(() => {
+    api.get('/admin/conversion/config')
+      .then(({ data }) => setCfg(data))
+      .catch(() => toast.error('Impossible de charger les taux'));
+    api.get('/admin/crypto/coins', { params: { direction: 'deposit' } })
+      .then(({ data }) => setCryptoCoins(Array.isArray(data) ? data : []))
+      .catch(() => toast.error('Impossible de charger le catalogue crypto'));
+  }, []);
 
   const grouped = useMemo(() => {
     const g = {}; GROUPS.forEach((n) => (g[n] = []));
@@ -43,12 +51,14 @@ export default function AdminRates() {
   const save = async () => {
     setSaving(true);
     try {
-      await api.patch('/admin/conversion/config', {
+      const { data } = await api.patch('/admin/conversion/config', {
         conversion_rates: cfg.rates,
+        crypto_usdt_rates: cfg.crypto_usdt_rates,
         conversion_limits: cfg.limits,
         conversion_pairs_enabled: cfg.pairs_enabled,
         conversion_fee: cfg.fee,
       });
+      setCfg(data);
       toast.success('Enregistré');
       setDirty(false);
     } catch (e) { toast.error(e.response?.data?.detail || 'Erreur'); }
@@ -101,6 +111,56 @@ export default function AdminRates() {
               className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-200 text-sm" />
           </div>
         </div>
+      </div>
+
+      {/* Admin-managed crypto valuations. A missing rate keeps that coin unavailable
+          in IziChangePay money flows rather than silently treating it as USDT. */}
+      <div className="bg-white border border-slate-100 rounded-2xl p-5">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center"><Coins className="w-5 h-5" /></div>
+          <div>
+            <h2 className="font-cabinet font-bold text-slate-900">Crypto → USDT</h2>
+            <p className="text-[11px] text-slate-500">Taux saisis par l’administrateur. 1 unité crypto = valeur USDT. Un taux absent bloque cet actif.</p>
+          </div>
+        </div>
+        <p className="text-[10px] text-slate-500 mb-4">
+          {cfg.crypto_usdt_rates_updated_at
+            ? `Dernière mise à jour : ${new Date(cfg.crypto_usdt_rates_updated_at).toLocaleString()}`
+            : 'Aucun taux crypto enregistré.'}
+        </p>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {Array.from(new Map([
+            ...cryptoCoins.map((c) => [c.coin, c]),
+            ...Object.keys(cfg.crypto_usdt_rates || {})
+              .filter((coin) => coin !== 'USDT')
+              .map((coin) => [coin, { coin, name: coin }]),
+          ]).values()).filter((c) => c.coin && c.coin !== 'USDT').map((c) => (
+            <label key={c.coin} className="p-3 rounded-xl border border-slate-200">
+              <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                1 {c.coin} = ? USDT
+              </span>
+              <span className="block text-[10px] text-slate-400 truncate">{c.name || c.coin}</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={cfg.crypto_usdt_rates?.[c.coin] ?? ''}
+                onChange={(e) => patch(
+                  `crypto_usdt_rates.${c.coin}`,
+                  e.target.value === '' ? null : e.target.value
+                )}
+                data-testid={`crypto-rate-${c.coin}`}
+                placeholder="Non configuré"
+                className="mt-2 w-full px-2 py-1.5 rounded-lg border border-slate-200 text-sm font-mono"
+              />
+            </label>
+          ))}
+        </div>
+        {cryptoCoins.length === 0 && Object.keys(cfg.crypto_usdt_rates || {}).filter((c) => c !== 'USDT').length === 0 && (
+          <p className="text-xs text-amber-700 bg-amber-50 rounded-lg p-3">
+            Aucun actif crypto disponible dans le catalogue IziChangePay.
+          </p>
+        )}
       </div>
 
       {/* Rates & limits grid */}

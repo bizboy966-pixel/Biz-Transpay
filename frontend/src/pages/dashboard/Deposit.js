@@ -246,38 +246,66 @@ function MethodPicker({ features, onPick }) {
 function CryptoDepositForm({ onSuccess }) {
   const { user } = useAuth();
   const [assets, setAssets] = useState([]);
+  const [assetsError, setAssetsError] = useState('');
   const [fullName, setFullName] = useState(user?.full_name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [refundAddress, setRefundAddress] = useState('');
   const [assetCode, setAssetCode] = useState('USDT.TRC20');
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
+  const idempotencyRef = useRef({ fingerprint: '', key: '' });
 
   useEffect(() => {
     api.get('/crypto/assets').then(({ data }) => {
       setAssets(data);
       const usdtTrc = data.find((a) => a.asset_code === 'USDT.TRC20') || data[0];
       if (usdtTrc) setAssetCode(usdtTrc.asset_code);
-    }).catch(() => {});
+      if (!data.length) setAssetsError('Aucun actif crypto avec un taux USDT configuré n’est disponible.');
+    }).catch(() => setAssetsError('Impossible de charger les actifs crypto.'));
   }, []);
 
   const asset = assets.find((a) => a.asset_code === assetCode);
   const amt = parseFloat(amount) || 0;
-  const canSubmit = fullName && email && refundAddress && asset && amt >= 1 && !loading;
+  const min = Number(asset?.minimum ?? 0);
+  const max = Number(asset?.maximum ?? 10 ** 12);
+  const feePct = Number(asset?.fee_pct || 0);
+  const feeFixed = Number(asset?.fee_fixed || 0);
+  const rate = Number(asset?.usdt_rate || 0);
+  const estimatedFeeUsdt = (amt * feePct / 100 + feeFixed) * rate;
+  const estimatedCreditUsdt = Math.max(0, amt * rate - estimatedFeeUsdt);
+  const canSubmit = fullName && email && refundAddress && asset && rate > 0
+    && amt > 0 && amt >= min && amt <= max && estimatedCreditUsdt > 0 && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
     if (!canSubmit) return;
+    const fingerprint = JSON.stringify([
+      amt, assetCode, fullName.trim(), email.trim().toLowerCase(),
+      refundAddress.trim(),
+    ]);
+    if (!idempotencyRef.current.key
+        || idempotencyRef.current.fingerprint !== fingerprint) {
+      idempotencyRef.current = {
+        fingerprint,
+        key: window.crypto?.randomUUID?.()
+          || `deposit-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+    }
     setLoading(true);
     try {
       const { data } = await api.post('/deposits/crypto', {
         amount: amt, asset_code: assetCode, full_name: fullName, email,
         refund_address: refundAddress.trim(), origin_url: window.location.origin,
+        idempotency_key: idempotencyRef.current.key,
       });
       onSuccess(data);
     } catch (err) {
       const detail = err.response?.data?.detail;
       toast.error(typeof detail === 'string' ? detail : 'Erreur lors de la création du dépôt');
+      if (err.response?.status && err.response.status < 500
+          && err.response.status !== 409) {
+        idempotencyRef.current = { fingerprint: '', key: '' };
+      }
     } finally {
       setLoading(false);
     }
@@ -291,8 +319,13 @@ function CryptoDepositForm({ onSuccess }) {
     <form onSubmit={submit} className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-6 space-y-3 sm:space-y-4">
       <div className="bg-orange-50 border border-orange-100 rounded-xl p-2.5 sm:p-3 flex items-start gap-2 sm:gap-2.5">
         <Bitcoin className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-orange-600 mt-0.5 shrink-0" />
-        <div className="text-[11px] sm:text-xs text-slate-700"><b>Dépôt crypto instantané.</b> Votre solde USDT est crédité dès la confirmation on-chain (généralement quelques minutes).</div>
+        <div className="text-[11px] sm:text-xs text-slate-700"><b>Dépôt crypto instantané.</b> Les actifs autres que USDT sont convertis au taux affiché; votre portefeuille est crédité en USDT après confirmation.</div>
       </div>
+      {assetsError && (
+        <div className="bg-amber-50 border border-amber-100 rounded-xl p-3 text-[11px] text-amber-800">
+          {assetsError}
+        </div>
+      )}
 
       <Field label="Nom complet">
         <input data-testid="dep-name" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Awa Diallo" required className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-orange-500 text-xs sm:text-sm" />
@@ -331,9 +364,27 @@ function CryptoDepositForm({ onSuccess }) {
         <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Utilisée uniquement si le paiement échoue et doit être remboursé.</div>
       </Field>
 
-      <Field label={`Montant (${asset?.coin || 'USDT'})`}>
-        <input data-testid="dep-amount" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10" min="1" required className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-orange-500 text-xs sm:text-sm" />
-        <div className="mt-1 text-[10px] sm:text-xs text-slate-500">Minimum : 1 {asset?.coin || 'USDT'}</div>
+      <Field label={`Montant à envoyer (${asset?.coin || 'USDT'})`}>
+        <input data-testid="dep-amount" type="number" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10" min={min} max={max} required className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-orange-500 text-xs sm:text-sm" />
+        <div className="mt-1 text-[10px] sm:text-xs text-slate-500">
+          Limites : {min}–{max.toLocaleString()} {asset?.coin || ''}
+        </div>
+        {amt > 0 && asset && (
+          <div className="mt-2 rounded-lg bg-slate-50 p-2.5 text-[10px] sm:text-xs space-y-1">
+            <div className="flex justify-between text-slate-600">
+              <span>Taux appliqué</span>
+              <span>1 {asset.coin} = {rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT</span>
+            </div>
+            <div className="flex justify-between text-slate-600">
+              <span>Frais estimés ({feePct}%)</span>
+              <span>{estimatedFeeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT</span>
+            </div>
+            <div className="flex justify-between border-t border-slate-200 pt-1 font-bold text-emerald-700">
+              <span>Crédit estimé</span>
+              <span>{estimatedCreditUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT</span>
+            </div>
+          </div>
+        )}
       </Field>
 
       <button type="submit" disabled={!canSubmit} data-testid="btn-dep-submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50 inline-flex items-center justify-center gap-2">
@@ -394,9 +445,13 @@ function CryptoDepositTracker({ deposit: initial }) {
           <h2 className="mt-3 font-cabinet text-xl sm:text-2xl font-extrabold text-slate-900">Paiement confirmé avec succès !</h2>
           {deposit.amount_net != null ? (
             <div className="mt-3 mx-auto max-w-xs bg-slate-50 rounded-xl p-3 text-left text-[11px] sm:text-xs space-y-1">
-              <div className="flex justify-between"><span className="text-slate-500">Reçu (brut)</span><span className="font-semibold">{Number(deposit.amount_gross ?? deposit.amount).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.coin}</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Frais ({deposit.fee_pct ?? '-'}%)</span><span className="font-semibold text-red-600">−{Number(deposit.fee || 0).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.coin}</span></div>
-              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-700 font-bold">Crédité (net)</span><span className="font-cabinet font-extrabold text-emerald-600">{Number(deposit.amount_net).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.coin}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Reçu (brut)</span><span className="font-semibold">{Number(deposit.amount_crypto ?? deposit.amount).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.amount_crypto_currency || deposit.coin}</span></div>
+              {deposit.usdt_rate != null && (
+                <div className="flex justify-between"><span className="text-slate-500">Taux appliqué</span><span>1 {deposit.coin} = {Number(deposit.usdt_rate).toLocaleString(undefined,{maximumFractionDigits:8})} USDT</span></div>
+              )}
+              <div className="flex justify-between"><span className="text-slate-500">Équivalent brut</span><span>{Number(deposit.amount_gross_usdt ?? deposit.amount_gross ?? deposit.amount).toLocaleString(undefined,{maximumFractionDigits:6})} USDT</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Frais ({deposit.fee_pct ?? '-'}%)</span><span className="font-semibold text-red-600">−{Number(deposit.fee || 0).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.fee_currency || 'USDT'}</span></div>
+              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-700 font-bold">Crédité (net)</span><span className="font-cabinet font-extrabold text-emerald-600">{Number(deposit.amount_net).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.credit_currency || 'USDT'}</span></div>
             </div>
           ) : (
             <p className="mt-1 text-xs sm:text-sm text-slate-500">{deposit.amount} {deposit.coin} ont été crédités sur votre portefeuille.</p>

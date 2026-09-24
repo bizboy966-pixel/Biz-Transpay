@@ -211,6 +211,7 @@ class CryptoDepositRequest(BaseModel):
     email: EmailStr
     refund_address: str = Field(..., min_length=1)  # required by izichangepay
     origin_url: str
+    idempotency_key: str = Field(..., min_length=8, max_length=120)
 
 
 # ---------- Payment link crypto (customer-side) ----------
@@ -222,6 +223,7 @@ class LinkPayRequest(BaseModel):
     email: EmailStr
     refund_address: str = Field(..., min_length=1)  # required on-chain address
     origin_url: str
+    idempotency_key: str = Field(..., min_length=8, max_length=120)
     turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 

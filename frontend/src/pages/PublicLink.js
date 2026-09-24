@@ -151,6 +151,7 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
   // Universal links let the customer pay in USDT via crypto — always show USDT here.
   const displayCurrency = link.currency === 'UNIVERSAL' ? 'USDT' : link.currency;
   const [assets, setAssets] = useState([]);
+  const [assetsError, setAssetsError] = useState('');
   const [assetCode, setAssetCode] = useState('USDT.TRC20');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -159,17 +160,33 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
   const [loading, setLoading] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
   const turnstileRef = useRef(null);
+  const idempotencyRef = useRef({ fingerprint: '', key: '' });
 
   useEffect(() => {
-    api.get('/crypto/assets').then(({ data }) => setAssets(data)).catch(() => {});
+    api.get('/crypto/assets')
+      .then(({ data }) => {
+        setAssets(data);
+        if (!data.length) setAssetsError('Aucun actif crypto avec un taux USDT configuré n’est disponible.');
+      })
+      .catch(() => setAssetsError('Impossible de charger les actifs crypto.'));
   }, []);
 
   const asset = assets.find((a) => a.asset_code === assetCode);
   const amt = parseFloat(amount) || 0;
+  const rate = Number(asset?.usdt_rate || 0);
+  const feePct = Number(asset?.fee_pct || 0);
+  const feeFixed = Number(asset?.fee_fixed || 0);
+  const feeBearer = link.fee_bearer || 'customer';
+  const feeCoin = rate > 0 ? (amt / rate) * feePct / 100 + feeFixed : 0;
+  const feeUsdt = feeCoin * rate;
+  const customerPaysFee = feeBearer !== 'owner';
+  const chargedCoin = rate > 0 ? (amt + (customerPaysFee ? feeUsdt : 0)) / rate : 0;
   const belowMin = isFree && amt < (link.min_amount || 0);
   const aboveMax = isFree && amt > (link.max_amount || 0);
   const canSubmit = fullName && email && refundAddress && amt > 0 && !belowMin
-    && !aboveMax && turnstile.enabled && turnstileToken && !loading;
+    && !aboveMax && rate > 0 && chargedCoin >= Number(asset?.minimum ?? 0)
+    && chargedCoin <= Number(asset?.maximum ?? 10 ** 12)
+    && turnstile.enabled && turnstileToken && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -179,12 +196,25 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
         : 'Veuillez terminer la vérification anti-bot.');
       return;
     }
+    const fingerprint = JSON.stringify([
+      link.id, isFree ? amt : Number(link.amount), assetCode,
+      fullName.trim(), email.trim().toLowerCase(), refundAddress.trim(),
+    ]);
+    if (!idempotencyRef.current.key
+        || idempotencyRef.current.fingerprint !== fingerprint) {
+      idempotencyRef.current = {
+        fingerprint,
+        key: window.crypto?.randomUUID?.()
+          || `link-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+    }
     setLoading(true);
     try {
       const { data } = await api.post('/links/pay', {
         slug: link.slug, amount: isFree ? amt : undefined,
         asset_code: assetCode, full_name: fullName, email,
         refund_address: refundAddress.trim(), origin_url: window.location.origin,
+        idempotency_key: idempotencyRef.current.key,
         turnstile_token: turnstileToken,
       });
       onSuccess(data);
@@ -193,6 +223,10 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
       turnstileRef.current?.reset();
       const detail = err.response?.data?.detail;
       toast.error(typeof detail === 'string' ? detail : 'Erreur lors du paiement');
+      if (err.response?.status && err.response.status < 500
+          && err.response.status !== 409) {
+        idempotencyRef.current = { fingerprint: '', key: '' };
+      }
     } finally { setLoading(false); }
   };
 
@@ -201,6 +235,11 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
 
   return (
     <form onSubmit={submit} className="mt-4 space-y-3">
+      {assetsError && (
+        <div className="rounded-lg bg-amber-50 border border-amber-100 p-2.5 text-[10px] text-amber-800">
+          {assetsError}
+        </div>
+      )}
       <div className="rounded-xl bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] p-3 sm:p-4 text-white">
         <div className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-80">{link.title}</div>
         {isFree ? (
@@ -213,6 +252,22 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
         )}
         {link.description && <div className="mt-1 text-[10px] sm:text-[11px] opacity-80">{link.description}</div>}
       </div>
+      {asset && amt > 0 && rate > 0 && (
+        <div className="rounded-xl bg-slate-50 p-3 text-[10px] sm:text-xs space-y-1">
+          <div className="flex justify-between text-slate-600">
+            <span>Taux appliqué</span>
+            <span>1 {asset.coin} = {rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT</span>
+          </div>
+          <div className="flex justify-between text-slate-600">
+            <span>Frais estimés ({feePct}%)</span>
+            <span>{feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT</span>
+          </div>
+          <div className="flex justify-between border-t border-slate-200 pt-1 font-bold text-slate-800">
+            <span>{customerPaysFee ? 'Montant crypto à envoyer' : 'Montant crypto de base'}</span>
+            <span>{chargedCoin.toLocaleString(undefined, { maximumFractionDigits: 6 })} {asset.coin}</span>
+          </div>
+        </div>
+      )}
 
       <Field label="Nom complet">
         <input data-testid="pay-name" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Votre nom" required className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none text-xs sm:text-sm" />
@@ -272,7 +327,7 @@ function CryptoLinkTracker({ payment, link }) {
       try {
         const { data } = await api.get(`/links/payments/${payment.id}`);
         setStatus(data.status);
-        if (['paid', 'expired', 'failed'].includes(data.status)) stopRef.current = true;
+        if (['paid', 'expired', 'failed', 'canceled'].includes(data.status)) stopRef.current = true;
       } catch {/* ignore */}
     };
     poll();
@@ -281,7 +336,7 @@ function CryptoLinkTracker({ payment, link }) {
   }, [payment.id]);
 
   const isDone = status === 'paid';
-  const isFailed = ['expired', 'failed', 'rejected'].includes(status);
+  const isFailed = ['expired', 'failed', 'rejected', 'canceled'].includes(status);
   const copy = (v, label) => { navigator.clipboard.writeText(v); toast.success(`${label} copié`); };
   const _link = link;
 

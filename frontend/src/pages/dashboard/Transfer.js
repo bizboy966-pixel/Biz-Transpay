@@ -446,6 +446,7 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
 // ------- BIZ TO CRYPTO -------
 function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   const turnstileRef = useRef(null);
+  const idempotencyRef = useRef({ fingerprint: '', key: '' });
   const ccfg = config?.crypto || { enabled: false };
   const [coins, setCoins] = useState([]);
   const [loadingCoins, setLoadingCoins] = useState(true);
@@ -491,10 +492,12 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   }, [walletAddress, network]);
 
   const amt = parseFloat(amount) || 0;
-  const feePct = crypto?.fee_pct || 4;
-  const feeFixed = parseFloat(crypto?.gateway_fee_fixed) || 0;
+  const rate = Number(crypto?.usdt_rate || 0);
+  const feePct = Number(crypto?.fee_pct ?? 4);
+  const feeFixed = Number(crypto?.fee_fixed ?? 0);
   const fee = amt * feePct / 100 + feeFixed;
-  const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
+  const feeUsdt = fee * rate;
+  const totalDebit = (feeBearer === 'sender' ? amt + fee : amt) * rate;
   const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
 
   // Human-readable fee label. Hides internal gateway/platform split; only
@@ -504,14 +507,15 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
     : `${feePct}%`;
 
   // For crypto, currency = crypto code (e.g. USDT). Balance is looked up on user object.
-  const currency = cryptoCode || 'USDT';
-  const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
+  const currency = 'USDT';
+  const bal = Number(balance?.balance_usdt || 0);
   const min = network?.min || 0, max = network?.max || 10 ** 12;
   // Address is valid when either (a) a regex matched OR (b) no regex is
   // configured for this network → we cannot validate client-side, so accept
   // any non-empty value (backend does the definitive check).
   const addressOk = !!walletAddress && (addressValidation.ok !== false);
-  const canSubmit = crypto && network && addressOk && amt >= min && amt <= max
+  const canSubmit = crypto && network && rate > 0 && addressOk
+    && amt >= min && amt <= max && fee < amt
     && totalDebit <= bal && fullName && email && turnstileToken;
 
   // Human-readable list of what's still missing, shown when the button is disabled.
@@ -531,6 +535,18 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
       toast.error('Veuillez terminer la vérification anti-bot.');
       return;
     }
+    const fingerprint = JSON.stringify([
+      cryptoCode, networkCode, walletAddress.trim(), amt, feeBearer,
+      fullName.trim(), email.trim().toLowerCase(),
+    ]);
+    if (!idempotencyRef.current.key
+        || idempotencyRef.current.fingerprint !== fingerprint) {
+      idempotencyRef.current = {
+        fingerprint,
+        key: window.crypto?.randomUUID?.()
+          || `crypto-withdrawal-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+    }
     setPending(true);
     try {
       const { data } = await api.post('/transfers', {
@@ -538,6 +554,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         recipient_name: fullName,
         crypto: cryptoCode, network: networkCode, wallet_address: walletAddress,
         fee_bearer: feeBearer, amount: amt, currency, description,
+        idempotency_key: idempotencyRef.current.key,
         turnstile_token: turnstileToken,
       });
       onDone(data, { type: 'biz_to_crypto' });
@@ -545,6 +562,10 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
       setTurnstileToken('');
       turnstileRef.current?.reset();
       toast.error(err.response?.data?.detail || 'Erreur');
+      if (err.response?.status && err.response.status < 500
+          && err.response.status !== 409) {
+        idempotencyRef.current = { fingerprint: '', key: '' };
+      }
     }
     finally { setPending(false); }
   };
@@ -577,7 +598,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
           className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm bg-white"
         >
           {coins.map((c) => {
-            const fx = parseFloat(c.gateway_fee_fixed) || 0;
+            const fx = parseFloat(c.fee_fixed) || 0;
             const feeStr = fx > 0 ? `${fx} ${c.coin} + ${c.fee_pct}%` : `${c.fee_pct}%`;
             return (
               <option key={c.coin} value={c.coin} data-testid={`crypto-opt-${c.coin}`}>
@@ -613,7 +634,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
 
       <Field label={`Montant (${cryptoCode})`}>
         <input data-testid="crypto-amount" type="number" step="0.0001" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-        <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min} · Max {max.toLocaleString()} · Solde : {bal.toLocaleString()} {cryptoCode}</div>
+        <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min} · Max {max.toLocaleString()} {cryptoCode} · Solde : {bal.toLocaleString()} USDT</div>
       </Field>
 
       <FeeBearerSwitch value={feeBearer} onChange={setFeeBearer} />
@@ -622,8 +643,9 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         <div className="p-3 sm:p-4 bg-slate-50 rounded-xl space-y-1 sm:space-y-1.5 text-xs sm:text-sm" data-testid="crypto-summary">
           <Row l="Réseau" v={network?.name || networkCode} />
           <Row l="Montant envoyé" v={`${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} />
-          <Row l="Frais appliqués" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feeLabel})`} />
-          <Row l="Total débité de votre solde" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} strong />
+          <Row l="Taux appliqué" v={`1 ${cryptoCode} = ${rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT`} />
+          <Row l="Frais appliqués" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feeLabel}) · ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} />
+          <Row l="Total débité de votre solde" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} strong />
           <Row l="Montant final reçu par le bénéficiaire" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} green />
         </div>
       )}
@@ -646,9 +668,10 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
           ['Cryptomonnaie', `${cryptoCode} · ${network?.name || networkCode}`],
           ['Adresse', walletAddress, 'mono'],
           ['Montant envoyé', `${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'strong'],
-          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`],
+          ['Taux', `1 ${cryptoCode} = ${rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT`],
+          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} · ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`],
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
-          ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'strong'],
+          ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'green'],
         ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-crypto-confirm" />
       )}

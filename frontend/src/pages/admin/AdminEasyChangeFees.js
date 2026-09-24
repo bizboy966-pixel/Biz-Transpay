@@ -9,6 +9,7 @@ const EMPTY_CRYPTO = {
   fees_gateway: {},
   fees_platform: {},
   fees_gateway_fixed: {},
+  fees_platform_fixed: {},
   hidden_coins: [],
 };
 
@@ -54,6 +55,7 @@ export default function AdminEasyChangeFees({ direction }) {
     gateway: Number(crypto.fees_gateway?.[coin] ?? crypto.fees?.[coin] ?? fallback ?? 0),
     platform: Number(crypto.fees_platform?.[coin] ?? 0),
     gatewayFixed: Number(crypto.fees_gateway_fixed?.[coin] ?? 0),
+    platformFixed: Number(crypto.fees_platform_fixed?.[coin] ?? 0),
   });
 
   const updateFee = (coin, part, value) => {
@@ -61,12 +63,17 @@ export default function AdminEasyChangeFees({ direction }) {
     const gateway = { ...(crypto.fees_gateway || {}) };
     const platform = { ...(crypto.fees_platform || {}) };
     const gatewayFixed = { ...(crypto.fees_gateway_fixed || {}) };
+    const platformFixed = { ...(crypto.fees_platform_fixed || {}) };
     const fees = { ...(crypto.fees || {}) };
     if (part === 'gateway') gateway[coin] = safe;
     if (part === 'platform') platform[coin] = safe;
     if (part === 'gatewayFixed') gatewayFixed[coin] = safe;
+    if (part === 'platformFixed') platformFixed[coin] = safe;
     fees[coin] = Number((gateway[coin] + platform[coin]).toFixed(4));
-    patchCrypto({ fees, fees_gateway: gateway, fees_platform: platform, fees_gateway_fixed: gatewayFixed });
+    patchCrypto({
+      fees, fees_gateway: gateway, fees_platform: platform,
+      fees_gateway_fixed: gatewayFixed, fees_platform_fixed: platformFixed,
+    });
   };
 
   const toggleHidden = (coin) => {
@@ -170,7 +177,8 @@ export default function AdminEasyChangeFees({ direction }) {
                 <th className="text-left px-2 py-2">Actif</th>
                 <th className="text-right px-2 py-2">Frais passerelle %</th>
                 <th className="text-right px-2 py-2">Frais plateforme %</th>
-                {isDeposit ? null : <th className="text-right px-2 py-2">Frais fixe</th>}
+                {isDeposit ? null : <th className="text-right px-2 py-2">Fixe passerelle</th>}
+                {isDeposit ? null : <th className="text-right px-2 py-2">Fixe plateforme</th>}
                 <th className="text-right px-2 py-2">Total</th>
                 <th className="text-center px-2 py-2">Statut</th>
                 <th className="text-center px-2 py-2">Action</th>
@@ -188,7 +196,15 @@ export default function AdminEasyChangeFees({ direction }) {
                     <td className="px-2 py-2 text-right"><input type="number" min="0" step="0.1" value={split.gateway} disabled={isHidden} onChange={(e) => updateFee(coin.coin, 'gateway', e.target.value)} className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-right disabled:bg-slate-100" /></td>
                     <td className="px-2 py-2 text-right"><input type="number" min="0" step="0.1" value={split.platform} disabled={isHidden} onChange={(e) => updateFee(coin.coin, 'platform', e.target.value)} className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-right disabled:bg-slate-100" /></td>
                     {!isDeposit && <td className="px-2 py-2 text-right"><input type="number" min="0" step="0.0001" value={split.gatewayFixed} disabled={isHidden} onChange={(e) => updateFee(coin.coin, 'gatewayFixed', e.target.value)} className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-right disabled:bg-slate-100" /></td>}
-                    <td className="px-2 py-2 text-right"><span className="px-1.5 py-0.5 rounded-md bg-slate-900 text-white font-bold">{total.toFixed(2)}%</span></td>
+                    {!isDeposit && <td className="px-2 py-2 text-right"><input type="number" min="0" step="0.0001" value={split.platformFixed} disabled={isHidden} onChange={(e) => updateFee(coin.coin, 'platformFixed', e.target.value)} className="w-20 px-2 py-1 border border-slate-200 rounded-lg text-right disabled:bg-slate-100" /></td>}
+                    <td className="px-2 py-2 text-right">
+                      <span className="px-1.5 py-0.5 rounded-md bg-slate-900 text-white font-bold">{total.toFixed(2)}%</span>
+                      {!isDeposit && (split.gatewayFixed > 0 || split.platformFixed > 0) && (
+                        <span className="block text-[9px] text-slate-500 mt-1">
+                          + {(split.gatewayFixed + split.platformFixed).toFixed(6)} {coin.coin}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-2 py-2 text-center"><span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${isHidden ? 'bg-slate-100 text-slate-500' : 'bg-emerald-50 text-emerald-700'}`}>{isHidden ? 'Masqué' : 'Actif'}</span></td>
                     <td className="px-2 py-2 text-center"><button onClick={() => toggleHidden(coin.coin)} title={isHidden ? 'Restaurer' : 'Masquer'} className="text-red-500 hover:bg-red-50 rounded-lg p-1">{isHidden ? <Eye className="w-3.5 h-3.5 text-emerald-600" /> : <Trash2 className="w-3.5 h-3.5" />}</button></td>
                   </tr>

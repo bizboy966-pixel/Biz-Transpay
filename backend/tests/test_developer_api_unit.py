@@ -359,7 +359,8 @@ class FakeCollection:
             if all((not isinstance(v, dict) and value(doc, k) == v) or
                    (isinstance(v, dict) and
                     (("$ne" in v and value(doc, k) != v["$ne"]) or
-                     ("$nin" in v and value(doc, k) not in v["$nin"])))
+                      ("$nin" in v and value(doc, k) not in v["$nin"]) or
+                      ("$in" in v and value(doc, k) in v["$in"])))
                    for k, v in query.items()):
                 for key, value in update.get("$set", {}).items():
                     target = doc
@@ -367,6 +368,20 @@ class FakeCollection:
                     for part in parts[:-1]:
                         target = target.setdefault(part, {})
                     target[parts[-1]] = value
+                for key, value in update.get("$inc", {}).items():
+                    target = doc
+                    parts = key.split(".")
+                    for part in parts[:-1]:
+                        target = target.setdefault(part, {})
+                    target[parts[-1]] = target.get(parts[-1], 0) + value
+                for key, value in update.get("$addToSet", {}).items():
+                    target = doc
+                    parts = key.split(".")
+                    for part in parts[:-1]:
+                        target = target.setdefault(part, {})
+                    values = target.setdefault(parts[-1], [])
+                    if value not in values:
+                        values.append(value)
                 for key in update.get("$unset", {}):
                     target = doc
                     parts = key.split(".")
@@ -410,6 +425,8 @@ class FakeCollection:
 
 class FakeDB:
     def __init__(self):
+        self.crypto_deposits = FakeCollection()
+        self.payment_links = FakeCollection()
         self.momo_deposits = FakeCollection()
         self.link_payments = FakeCollection()
         self.merchant_payments = FakeCollection()
@@ -816,6 +833,278 @@ async def test_crypto_payment_sandbox_snapshots_fee(monkeypatch):
 
 
 @run_async
+async def test_crypto_payment_sandbox_converts_non_usdt_with_explicit_rate(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(server, "_crypto_usdt_rate",
+                        lambda coin: asyncio.sleep(0, result=50000))
+    monkeypatch.setattr(server, "get_deposit_config",
+                        lambda: asyncio.sleep(0, result={
+                            "crypto": {
+                                "fees": {"BTC": 1},
+                                "fees_gateway": {"BTC": 0.6},
+                                "fees_platform": {"BTC": 0.4},
+                            },
+                        }))
+    monkeypatch.setattr(server, "_idempotency_claim",
+                        lambda *args: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(server, "_idempotency_store",
+                        lambda *args: asyncio.sleep(0))
+
+    result = await server.merchant_create_payment(
+        server.MerchantPaymentRequest(amount=0.01, coin="BTC"),
+        request(headers={"Idempotency-Key": "btc-payment-key"}),
+    )
+
+    saved = fake.merchant_payments.docs[0]
+    assert result["amount"] == "0.01"
+    assert result["amount_currency"] == "BTC"
+    assert result["amount_gross"] == "500.00"
+    assert result["amount_net"] == "495.00"
+    assert result["wallet_credit_currency"] == "USDT"
+    assert result["usdt_rate"] == 50000
+    assert saved["amount_crypto"] == 0.01
+    assert saved["amount_gross_usdt"] == 500
+
+
+def test_crypto_usdt_rate_does_not_assume_non_usdt_is_one_to_one():
+    assert server._configured_crypto_usdt_rate(
+        {"crypto_usdt_rates": {"BTC": 65000}}, "BTC") == 65000
+    assert server._configured_crypto_usdt_rate(
+        {"crypto_usdt_rates": {}}, "BTC") is None
+    assert server._configured_crypto_usdt_rate({}, "USDT") == 1.0
+
+
+@run_async
+async def test_non_usdt_deposit_settlement_uses_snapshotted_rate_once(monkeypatch):
+    fake = FakeDB()
+    row = {
+        "id": "btc-deposit", "user_id": "user-a", "status": "pending",
+        "amount": 0.01, "coin": "BTC", "network": "BTC",
+        "usdt_rate": 50000, "fee_pct": 1.5,
+        "gateway_fee_pct": 1, "platform_fee_pct": 0.5,
+        "gateway_fee_fixed": 0, "platform_fee_fixed": 0,
+    }
+    fake.crypto_deposits.docs.append(row)
+    monkeypatch.setattr(server, "db", fake)
+    credits = []
+    transactions = []
+
+    async def credit(user_id, field, amount, operation_id):
+        credits.append((user_id, field, amount, operation_id))
+        return True
+
+    async def record(*args, **kwargs):
+        transactions.append((args, kwargs))
+
+    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    monkeypatch.setattr(server, "record_tx", record)
+
+    assert await server._settle_izipay_payment(
+        "btc-deposit", "intent-btc", "tx-btc", "webhook")
+    assert await server._settle_izipay_payment(
+        "btc-deposit", "intent-btc", "tx-btc", "reconcile")
+
+    saved = fake.crypto_deposits.docs[0]
+    assert len(credits) == 1
+    assert credits[0][1:3] == ("balance_usdt", 492.5)
+    assert saved["amount_gross_usdt"] == 500
+    assert saved["amount_crypto"] == 0.01
+    assert saved["fee"] == 7.5
+    assert saved["amount_net"] == 492.5
+    assert saved["status"] == "confirmed"
+    assert len(transactions) == 1
+
+
+@run_async
+async def test_link_payment_settlement_credits_usdt_and_consumes_single_use_once(monkeypatch):
+    fake = FakeDB()
+    fake.link_payments.docs.append({
+        "id": "link-payment-1", "link_id": "link-1", "status": "pending",
+        "coin": "BTC", "network": "BTC", "usdt_rate": 50000,
+        "charged_amount": 0.01, "charged_amount_usdt": 500,
+        "fee": 5, "fee_currency": "USDT", "gateway_fee": 3,
+        "platform_fee": 2, "wallet_credit_amount": 495,
+        "single_use_claim_id": "claim-1", "customer_email": "buyer@example.com",
+    })
+    fake.payment_links.docs.append({
+        "id": "link-1", "user_id": "merchant-owner",
+        "active": True, "payments_received": 0, "total_received": 0,
+        "link_payment_operation_ids": [], "single_use_claim_id": "claim-1",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    credits = []
+    transactions = []
+
+    async def credit(user_id, field, amount, operation_id):
+        credits.append((user_id, field, amount, operation_id))
+
+    async def record(*args, **kwargs):
+        transactions.append((args, kwargs))
+
+    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    monkeypatch.setattr(server, "record_tx", record)
+
+    await server._settle_izipay_payment(
+        "link-payment-1", "intent-link", "tx-link", "webhook")
+    await server._settle_izipay_payment(
+        "link-payment-1", "intent-link", "tx-link", "reconcile")
+
+    lp = fake.link_payments.docs[0]
+    link = fake.payment_links.docs[0]
+    assert lp["status"] == "paid"
+    assert lp["amount_net"] == 495
+    assert len(credits) == 1
+    assert credits[0][:3] == ("merchant-owner", "balance_usdt", 495)
+    assert link["payments_received"] == 1
+    assert link["total_received"] == 495
+    assert link["active"] is False
+    assert link["link_payment_operation_ids"] == ["link-payment-1"]
+    assert len(transactions) == 1
+
+
+@run_async
+async def test_merchant_payment_settlement_credits_snapshotted_usdt_net(monkeypatch):
+    fake = FakeDB()
+    fake.merchant_payments.docs.append({
+        "id": "merchant-payment-1", "merchant_id": "merchant-a",
+        "status": "initiated", "coin": "BTC", "amount": 0.01,
+        "amount_gross": 500, "amount_gross_usdt": 500,
+        "amount_net": 495, "amount_net_usdt": 495,
+        "fee": 5, "fee_currency": "USDT", "gateway_fee": 3,
+        "platform_fee": 2, "fee_pct": 1, "usdt_rate": 50000,
+        "customer_email": "buyer@example.com", "reference": "order-1",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    credits = []
+    transactions = []
+    delivered = []
+
+    async def credit(user_id, field, amount, operation_id):
+        credits.append((user_id, field, amount, operation_id))
+
+    async def record(*args, **kwargs):
+        transactions.append((args, kwargs))
+
+    async def deliver(user_id, event, payload):
+        delivered.append((user_id, event, payload))
+
+    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    monkeypatch.setattr(server, "record_tx", record)
+    monkeypatch.setattr(server, "_deliver_webhook", deliver)
+
+    await server._settle_izipay_payment(
+        "merchant-payment-1", "intent-merchant", "tx-merchant", "webhook")
+
+    saved = fake.merchant_payments.docs[0]
+    assert saved["status"] == "paid"
+    assert saved["amount_gross_usdt"] == 500
+    assert saved["amount_net_usdt"] == 495
+    assert saved["fee"] == 5
+    assert credits == [(
+        "merchant-a", "balance_usdt", 495,
+        "izipay:merchant-payment:merchant-payment-1",
+    )]
+    assert len(transactions) == 1
+    assert len(delivered) == 1
+    assert delivered[0][1] == "payment.completed"
+
+
+@run_async
+async def test_provider_failure_cannot_override_settlement_or_keep_single_use_claim(monkeypatch):
+    fake = FakeDB()
+    fake.link_payments.docs.extend([
+        {"id": "link-settling", "link_id": "link-a",
+         "single_use_claim_id": "claim-settling", "status": "settling"},
+        {"id": "link-pending", "link_id": "link-b",
+         "single_use_claim_id": "claim-pending", "status": "pending"},
+    ])
+    monkeypatch.setattr(server, "db", fake)
+    released = []
+
+    async def release(link_id, claim_id):
+        released.append((link_id, claim_id))
+
+    monkeypatch.setattr(server, "_release_single_use_link", release)
+    await server._fail_izipay_payment("link-settling", "expired")
+    await server._fail_izipay_payment("link-pending", "expired")
+
+    assert fake.link_payments.docs[0]["status"] == "settling"
+    assert fake.link_payments.docs[1]["status"] == "expired"
+    assert released == [("link-b", "claim-pending")]
+
+
+@run_async
+async def test_merchant_payout_failure_refunds_once_and_ignores_late_success(monkeypatch):
+    fake = FakeDB()
+    payout = {
+        "id": "payout-1", "merchant_id": "merchant-a",
+        "status": "pending", "total_debit": 105,
+        "amount": 0.01, "coin": "BTC",
+    }
+    fake.merchant_payouts.docs.append(dict(payout))
+    fake.transactions.docs.append({
+        "id": "tx-payout-1", "status": "pending",
+        "metadata": {"merchant_payout_id": "payout-1"},
+    })
+    monkeypatch.setattr(server, "db", fake)
+    refunds = []
+    delivered = []
+
+    async def refund(user_id, field, amount, operation_id):
+        refunds.append((user_id, field, amount, operation_id))
+
+    async def deliver(user_id, event, payload):
+        delivered.append((user_id, event, payload))
+
+    monkeypatch.setattr(server, "_refund_wallet_once", refund)
+    monkeypatch.setattr(server, "_deliver_webhook", deliver)
+
+    await server._apply_merchant_payout_status(
+        dict(payout), "failed", {"reason": "provider rejected"})
+    await server._apply_merchant_payout_status(
+        dict(fake.merchant_payouts.docs[0]), "completed", {})
+
+    saved = fake.merchant_payouts.docs[0]
+    assert saved["status"] == "failed"
+    assert saved["refunded_at"]
+    assert fake.transactions.docs[0]["status"] == "failed"
+    assert len(refunds) == 1
+    assert refunds[0][2:] == (105, "merchant-payout:payout-1")
+    assert len(delivered) == 1
+    assert delivered[0][1] == "payout.failed"
+
+
+@run_async
+async def test_reconciliation_routes_success_through_shared_settlement(monkeypatch):
+    intent = {
+        "status": "completed", "merchantReference": "deposit-1",
+        "txHash": "tx-1",
+    }
+
+    async def get_payment_intent(intent_id):
+        assert intent_id == "intent-1"
+        return intent
+
+    monkeypatch.setattr(server, "izipay", SimpleNamespace(
+        is_configured=lambda: True,
+        get_payment_intent=get_payment_intent,
+    ))
+    settled = []
+
+    async def settle(*args, **kwargs):
+        settled.append((args, kwargs))
+
+    monkeypatch.setattr(server, "_settle_izipay_payment", settle)
+    await server._reconcile_intent("intent-1")
+
+    assert settled == [(("deposit-1", "intent-1", "tx-1"),
+                        {"source": "reconcile"})]
+
+
+@run_async
 async def test_legacy_payments_route_dispatches_mobile_money(monkeypatch):
     monkeypatch.setattr(server, "_authenticate_merchant",
                         lambda req: asyncio.sleep(0, result=merchant()))
@@ -914,6 +1203,46 @@ async def test_crypto_payout_sandbox_snapshots_fee(monkeypatch):
     assert result["total_debit"] == "104.00"
     assert fake.merchant_payouts.docs[0]["fee"] == 4
     assert fake.merchant_payouts.docs[0]["total_debit"] == 104
+
+
+@run_async
+async def test_crypto_payout_sandbox_converts_non_usdt_to_wallet_debit(monkeypatch):
+    fake = FakeDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_authenticate_merchant",
+                        lambda req: asyncio.sleep(0, result=merchant()))
+    monkeypatch.setattr(server, "_crypto_usdt_rate",
+                        lambda coin: asyncio.sleep(0, result=50000))
+    monkeypatch.setattr(server, "get_transfer_config",
+                        lambda: asyncio.sleep(0, result={
+                            "crypto": {
+                                "fees": {"BTC": 1},
+                                "fees_gateway": {"BTC": 0.6},
+                                "fees_platform": {"BTC": 0.4},
+                            },
+                        }))
+    monkeypatch.setattr(server, "_idempotency_claim",
+                        lambda *args: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(server, "_idempotency_store",
+                        lambda *args: asyncio.sleep(0))
+
+    result = await server.merchant_create_payout(
+        server.PayoutCreate(
+            amount=0.01, coin="BTC", network="BTC",
+            destination_address="bc1" + "q" * 32,
+        ),
+        request(headers={"Idempotency-Key": "btc-payout-key"}),
+    )
+
+    saved = fake.merchant_payouts.docs[0]
+    assert result["amount"] == "0.01"
+    assert result["amount_currency"] == "BTC"
+    assert result["amount_gross_usdt"] == "500.00"
+    assert result["fee"] == "5.00"
+    assert result["total_debit"] == "505.00"
+    assert result["wallet_debit_currency"] == "USDT"
+    assert saved["amount_gross_usdt"] == 500
+    assert saved["total_debit"] == 505
 
 
 @run_async
