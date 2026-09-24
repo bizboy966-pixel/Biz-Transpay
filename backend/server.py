@@ -296,10 +296,6 @@ def _turnstile_config() -> tuple[str, str, set[str]]:
 async def turnstile_config():
     """Expose only the public Turnstile site key to the browser."""
     _secret, site_key, _hostnames = _turnstile_config()
-    minimum = safe_limit(operator.get("min"))
-    maximum = safe_limit(operator.get("max"))
-    if maximum == 0:
-        maximum = None
     return {
         "enabled": bool(_secret and site_key),
         "site_key": site_key or None,
