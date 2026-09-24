@@ -3992,6 +3992,16 @@ def _paydunya_payin_ready(
     )
 
 
+def _canonical_mobile_money_operator_code(country: Any, code: Any) -> str:
+    country_code = str(country or "").strip().upper()
+    operator_code = str(code or "").strip().lower()
+    if country_code == "TG" and operator_code in {
+        "togocel_tg", "t-money-togo",
+    }:
+        return "tmoney_tg"
+    return operator_code
+
+
 def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
     configured = _paydunya_credentials_configured(cfg)
     modes = cfg.get("modes")
@@ -4036,7 +4046,8 @@ def _paydunya_public_config(cfg: dict, admin: bool = False) -> dict:
                 "country": op.get("country"),
                 "country_label": op.get("country_label")
                     or paydunya.COUNTRY_LABELS.get(op.get("country"), op.get("country")),
-                "code": op.get("code"),
+                "code": _canonical_mobile_money_operator_code(
+                    op.get("country"), op.get("code")),
                 "name": op.get("name") or op.get("code"),
                 "currency": op.get("currency") or "XOF",
                 "min": float(op.get("min", 100)),
@@ -4083,11 +4094,12 @@ def _find_deposit_operator(cfg: dict, country: str, code: str) -> Optional[dict]
 
 def _active_operator(catalog: list[dict], country: str, code: str) -> Optional[dict]:
     country_up = str(country or "").upper()
-    code_lo = str(code or "").lower()
+    code_lo = _canonical_mobile_money_operator_code(country_up, code)
     return next((
         op for op in catalog
         if str(op.get("country") or "").upper() == country_up
-        and str(op.get("code") or "").lower() == code_lo
+        and _canonical_mobile_money_operator_code(
+            country_up, op.get("code")) == code_lo
         and op.get("active", True)
         and not op.get("archived", False)
         and not op.get("hidden", False)
@@ -10308,7 +10320,10 @@ async def _developer_operator(
     ):
         op = next((item for item in cfg.get("catalog", [])
                    if str(item.get("country", "")).upper() == payload.country.upper()
-                   and str(item.get("code", "")).lower() == payload.operator.lower()
+                   and _canonical_mobile_money_operator_code(
+                       payload.country, item.get("code"))
+                   == _canonical_mobile_money_operator_code(
+                       payload.country, payload.operator)
                    and str(item.get("currency", payload.currency)).upper() == payload.currency.upper()
                    and item.get("active", True)
                    and not item.get("archived", False)
@@ -13193,6 +13208,7 @@ def _documentation_money_route(
     currency = str(operator.get("currency") or "").upper()
     code = str(operator.get("code") or operator.get("withdraw_mode") or "").strip()
     code = re.sub(r"^mbiyo_", "", code, flags=re.IGNORECASE)
+    code = _canonical_mobile_money_operator_code(country, code)
     if not re.fullmatch(r"[A-Z]{2}", country):
         return None
     if not re.fullmatch(r"[A-Z0-9]{3,12}", currency):

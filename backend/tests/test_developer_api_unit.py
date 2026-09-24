@@ -505,6 +505,35 @@ async def test_developer_operator_enforces_catalog_amount_limits(
 
 
 @run_async
+async def test_developer_operator_accepts_public_tmoney_code_for_internal_route(
+        monkeypatch):
+    async def paydunya_config(decrypt=False):
+        return {
+            "enabled": True,
+            "modes": {"softpay_direct": {"enabled": True}},
+            "catalog": [{
+                "country": "TG", "code": "togocel_tg", "name": "TogoCom (T-Money)",
+                "currency": "XOF", "min": 500, "max": 500000, "active": True,
+            }],
+        }
+
+    async def mbiyo_config(decrypt=False):
+        return {"enabled": False, "catalog": []}
+
+    monkeypatch.setattr(server, "get_paydunya_config", paydunya_config)
+    monkeypatch.setattr(server, "get_mbiyo_config", mbiyo_config)
+
+    config, operator = await server._developer_operator(
+        merchant(env="test"),
+        payload_direct(amount=2650, operator="tmoney_tg"),
+        required_mode="softpay_direct",
+    )
+
+    assert config["_gateway_provider"] == "paydunya"
+    assert operator["code"] == "togocel_tg"
+
+
+@run_async
 async def test_mutations_require_idempotency_key(monkeypatch):
     monkeypatch.setattr(server, "_authenticate_merchant",
                         lambda req: asyncio.sleep(0, result=merchant()))

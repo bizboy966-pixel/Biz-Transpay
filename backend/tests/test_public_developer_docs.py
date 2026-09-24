@@ -35,7 +35,7 @@ async def test_public_docs_catalog_separates_eligibility_and_live_routes(monkeyp
         },
         "catalog": [{
             "country": "TG", "country_label": "Togo",
-            "code": "tmoney_tg", "name": "T-Money",
+            "code": "togocel_tg", "name": "T-Money",
             "currency": "XOF", "min": 100, "max": 500000,
             "active": True,
         }],
@@ -86,6 +86,12 @@ async def test_public_docs_catalog_separates_eligibility_and_live_routes(monkeyp
     assert {country["country"] for country in catalog["payout"]["available"]} == {
         "GH", "TG",
     }
+    tg_payin_routes = next(
+        country["routes"] for country in catalog["payin"]["available"]
+        if country["country"] == "TG"
+    )
+    assert any(route["operator_code"] == "tmoney_tg" for route in tg_payin_routes)
+    assert all(route["operator_code"] != "togocel_tg" for route in tg_payin_routes)
     for direction in ("payin", "payout"):
         for status in ("eligible", "available"):
             for country in catalog[direction][status]:
