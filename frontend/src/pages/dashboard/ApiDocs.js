@@ -7,13 +7,69 @@ import api from '../../api';
 const API = `${process.env.REACT_APP_PUBLIC_DOMAIN || 'https://biz-transppayy.com'}/api/v1`;
 
 const products = [
+  { id: 'crypto-payin', name: 'BizPay Crypto · Pay-In', label: 'Dépôt crypto', tone: 'blue', path: '/payments', description: 'Créez un paiement crypto et redirigez le client vers sa page de paiement.' },
   { id: 'checkout', name: 'BizPay Checkout · PAR', label: 'Redirection', tone: 'blue', path: '/checkout', description: 'Créez une session PAR et redirigez votre client vers la page de paiement du prestataire.' },
   { id: 'psr', name: 'BizPay PSR', label: 'SDK intégré', tone: 'violet', path: '/psr', description: 'Créez une session PSR et remettez son jeton à usage unique au SDK de paiement intégré.' },
   { id: 'direct', name: 'BizPay Direct · SoftPay', label: 'Confirmation téléphone', tone: 'emerald', path: '/direct-payments', description: 'Déclenchez une confirmation Mobile Money depuis votre serveur, sans redirection.' },
-  { id: 'push', name: 'BizPUSH', label: 'Envoi automatisé', tone: 'amber', path: '/push', description: 'Envoyez des fonds à un bénéficiaire et suivez le traitement en arrière-plan.' },
+  { id: 'push', name: 'BizPUSH · Mobile Money', label: 'Retrait automatique', tone: 'amber', path: '/push', description: 'Envoyez des fonds vers un numéro Mobile Money et suivez le statut du retrait.' },
+  { id: 'crypto-payout', name: 'BizPUSH · Crypto', label: 'Retrait crypto', tone: 'amber', path: '/payouts', description: 'Envoyez des crypto vers une adresse et vérifiez le traitement du retrait.' },
 ];
 
 const examples = {
+  'crypto-payin': {
+    curl: `curl -X POST ${API}/payments \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY" \\
+  -H "Idempotency-Key: order-2048-crypto-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{"amount":25,"coin":"USDT","accepted_networks":["TRC20"],"reference":"ORDER-2048","customer_email":"client@example.com"}'`,
+    js: `const response = await fetch('${API}/payments', {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer sk_test_YOUR_KEY',
+    'Idempotency-Key': 'order-2048-crypto-1',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    amount: 25, coin: 'USDT', accepted_networks: ['TRC20'],
+    reference: 'ORDER-2048', customer_email: 'client@example.com',
+  }),
+});
+const payment = await response.json();
+if (!response.ok) throw new Error(payment.message || payment.code);
+console.log(payment.id, payment.status, payment.payment_url);`,
+    php: `<?php
+$ch = curl_init('${API}/payments');
+curl_setopt_array($ch, [
+  CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => [
+    'Authorization: Bearer sk_test_YOUR_KEY',
+    'Idempotency-Key: order-2048-crypto-1',
+    'Content-Type: application/json',
+  ],
+  CURLOPT_POSTFIELDS => json_encode([
+    'amount' => 25, 'coin' => 'USDT',
+    'accepted_networks' => ['TRC20'], 'reference' => 'ORDER-2048',
+  ]),
+]);
+$payment = json_decode(curl_exec($ch), true);
+curl_close($ch);
+if (isset($payment['payment_url'])) {
+  header('Location: ' . $payment['payment_url']);
+}`,
+    python: `import requests
+
+response = requests.post(
+    '${API}/payments',
+    json={'amount': 25, 'coin': 'USDT',
+          'accepted_networks': ['TRC20'], 'reference': 'ORDER-2048'},
+    headers={'Authorization': 'Bearer sk_test_YOUR_KEY',
+             'Idempotency-Key': 'order-2048-crypto-1'},
+    timeout=20,
+)
+response.raise_for_status()
+payment = response.json()
+print(payment['id'], payment['status'], payment.get('payment_url'))`,
+  },
   checkout: {
     curl: `curl -X POST ${API}/checkout \\
   -H "Authorization: Bearer sk_test_YOUR_KEY" \\
@@ -209,6 +265,68 @@ transfer = requests.post(
 ).json()
 print('Queued:', transfer['id'], transfer['status'])`,
   },
+  'crypto-payout': {
+    curl: `curl -X POST ${API}/payouts \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY" \\
+  -H "Idempotency-Key: withdrawal-88-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{"amount":25,"coin":"USDT","network":"TRC20","destination_address":"TJRabPrwbZy45sbavfcjinPJC18kjpRTv8","reference":"WD-88","fee_bearer":"sender"}'`,
+    js: `const response = await fetch('${API}/payouts', {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer sk_test_YOUR_KEY',
+    'Idempotency-Key': 'withdrawal-88-attempt-1',
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    amount: 25, coin: 'USDT', network: 'TRC20',
+    destination_address: 'TJRabPrwbZy45sbavfcjinPJC18kjpRTv8',
+    reference: 'WD-88', fee_bearer: 'sender',
+  }),
+});
+const payout = await response.json();
+if (!response.ok) throw new Error(payout.message || payout.code);
+const statusResponse = await fetch(\`${API}/payouts/\${payout.id}/status\`, {
+  headers: { Authorization: 'Bearer sk_test_YOUR_KEY' },
+});
+console.log(payout.id, (await statusResponse.json()).status);`,
+    php: `<?php
+$ch = curl_init('${API}/payouts');
+curl_setopt_array($ch, [
+  CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true,
+  CURLOPT_HTTPHEADER => [
+    'Authorization: Bearer sk_test_YOUR_KEY',
+    'Idempotency-Key: withdrawal-88-attempt-1',
+    'Content-Type: application/json',
+  ],
+  CURLOPT_POSTFIELDS => json_encode([
+    'amount' => 25, 'coin' => 'USDT', 'network' => 'TRC20',
+    'destination_address' => 'TJRabPrwbZy45sbavfcjinPJC18kjpRTv8',
+    'reference' => 'WD-88', 'fee_bearer' => 'sender',
+  ]),
+]);
+$payout = json_decode(curl_exec($ch), true);
+curl_close($ch);
+echo $payout['id'] . ' ' . $payout['status'];`,
+    python: `import requests
+
+headers = {'Authorization': 'Bearer sk_test_YOUR_KEY',
+           'Idempotency-Key': 'withdrawal-88-attempt-1'}
+response = requests.post(
+    '${API}/payouts',
+    json={'amount': 25, 'coin': 'USDT', 'network': 'TRC20',
+          'destination_address': 'TJRabPrwbZy45sbavfcjinPJC18kjpRTv8',
+          'reference': 'WD-88', 'fee_bearer': 'sender'},
+    headers=headers, timeout=20,
+)
+response.raise_for_status()
+payout = response.json()
+status = requests.get('${API}/payouts/' + payout['id'] + '/status',
+                      headers={'Authorization': headers['Authorization']},
+                      timeout=20)
+status.raise_for_status()
+print(payout['id'], status.json()['status'])`,
+  },
 };
 
 const statusCode = `curl ${API}/payments/PAYMENT_ID \\
@@ -217,7 +335,10 @@ const statusCode = `curl ${API}/payments/PAYMENT_ID \\
 curl ${API}/payments/PAYMENT_ID/status \\
   -H "Authorization: Bearer sk_test_YOUR_KEY"
 
-curl ${API}/push/PAYOUT_ID/status \\
+curl ${API}/push/PUSH_ID/status \\
+  -H "Authorization: Bearer sk_test_YOUR_KEY"
+
+curl ${API}/payouts/PAYOUT_ID/status \\
   -H "Authorization: Bearer sk_test_YOUR_KEY"`;
 
 function CodeBlock({ code }) {
@@ -241,6 +362,21 @@ function Info({ icon: Icon, title, children, tone = 'blue' }) {
   return <div className={`my-4 flex gap-3 rounded-xl border p-4 text-[13px] leading-relaxed ${styles[tone]}`}>
     <Icon className="mt-0.5 h-5 w-5 shrink-0" />
     <div><strong className="block mb-1">{title}</strong>{children}</div>
+  </div>;
+}
+
+function ApiTable({ headers, rows }) {
+  return <div className="my-4 overflow-x-auto rounded-xl border border-slate-200 bg-white">
+    <table className="w-full min-w-[620px] border-collapse text-left text-xs">
+      <thead className="bg-slate-100 text-slate-700">
+        <tr>{headers.map((header) => <th key={header} className="px-3 py-2.5 font-bold">{header}</th>)}</tr>
+      </thead>
+      <tbody className="divide-y divide-slate-100 text-slate-700">
+        {rows.map((row, index) => <tr key={`${index}-${row[0]}`}>
+          {row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-2.5 align-top leading-relaxed">{cell}</td>)}
+        </tr>)}
+      </tbody>
+    </table>
   </div>;
 }
 
@@ -276,8 +412,10 @@ export default function ApiDocs() {
   const [query, setQuery] = useState('');
   const sections = useMemo(() => [
     ['start', 'Démarrage'], ['auth', 'Authentification'], ['environments', 'Test et live'],
+    ['crypto-payin', 'Pay-In crypto'],
     ['checkout', 'BizPay Checkout · PAR'], ['psr', 'BizPay PSR'],
-    ['direct', 'BizPay Direct · SoftPay'], ['push', 'BizPUSH'],
+    ['direct', 'BizPay Direct · SoftPay'], ['push', 'Retrait Mobile Money'],
+    ['crypto-payout', 'Retrait crypto'], ['contracts', 'Champs et réponses'],
     ['status', 'Statuts et suivi'], ['webhooks', 'Webhooks signés'], ['errors', 'Erreurs'],
   ].filter(([, label]) => !query.trim() || label.toLowerCase().includes(query.toLowerCase())), [query]);
 
@@ -332,28 +470,173 @@ export default function ApiDocs() {
       <main className="api-docs-main min-w-0 max-w-3xl flex-1 px-5 py-8 lg:px-10 lg:py-12">
           <section id="start" className="scroll-mt-24">
           <div className="inline-flex items-center gap-2 rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700"><Code2 className="h-3 w-3" /> API REST · v1</div>
-          <h1 className="mt-3 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900 md:text-4xl">Paiements Mobile Money, sans détour.</h1>
-           <p className="mt-3 text-[15px] leading-relaxed text-slate-700">Quatre intégrations distinctes : PAR redirige vers la page de paiement hébergée, PSR utilise le SDK intégré, Direct déclenche SoftPay et BizPUSH envoie des fonds. Les autorisations de clé sont séparées pour chacun des parcours de paiement.</p>
+          <h1 className="mt-3 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900 md:text-4xl">Dépôts et retraits automatisés par API.</h1>
+           <p className="mt-3 text-[15px] leading-relaxed text-slate-700">Intégrez les dépôts crypto et Mobile Money, puis les retraits Mobile Money ou crypto. PAR redirige vers la page du prestataire, PSR utilise le SDK intégré, Direct déclenche SoftPay et BizPUSH initie les envois. Chaque création et lecture utilise les autorisations de clé correspondantes.</p>
           <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">{products.map((product) => <a href={`#${product.id}`} key={product.id} className="rounded-xl border border-slate-200 bg-white p-4 hover:-translate-y-0.5 hover:border-blue-300 transition-transform"><div className="font-cabinet text-sm font-bold text-slate-900">{product.name}</div><div className="mt-1 text-xs leading-relaxed text-slate-500">{product.description}</div><div className="mt-3 font-mono text-[11px] text-blue-700">POST {product.path}</div></a>)}</div>
-           <Info icon={ShieldCheck} title="Vérification serveur-à-serveur" tone="blue">Après la création par <code>/checkout</code>, <code>/psr</code>, <code>/direct-payments</code> ou <code>/payments</code> avec <code>payment_method: "mobile_money"</code>, conservez l’identifiant et interrogez <code>GET /payments/{'{id}'}/status</code>. Biz-transPay confirme le résultat auprès du prestataire, passe le paiement à <code>paid</code> et crédite le compte exactement une fois. Après 10 minutes sans confirmation, le statut devient <code>failed</code>.</Info>
+            <Info icon={ShieldCheck} title="Vérification serveur-à-serveur" tone="blue">Après chaque dépôt, conservez l’identifiant et vérifiez son statut par <code>GET /payments/{'{id}'}/status</code>. Un retrait Mobile Money se suit sur <code>GET /push/{'{id}'}/status</code> et un retrait crypto sur <code>GET /payouts/{'{id}'}/status</code>. Un statut <code>pending</code> ou <code>processing</code> n’est pas une confirmation de réussite.</Info>
         </section>
 
-         <section id="auth" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Authentification</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Envoyez la clé secrète dans l'en-tête Bearer. Les clés secrètes restent sur votre serveur : ne les placez jamais dans une application mobile ou un navigateur.</p><CodeBlock code={`Authorization: Bearer sk_test_YOUR_KEY\nContent-Type: application/json`} /><Info icon={KeyRound} title="Une clé, plusieurs intégrations" tone="blue">Lors de sa création, choisissez les intégrations nécessaires : <code>checkout:create</code> pour PAR, <code>psr:create</code> pour PSR, <code>direct:create</code> pour Direct / SoftPay, <code>push:create</code> pour BizPUSH et <code>payments:read</code> pour consulter les statuts. Le webhook est facultatif.</Info><Info icon={KeyRound} title="Clé et idempotence" tone="amber">Ajoutez une <code>Idempotency-Key</code> unique par tentative métier sur chaque requête POST. Une nouvelle tentative réseau avec la même clé ne créera pas un second paiement.</Info></section>
-         <section id="environments" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Test et live</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">La base URL reste la même. L'environnement est porté par le préfixe de la clé : <code className="font-mono text-blue-700">sk_test_</code> simule le parcours sans appel fournisseur, débit ou crédit réel ; <code className="font-mono text-emerald-700">sk_live_</code> traite les opérations de production. Les données et clés d'idempotence des deux environnements sont isolées. Créez et révoquez vos clés depuis <Link to="/dashboard/api" className="font-semibold text-blue-700 underline">Clés API</Link>.</p><Info icon={ShieldCheck} title="Simuler un paiement confirmé" tone="blue">Après avoir créé un Checkout ou un paiement Direct avec une clé test, appelez le chemin <code>simulation_endpoint</code> renvoyé dans la réponse avec la même clé. Biz-transPay passera l'opération à <code>paid</code> et enverra un webhook de test, sans modifier aucun solde réel.</Info><Info icon={ShieldCheck} title="Numéro Mobile Money" tone="emerald">Vous pouvez envoyer <code>customer_phone</code> au format national ou international. Exemple Togo : <code>91978352</code>, <code>22891978352</code> et <code>+228 91 97 83 52</code>. Biz-transPay compare ces formats de façon sûre lors de la confirmation fournisseur.</Info><CodeBlock code={`curl -X POST ${API}/test/payments/PAYMENT_ID/complete \\
+          <section id="auth" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Authentification</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Envoyez la clé secrète dans l'en-tête Bearer. Les clés secrètes restent sur votre serveur : ne les placez jamais dans une application mobile ou un navigateur. Toutes les routes ci-dessous sont relatives à <code>{API}</code>.</p><CodeBlock code={`Authorization: Bearer sk_test_YOUR_KEY\nContent-Type: application/json`} /><ApiTable headers={['Scope', 'Accès']} rows={[
+            [<code>checkout:create</code>, 'Créer des dépôts crypto, des sessions PAR et des paiements Mobile Money via la route compatible /payments.'],
+            [<code>psr:create</code>, 'Créer une session de dépôt Mobile Money avec le SDK PSR.'],
+            [<code>direct:create</code>, 'Créer une demande Mobile Money Direct / SoftPay.'],
+            [<code>push:create</code>, 'Créer un retrait BizPUSH Mobile Money ou un retrait crypto.'],
+            [<code>payments:read</code>, 'Lire, rechercher et suivre les dépôts et retraits.'],
+          ]} /><Info icon={KeyRound} title="Clé et idempotence" tone="amber">Utilisez une <code>Idempotency-Key</code> distincte par opération métier et réutilisez-la uniquement lors d’un retry réseau de cette même opération. Elle est obligatoire sur <code>/checkout</code>, <code>/psr</code>, <code>/direct-payments</code> et <code>/push</code>. Elle est facultative mais recommandée sur le Pay-In crypto <code>/payments</code> et le retrait crypto <code>/payouts</code>. Les alias <code>/payments</code> en Mobile Money et <code>/bizpush/payouts</code> exigent aussi cette clé. Elle ne peut dépasser 255 caractères; les créations idempotentes sont conservées 24 h.</Info></section>
+          <section id="environments" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Test et live</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">La base URL reste la même. Le préfixe de la clé choisit l’environnement : <code className="font-mono text-blue-700">sk_test_</code> crée des opérations locales sans appel fournisseur ni mouvement de solde réel ; <code className="font-mono text-emerald-700">sk_live_</code> peut déclencher de vrais paiements ou retraits. Les données et clés d’idempotence sont séparées. Créez et révoquez les clés depuis <Link to="/dashboard/api" className="font-semibold text-blue-700 underline">Clés API</Link>. Testez avec une clé test avant de passer en live.</p><Info icon={ShieldCheck} title="Simuler un dépôt confirmé" tone="blue">Pour les paiements Mobile Money, PSR, Direct et crypto, utilisez le chemin <code>simulation_endpoint</code> renvoyé avec une clé test. Il marque localement le dépôt comme confirmé et peut émettre le webhook de test. Les endpoints de retrait BizPUSH et crypto créent uniquement un enregistrement de test en attente : ils n’appellent pas le fournisseur, ne déplacent pas de solde et n’ont pas d’endpoint de simulation de réussite.</Info><Info icon={ShieldCheck} title="Numéro Mobile Money" tone="emerald">Envoyez le code pays ISO-2, l’opérateur actif de votre catalogue et le numéro au format national ou international. Exemple Togo : <code>91978352</code>, <code>22891978352</code> ou <code>+228 91 97 83 52</code>. Vérifiez toujours le couple pays/opérateur/devise configuré dans votre compte.</Info><CodeBlock code={`curl -X POST ${API}/test/payments/PAYMENT_ID/complete \\
   -H "Authorization: Bearer sk_test_YOUR_KEY"`} /></section>
 
-        <div className="space-y-14 mt-12"><ProductExample product="checkout" /><ProductExample product="psr" /><ProductExample product="direct" /><ProductExample product="push" /></div>
+        <div className="space-y-14 mt-12"><ProductExample product="crypto-payin" /><ProductExample product="checkout" /><ProductExample product="psr" /><ProductExample product="direct" /><ProductExample product="push" /><ProductExample product="crypto-payout" /></div>
 
-          <section id="status" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Statuts et suivi</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Une réponse d'acceptation indique que la demande est enregistrée, pas nécessairement que l'argent est arrivé. Conservez l'identifiant et interrogez <code>GET /payments/{'{id}'}/status</code> toutes les 4 à 5 secondes. Chaque lecture déclenche une vérification serveur-à-serveur chez le prestataire. Lorsque celui-ci renvoie <code>successful</code>, Biz-transPay met automatiquement le paiement à <code>paid</code>, crédite le compte exactement une fois et envoie le webhook marchand configuré. Si aucune confirmation n'est obtenue avant la fin des 10 minutes, le statut devient <code>failed</code> et la vérification s'arrête.</p><CodeBlock code={statusCode} /><div className="grid gap-3 sm:grid-cols-3">{[['pending', 'Vérification fournisseur en cours'], ['paid', 'Confirmé et crédité automatiquement'], ['failed', 'Refusé ou délai de 10 minutes expiré']].map(([key, text]) => <div key={key} className="rounded-xl border border-slate-200 bg-white p-3"><code className="font-mono text-xs font-bold text-slate-900">{key}</code><p className="mt-1 text-xs text-slate-500">{text}</p></div>)}</div></section>
-          <section id="webhooks" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Webhooks signés <span className="text-base font-semibold text-slate-400">(recommandés)</span></h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Biz-transPay confirme d'abord le statut directement auprès du prestataire, puis envoie le résultat à votre endpoint. Un paiement Mobile Money confirmé produit l'événement <code>mobile_money.payment.approved</code> avec le statut public <code>paid</code>, la référence marchande, les montants, la devise et la référence fournisseur. La signature HMAC se trouve dans <code>X-BizTransPay-Signature</code>, l'heure dans <code>X-BizTransPay-Timestamp</code> et le type dans <code>X-BizTransPay-Event</code>. Conservez aussi le polling comme reprise si votre endpoint est temporairement indisponible.</p><Info icon={Webhook} title="Source de vérité" tone="emerald">Ne validez jamais une commande à partir d'une redirection navigateur ou d'une notification Mobile Money seule. Acceptez le webhook signé ou vérifiez <code>GET /payments/{'{id}'}/status</code> côté serveur, puis exigez <code>paid</code>.</Info><CodeBlock code={`const signature = req.headers['x-biztranspay-signature'];
+          <section id="contracts" className="scroll-mt-24">
+            <h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Champs, réponses et contrats</h2>
+            <p className="mt-2 text-[14px] leading-relaxed text-slate-700">Les clés API utilisent les routes de création suivantes. Les codes opérateur et réseaux doivent être actifs pour le compte et l’environnement concernés.</p>
+            <ApiTable headers={['Méthode et route', 'Scope', 'Idempotence']} rows={[
+              ['POST /payments (crypto)', 'checkout:create', 'Facultative, recommandée'],
+              ['POST /checkout (Mobile Money PAR)', 'checkout:create', 'Obligatoire'],
+              ['POST /psr (Mobile Money PSR)', 'psr:create', 'Obligatoire'],
+              ['POST /direct-payments (Mobile Money SoftPay)', 'direct:create', 'Obligatoire'],
+              ['POST /push (retrait Mobile Money)', 'push:create', 'Obligatoire'],
+              ['POST /payouts (retrait crypto)', 'push:create', 'Facultative, recommandée'],
+              ['POST /bizpush/payouts (alias de /payouts)', 'push:create', 'Obligatoire'],
+            ]} />
+            <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Dépôts Mobile Money : PAR et PSR</h3>
+            <ApiTable headers={['Champ', 'Type / contrainte', 'Requis']} rows={[
+              [<code>amount</code>, 'Nombre strictement supérieur à 0, dans la devise demandée.', 'Oui'],
+              [<code>currency</code>, 'XOF, XAF, CDF, USD, GMD, GNF, UGX, TZS, KES, RWF, GHS, NGN, ZAR, ZMW ou EGP.', 'Oui'],
+              [<code>country</code>, 'Code pays ISO-2, par ex. TG.', 'Oui'],
+              [<code>operator</code>, 'Code opérateur actif dans le catalogue du compte, par ex. tmoney_tg.', 'Oui'],
+              [<code>customer_phone</code>, '6 à 32 caractères; facultatif pour PAR/PSR si le parcours fournisseur le permet.', 'Non'],
+              [<code>customer_name</code>, '1 à 120 caractères; défaut Client.', 'Non'],
+              [<code>customer_email</code>, 'Adresse e-mail du client.', 'Non'],
+              [<code>fee_bearer</code>, 'client ou merchant; défaut client.', 'Non'],
+              [<code>reference</code>, 'Référence marchande, jusqu’à 128 caractères.', 'Non'],
+              [<code>return_url</code>, 'URL vers laquelle retourner le client après le parcours hébergé.', 'Non'],
+              [<code>metadata</code>, 'Objet JSON libre pour vos données de rapprochement.', 'Non'],
+            ]} />
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-600">PAR renvoie <code>checkout_url</code> pour la page hébergée. PSR renvoie <code>psr_token_url</code>, un lien temporaire à usage unique à transmettre à votre application cliente; le SDK reçoit ensuite le jeton. Ne transmettez jamais la clé secrète à l’application. Les réponses Mobile Money exposent notamment <code>requested_amount</code>, <code>charged_amount</code>, <code>wallet_credit_amount</code>, <code>gateway_fee</code>, <code>platform_fee</code>, <code>fee</code> et <code>fee_bearer</code>. Les frais dépendent de l’opérateur et de sa configuration; utilisez les montants retournés pour le rapprochement.</p>
+            <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Dépôt Mobile Money Direct / SoftPay</h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-700"><code>POST /direct-payments</code> exige les mêmes <code>amount</code>, <code>currency</code>, <code>country</code> et <code>operator</code>, ainsi qu’un <code>customer_phone</code> (6 à 32 caractères). <code>customer_email</code>, <code>reference</code> (1 à 128 caractères), <code>return_url</code> et <code>metadata</code> sont facultatifs. Ce parcours déclenche la demande de confirmation sur le téléphone; il ne redirige pas vers un checkout.</p>
+            <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Dépôt crypto</h3>
+            <ApiTable headers={['Champ', 'Type / valeur', 'Requis']} rows={[
+              [<code>amount</code>, 'Nombre supérieur ou égal à 1.', 'Oui'],
+              [<code>coin</code>, 'Actif crypto demandé; défaut USDT.', 'Non'],
+              [<code>accepted_networks</code>, 'Tableau de réseaux acceptés; défaut TRC20, BEP20 et ERC20.', 'Non'],
+              [<code>payment_method</code>, 'crypto (défaut) ou mobile_money. Pour Mobile Money, préférez /checkout, /psr ou /direct-payments.', 'Non'],
+              [<code>currency, country, operator, customer_phone</code>, 'Requis uniquement avec payment_method=mobile_money.', 'Conditionnel'],
+              [<code>customer_name, customer_email, reference, return_url, metadata</code>, 'Données client, référence marchande, retour et métadonnées.', 'Non'],
+            ]} />
+            <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Retrait BizPUSH Mobile Money · POST /push</h3>
+            <ApiTable headers={['Champ', 'Type / contrainte', 'Requis']} rows={[
+              [<code>amount</code>, 'Nombre strictement supérieur à 0; montant envoyé au bénéficiaire.', 'Oui'],
+              [<code>currency</code>, 'XOF, XAF, CDF, USD, GMD, GNF, UGX, TZS, KES, RWF, GHS, NGN, ZAR, ZMW ou EGP.', 'Oui'],
+              [<code>country</code>, 'Code pays ISO-2.', 'Oui'],
+              [<code>operator</code>, 'Code opérateur actif du catalogue de retrait.', 'Oui'],
+              [<code>beneficiary_phone</code>, '6 à 32 caractères.', 'Oui'],
+              [<code>beneficiary_name, beneficiary_email</code>, 'Identité du bénéficiaire.', 'Non'],
+              [<code>reference</code>, 'Référence marchande, 1 à 128 caractères.', 'Non'],
+              [<code>metadata</code>, 'Objet JSON libre.', 'Non'],
+            ]} />
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-700">La réponse expose <code>id</code>, <code>object: "payout"</code>, <code>product: "bizpush"</code>, <code>status</code>, <code>amount</code>, <code>currency</code>, <code>reference</code>, <code>fee</code>, <code>total_debit</code>, les horodatages et vos métadonnées publiques. <code>total_debit</code> inclut les frais calculés selon le pays et l’opérateur; consultez-le avant de rapprocher le solde. En live, un incident de liquidité du fournisseur peut laisser le retrait en attente de résolution manuelle; ne supposez pas qu’un état pending entraîne un remboursement automatique.</p>
+            <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Retrait crypto · POST /payouts</h3>
+            <ApiTable headers={['Champ', 'Type / contrainte', 'Requis']} rows={[
+              [<code>amount</code>, 'Nombre strictement supérieur à 0.', 'Oui'],
+              [<code>coin</code>, 'Actif crypto demandé; défaut USDT.', 'Non'],
+              [<code>network</code>, 'Réseau actif pour l’actif choisi, par ex. TRC20.', 'Oui'],
+              [<code>destination_address</code>, 'Adresse compatible avec le réseau.', 'Oui'],
+              [<code>fee_bearer</code>, 'sender (défaut) ou recipient.', 'Non'],
+              [<code>reference</code>, 'Référence marchande, jusqu’à 128 caractères.', 'Non'],
+              [<code>beneficiary_name, beneficiary_email, metadata</code>, 'Données facultatives du bénéficiaire et métadonnées.', 'Non'],
+            ]} />
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-700">La réponse inclut <code>amount</code>, <code>amount_net</code>, <code>fee</code>, <code>fee_pct</code>, <code>total_debit</code>, <code>coin</code>, <code>network</code>, <code>asset_code</code>, <code>destination_address</code>, <code>provider_id</code>, <code>provider_status</code>, <code>error_code</code> et les horodatages. La disponibilité et les montants dépendent des actifs et réseaux actifs. <code>/bizpush/payouts</code> est un alias de ce retrait crypto; ce n’est pas le retrait Mobile Money <code>/push</code>.</p>
+            <h3 className="mt-7 font-cabinet text-lg font-bold text-slate-900">Exemples de réponses</h3>
+            <CodeBlock code={`// Dépôt Mobile Money (montants et frais dépendent de l’opérateur)
+{
+  "id": "pay_...",
+  "object": "payment",
+  "product": "bizpay_checkout",
+  "status": "pending",
+  "amount": "12500.00",
+  "requested_amount": "12500.00",
+  "charged_amount": "12500.00",
+  "wallet_credit_amount": "12500.00",
+  "fee": "0.00",
+  "fee_bearer": "client",
+  "currency": "XOF",
+  "reference": "ORDER-2048",
+  "checkout_url": "https://provider.example/...",
+  "simulation_endpoint": null
+}`} />
+            <CodeBlock code={`// Retrait Mobile Money ou crypto: vérifier le statut après création
+{
+  "id": "payout_...",
+  "object": "payout",
+  "status": "pending",
+  "amount": "15000.00",
+  "fee": "150.00",
+  "total_debit": "15150.00",
+  "currency": "XOF",
+  "reference": "PAYROLL-88"
+}`} />
+          </section>
+
+          <section id="status" className="scroll-mt-24">
+            <h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Statuts et suivi</h2>
+            <p className="mt-2 text-[14px] leading-relaxed text-slate-700">Une réponse de création signifie que la requête a été enregistrée, pas que les fonds sont déjà reçus ou envoyés. Faites le suivi depuis votre serveur, avec la même clé API, et ne traitez que l’état terminal positif comme une réussite.</p>
+            <ApiTable headers={['Opération', 'Lecture de statut', 'Autres lectures']} rows={[
+              ['Dépôt crypto ou Mobile Money', 'GET /payments/{id}/status', 'GET /payments/{id}, /completed; GET /payments/search?reference=…; GET /payments?limit=20&offset=0&status=paid'],
+              ['Retrait Mobile Money BizPUSH', 'GET /push/{id}/status', 'GET /push/{id}'],
+              ['Retrait crypto', 'GET /payouts/{id}/status', 'GET /payouts/{id}, /completed; GET /payouts/search?reference=…; GET /payouts?limit=20&offset=0'],
+            ]} />
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-700">Toutes ces lectures demandent <code>payments:read</code>. Un dépôt Mobile Money renvoie généralement <code>pending</code>, puis <code>paid</code> ou <code>failed</code>. Le Pay-In crypto peut passer par <code>initiated</code> et <code>confirming</code> avant <code>paid</code>, ou finir en <code>expired</code>, <code>failed</code> ou <code>canceled</code>. Pour les deux retraits, considérez seulement <code>completed</code> comme un succès; <code>pending</code>, <code>processing</code> et <code>sent</code> ne sont pas des confirmations terminales. Les retraits test restent <code>pending</code>, sans endpoint de simulation.</p>
+            <CodeBlock code={statusCode} />
+            <Info icon={ShieldCheck} title="Reprise après timeout" tone="amber">Si une création expire côté client, renvoyez le même corps avec la même <code>Idempotency-Key</code> afin de retrouver l’opération initiale. N’en créez pas une seconde avant d’avoir vérifié son identifiant et son statut.</Info>
+          </section>
+          <section id="webhooks" className="scroll-mt-24">
+            <h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Webhooks signés <span className="text-base font-semibold text-slate-400">(facultatifs)</span></h2>
+            <p className="mt-2 text-[14px] leading-relaxed text-slate-700">Configurez une URL de webhook et son secret dans la section API du tableau de bord. Les événements actuellement émis sont <code>payment.created</code>, <code>payment.confirming</code>, <code>payment.completed</code>, <code>payment.failed</code>, <code>payment.expired</code>, <code>mobile_money.payment.approved</code>, <code>mobile_money.payment.declined</code>, <code>mobile_money.payment.canceled</code>, <code>push.succeeded</code> et <code>push.failed</code>. Les événements <code>push.*</code> couvrent BizPUSH Mobile Money. Le retrait crypto <code>/payouts</code> n’émet pas actuellement de webhook : utilisez son endpoint de statut.</p>
+            <p className="mt-2 text-[13px] leading-relaxed text-slate-700">Le corps JSON contient <code>id</code>, <code>type</code>, <code>data</code> et <code>created_at</code>. Vérifiez la signature HMAC SHA-256 sur les octets exacts du corps précédés de l’horodatage et d’un point. Utilisez le corps brut, le secret du webhook, l’identifiant d’événement pour dédupliquer et comparez les signatures en temps constant.</p>
+            <ApiTable headers={['En-tête', 'Contenu']} rows={[
+              ['X-BizTransPay-Signature', 'sha256=<HMAC hexadécimal>'],
+              ['X-BizTransPay-Timestamp', 'Horodatage Unix en secondes utilisé pour signer.'],
+              ['X-BizTransPay-Event-Id', 'Identifiant à dédupliquer; une livraison peut être retentée.'],
+              ['X-BizTransPay-Event-Type', 'Nom de l’événement envoyé.'],
+            ]} />
+            <Info icon={Webhook} title="Source de vérité" tone="emerald">Ne validez jamais une commande à partir d’une redirection navigateur ou d’une notification téléphone seule. Vérifiez le webhook signé ou confirmez le statut avec l’API et n’exécutez votre logique métier qu’une fois l’opération terminée.</Info>
+            <CodeBlock code={`import crypto from 'node:crypto';
+
+// Configurez votre serveur pour conserver les octets HTTP bruts dans req.rawBody.
+const rawBody = req.rawBody;
 const timestamp = req.headers['x-biztranspay-timestamp'];
-const expected = 'sha256=' + hmacSha256(
-  process.env.BIZTRANSPAY_WEBHOOK_SECRET,
-  timestamp + '.' + rawBody
-);
-if (!timingSafeEqual(signature, expected)) return res.status(401).end();
-return res.status(204).end();`} /></section>
-        <section id="errors" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Erreurs et bonnes pratiques</h2><ul className="mt-3 space-y-2 text-[14px] leading-relaxed text-slate-700"><li><strong>401</strong> : clé absente, invalide ou désactivée.</li><li><strong>409</strong> : même Idempotency-Key avec un corps différent.</li><li><strong>422</strong> : données métier à corriger avant de réessayer.</li><li>Ne faites pas confiance à une redirection navigateur pour confirmer un paiement.</li><li>Journalisez votre référence métier et l'identifiant Biz-transPay, jamais la clé secrète.</li></ul><Info icon={ShieldCheck} title="Besoin d'une clé ?" >Ouvrez <Link to="/dashboard/api" className="font-semibold text-blue-700 underline">l'espace API</Link> pour créer une clé de test, puis générez une clé live lorsque votre intégration est prête.</Info></section>
+const received = Buffer.from(req.headers['x-biztranspay-signature'] || '');
+const expected = Buffer.from('sha256=' + crypto
+  .createHmac('sha256', process.env.BIZTRANSPAY_WEBHOOK_SECRET)
+  .update(timestamp + '.' + rawBody.toString('utf8'))
+  .digest('hex'));
+
+if (received.length !== expected.length ||
+    !crypto.timingSafeEqual(received, expected)) {
+  return res.status(401).end();
+}
+const event = JSON.parse(rawBody.toString('utf8'));
+// Dédupliquer event.id avant d'appliquer les effets métier.
+return res.status(200).end();`} />
+          </section>
+          <section id="errors" className="scroll-mt-24"><h2 className="mt-12 font-cabinet text-2xl font-extrabold text-slate-900">Erreurs et bonnes pratiques</h2><p className="mt-2 text-[14px] leading-relaxed text-slate-700">Les erreurs renvoient un code HTTP et, en général, un corps avec <code>statusCode</code>, <code>message</code>, <code>code</code> et des <code>details</code> facultatifs. Corrigez les erreurs de validation avant de réessayer; pour un timeout ou une erreur amont ambiguë, vérifiez l’opération avec son idempotency key ou son identifiant. La limite configurée est de 100 requêtes par minute et par clé; respectez les en-têtes de limitation renvoyés, dont <code>Retry-After</code> s’il est présent.</p><ApiTable headers={['HTTP / code', 'Quand / action']} rows={[
+            ['400', 'Champ requis manquant, devise/opérateur/réseau non pris en charge ou requête invalide.'],
+            ['401', 'Clé absente ou invalide. Vérifiez Authorization: Bearer.'],
+            ['403', 'Clé désactivée, compte bloqué ou scope manquant.'],
+            ['404', 'Identifiant inexistant ou appartenant à un autre compte/environnement.'],
+            ['409', 'Conflit : clé d’idempotence réutilisée avec une charge utile différente, paiement déjà payé ou état incompatible.'],
+            ['422', 'Format ou contrainte de champ invalide.'],
+            ['429', 'Limite de requêtes atteinte; respectez Retry-After si présent.'],
+            ['502 / 503', 'Erreur ou indisponibilité fournisseur. Vérifiez le statut avant de créer une autre opération.'],
+            ['MISSING_REQUIRED_FIELD', 'La réponse indique missing_fields; ajoutez les champs requis.'],
+            ['IDEMPOTENCY_KEY_REQUIRED / IDEMPOTENCY_KEY_REUSED', 'Ajoutez une clé ou réutilisez-la seulement avec le corps original.'],
+            ['PAYMENT_METHOD_UNAVAILABLE / CURRENCY_NOT_SUPPORTED', 'Vérifiez le catalogue actif pays/opérateur/devise.'],
+            ['PAYMENT_STATUS_UNKNOWN', 'Résultat fournisseur ambigu; consultez le statut, ne créez pas un doublon.'],
+            ['INSUFFICIENT_BALANCE / INVALID_ASSET / INVALID_DESTINATION_ADDRESS', 'Corrigez le solde ou le couple actif/réseau/adresse avant de réessayer.'],
+          ]} /><Info icon={ShieldCheck} title="Besoin d'une clé ?" >Ouvrez <Link to="/dashboard/api" className="font-semibold text-blue-700 underline">l'espace API</Link> pour créer une clé de test, puis générez une clé live lorsque votre intégration est prête.</Info></section>
       </main>
     </div>
   </div>;

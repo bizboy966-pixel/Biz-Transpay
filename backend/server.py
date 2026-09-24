@@ -11623,10 +11623,10 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     story.append(Paragraph("<b>Documentation officielle de l\'API</b>", styles["Bodybtp"]))
     story.append(Spacer(1, 6))
     story.append(p(f"Version 1.0 . Domaine : <b>{OFFICIAL}</b> . Base URL : <b>{API_BASE}/v1</b>"))
-    story.append(p("Encaissez des paiements Mobile Money ou crypto via une API REST. "
-                   "Biz-transPay verifie automatiquement le statut aupres du prestataire, "
-                   "credite le compte exactement une fois et peut notifier votre serveur "
-                   "avec un webhook HMAC signe."))
+    story.append(p("Cette API REST couvre les dépôts Mobile Money et crypto, ainsi que "
+                   "les retraits Mobile Money BizPUSH et les retraits crypto. Les parcours "
+                   "PAR, PSR et Direct sont distincts; les deux types de retrait ont des "
+                   "routes, des statuts et des règles de notification séparés."))
     story.append(p("<b>Support</b> : depuis votre tableau de bord (> Support) ou par email."))
 
     # ---------------- Auth ----------------
@@ -11647,12 +11647,24 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     ], [3.5 * cm, 3.5 * cm, 9.5 * cm]))
     story.append(p("La cle secrete est affichee UNE SEULE FOIS a la creation. Copiez-la immediatement. "
                    "Si vous la perdez, regenerez-la (l\'ancienne cesse alors de fonctionner)."))
+    story.append(p("Scopes disponibles : <b>checkout:create</b> pour les dépôts crypto, PAR et "
+                   "la route Mobile Money compatible /payments; <b>psr:create</b> pour PSR; "
+                   "<b>direct:create</b> pour Direct; <b>push:create</b> pour les deux types "
+                   "de retrait; <b>payments:read</b> pour la lecture, la recherche et le suivi."))
+    story.append(p("Utilisez toujours une clé Idempotency-Key distincte par opération métier. "
+                   "Elle est obligatoire sur /checkout, /psr, /direct-payments et /push; "
+                   "facultative mais recommandée sur /payments crypto et /payouts. "
+                   "La route /payments en Mobile Money et l'alias /bizpush/payouts l'exigent. "
+                   "Maximum 255 caractères; une réponse idempotente est conservée 24 h."))
 
     # ---------------- Payments (Pay-In) ----------------
     story.append(PageBreak())
     story.append(h2("3. Paiements (Pay-In)"))
-    story.append(p("Encaissez des paiements crypto de vos clients. Notre systeme genere un lien de "
-                   "checkout hoste, vous redirigez le client, puis vous verifiez le statut."))
+    story.append(p("Encaissez des paiements crypto de vos clients. Envoyez une clé sk_test_ "
+                   "pour créer une opération locale sans appel fournisseur ni mouvement de fonds, "
+                   "ou une clé sk_live_ pour le traitement réel. En live, le client suit payment_url; "
+                   "en test, utilisez simulation_endpoint et n'affichez pas une redirection vers un "
+                   "checkout hébergé simulé."))
 
     story.append(h3("Créer un paiement"))
     story.append(p(f"<b>POST</b> <font face=\"Courier\">{API_BASE}/v1/payments</font>"))
@@ -11663,8 +11675,17 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
   "customer_email": "buyer@shop.com",
   "accepted_networks": ["TRC20", "BEP20", "ERC20"]
 }"""))
-    story.append(p("Reponse 200 : <font face=\"Courier\">id, status=initiated, payment_url, expires_at</font>. "
-                   "Redirigez le client vers <font face=\"Courier\">payment_url</font>."))
+    story.append(p("Champs : amount (requis, minimum 1), coin (défaut USDT), "
+                   "accepted_networks (défaut TRC20, BEP20, ERC20), reference, customer_email, "
+                   "return_url et metadata (facultatifs). L'en-tête Idempotency-Key est "
+                   "facultatif mais recommandé. La réponse comprend id, environment, status, "
+                   "coin, amount, amount_gross, amount_net, fee, fee_pct, gateway_fee, "
+                   "platform_fee, reference, customer_email, payment_url, checkout_url, "
+                   "simulation_endpoint, deposit_address, amount_to_send, tx_hash, "
+                   "accepted_networks, expires_at et les horodatages."))
+    story.append(p("Le statut initial en live est généralement initiated. Redirigez le client "
+                   "vers payment_url lorsqu'il est fourni. Le sandbox ne contacte pas de "
+                   "passerelle; simulation_endpoint est renvoyé pour simuler la confirmation."))
 
     story.append(h3("Verifier le statut"))
     story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payments/{{id}}/status</font> - reponse legere "
@@ -11692,10 +11713,26 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
 
     story.append(h2("4. Paiements Mobile Money"))
     story.append(p("Les trois parcours sont distincts : /v1/checkout pour PAR "
-                   "(redirection vers la page de paiement hébergée), /v1/psr pour "
-                   "le SDK PSR intégré, et /v1/direct-payments pour SoftPay sans "
-                   "redirection. Chaque parcours exige son scope dédié : "
-                   "checkout:create, psr:create ou direct:create."))
+                   "(redirection vers la page du prestataire), /v1/psr pour le SDK PSR "
+                   "intégré, et /v1/direct-payments pour SoftPay sans redirection. "
+                   "Ils exigent respectivement checkout:create, psr:create et direct:create."))
+    story.append(p("Pour PAR et PSR, envoyez amount (> 0), currency (XOF, XAF, CDF, USD, "
+                   "GMD, GNF, UGX, TZS, KES, RWF, GHS, NGN, ZAR, ZMW ou EGP), country "
+                   "(code ISO-2) et operator (code actif du catalogue). customer_phone est "
+                   "facultatif pour ces deux routes. customer_name (défaut Client), "
+                   "customer_email, fee_bearer (client ou merchant, défaut client), reference "
+                   "(jusqu'à 128 caractères), return_url et metadata sont facultatifs."))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/checkout \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: order-2048-par-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":12500,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","customer_name":"Afi Mensah",
+       "customer_phone":"22890000000","reference":"ORDER-2048"}}'"""))
+    story.append(p("Une réponse PAR inclut l'identifiant, le statut, les montants et frais "
+                   "calculés selon l'opérateur, la référence et checkout_url. En production, "
+                   "redirigez le navigateur client vers checkout_url; en test, ne présumez pas "
+                   "qu'une page fournisseur réelle est disponible."))
     story.append(code(f"""curl -X POST {API_BASE}/v1/psr \\
   -H "Authorization: Bearer sk_live_XXXXX" \\
   -H "Idempotency-Key: order-2048-attempt-1" \\
@@ -11703,15 +11740,44 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
   -d '{{"amount":12500,"currency":"XOF","country":"TG",
        "operator":"tmoney_tg","customer_name":"Afi Mensah",
        "reference":"ORDER-2048"}}'"""))
-    story.append(p("La réponse PSR inclut psr_token_url, une URL temporaire à usage "
-                   "unique. Remettez-la à l’application cliente afin qu’elle récupère "
-                   "le jeton et le transmette au SDK officiel. La clé secrète reste "
-                   "sur votre serveur. En sandbox, utilisez simulation_endpoint : "
-                   "aucun appel fournisseur n’est effectué."))
-    story.append(p("Le chemin compatible /v1/payments avec "
-                   "payment_method=mobile_money reste disponible. "
-                   "Idempotency-Key est obligatoire afin qu'un retry reseau ne cree "
-                   "jamais une seconde transaction."))
+    story.append(p("La réponse PSR inclut psr_token_url, URL temporaire à usage unique, "
+                   "et psr_token_expires_at lorsqu'il est disponible. Remettez l'URL à "
+                   "l'application cliente pour qu'elle obtienne le jeton et le transmette "
+                   "au SDK officiel. La clé secrète reste sur votre serveur. En sandbox, "
+                   "utilisez simulation_endpoint; aucun appel fournisseur n'est effectué."))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/direct-payments \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: invoice-771-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":8900,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","customer_phone":"22890000000",
+       "customer_email":"client@example.com","reference":"INV-771"}}'"""))
+    story.append(p("Direct exige aussi customer_phone (6 à 32 caractères). "
+                   "customer_email, reference (1 à 128 caractères), return_url et "
+                   "metadata sont facultatifs. Le client confirme sur son téléphone; "
+                   "aucune redirection checkout n'est nécessaire."))
+    story.append(p("La route compatible /v1/payments accepte payment_method=mobile_money; "
+                   "elle exige aussi customer_phone, currency, country et operator et "
+                   "l'en-tête Idempotency-Key. Pour une nouvelle intégration Mobile Money, "
+                   "choisissez explicitement PAR, PSR ou Direct."))
+    story.append(code("""{
+  "id": "pay_...",
+  "object": "payment",
+  "product": "bizpay_checkout",
+  "status": "pending",
+  "amount": "12500.00",
+  "requested_amount": "12500.00",
+  "charged_amount": "…",
+  "wallet_credit_amount": "…",
+  "gateway_fee": "…",
+  "platform_fee": "…",
+  "fee": "…",
+  "fee_bearer": "client",
+  "currency": "XOF",
+  "reference": "ORDER-2048",
+  "checkout_url": "https://…",
+  "simulation_endpoint": null
+}"""))
     story.append(code(f"""curl -X POST {API_BASE}/v1/payments \\
   -H "Authorization: Bearer sk_live_XXXXX" \\
   -H "Idempotency-Key: order-2048-attempt-1" \\
@@ -11740,28 +11806,71 @@ async def download_api_docs_pdf(uid: str = Depends(get_current_user_id)):
     ], [3 * cm, 13.5 * cm]))
 
     story.append(h2("5. Webhooks signés HMAC"))
-    story.append(p("Apres confirmation serveur-a-serveur, Biz-transPay envoie les "
-                   "changements de statut a vos endpoints actifs. Le paiement Mobile "
-                   "Money confirme utilise l'evenement mobile_money.payment.approved "
-                   "et expose le statut public paid."))
-    story.append(p("Verifiez X-BizTransPay-Signature sur la chaine "
-                   "X-BizTransPay-Timestamp + '.' + corps JSON brut. Conservez le "
-                   "polling /status comme reprise si votre endpoint est indisponible."))
+    story.append(p("Configurez l'URL, le secret et les événements dans la section API du "
+                   "tableau de bord. Les événements disponibles sont payment.created, "
+                   "payment.confirming, payment.completed, payment.failed, payment.expired, "
+                   "mobile_money.payment.approved, mobile_money.payment.declined, "
+                   "mobile_money.payment.canceled, push.succeeded et push.failed. "
+                   "Les événements push.* concernent BizPUSH Mobile Money, pas le retrait crypto."))
+    story.append(p("Le corps contient id, type, data et created_at. Les en-têtes sont "
+                   "X-BizTransPay-Signature (sha256=<hex>), X-BizTransPay-Timestamp "
+                   "(Unix secondes), X-BizTransPay-Event-Id et X-BizTransPay-Event-Type. "
+                   "La signature est HMAC-SHA256(secret, timestamp + '.' + corps JSON brut). "
+                   "Dédupliquez par id d'événement et répondez avec un code 2xx. Gardez le "
+                   "polling /status comme reprise. Le retrait crypto /v1/payouts ne génère "
+                   "pas actuellement de webhook; utilisez ses routes de lecture."))
     story.append(code("""import crypto from 'node:crypto';
-const expected = 'sha256=' + crypto
+const rawBody = req.rawBody; // exact HTTP bytes, before JSON parsing
+const timestamp = req.headers['x-biztranspay-timestamp'];
+const received = Buffer.from(req.headers['x-biztranspay-signature'] || '');
+const expected = Buffer.from('sha256=' + crypto
   .createHmac('sha256', process.env.BIZTRANSPAY_WEBHOOK_SECRET)
-  .update(timestamp + '.' + rawBody)
-  .digest('hex');
-if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
-  throw new Error('Invalid webhook signature');
-}"""))
+  .update(timestamp + '.' + rawBody.toString('utf8'))
+  .digest('hex'));
+if (received.length !== expected.length ||
+    !crypto.timingSafeEqual(received, expected)) {
+  return res.status(401).end();
+}
+const event = JSON.parse(rawBody.toString('utf8'));
+// Deduplicate event.id before applying business effects.
+return res.status(200).end();"""))
 
     # ---------------- Payouts ----------------
     story.append(PageBreak())
-    story.append(h2("6. Retraits (Payouts)"))
-    story.append(p("Envoyez des crypto vers n\'importe quelle adresse externe. Le montant + frais est "
-                   "debite du solde marchand puis relaye a la passerelle amont. Rembourse automatiquement "
-                   "en cas de refus."))
+    story.append(h2("6. Retraits Mobile Money BizPUSH"))
+    story.append(p("POST /v1/push envoie des fonds à un numéro Mobile Money. Ce parcours est "
+                   "distinct du retrait crypto /v1/payouts et exige le scope push:create. "
+                   "Un Idempotency-Key est obligatoire."))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/push \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: payroll-88-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":15000,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","beneficiary_phone":"22890000000",
+       "beneficiary_name":"Kossi Mensah","reference":"PAYROLL-88"}}'"""))
+    story.append(p("Champs requis : amount (> 0), currency (XOF, XAF, CDF, USD, GMD, "
+                   "GNF, UGX, TZS, KES, RWF, GHS, NGN, ZAR, ZMW ou EGP), country "
+                   "(ISO-2), operator (code actif du catalogue) et beneficiary_phone "
+                   "(6 à 32 caractères). beneficiary_name, beneficiary_email, reference "
+                   "(1 à 128 caractères) et metadata sont facultatifs."))
+    story.append(p("La réponse expose id, object=payout, product=bizpush, status, amount, "
+                   "currency, reference, fee, total_debit, created_at, updated_at et "
+                   "metadata publique. fee et total_debit sont calculés avec la grille "
+                   "active de l'opérateur; vérifiez total_debit avant rapprochement."))
+    story.append(p("Suivi : GET /v1/push/{id} et GET /v1/push/{id}/status, avec le scope "
+                   "payments:read. En test, la requête crée seulement un enregistrement "
+                   "local pending, sans appel fournisseur ni débit réel; aucun endpoint "
+                   "de simulation d'un retrait réussi n'existe. En live, un manque de "
+                   "liquidité du fournisseur peut laisser le débit réservé en attente "
+                   "d'une résolution manuelle; ne supposez pas un remboursement automatique."))
+
+    story.append(h2("7. Retrait crypto"))
+    story.append(p("POST /v1/payouts envoie un actif vers une adresse blockchain. Le scope "
+                   "requis est push:create; payments:read protège les lectures. "
+                   "L'Idempotency-Key est facultative sur cette route, mais fortement "
+                   "recommandée pour chaque retrait. POST /v1/bizpush/payouts est un alias "
+                   "de /v1/payouts (et exige une clé d'idempotence); il ne désigne pas le "
+                   "retrait Mobile Money /v1/push."))
 
     story.append(h3("Creer un retrait"))
     story.append(p(f"<b>POST</b> <font face=\"Courier\">{API_BASE}/v1/payouts</font>"))
@@ -11774,12 +11883,22 @@ if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
   "beneficiary_name": "John Doe",
   "fee_bearer": "sender"
 }"""))
-    story.append(p("Reponse 200 : <font face=\"Courier\">id, status=processing, amount, fee, total_debit, "
-                   "provider_id, created_at</font>."))
+    story.append(p("Champs : amount (> 0), network et destination_address sont requis; "
+                   "coin (défaut USDT), reference (max. 128 caractères), beneficiary_name "
+                   "(max. 128), beneficiary_email, metadata et fee_bearer (sender par défaut "
+                   "ou recipient) sont facultatifs. Les actifs et réseaux doivent être "
+                   "actifs et l'adresse compatible."))
+    story.append(p("La réponse comprend id, environment, object=payout, status, amount, "
+                   "amount_net, fee, fee_pct, total_debit, coin, network, asset_code, "
+                   "destination_address, reference, bénéficiaire, provider_id, "
+                   "provider_status, metadata, error_code et les horodatages. Le statut "
+                   "peut être pending en sandbox; ne supposez pas processing à la création. "
+                   "Le montant et les frais dépendent de l'actif, du réseau et du mode "
+                   "fee_bearer."))
 
     story.append(h3("Suivre / rechercher / lister"))
     story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}/status</font>"))
-    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}/completed</font>"))
+    story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}/completed</font> - renvoie completed et status"))
     story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/{{id}}</font> - details complets"))
     story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts/search?reference=WD-42</font>"))
     story.append(p(f"<b>GET</b> <font face=\"Courier\">{API_BASE}/v1/payouts?limit=20&status=completed</font>"))
@@ -11787,17 +11906,22 @@ if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
     story.append(h3("Statuts possibles"))
     story.append(_table([
         ["Status", "Signification"],
-        ["pending", "Debit effectue, en attente d\'envoi passerelle"],
-        ["processing", "Envoye a la passerelle, en cours"],
-        ["sent", "Broadcast on-chain, en attente de confirmation"],
+        ["pending", "Enregistré ou en attente de traitement; en sandbox, reste pending"],
+        ["processing", "Transmis à la passerelle, traitement en cours"],
+        ["sent", "Envoyé sur le réseau, en attente de confirmation"],
         ["completed", "Retrait confirme"],
-        ["failed", "Rejete par la passerelle - solde marchand rembourse"],
-        ["canceled", "Annule cote passerelle - solde marchand rembourse"],
+        ["failed", "Échec terminal; vérifiez error_code et le statut du solde"],
+        ["canceled", "Annulé; vérifiez le statut du solde"],
     ], [3 * cm, 13.5 * cm]))
+    story.append(p("En sandbox, le retrait crypto crée seulement un enregistrement local pending; "
+                   "aucun appel fournisseur, mouvement réel de fonds ou endpoint de simulation "
+                   "de réussite n'est disponible. Aucun webhook crypto payout n'est émis. "
+                   "En production, suivez l'opération jusqu'à un état terminal; les erreurs "
+                   "de liquidité fournisseur peuvent requérir une réconciliation manuelle."))
 
     # ---------------- Errors ----------------
     story.append(PageBreak())
-    story.append(h2("7. Gestion des erreurs"))
+    story.append(h2("8. Gestion des erreurs"))
     story.append(p("Toutes les erreurs suivent un format uniforme :"))
     story.append(code("""{
   "statusCode": 400,
@@ -11815,9 +11939,12 @@ if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
         ["INVALID_ASSET", "Couple coin/network non supporte"],
         ["INVALID_DESTINATION_ADDRESS", "Adresse incompatible avec le reseau"],
         ["AMOUNT_TOO_SMALL / TOO_LARGE", "Montant hors bornes"],
+        ["IDEMPOTENCY_KEY_REQUIRED", "Clé obligatoire absente sur cette route"],
+        ["IDEMPOTENCY_KEY_REUSED", "Même clé réutilisée avec une requête différente"],
+        ["MISSING_REQUIRED_FIELD", "Champ Mobile Money obligatoire absent"],
+        ["PAYMENT_METHOD_UNAVAILABLE", "Pays, devise ou opérateur inactif/non pris en charge"],
+        ["PAYMENT_STATUS_UNKNOWN", "Résultat amont ambigu; vérifier le statut avant retry"],
         ["PAYMENT_ALREADY_PAID", "Impossible d\'annuler un paiement encaisse"],
-        ["GATEWAY_INSUFFICIENT_FUNDS", "Fonds insuffisants passerelle amont"],
-        ["GATEWAY_UNREACHABLE", "Passerelle temporairement injoignable"],
         ["RATE_LIMITED", "Depassement de 100 requetes/minute/cle"],
         ["IDEMPOTENCY_KEY_TOO_LONG", "Idempotency-Key superieur a 255 caracteres"],
     ], [6 * cm, 10.5 * cm]))
@@ -11838,17 +11965,20 @@ if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
     ], [2 * cm, 14.5 * cm]))
 
     # ---------------- Idempotency + Rate limits ----------------
-    story.append(h2("8. Idempotence & Rate limits"))
-    story.append(p("Ajoutez un header <b>Idempotency-Key</b> (max 255 caracteres) a toute requete POST. "
-                   "En cas de retry (timeout reseau, doublon), la meme cle retourne la reponse originale - "
-                   "aucun doublon cote serveur. Fenetre : 24 heures."))
+    story.append(h2("9. Idempotence & Rate limits"))
+    story.append(p("Ajoutez Idempotency-Key à chaque création et réutilisez la même clé uniquement "
+                   "pour le retry de la même opération. La clé est obligatoire sur /checkout, /psr, "
+                   "/direct-payments, /push, /payments en Mobile Money et /bizpush/payouts. Elle est "
+                   "facultative mais recommandée sur /payments crypto et /payouts. Maximum 255 caractères; "
+                   "les réponses de création idempotentes sont conservées 24 heures. Une clé identique "
+                   "avec un corps différent renvoie un conflit; les environnements test et live sont isolés."))
     story.append(p("Chaque cle API a une limite de <b>100 requetes / minute</b>. Les reponses "
                    "incluent : <font face=\"Courier\">X-RateLimit-Limit</font>, <font face=\"Courier\">X-RateLimit-Remaining</font>, "
                    "<font face=\"Courier\">X-RateLimit-Reset</font>."))
 
     # ---------------- SDK Examples ----------------
     story.append(PageBreak())
-    story.append(h2("9. Exemples d'intégration SDK"))
+    story.append(h2("10. Exemples d'intégration SDK"))
 
     story.append(h3("cURL"))
     story.append(code(f"""curl -X POST {API_BASE}/v1/payments \\
@@ -11959,9 +12089,48 @@ var response = await http.PostAsJsonAsync(
 var payment = await response.Content.ReadFromJsonAsync<Dictionary<string, object>>();
 Console.WriteLine(payment["payment_url"]);"""))
 
+    story.append(h3("BizPay Checkout PAR · cURL"))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/checkout \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: order-2048-par-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":12500,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","customer_phone":"22890000000",
+       "reference":"ORDER-2048"}}'"""))
+
+    story.append(h3("BizPay Direct SoftPay · cURL"))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/direct-payments \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: invoice-771-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":8900,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","customer_phone":"22890000000",
+       "reference":"INV-771"}}'"""))
+
+    story.append(h3("Retrait Mobile Money BizPUSH · cURL"))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/push \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: payroll-88-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":15000,"currency":"XOF","country":"TG",
+       "operator":"tmoney_tg","beneficiary_phone":"22890000000",
+       "reference":"PAYROLL-88"}}'"""))
+
+    story.append(h3("Retrait crypto · cURL"))
+    story.append(code(f"""curl -X POST {API_BASE}/v1/payouts \\
+  -H "Authorization: Bearer sk_test_XXXXX" \\
+  -H "Idempotency-Key: withdrawal-88-attempt-1" \\
+  -H "Content-Type: application/json" \\
+  -d '{{"amount":25,"coin":"USDT","network":"TRC20",
+       "destination_address":"TJRabPrwbZy45sbavfcjinPJC18kjpRTv8",
+       "reference":"WD-88","fee_bearer":"sender"}}'"""))
+    story.append(p("Après chaque création de retrait, enregistrez id puis interrogez "
+                   "/v1/push/{id}/status ou /v1/payouts/{id}/status avec une clé autorisée "
+                   "payments:read. En test, les deux retraits restent pending."))
+
     # ---------------- Footer ----------------
     story.append(PageBreak())
-    story.append(h2("10. Bonnes pratiques & FAQ"))
+    story.append(h2("11. Bonnes pratiques & FAQ"))
     story.append(p("- Toujours envoyer <b>Idempotency-Key</b> sur les POST pour eviter les doublons."))
     story.append(p("- Poller /status cote serveur, jamais depuis le navigateur (fuite de cle)."))
     story.append(p("- Stocker le champ <b>reference</b> pour rechercher plus tard via /search."))
