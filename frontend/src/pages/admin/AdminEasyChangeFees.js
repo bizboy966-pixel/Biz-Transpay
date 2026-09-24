@@ -19,12 +19,14 @@ export default function AdminEasyChangeFees({ direction }) {
   const [coins, setCoins] = useState([]);
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
   const configPath = isDeposit ? '/admin/deposit/config' : '/admin/transfer/config';
 
   const load = async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const [{ data: nextCfg }, { data: nextCoins }] = await Promise.all([
         api.get(configPath),
@@ -34,7 +36,12 @@ export default function AdminEasyChangeFees({ direction }) {
       setCoins(nextCoins || []);
       setDirty(false);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Impossible de charger le catalogue Easy Change Pay');
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string'
+        ? detail
+        : 'Impossible de charger le catalogue Easy Change Pay';
+      setLoadError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -121,7 +128,22 @@ export default function AdminEasyChangeFees({ direction }) {
     }
   };
 
-  if (loading || !cfg) return <div className="text-slate-500 text-sm">Chargement du catalogue Easy Change Pay…</div>;
+  if (!cfg && loading) {
+    return <div className="text-slate-500 text-sm">Chargement du catalogue Easy Change Pay…</div>;
+  }
+  if (!cfg && loadError) {
+    return (
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900" role="alert">
+        <p>{loadError}</p>
+        <button type="button" onClick={load} disabled={loading}
+          data-testid={`btn-retry-${direction}-config`}
+          className="mt-3 rounded-lg bg-white px-3 py-1.5 text-xs font-bold text-slate-800 border border-amber-200 disabled:opacity-50">
+          Réessayer
+        </button>
+      </div>
+    );
+  }
+  if (!cfg) return <div className="text-slate-500 text-sm">Catalogue Easy Change Pay indisponible.</div>;
 
   return (
     <div className="space-y-4 sm:space-y-6" data-testid={`admin-${direction}-config`}>

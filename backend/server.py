@@ -13910,7 +13910,15 @@ async def admin_crypto_coins(direction: str = "withdrawal",
     hidden = {str(c).upper() for c in (section.get("hidden_coins") or [])}
     rate_cfg = await get_platform_config()
     # Always include configured coins even if not returned by API (e.g. temporarily disabled)
-    for c in fees:
+    configured_coins = set()
+    for field in (
+        "fees", "fees_gateway", "fees_platform",
+        "fees_gateway_fixed", "fees_platform_fixed",
+    ):
+        coin_fees = section.get(field) or {}
+        if isinstance(coin_fees, dict):
+            configured_coins.update(str(c).upper() for c in coin_fees)
+    for c in configured_coins:
         coins.setdefault(c, c)
     for c in hidden:
         coins.setdefault(c, c)

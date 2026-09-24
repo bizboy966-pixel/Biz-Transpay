@@ -425,6 +425,7 @@ class FakeCollection:
 
 class FakeDB:
     def __init__(self):
+        self.settings = FakeCollection()
         self.crypto_deposits = FakeCollection()
         self.payment_links = FakeCollection()
         self.momo_deposits = FakeCollection()
@@ -875,6 +876,85 @@ def test_crypto_usdt_rate_does_not_assume_non_usdt_is_one_to_one():
     assert server._configured_crypto_usdt_rate(
         {"crypto_usdt_rates": {}}, "BTC") is None
     assert server._configured_crypto_usdt_rate({}, "USDT") == 1.0
+
+
+@run_async
+async def test_admin_crypto_coin_catalog_loads_configured_assets(monkeypatch):
+    transfer = {
+        "crypto": {
+            "fees": {"BTC": 1.5},
+            "fees_gateway": {"BTC": 1},
+            "fees_platform": {"BTC": 0.5},
+            "fees_gateway_fixed": {"SOL": 0.02},
+            "hidden_coins": ["ETH"],
+        },
+    }
+    monkeypatch.setattr(server, "izipay",
+                        SimpleNamespace(is_configured=lambda: False))
+    monkeypatch.setattr(server, "get_transfer_config",
+                        lambda: asyncio.sleep(0, result=transfer))
+    monkeypatch.setattr(server, "get_platform_config",
+                        lambda: asyncio.sleep(
+                            0, result={"crypto_usdt_rates": {"BTC": 65000}}))
+
+    result = await server.admin_crypto_coins(
+        direction="withdrawal", refresh=False,
+        admin={"id": "admin-a", "username": "admin"},
+    )
+
+    by_coin = {item["coin"]: item for item in result}
+    assert set(by_coin) == {"BTC", "ETH", "SOL"}
+    assert by_coin["BTC"]["fee_pct"] == 1.5
+    assert by_coin["BTC"]["usdt_rate"] == 65000
+    assert by_coin["ETH"]["hidden"] is True
+    assert by_coin["SOL"]["gateway_fee_fixed"] == 0.02
+
+
+@run_async
+async def test_admin_can_save_deposit_and_withdrawal_crypto_settings(monkeypatch):
+    fake = FakeDB()
+    fake.settings.docs.extend([
+        {"id": "transfer_config", "crypto": {
+            "enabled": True, "fees": {"BTC": 2}, "fees_gateway": {},
+            "fees_platform": {}, "hidden_coins": [],
+        }},
+        {"id": "deposit_config", "crypto": {
+            "enabled": True, "fees": {}, "fees_gateway": {},
+            "fees_platform": {}, "hidden_coins": [],
+        }},
+    ])
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(
+        server, "get_transfer_config",
+        lambda: asyncio.sleep(0, result=fake.settings.docs[0]))
+    monkeypatch.setattr(
+        server, "get_deposit_config",
+        lambda: asyncio.sleep(0, result=fake.settings.docs[1]))
+    monkeypatch.setattr(server, "audit", lambda *args, **kwargs: asyncio.sleep(0))
+    admin = {"id": "admin-a", "username": "admin"}
+
+    withdrawal = await server.admin_update_transfer_config(
+        server.AdminTransferConfigReq(crypto={
+            "enabled": False, "fees_gateway": {"BTC": 1.25},
+            "hidden_coins": ["BTC"],
+        }),
+        admin=admin,
+    )
+    deposit = await server.admin_update_deposit_config(
+        server.AdminDepositConfigReq(crypto={
+            "enabled": False, "fees_platform": {"ETH": 0.75},
+            "hidden_coins": ["ETH"],
+        }),
+        admin=admin,
+    )
+
+    assert withdrawal["crypto"]["enabled"] is False
+    assert withdrawal["crypto"]["fees"]["BTC"] == 2
+    assert withdrawal["crypto"]["fees_gateway"]["BTC"] == 1.25
+    assert withdrawal["crypto"]["hidden_coins"] == ["BTC"]
+    assert deposit["crypto"]["enabled"] is False
+    assert deposit["crypto"]["fees_platform"]["ETH"] == 0.75
+    assert deposit["crypto"]["hidden_coins"] == ["ETH"]
 
 
 @run_async
