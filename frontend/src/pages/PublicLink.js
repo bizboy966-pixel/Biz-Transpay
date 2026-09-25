@@ -423,7 +423,7 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const turnstileRef = useRef(null);
 
   useEffect(() => {
-    fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/config`).then(r => r.json())
+    fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/config?surface=public_link`).then(r => r.json())
       .then(d => {
         const wanted = String(link.currency || 'XOF').toUpperCase();
         const groups = (d.catalog || [])

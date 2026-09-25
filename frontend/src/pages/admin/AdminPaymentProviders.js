@@ -314,7 +314,89 @@ export default function AdminPaymentProviders() {
           </div>
         )}
       </section>
+      <AfribapayPanel />
       <MbiyoPanel />
+    </div>
+  );
+}
+
+function AfribapayPanel() {
+  const [config, setConfig] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [filter, setFilter] = useState('all');
+  const fields = [
+    ['api_user', 'Utilisateur API'], ['api_key', 'Clé API'], ['merchant_key', 'Clé marchand'],
+  ];
+  useEffect(() => {
+    api.get('/admin/payment-providers/afribapay')
+      .then(({ data }) => setConfig(data))
+      .catch((err) => toast.error(err.response?.data?.detail || 'Impossible de charger AfribaPAY'));
+  }, []);
+  if (!config) return <section className="bg-white border border-slate-100 rounded-2xl p-5 text-xs text-slate-500">Chargement d’AfribaPAY…</section>;
+  const set = (key, value) => setConfig((current) => ({ ...current, [key]: value }));
+  const setRoute = (id, key, value) => setConfig((current) => ({
+    ...current, catalog: (current.catalog || []).map((row) => row.id === id ? { ...row, [key]: value } : row),
+  }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = {
+        enabled: config.enabled, mode: config.mode,
+        sandbox_api_base_url: config.sandbox_api_base_url,
+        sandbox_payout_base_url: config.sandbox_payout_base_url,
+        live_api_base_url: config.live_api_base_url,
+        live_payout_base_url: config.live_payout_base_url,
+        catalog: config.catalog,
+        ...Object.fromEntries(fields
+          .filter(([key]) => draft[key]?.trim())
+          .map(([key]) => [key, draft[key].trim()])),
+      };
+      const { data } = await api.put('/admin/payment-providers/afribapay', payload);
+      setConfig(data); setDraft({});
+      toast.success('Configuration AfribaPAY enregistrée');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Impossible d’enregistrer AfribaPAY');
+    } finally { setSaving(false); }
+  };
+  const catalog = (config.catalog || []).filter((row) => filter === 'all' || row.country === filter);
+  const countries = [...new Set((config.catalog || []).map((row) => row.country))].sort();
+  return (
+    <section className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 space-y-4" data-testid="afribapay-settings">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${config.enabled ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}><Smartphone className="w-5 h-5" /></div>
+        <div className="flex-1"><h2 className="font-cabinet font-bold text-slate-900">AfribaPAY</h2><p className="text-[11px] text-slate-500">Dépôts et retraits Mobile Money pour tous les pays éligibles.</p></div>
+        <button type="button" onClick={() => set('enabled', !config.enabled)} className={`px-3 py-1.5 rounded-full text-[10px] font-bold ${config.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{config.enabled ? 'Activé' : 'Désactivé'}</button>
+        <button type="button" onClick={save} disabled={saving} className="inline-flex items-center gap-2 bg-[#2563EB] text-white font-bold px-4 py-2.5 rounded-full text-xs disabled:opacity-50">{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Enregistrer</button>
+      </div>
+      <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900"><b>Attention :</b> le sandbox AfribaPAY peut effectuer de vrais paiements. Ne l’utilisez jamais pour tester avec des fonds réels.</div>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div><label className="text-xs font-semibold text-slate-700 mb-1.5 block">Mode</label><div className="grid grid-cols-2 gap-2">{['sandbox', 'live'].map((mode) => <button type="button" key={mode} onClick={() => set('mode', mode)} className={`p-2 rounded-xl border-2 text-xs font-bold ${config.mode === mode ? 'border-blue-600 bg-blue-50 text-blue-600' : 'border-slate-200 text-slate-500'}`}>{mode === 'live' ? 'Production' : 'Sandbox (paiements réels)'}</button>)}</div></div>
+        <div className="grid grid-cols-2 gap-2">
+          {['sandbox_api_base_url', 'sandbox_payout_base_url', 'live_api_base_url', 'live_payout_base_url'].map((key) => <label key={key} className="text-[10px] font-semibold text-slate-600">{key.replaceAll('_', ' ')}<input value={config[key] || ''} onChange={(e) => set(key, e.target.value)} className="mt-1 w-full px-2 py-2 border border-slate-200 rounded-lg text-xs font-mono" /></label>)}
+        </div>
+      </div>
+      <div className="grid sm:grid-cols-3 gap-3">
+        {fields.map(([key, label]) => <label key={key} className="text-xs font-semibold text-slate-700">{label} <span className="text-[10px] text-slate-400">{config[`${key}_configured`] ? '(configuré)' : '(non configuré)'}</span><input type="password" value={draft[key] || ''} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} placeholder="Saisir pour remplacer" autoComplete="new-password" className="mt-1 w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-mono" /></label>)}
+      </div>
+      <div className="flex gap-2 overflow-x-auto">{[['all', 'Tous'], ...countries.map((c) => [c, c])].map(([value, label]) => <button type="button" key={value} onClick={() => setFilter(value)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${filter === value ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>{label}</button>)}</div>
+      <div className="space-y-3">{catalog.map((row) => <AfribapayRoute key={row.id} row={row} onChange={(key, value) => setRoute(row.id, key, value)} />)}</div>
+    </section>
+  );
+}
+
+function AfribapayRoute({ row, onChange }) {
+  const [expanded, setExpanded] = useState(false);
+  const numeric = ['gateway_fee_pct', 'gateway_fee_fixed', 'platform_fee_pct', 'platform_fee_fixed', 'fee_pct', 'min', 'max'];
+  return (
+    <div className={`rounded-xl border ${row.archived ? 'bg-slate-50 border-slate-200' : 'bg-white border-slate-200'}`}>
+      <div className="p-3 flex items-center gap-3">
+        <div className="flex-1 min-w-0"><div className="text-sm font-bold text-slate-900">{row.name}</div><div className="text-[10px] text-slate-500">{row.country_label || row.country} · {row.operator} · {row.currency}</div></div>
+        <label className="text-[10px] font-bold"><input type="checkbox" checked={row.active !== false} disabled={row.archived} onChange={(e) => onChange('active', e.target.checked)} /> Actif</label>
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="px-2.5 py-1.5 rounded-lg bg-slate-100 text-[10px] font-bold">Modifier</button>
+        <button type="button" onClick={() => { onChange('archived', !row.archived); if (!row.archived) onChange('active', false); }} className="px-2.5 py-1.5 rounded-lg bg-red-50 text-red-600 text-[10px] font-bold">{row.archived ? 'Réactiver' : 'Archiver'}</button>
+      </div>
+      {expanded && <div className="border-t border-slate-100 p-3 grid sm:grid-cols-2 lg:grid-cols-4 gap-3">{numeric.map((key) => <label key={key} className="text-[10px] font-semibold text-slate-600">{key.replaceAll('_', ' ')}<input type="number" step="0.01" value={row[key] ?? ''} onChange={(e) => onChange(key, e.target.value === '' ? null : Number(e.target.value))} className="mt-1 w-full px-2 py-2 border border-slate-200 rounded-lg text-xs" /></label>)}</div>}
     </div>
   );
 }

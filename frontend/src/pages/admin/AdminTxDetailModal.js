@@ -69,6 +69,11 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
 
   const meta = tx?.metadata || {};
   const mbiyoAmbiguous = Boolean(meta.mbiyo_submission_review_required || meta.mbiyo_submission_unknown);
+  const afribapayAmbiguous = meta.provider === 'afribapay'
+    && Boolean(meta.afribapay_submission_unknown || meta.manual_review_required);
+  const manualEvidenceRequired = mbiyoAmbiguous || afribapayAmbiguous;
+  const manualReviewRequired = Boolean(meta.manual_review_required);
+  const providerLiquidityHold = Boolean(meta.provider_balance_insufficient);
   const user = tx?.user || {};
   const isDeposit = tx?.type === 'deposit';
   const isWithdrawal = tx?.type === 'withdrawal' || (tx?.type === 'transfer' && tx?.direction === 'out');
@@ -88,7 +93,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
 
   const flaggedEvidence = (action) => {
     const allowedOutcomes = action === 'approve' ? approveOutcomes : rejectOutcomes;
-    if (!mbiyoAmbiguous || (evidenceReady && allowedOutcomes.includes(providerOutcome))) return true;
+    if (!manualEvidenceRequired || (evidenceReady && allowedOutcomes.includes(providerOutcome))) return true;
     toast.error('Sélectionnez un résultat autorisé, renseignez la référence de preuve et confirmez l’attestation.');
     return false;
   };
@@ -100,7 +105,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
     try {
       await api.post(`/admin/transactions/${tx.id}/approve`, {
         confirmation: 'CONFIRMER',
-        ...(mbiyoAmbiguous ? {
+        ...(manualEvidenceRequired ? {
           provider_outcome: providerOutcome,
           provider_outcome_evidence_reference: providerOutcomeEvidenceReference.trim(),
           provider_outcome_attested: true,
@@ -140,7 +145,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
       await api.post(`/admin/transactions/${tx.id}/reject`, {
         reason: reason.trim() || null,
         confirmation: 'CONFIRMER',
-        ...(mbiyoAmbiguous ? {
+        ...(manualEvidenceRequired ? {
           provider_outcome: providerOutcome,
           provider_outcome_evidence_reference: providerOutcomeEvidenceReference.trim(),
           provider_outcome_attested: true,
@@ -243,13 +248,13 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
 
               {/* Additional info spanning full width */}
               {(tx.description || meta.rejection_reason || tx.rejection_reason
-                || meta.manual_review_required || mbiyoAmbiguous) && (
+                || manualReviewRequired || manualEvidenceRequired) && (
                 <div className="md:col-span-2 mt-3 pt-3 border-t border-slate-100">
-                  {mbiyoAmbiguous && (
+                  {manualEvidenceRequired && (
                     <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-[13px] text-red-950">
                       <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-700" />
                       <div>
-                        <div className="font-semibold">Résultat Mbiyo inconnu — contrôle indépendant obligatoire</div>
+                        <div className="font-semibold">Résultat {afribapayAmbiguous ? 'AfribaPAY' : 'Mbiyo'} inconnu — contrôle indépendant obligatoire</div>
                         <div className="mt-0.5 leading-relaxed">
                           Le résultat du prestataire n’a pas pu être confirmé et le débit est réservé.
                           Ne remboursez pas et ne validez pas cette transaction avant d’obtenir une preuve indépendante du prestataire.
@@ -257,7 +262,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                       </div>
                     </div>
                   )}
-                  {meta.manual_review_required && (
+                  {(providerLiquidityHold || (manualReviewRequired && !manualEvidenceRequired)) && (
                     <div className="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-[13px] text-amber-900 flex items-start gap-2">
                       <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
                       <div>
@@ -288,13 +293,13 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                 </div>
               )}
 
-              {mbiyoAmbiguous && tx.status === 'pending' && (
+              {manualEvidenceRequired && tx.status === 'pending' && (
                 <div className="md:col-span-2 mt-4 rounded-xl border border-red-200 bg-red-50/60 p-4">
                   <div className="mb-3 text-sm font-semibold text-red-950">Preuve prestataire requise avant toute décision</div>
                   <div className="grid gap-3 md:grid-cols-2">
-                    <label className="text-xs font-semibold text-slate-700">
+                     <label className="text-xs font-semibold text-slate-700">
                       Résultat prestataire pour {showReject ? 'le rejet' : 'la validation'}
-                      <select value={providerOutcome} onChange={(e) => setProviderOutcome(e.target.value)} data-testid="select-mbiyo-provider-outcome" className="mt-1.5 w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20">
+                       <select value={providerOutcome} onChange={(e) => setProviderOutcome(e.target.value)} data-testid="select-provider-outcome" className="mt-1.5 w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20">
                         <option value="">Sélectionner un résultat</option>
                         {(showReject ? rejectOutcomes : approveOutcomes).map((outcome) => <option key={outcome} value={outcome}>{outcome}</option>)}
                       </select>

@@ -62,6 +62,7 @@ import izipay  # IzichangePay integration (server-side only)
 import fedapay  # FedaPay Mobile Money integration (server-side only)
 import paydunya  # PayDunya SoftPay deposits (server-side only)
 import mbiyo  # Mbiyo Mobile Money integration (server-side only)
+import afribapay  # AfribaPAY Mobile Money integration (server-side only)
 
 # ---------- DB ----------
 postgres_store, db = create_database(os.environ.get("DATABASE_URL", ""))
@@ -2504,6 +2505,8 @@ def _validate_csrf_request(request: Request) -> Optional[JSONResponse]:
         return None
     if not request.url.path.startswith("/api/"):
         return None
+    if request.url.path == "/api/webhooks/afribapay":
+        return None
     if _is_public_payment_link_mutation(request.url.path):
         return None
     if request.url.path in {
@@ -3407,6 +3410,8 @@ async def wallet_summary(uid: str = Depends(get_current_user_id)):
     return {
         "balance_xof": u.get("balance_xof", 0.0),
         "balance_xaf": u.get("balance_xaf", 0.0),
+        "balance_cdf": u.get("balance_cdf", 0.0),
+        "balance_gnf": u.get("balance_gnf", 0.0),
         "balance_usdt": u.get("balance_usdt", 0.0),
         "transactions_count": tx_count,
         "kyc_status": u.get("kyc_status", "not_started"),
@@ -3704,6 +3709,10 @@ async def get_deposit_config() -> dict:
 
 
 PAYDUNYA_WALLET_CURRENCIES = {"XOF", "XAF"}
+AFRIBAPAY_WALLET_CURRENCIES = {
+    currency for currencies in afribapay.COUNTRY_CURRENCIES.values()
+    for currency in currencies
+}
 
 PAYDUNYA_DEFAULT_CONFIG = {
     "id": "payment_provider_paydunya",
@@ -3801,6 +3810,96 @@ async def get_mbiyo_config(decrypt: bool = False) -> dict:
     return doc
 
 
+AFRIBAPAY_DEFAULT_CONFIG = afribapay.default_config()
+
+
+def _normalize_afribapay_catalog(catalog: list[dict]) -> list[dict]:
+    """Keep persisted routes aligned with the current documented catalogue."""
+    defaults = {
+        str(op["id"]): op for op in afribapay.default_catalog()
+    }
+    normalized = []
+    identity_fields = (
+        "provider", "country", "country_label", "currency", "code",
+        "public_code", "operator", "otp_required", "ussd_code",
+    )
+    for raw in catalog or []:
+        if not isinstance(raw, dict):
+            continue
+        base = defaults.get(str(raw.get("id") or ""))
+        if not base:
+            continue
+        op = {**base, **raw}
+        for key in identity_fields:
+            op[key] = base[key]
+        for key in ("active", "archived", "hidden"):
+            if not isinstance(raw.get(key), bool):
+                op[key] = base[key]
+        cap = float(base["max"]) if base.get("max") is not None else None
+        try:
+            minimum = float(raw.get("min", base["min"]))
+            if not math.isfinite(minimum):
+                raise ValueError
+        except (TypeError, ValueError):
+            minimum = float(base["min"])
+        minimum = max(float(base["min"]), minimum)
+        try:
+            maximum = float(raw.get("max")) if raw.get("max") not in (None, "") else cap
+            if maximum is not None and not math.isfinite(maximum):
+                raise ValueError
+        except (TypeError, ValueError):
+            maximum = cap
+        if cap is not None and maximum is not None:
+            maximum = min(maximum, cap)
+            maximum = max(maximum, float(base["min"]))
+        if maximum is not None:
+            minimum = min(minimum, maximum)
+        op["min"] = minimum
+        op["max"] = maximum
+        normalized.append(op)
+    present = {str(op["id"]) for op in normalized}
+    normalized.extend(
+        copy.deepcopy(op) for op in defaults.values()
+        if str(op["id"]) not in present
+    )
+    return normalized
+
+
+async def get_afribapay_config(decrypt: bool = False) -> dict:
+    doc = await db.settings.find_one({"id": "payment_provider_afribapay"}, {"_id": 0})
+    if not doc:
+        await db.settings.insert_one(copy.deepcopy(AFRIBAPAY_DEFAULT_CONFIG))
+        doc = await db.settings.find_one(
+            {"id": "payment_provider_afribapay"}, {"_id": 0})
+    else:
+        # Add newly documented routes without replacing an administrator's
+        # activation, archive, fee, or limit settings.
+        catalog = copy.deepcopy(doc.get("catalog") or [])
+        existing_ids = {str(op.get("id") or "") for op in catalog}
+        added = [op for op in afribapay.default_catalog()
+                 if str(op.get("id") or "") not in existing_ids]
+        if added:
+            catalog.extend(added)
+            await db.settings.update_one(
+                {"id": "payment_provider_afribapay"},
+                {"$set": {"catalog": catalog, "setup_version": 1}})
+            doc = await db.settings.find_one(
+                {"id": "payment_provider_afribapay"}, {"_id": 0})
+    doc = dict(doc)
+    doc["catalog"] = _normalize_afribapay_catalog(doc.get("catalog") or [])
+    if decrypt:
+        decrypted = {}
+        for key in ("api_user", "api_key", "merchant_key"):
+            encrypted = doc.get(f"{key}_encrypted")
+            if encrypted:
+                decrypted[key] = afribapay.decrypt_secret(
+                    encrypted, os.environ.get("SESSION_SECRET", ""))
+        doc["_api_user"] = decrypted.get("api_user", "")
+        doc["_api_key"] = decrypted.get("api_key", "")
+        doc["_merchant_key"] = decrypted.get("merchant_key", "")
+    return doc
+
+
 def _customer_fee_components(op: dict) -> tuple[float, float, float, float]:
     """Normalize split and legacy provider fees for customer-facing previews."""
     gateway_pct = float(op.get("gateway_fee_pct", 0) or 0)
@@ -3867,6 +3966,89 @@ def _paydunya_credentials_configured(cfg: dict) -> bool:
         and (cfg.get("private_key_encrypted") or os.environ.get("PAYDUNYA_PRIVATE_KEY"))
         and (cfg.get("token_encrypted") or os.environ.get("PAYDUNYA_TOKEN"))
     )
+
+
+def _afribapay_credentials_configured(cfg: dict) -> bool:
+    return afribapay.credentials_configured(cfg)
+
+
+def _afribapay_base_url_configured(cfg: dict, *, payout: bool = False) -> bool:
+    mode = str(cfg.get("mode") or "sandbox").lower()
+    if mode == "live":
+        key = "live_payout_base_url" if payout else "live_api_base_url"
+        value = str(cfg.get(key) or "").strip()
+    else:
+        key = "sandbox_payout_base_url" if payout else "sandbox_api_base_url"
+        value = str(cfg.get(key) or "").strip()
+    if not value:
+        return False
+    try:
+        afribapay.validate_base_url(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _afribapay_ready(cfg: dict, *, payout: bool = False) -> bool:
+    return bool(
+        cfg.get("enabled")
+        and _afribapay_credentials_configured(cfg)
+        and _afribapay_base_url_configured(cfg, payout=payout)
+    )
+
+
+def _afribapay_public_config(cfg: dict, admin: bool = False) -> dict:
+    configured = _afribapay_credentials_configured(cfg)
+    payin_ready = _afribapay_ready(cfg)
+    payout_ready = _afribapay_ready(cfg, payout=True)
+    if admin:
+        return {
+            "enabled": bool(cfg.get("enabled", False)),
+            "mode": cfg.get("mode", "sandbox"),
+            "configured": configured,
+            "payin_available": payin_ready,
+            "payout_available": payout_ready,
+            "api_user_configured": bool(cfg.get("api_user_encrypted")),
+            "api_key_configured": bool(cfg.get("api_key_encrypted")),
+            "merchant_key_configured": bool(cfg.get("merchant_key_encrypted")),
+            "sandbox_api_base_url": cfg.get(
+                "sandbox_api_base_url", afribapay.BASE_URL),
+            "sandbox_payout_base_url": cfg.get(
+                "sandbox_payout_base_url", afribapay.PAYOUT_BASE_URL),
+            "live_api_base_url": cfg.get("live_api_base_url", ""),
+            "live_payout_base_url": cfg.get("live_payout_base_url", ""),
+            "catalog": cfg.get("catalog") or afribapay.default_catalog(),
+        }
+    catalog = []
+    if payin_ready:
+        for op in cfg.get("catalog") or []:
+            if (not op.get("active", True) or op.get("archived", False)
+                    or op.get("hidden", False)):
+                continue
+            fee_pct, fee_fixed = _customer_fee_rates(op)
+            catalog.append({
+                "country": op.get("country"),
+                "country_label": op.get("country_label")
+                    or afribapay.COUNTRY_LABELS.get(op.get("country")),
+                "code": op.get("public_code") or op.get("code"),
+                "name": op.get("name") or op.get("operator"),
+                "currency": op.get("currency"),
+                "min": float(op.get("min", 100) or 100),
+                "max": float(op.get("max", 0) or 0) or None,
+                "fee_pct": fee_pct, "fee_fixed": fee_fixed,
+                "gateway_fee_pct": _customer_fee_components(op)[0],
+                "gateway_fee_fixed": _customer_fee_components(op)[1],
+                "platform_fee_pct": _customer_fee_components(op)[2],
+                "platform_fee_fixed": _customer_fee_components(op)[3],
+                "amount_increment": 0,
+                "payment_flow": afribapay.payment_flow(op),
+            })
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "configured": configured,
+        "catalog": catalog,
+        "mobile_money_enabled": bool(catalog),
+    }
 
 
 def _paydunya_payin_mode_enabled(
@@ -4030,11 +4212,35 @@ def _active_mbiyo_operator(
     ), None)
 
 
+def _active_afribapay_operator(
+    catalog: list[dict], country: str, code: str,
+    currency: Optional[str] = None,
+) -> Optional[dict]:
+    country_up = str(country or "").upper()
+    code_lo = str(code or "").strip().lower()
+    currency_up = str(currency or "").strip().upper()
+    return next((
+        op for op in catalog
+        if str(op.get("country") or "").upper() == country_up
+        and (
+            str(op.get("public_code") or "").lower() == code_lo
+            or str(op.get("code") or "").lower() == code_lo
+        )
+        and (not currency_up
+             or str(op.get("currency") or "").upper() == currency_up)
+        and op.get("active", True)
+        and not op.get("archived", False)
+        and not op.get("hidden", False)
+    ), None)
+
+
 async def _resolve_deposit_provider(country: str, code: str,
                                     currency: Optional[str] = None,
-                                    required_mode: Optional[str] = None) -> str:
+                                    required_mode: Optional[str] = None,
+                                    allow_afribapay: bool = True) -> str:
     paydunya_cfg = await get_paydunya_config()
     mbiyo_cfg = await get_mbiyo_config()
+    afribapay_cfg = await get_afribapay_config()
     paydunya_route = (
         _active_operator(paydunya_cfg.get("catalog") or [], country, code)
         if paydunya_cfg.get("enabled") else None
@@ -4053,6 +4259,15 @@ async def _resolve_deposit_provider(country: str, code: str,
                  or os.environ.get("MBIYO_SECRET_KEY")
                  or os.environ.get("MBIYO_API_KEY")) else None
     )
+    afribapay_route = (
+        _active_afribapay_operator(
+            afribapay_cfg.get("catalog") or [], country, code, currency)
+        if allow_afribapay and _afribapay_ready(afribapay_cfg) else None
+    )
+    afribapay_match = (
+        afribapay_route
+        if not required_mode or required_mode == "softpay_direct" else None
+    )
     if currency and str(currency).upper() not in {"UNIVERSAL", "ANY"}:
         wanted = currency.upper()
         paydunya_route = paydunya_route if paydunya_route and str(
@@ -4061,6 +4276,10 @@ async def _resolve_deposit_provider(country: str, code: str,
             paydunya_match.get("currency", "")).upper() == wanted else None
         mbiyo_match = mbiyo_match if mbiyo_match and str(
             mbiyo_match.get("currency", "")).upper() == wanted else None
+        afribapay_route = afribapay_route if afribapay_route and str(
+            afribapay_route.get("currency", "")).upper() == wanted else None
+        afribapay_match = afribapay_match if afribapay_match and str(
+            afribapay_match.get("currency", "")).upper() == wanted else None
     if paydunya_match and mbiyo_match:
         # The public catalogue de-duplicates equivalent routes in this same
         # order, so resolution must keep the first configured route as well.
@@ -4069,8 +4288,23 @@ async def _resolve_deposit_provider(country: str, code: str,
         return "mbiyo"
     if paydunya_match:
         return "paydunya"
+    if afribapay_match:
+        return "afribapay"
     if paydunya_route:
         if not _paydunya_credentials_configured(paydunya_cfg):
+            raise HTTPException(
+                503,
+                "Le service Mobile Money est temporairement indisponible "
+                "pour cet opérateur.",
+            )
+    if afribapay_route:
+        if not _afribapay_credentials_configured(afribapay_cfg):
+            raise HTTPException(
+                503,
+                "Le service Mobile Money est temporairement indisponible "
+                "pour cet opérateur.",
+            )
+        if not _afribapay_base_url_configured(afribapay_cfg):
             raise HTTPException(
                 503,
                 "Le service Mobile Money est temporairement indisponible "
@@ -4215,6 +4449,40 @@ async def get_transfer_config() -> dict:
     merged = dict(doc)
     merged["mobile_money"] = _merged_mobile_money(
         DEFAULT_TRANSFER_CONFIG, doc.get("mobile_money") or {})
+    payout_catalog = merged["mobile_money"].setdefault("operators", [])
+    current_afribapay_defaults = {
+        str(op["id"]): op for op in afribapay.default_payout_catalog()
+    }
+    normalized_payout_catalog = []
+    for op in payout_catalog:
+        provider = str(op.get("provider") or "").lower()
+        code = str(op.get("code") or "").lower()
+        is_afribapay = provider == "afribapay" or code.startswith("afribapay_")
+        if is_afribapay:
+            base = current_afribapay_defaults.get(str(op.get("id") or ""))
+            if not base:
+                continue
+            op = dict(op)
+            for field in (
+                "id", "provider", "country", "country_label", "currency",
+                "code", "public_code", "operator", "otp_required", "ussd_code",
+            ):
+                op[field] = base[field]
+        normalized_payout_catalog.append(op)
+    payout_catalog[:] = normalized_payout_catalog
+    payout_keys = {
+        (str(op.get("provider") or "paydunya").lower(),
+         str(op.get("country") or "").upper(),
+         str(op.get("code") or "").lower(),
+         str(op.get("currency") or "").upper())
+        for op in payout_catalog
+    }
+    for op in afribapay.default_payout_catalog():
+        key = ("afribapay", str(op["country"]).upper(),
+               str(op["code"]).lower(), str(op["currency"]).upper())
+        if key not in payout_keys:
+            payout_catalog.append(op)
+            payout_keys.add(key)
     paydunya_cfg = await get_paydunya_config()
     merged["paydunya"] = {
         "enabled": bool(paydunya_cfg.get("enabled")
@@ -4227,6 +4495,10 @@ async def get_transfer_config() -> dict:
             or os.environ.get("MBIYO_SECRET_KEY") or os.environ.get("MBIYO_API_KEY"))),
         "operators": copy.deepcopy(mb_cfg.get("catalog") or []),
     }
+    afribapay_cfg = await get_afribapay_config()
+    merged["afribapay"] = {
+        "enabled": _afribapay_ready(afribapay_cfg, payout=True),
+    }
     return merged
 
 
@@ -4236,9 +4508,12 @@ def _public_transfer_config(cfg: dict) -> dict:
     public_ops = []
     global_enabled = bool(mm.get("enabled", False))
     paydunya_enabled = bool((result.get("paydunya") or {}).get("enabled"))
+    afribapay_enabled = bool((result.get("afribapay") or {}).get("enabled"))
     paydunya_ops = (mm.get("operators") or []) if (
         global_enabled and paydunya_enabled) else []
     for op in paydunya_ops:
+        if str(op.get("provider") or "paydunya").lower() != "paydunya":
+            continue
         if not op.get("active", True) or op.get("archived", False) or op.get("hidden", False):
             continue
         if not op.get("withdraw_mode") or str(op.get("currency") or "").upper() != "XOF":
@@ -4279,6 +4554,32 @@ def _public_transfer_config(cfg: dict) -> dict:
                 "fee_pct": _customer_fee_rates(op)[0],
                 "fee_fixed": _customer_fee_rates(op)[1], "active": True,
             })
+    if global_enabled and afribapay_enabled:
+        for op in mm.get("operators") or []:
+            if str(op.get("provider") or "").lower() != "afribapay":
+                continue
+            if (not op.get("active", True) or op.get("archived")
+                    or op.get("hidden")):
+                continue
+            currency = str(op.get("currency") or "").upper()
+            if currency not in afribapay.COUNTRY_CURRENCIES.get(
+                    str(op.get("country") or "").upper(), ()):
+                continue
+            public_code = str(op.get("public_code") or "")
+            if not public_code:
+                public_code = str(op.get("code") or "").removeprefix(
+                    "afribapay_")
+            public_ops.append({
+                "country": op.get("country"),
+                "country_label": op.get("country_label")
+                    or afribapay.COUNTRY_LABELS.get(op.get("country")),
+                "code": public_code,
+                "name": op.get("name") or public_code,
+                "currency": currency, "min": float(op.get("min", 100) or 100),
+                "max": float(op.get("max", 0) or 0) or None,
+                "fee_pct": _customer_fee_rates(op)[0],
+                "fee_fixed": _customer_fee_rates(op)[1], "active": True,
+            })
     # Keep the first route for each public tuple: this is also the arbitration
     # priority used by payout execution.
     seen = set()
@@ -4292,6 +4593,7 @@ def _public_transfer_config(cfg: dict) -> dict:
     result["mobile_money"]["operators"] = public_ops
     result.pop("paydunya", None)
     result.pop("mbiyo", None)
+    result.pop("afribapay", None)
     return result
 
 
@@ -4627,6 +4929,13 @@ async def transfer(req: TransferRequest, request: Request,
         )
         if mb_op and str(mb_op.get("currency") or "").upper() != req.currency.upper():
             mb_op = None
+        afri_cfg = await get_afribapay_config(decrypt=True)
+        afri_op = (
+            _active_afribapay_operator(
+                afri_cfg.get("catalog") or [], req.country, req.operator,
+                req.currency)
+            if _afribapay_ready(afri_cfg, payout=True) else None
+        )
         paydunya_op = (
             _active_operator(mm_cfg.get("operators") or [], req.country, req.operator)
             if (cfg.get("paydunya") or {}).get("enabled") else None
@@ -4641,18 +4950,99 @@ async def transfer(req: TransferRequest, request: Request,
             # Match the public catalogue's deterministic first-provider
             # priority for an identical country/code/currency tuple.
             mb_op = None
-        if not mb_op and not paydunya_op:
+        if afri_op and (mb_op or paydunya_op):
+            # PayDunya and Mbiyo routes appear first in the public withdrawal
+            # catalogue; AfribaPAY is only selected when no earlier provider
+            # owns the identical country/operator/currency route.
+            afri_op = None
+        if not mb_op and not paydunya_op and not afri_op:
             raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
 
         callback_base = (os.environ.get("OFFICIAL_DOMAIN")
                          or _paydunya_callback_base(request)).rstrip("/")
         callback_host = (urlparse(callback_base).hostname or "").lower()
-        if (paydunya_op and (callback_host.endswith(".replit.dev")
-                             or callback_host in {"localhost", "127.0.0.1"})):
+        if ((paydunya_op or afri_op) and (
+                callback_host.endswith(".replit.dev")
+                or callback_host in {"localhost", "127.0.0.1"})):
             raise HTTPException(
                 503,
                 "Le retrait automatique Mobile Money nécessite l'application "
                 "publiée. Les callbacks de prévisualisation ne sont pas acceptés.")
+
+        if afri_op:
+            op = afri_op
+            processed_amount = float(req.amount)
+            minimum = float(op.get("min", 100) or 100)
+            maximum = float(op.get("max", 0) or 0)
+            if processed_amount < minimum or (maximum and processed_amount > maximum):
+                raise HTTPException(400, "Montant hors des limites autorisées")
+            if str(op.get("currency") or "").upper() != req.currency.upper():
+                raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
+            try:
+                fees = paydunya.calculate_fees(
+                    processed_amount, op, req.fee_bearer or "sender")
+            except paydunya.PayDunyaError as exc:
+                raise HTTPException(exc.status, exc.message)
+            provider_payout_amount = float(fees["wallet_credit_amount"])
+            if u.get(field, 0) < float(fees["charged_amount"]):
+                raise HTTPException(400, "Solde insuffisant (frais inclus)")
+            tx_out = await record_tx(
+                uid, "transfer", "out", processed_amount, req.currency.upper(),
+                status="pending", counterparty=req.recipient,
+                description=req.description,
+                metadata={
+                    "transfer_type": "biz_to_mobile",
+                    "provider": "afribapay",
+                    "provider_name": "afribapay",
+                    "country": str(req.country).upper(),
+                    "operator": op.get("operator"),
+                    "operator_code": op.get("code"),
+                    "operator_name": op.get("name"),
+                    "phone_number": req.recipient,
+                    "fee": fees["total_fee"],
+                    "gateway_fee": fees["gateway_fee"],
+                    "platform_fee": fees["platform_fee"],
+                    "recipient_gets": provider_payout_amount,
+                    "provider_payout_amount": provider_payout_amount,
+                    "total_debit": fees["charged_amount"],
+                    "fee_snapshot": fees,
+                    "idempotency_key": mobile_idempotency_key,
+                    "request_fingerprint": mobile_request_fingerprint,
+                    "order_id": None,
+                    "debit_phase": "pending",
+                    "afribapay_submission_phase": "not_submitted",
+                    "afribapay_submission_phase_at": now_iso(),
+                },
+            )
+            await db.transactions.update_one(
+                {"id": tx_out.id},
+                {"$set": {"metadata.order_id": tx_out.id}},
+            )
+            debited = await db.users.update_one(
+                {"id": uid, field: {"$gte": float(fees["charged_amount"])},
+                 "withdrawal_debit_ids": {"$ne": tx_out.id}},
+                {"$inc": {field: -float(fees["charged_amount"])},
+                 "$addToSet": {"withdrawal_debit_ids": tx_out.id}},
+            )
+            if debited.modified_count != 1:
+                await db.transactions.update_one(
+                    {"id": tx_out.id, "status": "pending"},
+                    {"$set": {"status": "failed",
+                              "metadata.failure_reason": "insufficient_balance"}},
+                )
+                raise HTTPException(400, "Solde insuffisant (frais inclus)")
+            await db.transactions.update_one(
+                {"id": tx_out.id},
+                {"$set": {"metadata.debit_phase": "applied",
+                          "metadata.debit_applied": True,
+                          "metadata.debit_applied_at": now_iso()}},
+            )
+            callback_base = (
+                os.environ.get("OFFICIAL_DOMAIN")
+                or _paydunya_callback_base(request)).rstrip("/")
+            result = await _submit_afribapay_payout(
+                tx_out.id, req, u, op, afri_cfg, fees, callback_base)
+            return result
 
         if mb_op:
             op = mb_op
@@ -5714,11 +6104,15 @@ async def fedapay_catalog():
 
 
 @api.get("/deposits/config")
-async def deposits_config_public():
+async def deposits_config_public(
+    surface: Literal["dashboard", "public_link"] = Query("dashboard"),
+):
     cfg = await get_paydunya_config()
     public = _paydunya_public_config(cfg)
     mb_cfg = await get_mbiyo_config()
     mb_public = _mbiyo_public_config(mb_cfg)
+    afribapay_cfg = await get_afribapay_config()
+    afribapay_public = _afribapay_public_config(afribapay_cfg)
     # Grouping is retained for the existing deposit form contract.
     grouped: dict[str, dict] = {}
     for op in public["catalog"]:
@@ -5760,6 +6154,28 @@ async def deposits_config_public():
             "min": float(op.get("min", 100)), "max": float(op.get("max", 0)) or None,
             "payment_flow": op.get("payment_flow") or {},
         })
+    include_afribapay = surface != "public_link"
+    for op in (afribapay_public.get("catalog", []) if include_afribapay else []):
+        country = op.get("country", "")
+        entry = grouped.setdefault(country, {
+            "country": country,
+            "country_label": op.get("country_label")
+                or afribapay.COUNTRY_LABELS.get(country, country),
+            "operators": [],
+        })
+        entry["operators"].append({
+            "code": op["code"], "name": op.get("name") or op["code"],
+            "label": op.get("name") or op["code"],
+            "currency": op.get("currency") or "XOF",
+            "fee_pct": float(op.get("fee_pct", 0) or 0),
+            "fee_fixed": float(op.get("fee_fixed", 0) or 0),
+            **{key: op.get(key, 0) for key in (
+                "gateway_fee_pct", "gateway_fee_fixed",
+                "platform_fee_pct", "platform_fee_fixed", "amount_increment")},
+            "min": float(op.get("min", 100)),
+            "max": float(op.get("max", 0) or 0) or None,
+            "payment_flow": op.get("payment_flow") or {},
+        })
     for entry in grouped.values():
         unique = []
         seen = set()
@@ -5780,8 +6196,10 @@ async def deposits_config_public():
             unique.append(operator)
         entry["operators"] = unique
     public["catalog"] = list(grouped.values())
-    public["mobile_money_enabled"] = bool(public.get("mobile_money_enabled") or
-                                          mb_public.get("mobile_money_enabled"))
+    public["mobile_money_enabled"] = bool(
+        public.get("mobile_money_enabled")
+        or mb_public.get("mobile_money_enabled")
+        or (include_afribapay and afribapay_public.get("mobile_money_enabled")))
     # The top-level flag represents aggregate Mobile Money availability, not
     # PayDunya alone. This keeps Mbiyo-only configurations usable.
     public["enabled"] = public["mobile_money_enabled"]
@@ -6146,6 +6564,168 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             "message": "Suivez les instructions affichées puis validez la demande sur votre téléphone."}
 
 
+async def _create_afribapay_deposit(
+    req: MobileMoneyDepositRequest, request: Request, uid: str,
+) -> dict:
+    cfg = await get_afribapay_config(decrypt=True)
+    public = _afribapay_public_config(cfg)
+    op = _active_afribapay_operator(
+        cfg.get("catalog") or [], req.country, req.operator, req.currency)
+    currency = str(req.currency or "").upper()
+    if not _afribapay_ready(cfg) or not public.get("mobile_money_enabled") or not op:
+        raise HTTPException(503, "Mobile Money temporairement indisponible")
+    if currency not in AFRIBAPAY_WALLET_CURRENCIES:
+        raise HTTPException(400, "Devise Mobile Money non prise en charge")
+    minimum = float(op.get("min", 100) or 100)
+    maximum = float(op.get("max", 0) or 0)
+    if req.amount < minimum or (maximum and req.amount > maximum):
+        raise HTTPException(400, "Montant hors des limites autorisées")
+    try:
+        fees = paydunya.calculate_fees(
+            req.amount, op, req.fee_bearer or "client")
+    except paydunya.PayDunyaError as exc:
+        raise HTTPException(exc.status, exc.message)
+    if req.otp is not None and not re.fullmatch(r"\d{4,6}", str(req.otp).strip()):
+        raise HTTPException(400, "Le code OTP doit comporter de 4 à 6 chiffres")
+
+    dep_id = new_id()
+    created_at = now_iso()
+    pending_expires_at = (
+        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
+    ).isoformat()
+    callback_base = (
+        os.environ.get("OFFICIAL_DOMAIN") or _paydunya_callback_base(request)
+    ).rstrip("/")
+    notify_url = f"{callback_base}/api/webhooks/afribapay?ref={dep_id}"
+    payment_flow = afribapay.payment_flow(op, fees["charged_amount"])
+    deposit = {
+        "id": dep_id, "user_id": uid,
+        "amount": fees["wallet_credit_amount"],
+        "requested_amount": req.amount, "processed_amount": req.amount,
+        "provider_submitted_amount": fees["charged_amount"],
+        "charged_amount": fees["charged_amount"],
+        "gateway_fee": fees["gateway_fee"],
+        "platform_fee": fees["platform_fee"],
+        "total_fee": fees["total_fee"],
+        "wallet_credit_amount": fees["wallet_credit_amount"],
+        "fee_snapshot": fees, "currency": currency,
+        "email": req.email, "full_name": req.full_name,
+        "country": str(req.country).upper(),
+        "operator": req.operator, "operator_name": op.get("name"),
+        "operator_snapshot": copy.deepcopy(op),
+        "phone_number": req.phone_number,
+        "fee_bearer": fees["fee_bearer"],
+        "idempotency_key": req.idempotency_key,
+        "provider": "afribapay", "afribapay_order_id": dep_id,
+        "provider_status": "pending", "status": "pending",
+        "payment_flow": payment_flow, "notify_url": notify_url,
+        "afribapay_submission_phase": "not_submitted",
+        "created_at": created_at, "pending_expires_at": pending_expires_at,
+    }
+    await db.momo_deposits.insert_one(copy.deepcopy(deposit))
+    client = afribapay.client_from_config(cfg)
+    base_payload = {
+        "operator": op.get("operator"), "phone_number": req.phone_number,
+        "country": str(req.country).upper(),
+        "amount": fees["charged_amount"], "currency": currency,
+        "order_id": dep_id, "reference_id": req.idempotency_key or dep_id,
+        "notify_url": notify_url, "lang": "fr",
+    }
+    if op.get("operator") == "wligdicash" and not req.otp:
+        try:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"afribapay_submission_phase": "otp_requesting"}})
+            response = await client.request_otp(**base_payload)
+        except afribapay.AfriPayError as exc:
+            if exc.status < 500:
+                await db.momo_deposits.update_one(
+                    {"id": dep_id, "status": "pending"},
+                    {"$set": {"status": "failed",
+                              "provider_status": "rejected",
+                              "failed_reason": "provider_rejected",
+                              "afribapay_submission_phase": "otp_rejected"}})
+                raise HTTPException(
+                    400, "AfribaPAY n’a pas pu envoyer le code OTP")
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"submission_unknown": True,
+                          "provider_status": "otp_unknown",
+                          "afribapay_submission_phase": "otp_outcome_unknown"}})
+            deposit.update({
+                "submission_unknown": True, "provider_status": "otp_unknown",
+                "afribapay_submission_phase": "otp_outcome_unknown",
+            })
+            return _public_momo_deposit(deposit)
+        data = response.get("data") if isinstance(response.get("data"), dict) else response
+        patch = {
+            "auth_mode": "pin", "otp_required": True,
+            "provider_status": "otp_required",
+            "afribapay_submission_phase": "otp_sent",
+            "afribapay_otp_response_status": afribapay.status_value(response),
+        }
+        await db.momo_deposits.update_one({"id": dep_id}, {"$set": patch})
+        deposit.update(patch)
+        return _public_momo_deposit(deposit)
+
+    if req.otp:
+        base_payload["otp_code"] = str(req.otp).strip()
+    try:
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"afribapay_submission_phase": "dispatching"}})
+        response = await client.payin(**base_payload)
+    except afribapay.AfriPayError as exc:
+        if exc.status < 500:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "failed",
+                          "provider_status": "rejected",
+                          "failed_reason": "provider_rejected",
+                          "afribapay_submission_phase": "rejected"}})
+            raise HTTPException(400, "La passerelle Mobile Money a refusé la demande")
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"submission_unknown": True,
+                      "provider_status": "unknown",
+                      "afribapay_submission_phase": "outcome_unknown"}})
+        deposit.update({
+            "submission_unknown": True, "provider_status": "unknown",
+            "afribapay_submission_phase": "outcome_unknown",
+        })
+        return _public_momo_deposit(deposit)
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    provider_id = (data.get("transaction_id") or data.get("transactionId")
+                   or data.get("payment_id") or data.get("id"))
+    provider_link = data.get("provider_link") or data.get("payment_url")
+    if provider_link:
+        parsed = urlparse(str(provider_link))
+        if parsed.scheme == "https" and parsed.hostname and not parsed.username:
+            deposit["redirect_url"] = str(provider_link)
+    provider_status = afribapay.status_value(response) or "pending"
+    patch = {
+        "afribapay_transaction_id": str(provider_id) if provider_id else None,
+        "provider_status": provider_status,
+        "afribapay_submission_phase": (
+            "provider_id_received" if provider_id else "response_without_provider_id"),
+        "afribapay_response_received_at": now_iso(),
+        "next_reconcile_at": now_iso(),
+    }
+    if deposit.get("redirect_url"):
+        patch["redirect_url"] = deposit["redirect_url"]
+    await db.momo_deposits.update_one({"id": dep_id}, {"$set": patch})
+    deposit.update({key: value for key, value in patch.items() if value is not None})
+    if provider_status in afribapay.STATUS_VALUES:
+        try:
+            await _reconcile_afribapay_deposit(dep_id)
+            deposit = await db.momo_deposits.find_one(
+                {"id": dep_id}, {"_id": 0}) or deposit
+        except Exception:
+            logger.exception("AfribaPAY deposit verification failed for %s", dep_id)
+    return _public_momo_deposit(deposit)
+
+
 @api.post("/deposits/mobile-money/start")
 async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
                                      request: Request,
@@ -6183,6 +6763,8 @@ async def start_mobile_money_deposit(req: MobileMoneyDepositRequest,
             req.country, req.operator, req.currency)
         if provider == "mbiyo":
             result = await _create_mbiyo_deposit(req, request, uid)
+        elif provider == "afribapay":
+            result = await _create_afribapay_deposit(req, request, uid)
         else:
             cfg = await get_paydunya_config()
             public = _paydunya_public_config(cfg)
@@ -6845,6 +7427,100 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
     return True
 
 
+def _afribapay_response_value(payload: dict, *keys: str):
+    data = payload.get("data") if isinstance(payload, dict) else None
+    containers = [data, payload]
+    for container in containers:
+        if isinstance(container, dict):
+            for key in keys:
+                value = container.get(key)
+                if value not in (None, ""):
+                    return value
+    return None
+
+
+async def _reconcile_afribapay_deposit(dep_id: str) -> bool:
+    """Verify an AfribaPAY deposit by its merchant order ID before crediting."""
+    d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
+    if not d or d.get("provider") != "afribapay":
+        return False
+    if d.get("status") == "approved":
+        return True
+    if d.get("status") != "pending" or await _expire_momo_deposit_if_due(d):
+        return False
+    if d.get("afribapay_submission_phase") in {
+        "otp_requesting", "otp_sent", "otp_outcome_unknown",
+    }:
+        # The user must submit the one-time code before a payment exists.
+        return False
+    cfg = await get_afribapay_config(decrypt=True)
+    response = await afribapay.client_from_config(cfg).status(
+        order_id=str(d.get("afribapay_order_id") or d["id"]))
+    status = afribapay.status_value(response)
+    order_id = _afribapay_response_value(
+        response, "order_id", "orderId", "merchant_order_id")
+    expected_order_id = str(d.get("afribapay_order_id") or d["id"])
+    expected_amount = float(d.get("provider_submitted_amount", d.get("amount", 0)))
+    expected_currency = str(d.get("currency") or "").upper()
+    received_amount = _afribapay_response_value(
+        response, "amount", "paid_amount", "transaction_amount")
+    received_currency = _afribapay_response_value(response, "currency")
+
+    if order_id not in (None, "") and str(order_id) != expected_order_id:
+        await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"status": "quarantined",
+                      "reconciliation_mismatch": "order_id"}})
+        return False
+    if status in {"success", "failed"}:
+        mismatch = None
+        if str(order_id or "") != expected_order_id:
+            mismatch = "missing_order_id"
+        elif received_amount in (None, ""):
+            mismatch = "missing_amount"
+        elif received_currency in (None, ""):
+            mismatch = "missing_currency"
+        else:
+            try:
+                if abs(float(received_amount) - expected_amount) > 1e-9:
+                    mismatch = "amount"
+            except (TypeError, ValueError):
+                mismatch = "amount"
+            if not mismatch and str(received_currency).upper() != expected_currency:
+                mismatch = "currency"
+        if mismatch:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": "pending"},
+                {"$set": {"status": "quarantined",
+                          "reconciliation_mismatch": mismatch}})
+            return False
+
+    await db.momo_deposits.update_one(
+        {"id": dep_id, "status": "pending"},
+        {"$set": {
+            "provider_status": status or "pending",
+            "afribapay_last_verified_at": now_iso(),
+            "next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+        }})
+    if status == "success":
+        fresh = await db.momo_deposits.find_one(
+            {"id": dep_id, "status": "pending"}, {"_id": 0})
+        if fresh:
+            await _credit_momo_deposit(fresh)
+        return True
+    if status == "failed":
+        failed = await db.momo_deposits.update_one(
+            {"id": dep_id, "status": "pending"},
+            {"$set": {"status": "failed", "retryable": False,
+                      "failed_reason": "provider_failed"}})
+        if failed.modified_count:
+            await _notify_integration_business_transition(
+                d.get("user_id", ""), "deposit", dep_id, "failed")
+        return False
+    return False
+
+
 async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
     """Verify a Mbiyo deposit server-to-server and credit it once."""
     d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
@@ -6943,7 +7619,7 @@ async def _paydunya_reconcile_loop() -> None:
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
             cursor = db.momo_deposits.find(
                 {
-                    "provider": {"$in": ["paydunya", "mbiyo"]},
+                    "provider": {"$in": ["paydunya", "mbiyo", "afribapay"]},
                     "created_at": {"$gt": cutoff},
                     "$or": [
                         {"status": "pending"},
@@ -6958,7 +7634,9 @@ async def _paydunya_reconcile_loop() -> None:
             ).sort("created_at", -1).limit(50)
             async for deposit in cursor:
                 try:
-                    if deposit.get("provider") == "mbiyo":
+                    if deposit.get("provider") == "afribapay":
+                        await _reconcile_afribapay_deposit(deposit["id"])
+                    elif deposit.get("provider") == "mbiyo":
                         await _reconcile_mbiyo_deposit(deposit["id"])
                     else:
                         await _reconcile_momo_deposit(deposit["id"])
@@ -7000,6 +7678,9 @@ async def _paydunya_reconcile_loop() -> None:
                         else:
                             await _reconcile_mbiyo_without_provider_id(
                                 withdrawal, tokenless_grace)
+                    elif withdrawal_meta.get("provider") == "afribapay":
+                        if not withdrawal_meta.get("provider_balance_insufficient"):
+                            await _reconcile_afribapay_withdrawal(withdrawal)
                     elif (withdrawal_meta.get("provider") == "paydunya"
                           and withdrawal_meta.get("paydunya_invoice_token")):
                         await _reconcile_mobile_withdrawal(withdrawal)
@@ -7126,8 +7807,13 @@ async def _credit_momo_deposit(d: dict) -> None:
     field = f"balance_{currency.lower()}"
     mbiyo_currencies = {currency for currencies in mbiyo.CURRENCIES.values()
                         for currency in currencies}
-    allowed = (mbiyo_currencies if d.get("provider") == "mbiyo"
-               else PAYDUNYA_WALLET_CURRENCIES)
+    if d.get("provider") == "mbiyo":
+        allowed = mbiyo_currencies
+    elif d.get("provider") == "afribapay":
+        allowed = set(afribapay.COUNTRY_CURRENCIES.get(
+            str(d.get("country") or "").upper(), ()))
+    else:
+        allowed = PAYDUNYA_WALLET_CURRENCIES
     if currency not in allowed:
         logger.error("Refusing gateway credit in unsupported currency %s", currency)
         return
@@ -7345,7 +8031,14 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
     d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
     if not d:
         raise HTTPException(404, "Not found")
-    if d.get("provider") == "mbiyo" and d.get("status") == "pending":
+    if d.get("provider") == "afribapay" and d.get("status") == "pending":
+        try:
+            await _reconcile_afribapay_deposit(deposit_id)
+        except Exception:
+            logger.exception("AfribaPAY deposit reconciliation failed for %s", deposit_id)
+        d = await db.momo_deposits.find_one(
+            {"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
+    elif d.get("provider") == "mbiyo" and d.get("status") == "pending":
         try:
             await _reconcile_mbiyo_deposit(deposit_id)
         except Exception:
@@ -7377,6 +8070,91 @@ async def finalize_momo_deposit(
         d.get("endpoint_slug") == "wizall-money-senegal"
     ):
         raise HTTPException(409, "Cette transaction ne demande pas de code de finalisation")
+    if d.get("provider") == "afribapay":
+        otp = str(req.otp or "").strip()
+        if not re.fullmatch(r"\d{4,6}", otp):
+            raise HTTPException(400, "Le code OTP doit comporter de 4 à 6 chiffres")
+        cfg = await get_afribapay_config(decrypt=True)
+        op = d.get("operator_snapshot") or {}
+        payload = {
+            "operator": op.get("operator"),
+            "phone_number": d.get("phone_number"),
+            "country": str(d.get("country") or "").upper(),
+            "amount": d.get("provider_submitted_amount", d.get("amount")),
+            "currency": str(d.get("currency") or "").upper(),
+            "order_id": str(d.get("afribapay_order_id") or d["id"]),
+            "reference_id": d.get("idempotency_key") or d["id"],
+            "notify_url": d.get("notify_url"),
+            "lang": "fr", "otp_code": otp,
+        }
+        try:
+            claimed = await db.momo_deposits.update_one(
+                {"id": deposit_id, "status": "pending",
+                 "afribapay_submission_phase": "otp_sent"},
+                {"$set": {"afribapay_submission_phase": "dispatching",
+                          "afribapay_dispatch_started_at": now_iso()}})
+            if claimed.modified_count != 1:
+                fresh = await db.momo_deposits.find_one(
+                    {"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
+                if fresh.get("afribapay_submission_phase") != "otp_sent":
+                    return _public_momo_deposit(fresh)
+                raise HTTPException(409, "Le code est déjà en cours de vérification")
+            response = await afribapay.client_from_config(cfg).payin(**payload)
+        except afribapay.AfriPayError as exc:
+            if exc.status < 500:
+                attempts = int(d.get("afribapay_otp_attempts", 0)) + 1
+                patch = {
+                    "afribapay_submission_phase": (
+                        "otp_sent" if attempts < 4 else "otp_rejected"),
+                    "afribapay_otp_attempts": attempts,
+                    "afribapay_last_otp_error_at": now_iso(),
+                }
+                if attempts >= 4:
+                    patch.update({
+                        "status": "failed", "auth_mode": None,
+                        "provider_status": "rejected",
+                        "failed_reason": "otp_attempts_exhausted",
+                    })
+                await db.momo_deposits.update_one(
+                    {"id": deposit_id, "status": "pending"}, {"$set": patch})
+                raise HTTPException(400, "Le code de validation n’a pas été accepté.")
+            await db.momo_deposits.update_one(
+                {"id": deposit_id, "status": "pending"},
+                {"$set": {
+                    "auth_mode": None, "submission_unknown": True,
+                    "provider_status": "unknown",
+                    "afribapay_submission_phase": "outcome_unknown",
+                    "next_reconcile_at": now_iso(),
+                }})
+            raise HTTPException(
+                502, "Le résultat du dépôt est en cours de vérification. Ne relancez pas le paiement.")
+        data = response.get("data") if isinstance(response.get("data"), dict) else response
+        provider_id = (data.get("transaction_id") or data.get("transactionId")
+                       or data.get("payment_id") or data.get("id"))
+        provider_link = data.get("provider_link") or data.get("payment_url")
+        updates = {
+            "auth_mode": None, "otp_required": False,
+            "provider_status": afribapay.status_value(response) or "pending",
+            "afribapay_submission_phase": (
+                "provider_id_received" if provider_id
+                else "response_without_provider_id"),
+            "afribapay_response_received_at": now_iso(),
+            "next_reconcile_at": now_iso(),
+        }
+        if provider_id:
+            updates["afribapay_transaction_id"] = str(provider_id)
+        if (provider_link and urlparse(str(provider_link)).scheme == "https"
+                and urlparse(str(provider_link)).hostname):
+            updates["redirect_url"] = str(provider_link)
+        await db.momo_deposits.update_one(
+            {"id": deposit_id, "status": "pending"}, {"$set": updates})
+        try:
+            await _reconcile_afribapay_deposit(deposit_id)
+        except Exception:
+            logger.exception("AfribaPAY OTP payment verification failed for %s", deposit_id)
+        fresh = await db.momo_deposits.find_one(
+            {"id": deposit_id}, {"_id": 0}) or d
+        return _public_momo_deposit(fresh)
     provider_ref = str(
         d.get("mbiyo_transaction_id") or d.get("provider_reference")
         or d.get("paydunya_reference") or ""
@@ -7438,6 +8216,56 @@ async def paydunya_payment_return(token: str = "", ref: str = ""):
             await asyncio.sleep(1)
     return RedirectResponse(
         url="/dashboard?paydunya=pending", status_code=303)
+
+
+@api.head("/webhooks/afribapay")
+@api.get("/webhooks/afribapay")
+@api.post("/webhooks/afribapay")
+async def afribapay_webhook(request: Request, ref: str = Query("")):
+    """Treat the callback only as a hint; all settlement uses the status API."""
+    payload = {}
+    if request.method == "POST":
+        raw = await request.body()
+        if len(raw) > MAX_WEBHOOK_BYTES:
+            raise HTTPException(413, "Webhook payload too large")
+        try:
+            parsed = json.loads(raw or b"{}")
+            payload = parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            payload = {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    candidate = str(
+        ref or data.get("order_id") or data.get("orderId")
+        or data.get("reference_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", candidate):
+        return {"received": True}
+
+    deposit = await db.momo_deposits.find_one(
+        {"id": candidate, "provider": "afribapay"}, {"_id": 0})
+    if deposit:
+        await db.momo_deposits.update_one(
+            {"id": deposit["id"], "provider": "afribapay"},
+            {"$set": {"afribapay_callback_received_at": now_iso()}})
+        try:
+            await _reconcile_afribapay_deposit(deposit["id"])
+        except Exception:
+            logger.exception(
+                "AfribaPAY callback status verification failed for %s",
+                deposit["id"])
+
+    payout = await db.transactions.find_one(
+        {"id": candidate, "metadata.provider": "afribapay"}, {"_id": 0})
+    if payout:
+        await db.transactions.update_one(
+            {"id": payout["id"], "metadata.provider": "afribapay"},
+            {"$set": {"metadata.afribapay_callback_received_at": now_iso()}})
+        try:
+            await _reconcile_afribapay_withdrawal(payout)
+        except Exception:
+            logger.exception(
+                "AfribaPAY payout callback status verification failed for %s",
+                payout["id"])
+    return {"received": True}
 
 
 @api.post("/webhooks/paydunya")
@@ -7843,11 +8671,10 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
     if tx.get("status") in ("completed", "failed") or meta.get("refunded"):
         return False
     if tx.get("status") == "pending":
-        provider_status_field = (
-            "metadata.mbiyo_status"
-            if meta.get("provider") == "mbiyo"
-            else "metadata.paydunya_status"
-        )
+        provider_status_field = {
+            "mbiyo": "metadata.mbiyo_status",
+            "afribapay": "metadata.afribapay_status",
+        }.get(meta.get("provider"), "metadata.paydunya_status")
         claimed = await db.transactions.update_one(
             {"id": tx_id, "status": "pending"},
             {"$set": {"status": "refund_pending",
@@ -7921,10 +8748,10 @@ async def _hold_mobile_withdrawal_for_provider_funds(
     if not tx:
         return None
     meta = tx.get("metadata") or {}
-    provider_status_field = (
-        "metadata.mbiyo_status" if provider == "mbiyo"
-        else "metadata.paydunya_status"
-    )
+    provider_status_field = {
+        "mbiyo": "metadata.mbiyo_status",
+        "afribapay": "metadata.afribapay_status",
+    }.get(provider, "metadata.paydunya_status")
     updates = {
         "metadata.manual_review_required": True,
         "metadata.provider_balance_insufficient": True,
@@ -8117,6 +8944,305 @@ async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:
     return True
 
 
+async def _mark_afribapay_payout_manual_review(
+    tx_id: str, reason: str, detail: str = ""
+) -> None:
+    await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"},
+        {"$set": {
+            "metadata.manual_review_required": True,
+            "metadata.manual_review_reason": str(reason)[:120],
+            "metadata.manual_review_detail": str(detail)[:240],
+            "metadata.afribapay_submission_unknown": True,
+            "metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        }},
+    )
+
+
+async def _complete_afribapay_withdrawal(tx_id: str, provider_status: str) -> bool:
+    changed = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending",
+         "metadata.provider": "afribapay"},
+        {"$set": {
+            "status": "completed",
+            "metadata.afribapay_status": provider_status,
+            "metadata.completed_at": now_iso(),
+            "metadata.manual_review_required": False,
+        },
+         "$unset": {"metadata.next_reconcile_at": ""}},
+    )
+    if not changed.modified_count:
+        tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+        if tx and tx.get("status") == "completed":
+            return True
+        await db.transactions.update_one(
+            {"id": tx_id},
+            {"$set": {"metadata.afribapay_status": provider_status,
+                      "metadata.reconciliation_conflict": True}},
+        )
+        return False
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if tx:
+        await _notify_integration_business_transition(
+            tx.get("user_id", ""), "payout", tx_id, "completed")
+    return True
+
+
+async def _reconcile_afribapay_withdrawal(tx: dict) -> str:
+    """Verify a payout by local order ID; never resubmit an uncertain payout."""
+    if not tx or tx.get("type") != "transfer":
+        return "not_applicable"
+    metadata = tx.get("metadata") or {}
+    if metadata.get("provider") != "afribapay":
+        return "not_applicable"
+    if tx.get("status") == "completed":
+        return "completed"
+    if tx.get("status") in {"failed", "refund_pending"}:
+        return tx["status"]
+    if tx.get("status") != "pending":
+        return str(tx.get("status") or "unknown")
+    if metadata.get("debit_applied") is not True:
+        await _mark_afribapay_payout_manual_review(
+            tx["id"], "debit_state_unknown",
+            "Wallet debit state is not confirmed")
+        return "manual_review"
+    cfg = await get_afribapay_config(decrypt=True)
+    try:
+        response = await afribapay.client_from_config(cfg).status(
+            order_id=str(metadata.get("order_id") or tx["id"]))
+    except afribapay.AfriPayError as exc:
+        await db.transactions.update_one(
+            {"id": tx["id"], "status": "pending"},
+            {"$set": {
+                "metadata.afribapay_last_status_error": exc.status,
+                "metadata.next_reconcile_at": (
+                    datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+            }},
+        )
+        return "pending"
+    except Exception:
+        await db.transactions.update_one(
+            {"id": tx["id"], "status": "pending"},
+            {"$set": {"metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()}},
+        )
+        return "pending"
+
+    status = afribapay.status_value(response)
+    order_id = _afribapay_response_value(
+        response, "order_id", "orderId", "merchant_order_id")
+    expected_order_id = str(metadata.get("order_id") or tx["id"])
+    if str(order_id or "") != expected_order_id:
+        await _mark_afribapay_payout_manual_review(
+            tx["id"], "order_id_unverified",
+            "AfribaPAY status response did not confirm the local order ID")
+        return "manual_review"
+
+    expected_amount = metadata.get(
+        "provider_payout_amount", metadata.get("recipient_gets"))
+    expected_currency = str(tx.get("currency") or "").upper()
+    amount = _afribapay_response_value(
+        response, "amount", "paid_amount", "transaction_amount")
+    currency = _afribapay_response_value(response, "currency")
+    if status == "success":
+        try:
+            amount_ok = amount not in (None, "") and abs(
+                float(amount) - float(expected_amount)) <= 1e-9
+        except (TypeError, ValueError):
+            amount_ok = False
+        if (not amount_ok or str(currency or "").upper() != expected_currency):
+            await _mark_afribapay_payout_manual_review(
+                tx["id"], "payout_amount_or_currency_mismatch",
+                "Verified payout amount or currency differs from the local order")
+            return "manual_review"
+        await db.transactions.update_one(
+            {"id": tx["id"], "status": "pending"},
+            {"$set": {"metadata.afribapay_status": status,
+                      "metadata.afribapay_last_verified_at": now_iso()}},
+        )
+        await _complete_afribapay_withdrawal(tx["id"], status)
+        return "completed"
+
+    if status == "failed":
+        if amount not in (None, ""):
+            try:
+                if abs(float(amount) - float(expected_amount)) > 1e-9:
+                    await _mark_afribapay_payout_manual_review(
+                        tx["id"], "failed_payout_amount_mismatch",
+                        "Failed payout response amount differs from local order")
+                    return "manual_review"
+            except (TypeError, ValueError):
+                await _mark_afribapay_payout_manual_review(
+                    tx["id"], "failed_payout_amount_invalid",
+                    "Failed payout response amount could not be verified")
+                return "manual_review"
+        if currency and str(currency).upper() != expected_currency:
+            await _mark_afribapay_payout_manual_review(
+                tx["id"], "failed_payout_currency_mismatch",
+                "Failed payout response currency differs from local order")
+            return "manual_review"
+        if _is_provider_balance_insufficient(
+                json.dumps(response, ensure_ascii=False)):
+            await _hold_mobile_withdrawal_for_provider_funds(
+                tx["id"], provider="afribapay",
+                reason=json.dumps(response, ensure_ascii=False))
+            return "manual_review"
+        await _refund_mobile_withdrawal(tx["id"], "afribapay_provider_failed")
+        return "failed"
+
+    await db.transactions.update_one(
+        {"id": tx["id"], "status": "pending"},
+        {"$set": {
+            "metadata.afribapay_status": status or "pending",
+            "metadata.afribapay_last_verified_at": now_iso(),
+            "metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+        }},
+    )
+    return "pending"
+
+
+async def _submit_afribapay_payout(
+    tx_id: str, req: TransferRequest, user: dict, op: dict,
+    cfg: dict, fees: dict, callback_base: str,
+) -> dict:
+    """Dispatch once after the wallet debit is durably recorded."""
+    callback_url = f"{callback_base}/api/webhooks/afribapay?ref={tx_id}"
+    claim = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending",
+         "metadata.provider": "afribapay",
+         "metadata.debit_applied": True,
+         "metadata.afribapay_submission_phase": "not_submitted"},
+        {"$set": {
+            "metadata.afribapay_submission_phase": "dispatching",
+            "metadata.afribapay_submission_phase_at": now_iso(),
+            "metadata.afribapay_notify_url": callback_url,
+        }},
+    )
+    if claim.modified_count != 1:
+        await _mark_afribapay_payout_manual_review(
+            tx_id, "dispatch_phase_persist_failed",
+            "Unable to durably record AfribaPAY payout dispatch phase")
+        raise HTTPException(
+            503, "Le retrait reste réservé pour vérification manuelle.")
+
+    payload = {
+        "operator": op.get("operator"),
+        "country": str(req.country).upper(),
+        "phone_number": req.recipient,
+        "amount": float(fees["wallet_credit_amount"]),
+        "currency": str(req.currency).upper(),
+        "order_id": tx_id,
+        "reference_id": req.idempotency_key or tx_id,
+        "notify_url": callback_url,
+    }
+    try:
+        response = await afribapay.client_from_config(cfg).payout(**payload)
+    except afribapay.AfriPayError as exc:
+        if _is_provider_balance_insufficient(exc.message):
+            latest = await _hold_mobile_withdrawal_for_provider_funds(
+                tx_id, provider="afribapay", reason=exc.message)
+            return {
+                "transaction": latest, "fee": fees["total_fee"],
+                "total_debit": fees["charged_amount"],
+                "recipient_gets": fees["wallet_credit_amount"],
+                "operator": op.get("name"), "pending_manual": True,
+                "message": (
+                    "Le portefeuille du prestataire est momentanément "
+                    "insuffisant. Votre demande reste réservée pour traitement "
+                    "manuel par un administrateur."
+                ),
+            }
+        if exc.status < 500:
+            await _refund_mobile_withdrawal(tx_id, "afribapay_provider_rejected")
+            raise HTTPException(400, "Le prestataire a refusé le retrait Mobile Money")
+        await _mark_afribapay_payout_manual_review(
+            tx_id, "dispatch_outcome_unknown", exc.message)
+        await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {
+                "metadata.afribapay_status": "unknown",
+                "metadata.afribapay_status_code": exc.status,
+            }},
+        )
+        raise HTTPException(
+            502,
+            "Le retrait a peut-être été transmis. Le solde reste réservé "
+            "pendant la vérification du résultat.")
+    except Exception as exc:
+        await _mark_afribapay_payout_manual_review(
+            tx_id, "dispatch_outcome_unknown", str(exc))
+        raise HTTPException(
+            502, "Le retrait est en cours de vérification. Le solde reste réservé.")
+
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    provider_id = (data.get("transaction_id") or data.get("transactionId")
+                   or data.get("payment_id") or data.get("id"))
+    provider_status = afribapay.status_value(response) or "pending"
+    updates = {
+        "metadata.afribapay_transaction_id": (
+            str(provider_id) if provider_id else None),
+        "metadata.afribapay_status": provider_status,
+        "metadata.afribapay_submission_phase": (
+            "provider_id_persisted" if provider_id
+            else "response_without_provider_id"),
+        "metadata.afribapay_response_received_at": now_iso(),
+        "metadata.next_reconcile_at": now_iso(),
+    }
+    persisted = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"}, {"$set": updates})
+    if not persisted.matched_count:
+        await _mark_afribapay_payout_manual_review(
+            tx_id, "provider_response_persistence_failed",
+            "AfribaPAY responded but the response could not be attached locally")
+        raise HTTPException(
+            502, "Le résultat du retrait doit être vérifié manuellement.")
+
+    if _is_provider_balance_insufficient(json.dumps(response, ensure_ascii=False)):
+        latest = await _hold_mobile_withdrawal_for_provider_funds(
+            tx_id, provider="afribapay",
+            reason=json.dumps(response, ensure_ascii=False))
+        return {
+            "transaction": latest, "fee": fees["total_fee"],
+            "total_debit": fees["charged_amount"],
+            "recipient_gets": fees["wallet_credit_amount"],
+            "operator": op.get("name"), "pending_manual": True,
+            "message": (
+                "Le portefeuille du prestataire est momentanément insuffisant. "
+                "Votre demande reste réservée pour traitement manuel."
+            ),
+        }
+    if provider_status in {"success", "failed"} or not provider_id:
+        tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+        if tx:
+            await _reconcile_afribapay_withdrawal(tx)
+    else:
+        await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {"metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()}},
+        )
+    latest = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    manual_review = bool(
+        (latest or {}).get("metadata", {}).get("manual_review_required"))
+    if not provider_id and (latest or {}).get("status") == "pending":
+        await _mark_afribapay_payout_manual_review(
+            tx_id, "provider_response_missing_id",
+            "AfribaPAY response did not include a transaction identifier")
+        latest = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+        manual_review = True
+    return {
+        "transaction": latest, "fee": fees["total_fee"],
+        "total_debit": fees["charged_amount"],
+        "recipient_gets": fees["wallet_credit_amount"],
+        "operator": op.get("name"),
+        "pending_manual": manual_review,
+        **({"message": "Le résultat du retrait sera vérifié par un administrateur."}
+           if manual_review else {}),
+    }
+
+
 async def _reconcile_mbiyo_withdrawal(tx: dict) -> str:
     """Read a Mbiyo payout status and apply its idempotent terminal outcome."""
     if not tx:
@@ -8222,6 +9348,8 @@ async def _reconcile_mobile_withdrawal(tx: dict) -> str:
     if not tx:
         return ""
     meta = tx.get("metadata") or {}
+    if meta.get("provider") == "afribapay":
+        return await _reconcile_afribapay_withdrawal(tx)
     token = str(meta.get("paydunya_invoice_token") or "")
     provider_id = str(meta.get("paydunya_disbursement_id") or "")
     if not token and not provider_id:
@@ -9136,7 +10264,7 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
     link_currency = str(link.get("currency") or "XOF").upper()
     route_provider = await _resolve_deposit_provider(
         req.country, req.operator, link_currency,
-        required_mode="softpay_direct")
+        required_mode="softpay_direct", allow_afribapay=False)
     if route_provider == "mbiyo":
         mb_cfg = await get_mbiyo_config(decrypt=True)
         mb_op = _active_mbiyo_operator(
@@ -9579,6 +10707,28 @@ SUPPORTED_CONVERSION_PAIRS = [
 def _balance_field(currency: str) -> str:
     c = (currency or "").upper()
     return {"USDT": "balance_usdt", "XOF": "balance_xof", "XAF": "balance_xaf"}.get(c)
+
+
+def _transaction_wallet_field(currency: Any) -> Optional[str]:
+    """Map a transaction currency to its own wallet without cross-currency fallback."""
+    return {
+        "XOF": "balance_xof",
+        "XAF": "balance_xaf",
+        "CDF": "balance_cdf",
+        "USD": "balance_usd",
+        "GNF": "balance_gnf",
+        "GMD": "balance_gmd",
+        "UGX": "balance_ugx",
+        "TZS": "balance_tzs",
+        "KES": "balance_kes",
+        "RWF": "balance_rwf",
+        "GHS": "balance_ghs",
+        "NGN": "balance_ngn",
+        "ZAR": "balance_zar",
+        "ZMW": "balance_zmw",
+        "EGP": "balance_egp",
+        "USDT": "balance_usdt",
+    }.get(str(currency or "").upper())
 
 
 async def get_platform_config() -> dict:
@@ -12338,6 +13488,88 @@ async def _record_mbiyo_submission_evidence(
     return review
 
 
+def _requires_afribapay_submission_evidence(tx: dict) -> bool:
+    metadata = tx.get("metadata") or {}
+    return (
+        tx.get("type") == "transfer"
+        and tx.get("direction") == "out"
+        and metadata.get("provider") == "afribapay"
+        and (
+            metadata.get("afribapay_submission_unknown") is True
+            or metadata.get("manual_review_required") is True
+        )
+    )
+
+
+async def _record_afribapay_submission_evidence(
+        tx: dict, action: str, body: Any, admin: dict) -> Optional[dict]:
+    """Require independently recorded outcome evidence for manual payout decisions."""
+    if not _requires_afribapay_submission_evidence(tx):
+        return None
+    outcome = getattr(body, "provider_outcome", None)
+    evidence_reference = str(
+        getattr(body, "provider_outcome_evidence_reference", "") or ""
+    ).strip()
+    attested = getattr(body, "provider_outcome_attested", False) is True
+    allowed_outcomes = (
+        _MBIYO_APPROVE_OUTCOMES if action == "approve"
+        else _MBIYO_REJECT_OUTCOMES
+    )
+    if outcome not in allowed_outcomes or not evidence_reference or not attested:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "AFRIBAPAY_OUTCOME_EVIDENCE_REQUIRED",
+                "message": (
+                    "Une preuve indépendante du résultat AfribaPAY, sa référence "
+                    "et votre attestation explicite sont requises avant cette décision."
+                ),
+            },
+        )
+    recorded_at = now_iso()
+    review = {
+        "action": action,
+        "provider_outcome": outcome,
+        "evidence_reference": evidence_reference,
+        "admin_attested": True,
+        "admin_id": admin["id"],
+        "admin_username": admin["username"],
+        "recorded_at": recorded_at,
+    }
+    metadata = dict(tx.get("metadata") or {})
+    metadata["afribapay_submission_admin_review"] = review
+    result = await db.transactions.update_one(
+        {
+            "id": tx["id"], "status": "pending",
+            "metadata": tx.get("metadata") or {},
+            "metadata.provider": "afribapay",
+            "$or": [
+                {"metadata.afribapay_submission_unknown": True},
+                {"metadata.manual_review_required": True},
+            ],
+        },
+        {"$set": {"metadata": metadata}},
+    )
+    if not result.modified_count:
+        raise HTTPException(
+            409,
+            "La transaction a changé pendant l’enregistrement de la preuve. "
+            "Vérifiez son état avant toute nouvelle action.",
+        )
+    await audit(
+        admin["id"], admin["username"],
+        f"afribapay_ambiguous_submission_{action}",
+        target_user_id=tx["user_id"],
+        details={
+            "tx_id": tx["id"], "action": action,
+            "provider_outcome": outcome,
+            "evidence_reference": evidence_reference,
+            "admin_attested": True, "recorded_at": recorded_at,
+        },
+    )
+    return review
+
+
 @api.post("/admin/transactions/{tx_id}/approve")
 async def admin_approve_transaction(
     tx_id: str,
@@ -12360,6 +13592,7 @@ async def admin_approve_transaction(
         raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
 
     await _record_mbiyo_submission_evidence(tx, "approve", body, admin)
+    await _record_afribapay_submission_evidence(tx, "approve", body, admin)
 
     typ = tx.get("type")
     direction = tx.get("direction")
@@ -12373,7 +13606,9 @@ async def admin_approve_transaction(
 
     if typ == "deposit":
         # Credit user's balance now.
-        field = "balance_usdt" if is_crypto else "balance_xof"
+        field = _transaction_wallet_field(tx.get("currency"))
+        if not field:
+            raise HTTPException(400, "Devise de portefeuille non prise en charge")
         balance_applied = await _credit_wallet_once(
             uid, field, credit_amount, f"manual-approve:{tx_id}")
 
@@ -12434,6 +13669,7 @@ async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
         raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
 
     await _record_mbiyo_submission_evidence(tx, "reject", body, admin)
+    await _record_afribapay_submission_evidence(tx, "reject", body, admin)
 
     typ = tx.get("type")
     direction = tx.get("direction")
@@ -12449,7 +13685,9 @@ async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
             or (amt + float(meta.get("fee", 0) or 0))
             or amt
         )
-        field = "balance_usdt" if is_crypto else "balance_xof"
+        field = _transaction_wallet_field(tx.get("currency"))
+        if not field:
+            raise HTTPException(400, "Devise de portefeuille non prise en charge")
         refund_applied = await _refund_wallet_once(
             uid, field, refund_amount, f"manual-reject:{tx_id}")
     else:
@@ -12588,6 +13826,9 @@ async def admin_create_admin(
         "balance_xof": 0.0,
         "balance_xaf": 0.0,
         "balance_usdt": 0.0,
+        "balance_gnf": 0.0,
+        "balance_cdf": 0.0,
+        "balance_usd": 0.0,
         "created_at": now_iso(),
         "two_fa_enabled": False,
         "language": "fr",
@@ -12624,21 +13865,34 @@ def _validate_withdrawal_catalog(section: dict) -> None:
     seen = set()
     valid_countries = set(paydunya.COUNTRY_LABELS)
     currencies = {"XOF", "XAF"}
+    valid_afribapay = {
+        (str(op["country"]).upper(), str(op["code"]).lower(),
+         str(op["currency"]).upper())
+        for op in afribapay.default_payout_catalog()
+    }
     for op in operators:
         if not isinstance(op, dict):
             raise HTTPException(422, "Chaque opérateur doit être un objet")
+        provider = str(op.get("provider") or "paydunya").strip().lower()
         country = str(op.get("country") or "").upper()
         currency = str(op.get("currency") or "").upper()
         code = str(op.get("code") or "").strip()
         mode = str(op.get("withdraw_mode") or "").strip()
-        if country not in valid_countries or currency not in currencies:
-            raise HTTPException(422, "Pays ou devise Mobile Money invalide")
-        if (country, code.lower()) in seen or not code:
-            raise HTTPException(422, "Les opérateurs doivent avoir un couple pays/code unique")
-        seen.add((country, code.lower()))
-        expected_currency = "XAF" if country == "CM" else "XOF"
-        if currency != expected_currency:
-            raise HTTPException(422, "La devise ne correspond pas au pays")
+        duplicate_key = (provider, country, code.lower(), currency)
+        if duplicate_key in seen or not code:
+            raise HTTPException(422, "Les opérateurs doivent avoir un couple pays/code/devise unique")
+        seen.add(duplicate_key)
+        if provider == "afribapay":
+            if (country, code.lower(), currency) not in valid_afribapay:
+                raise HTTPException(422, "Route AfribaPAY Mobile Money invalide")
+        elif provider == "paydunya":
+            if country not in valid_countries or currency not in currencies:
+                raise HTTPException(422, "Pays ou devise Mobile Money invalide")
+            expected_currency = "XAF" if country == "CM" else "XOF"
+            if currency != expected_currency:
+                raise HTTPException(422, "La devise ne correspond pas au pays")
+        else:
+            raise HTTPException(422, "Prestataire Mobile Money invalide")
         # A small set of pre-catalogue legacy operators (notably Wave Togo)
         # has no PayDunya disbursement mode.  Keep those rows editable for
         # migration, but they will fail explicitly if selected for payout.
@@ -12647,9 +13901,10 @@ def _validate_withdrawal_catalog(section: dict) -> None:
             or (country, code.lower()) == ("TG", "wave"))
         executable = op.get("active", True) and not op.get("archived", False) \
             and not op.get("hidden", False)
-        if executable and mode not in paydunya.WITHDRAWAL_MODES:
+        if (executable and provider == "paydunya"
+                and mode not in paydunya.WITHDRAWAL_MODES):
             raise HTTPException(422, "Mode de retrait PayDunya invalide")
-        if executable and currency != "XOF":
+        if executable and provider == "paydunya" and currency != "XOF":
             raise HTTPException(
                 422, "PayDunya PUSH ne garantit actuellement que les retraits XOF")
         for key in ("fee_pct", "gateway_fee_pct", "gateway_fee_fixed",
@@ -13042,6 +14297,121 @@ class MbiyoProviderUpdate(BaseModel):
     clear_public_key: bool = False
     clear_secret_key: bool = False
     clear_webhook_secret: bool = False
+
+
+class AfribapayProviderUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    mode: Optional[Literal["sandbox", "live"]] = None
+    sandbox_api_base_url: Optional[str] = None
+    sandbox_payout_base_url: Optional[str] = None
+    live_api_base_url: Optional[str] = None
+    live_payout_base_url: Optional[str] = None
+    catalog: Optional[list[dict]] = None
+    api_user: Optional[str] = None
+    api_key: Optional[str] = None
+    merchant_key: Optional[str] = None
+    clear_api_user: bool = False
+    clear_api_key: bool = False
+    clear_merchant_key: bool = False
+
+
+def _validate_afribapay_catalog(catalog: list[dict]) -> list[dict]:
+    defaults = {str(op["id"]): op for op in afribapay.default_catalog()}
+    result, seen = [], set()
+    for raw in catalog:
+        if not isinstance(raw, dict):
+            raise HTTPException(400, "Chaque ligne AfribaPAY doit être un objet")
+        row_id = str(raw.get("id") or "")
+        base = defaults.get(row_id)
+        if not base or row_id in seen:
+            raise HTTPException(400, "Route AfribaPAY inconnue ou en double")
+        seen.add(row_id)
+        op = {**base, **raw}
+        # Provider routing identifiers are fixed to the documented catalogue;
+        # only display, fee, limits, and activation fields are editable.
+        for key in (
+            "provider", "country", "country_label", "currency", "code",
+            "public_code", "operator", "otp_required", "ussd_code",
+        ):
+            op[key] = base[key]
+        op["name"] = str(raw.get("name") or base["name"]).strip()[:80]
+        op["active"] = bool(raw.get("active", base["active"]))
+        op["archived"] = bool(raw.get("archived", False))
+        op["hidden"] = bool(raw.get("hidden", False))
+        for key in (
+            "fee_pct", "gateway_fee_pct", "gateway_fee_fixed",
+            "platform_fee_pct", "platform_fee_fixed", "min", "max",
+        ):
+            value = raw.get(key, base.get(key))
+            if value in (None, ""):
+                op[key] = None
+                continue
+            try:
+                op[key] = float(value)
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"Valeur AfribaPAY invalide pour {key}")
+            if not math.isfinite(op[key]) or op[key] < 0:
+                raise HTTPException(400, f"{key} doit être un nombre positif")
+        if op.get("max") is not None and op["max"] < op.get("min", 0):
+            raise HTTPException(400, "La limite maximale doit dépasser la minimale")
+        result.append(op)
+    # Keep the official route rows present even if a stale client omits one.
+    result.extend(defaults[row_id] for row_id in defaults if row_id not in seen)
+    return result
+
+
+@api.get("/admin/payment-providers/afribapay")
+async def admin_get_afribapay(admin=Depends(get_admin)):
+    return _afribapay_public_config(await get_afribapay_config(), admin=True)
+
+
+@api.put("/admin/payment-providers/afribapay")
+async def admin_update_afribapay(
+    req: AfribapayProviderUpdate, admin=Depends(get_admin)
+):
+    current = await get_afribapay_config()
+    data = req.model_dump(exclude_none=True)
+    updates, unset = {}, {}
+    for key in ("enabled", "mode"):
+        if key in data:
+            updates[key] = data[key]
+    for key in (
+        "sandbox_api_base_url", "sandbox_payout_base_url",
+        "live_api_base_url", "live_payout_base_url",
+    ):
+        if data.get(key) is None:
+            continue
+        value = str(data[key]).strip()
+        if not value and key.startswith("live_"):
+            updates[key] = ""
+            continue
+        try:
+            updates[key] = afribapay.validate_base_url(value)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if req.catalog is not None:
+        updates["catalog"] = _validate_afribapay_catalog(req.catalog)
+        updates["setup_version"] = 1
+    session_secret = os.environ.get("SESSION_SECRET", "")
+    for key in ("api_user", "api_key", "merchant_key"):
+        if data.get(f"clear_{key}"):
+            unset[f"{key}_encrypted"] = ""
+        elif data.get(key) and str(data[key]).strip():
+            updates[f"{key}_encrypted"] = afribapay.encrypt_secret(
+                str(data[key]).strip(), session_secret)
+    update_doc = {}
+    if updates:
+        update_doc["$set"] = updates
+    if unset:
+        update_doc["$unset"] = unset
+    if update_doc:
+        await db.settings.update_one(
+            {"id": "payment_provider_afribapay"}, update_doc, upsert=True)
+        await audit(
+            admin["id"], admin["username"], "update_afribapay_provider",
+            details=list(updates.keys()) + list(unset.keys()))
+    return _afribapay_public_config(
+        await get_afribapay_config(), admin=True)
 
 
 def _validate_mbiyo_catalog(catalog: list[dict]) -> list[dict]:

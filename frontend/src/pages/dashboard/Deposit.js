@@ -169,7 +169,9 @@ export default function Deposit() {
       {step === 1 && features && (() => {
         const cryptoOn = features.wallet_crypto_enabled !== false && features.deposit_crypto_enabled !== false;
         const mmOn = (features.wallet_xof_enabled !== false && features.deposit_xof_enabled !== false)
-                    || (features.wallet_xaf_enabled !== false && features.deposit_xaf_enabled !== false);
+                    || (features.wallet_xaf_enabled !== false && features.deposit_xaf_enabled !== false)
+                    || features.wallet_gnf_enabled !== false || features.wallet_cdf_enabled !== false
+                    || features.wallet_usd_enabled !== false;
         if (!cryptoOn && !mmOn) {
           return (
             <ComingSoon
@@ -185,6 +187,8 @@ export default function Deposit() {
       {step === 2 && method === 'mobile_money' && (
         (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
         || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
+        || features?.wallet_gnf_enabled !== false || features?.wallet_cdf_enabled !== false
+        || features?.wallet_usd_enabled !== false
       ) && <MobileMoneyForm onSuccess={(d) => {
         sessionStorage.setItem(ACTIVE_MOMO_DEPOSIT_KEY, d.id);
         setDeposit({ ...d, __momo: true });
@@ -214,6 +218,8 @@ function MethodPicker({ features, onPick }) {
   const mmOn = (
     (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
     || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
+    || features?.wallet_gnf_enabled !== false || features?.wallet_cdf_enabled !== false
+    || features?.wallet_usd_enabled !== false
   );
   const [providerAvailable, setProviderAvailable] = useState(false);
   useEffect(() => {
@@ -576,7 +582,16 @@ function MobileMoneyForm({ onSuccess }) {
 
   useEffect(() => {
     api.get('/deposits/config').then(({ data }) => {
-      setCatalog(data.catalog || []);
+      const rows = data.catalog || [];
+      const grouped = rows.length && rows[0]?.operators
+        ? rows
+        : Object.values(rows.reduce((acc, row) => {
+          const key = row.country;
+          if (!acc[key]) acc[key] = { country: key, country_label: row.country_label || key, operators: [] };
+          acc[key].operators.push(row);
+          return acc;
+        }, {}));
+      setCatalog(grouped);
       setProvider({
         enabled: data.mobile_money_enabled === true,
         mobile_money_enabled: data.mobile_money_enabled === true,
@@ -662,7 +677,7 @@ function MobileMoneyForm({ onSuccess }) {
       };
       const { data } = await api.post('/deposits/mobile-money/start', request);
       const redirectUrl = data.redirect_url || data.checkout_url;
-      if (data.payment_kind === 'redirect') {
+      if (data.payment_kind === 'redirect' || data.payment_flow?.kind === 'redirect' || redirectUrl) {
         if (!redirectUrl) throw new Error('Le lien de paiement n’a pas pu être préparé. Veuillez réessayer.');
         window.location.assign(redirectUrl);
         return;
@@ -990,6 +1005,7 @@ function MobileMoneyTracker({ deposit }) {
       : `Une demande de ${d.amount_to_pay?.toLocaleString?.() || d.amount_to_pay || d.charged_amount || d.amount} ${d.currency || 'XOF'} via ${operatorName} a été envoyée au ${d.phone_number || 'numéro indiqué'}. Ouvrez la notification ou l’application Mobile Money et confirmez le paiement.`);
   const flow = d.payment_flow || {};
   const needsPostInitOtp = pending && (d.auth_mode === 'pin' || (d.otp_required && !flow.before_submit));
+  const afribapayWaveRedirect = pending && d.provider === 'afribapay' && d.redirect_url;
   const finalize = async () => {
     if (!otp.trim()) {
       setFinalizeError('Saisissez le code demandé pour continuer.');
@@ -1041,6 +1057,16 @@ function MobileMoneyTracker({ deposit }) {
            className="inline-flex items-center justify-center gap-2 rounded-full bg-[#2563EB] px-5 py-3 text-xs font-bold text-white hover:bg-[#1D4ED8]"
          >
            Continuer sur PayDunya <ArrowRight className="h-4 w-4" />
+         </button>
+       )}
+       {afribapayWaveRedirect && (
+         <button
+           type="button"
+           onClick={() => window.location.assign(d.redirect_url)}
+           data-testid="afribapay-wave-redirect"
+           className="inline-flex items-center justify-center gap-2 rounded-full bg-[#2563EB] px-5 py-3 text-xs font-bold text-white hover:bg-[#1D4ED8]"
+         >
+           Ouvrir le paiement Wave <ArrowRight className="h-4 w-4" />
          </button>
        )}
        {needsPostInitOtp && (

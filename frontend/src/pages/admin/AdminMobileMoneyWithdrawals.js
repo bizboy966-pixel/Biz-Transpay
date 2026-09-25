@@ -40,18 +40,23 @@ function normalizeOperators(operators, provider) {
     : [];
 }
 
-function normalizeConfig(data, mbiyoData) {
+function normalizeConfig(data, mbiyoData, afribapayData) {
   const paydunyaOperators = normalizeOperators(data?.mobile_money?.operators, 'paydunya');
   const mbiyoOperators = normalizeOperators(
     mbiyoData?.catalog || data?.mbiyo?.operators,
     'mbiyo',
   );
+  const afribapayOperators = normalizeOperators(afribapayData?.catalog, 'afribapay');
   return {
     enabled: data?.mobile_money?.enabled !== false,
-    operators: [...paydunyaOperators, ...mbiyoOperators],
+    operators: [...paydunyaOperators, ...mbiyoOperators, ...afribapayOperators],
     mbiyo: {
       enabled: mbiyoData?.enabled !== false,
       mode: mbiyoData?.mode || 'test',
+    },
+    afribapay: {
+      enabled: afribapayData?.enabled !== false,
+      mode: afribapayData?.mode || 'sandbox',
     },
   };
 }
@@ -72,11 +77,12 @@ export default function AdminMobileMoneyWithdrawals() {
   const load = async () => {
     setLoading(true);
     try {
-      const [{ data }, { data: mbiyoData }] = await Promise.all([
+      const [{ data }, { data: mbiyoData }, { data: afribapayData }] = await Promise.all([
         api.get('/admin/transfer/config'),
         api.get('/admin/payment-providers/mbiyo'),
+        api.get('/admin/payment-providers/afribapay'),
       ]);
-      setConfig(normalizeConfig(data, mbiyoData));
+      setConfig(normalizeConfig(data, mbiyoData, afribapayData));
       setDirty(false);
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Impossible de charger le catalogue Mobile Money');
@@ -144,9 +150,10 @@ export default function AdminMobileMoneyWithdrawals() {
         max: operator.max === '' ? null : operator.max,
       }));
       const paydunyaOperators = cleanOperators
-        .filter((operator) => operator.provider !== 'mbiyo')
+        .filter((operator) => operator.provider === 'paydunya')
         .map(({ provider, ...operator }) => operator);
       const mbiyoOperators = cleanOperators.filter((operator) => operator.provider === 'mbiyo');
+      const afribapayOperators = cleanOperators.filter((operator) => operator.provider === 'afribapay');
       const [{ data }, { data: mbiyoData }] = await Promise.all([
         api.patch('/admin/transfer/config', {
           mobile_money: { enabled: config.enabled, operators: paydunyaOperators },
@@ -156,8 +163,14 @@ export default function AdminMobileMoneyWithdrawals() {
           mode: config.mbiyo.mode,
           catalog: mbiyoOperators,
         }),
+        api.put('/admin/payment-providers/afribapay', {
+          enabled: config.afribapay.enabled,
+          mode: config.afribapay.mode,
+          catalog: afribapayOperators,
+        }),
       ]);
-      setConfig(normalizeConfig(data, mbiyoData));
+      const { data: afribapayData } = await api.get('/admin/payment-providers/afribapay');
+      setConfig(normalizeConfig(data, mbiyoData, afribapayData));
       setDirty(false);
       toast.success('Catalogue Mobile Money enregistré');
     } catch (err) {
@@ -219,6 +232,7 @@ export default function AdminMobileMoneyWithdrawals() {
             ['all', 'Tous les prestataires'],
             ['paydunya', 'PayDunya'],
             ['mbiyo', 'Mbiyo'],
+            ['afribapay', 'AfribaPAY'],
           ].map(([value, label]) => {
             const count = config.operators.filter((operator) => value === 'all' || operator.provider === value).length;
             return <button type="button" key={value} onClick={() => setProviderFilter(value)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${providerFilter === value ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'}`}>{label} ({count})</button>;
