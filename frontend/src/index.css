@@ -379,6 +379,19 @@ select {
 }
 .bt-bottom-nav__item--prominent .bt-bottom-nav__icon svg { width: 27px; height: 27px; }
 
+@media (min-width: 1024px) {
+  .bt-bottom-nav {
+    right: auto;
+    left: 50%;
+    width: min(900px, calc(100vw - 48px));
+    transform: translateX(-50%);
+  }
+  .bt-bottom-nav--sidebar-open {
+    left: calc(50% + 128px);
+    width: min(900px, calc(100vw - 304px));
+  }
+}
+
 .bt-auth-form-column {
   display: flex;
   align-items: center;

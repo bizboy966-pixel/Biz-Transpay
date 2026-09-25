@@ -139,11 +139,14 @@ export default function DashboardLayout() {
           </div>
         </header>
 
-            <main className="bt-content p-5 sm:p-7 pb-24 lg:pb-7">
+            <main className="bt-content p-5 sm:p-7 pb-32">
           <Outlet />
         </main>
       </div>
-      <nav className="bt-bottom-nav lg:hidden" aria-label="Navigation principale">
+      <nav
+        className={`bt-bottom-nav ${sidebarOpen ? 'bt-bottom-nav--sidebar-open' : ''}`}
+        aria-label="Navigation principale"
+      >
         {bottomNav.map((n) => (
           <NavLink
             key={n.to}
