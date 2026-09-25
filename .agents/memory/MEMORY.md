@@ -31,3 +31,5 @@
 - [Public developer documentation](public-developer-documentation.md) — separate technical country eligibility from configured availability and expose only provider-neutral integration data.
 - [Legacy merchant-data retirement](legacy-merchant-data-retirement.md) — production purges need runtime access and corroborated ownership; never infer provenance from a shared payment label alone.
 - [AfribaPAY verification gates](afribapay-verification-gates.md) — its sandbox can move real money; keep automated checks mocked and live endpoints unset until provider-confirmed.
+- [Referral invite codes](referral-invite-codes.md) — use immutable account IDs as invitation codes; usernames are not database-unique in the document adapter.
+- [Referral rounding](referral-rounding.md) — keep fractional XOF/XAF commissions to honor percentage rates on small qualifying operations.

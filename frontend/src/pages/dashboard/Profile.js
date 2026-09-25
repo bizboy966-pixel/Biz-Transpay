@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { BriefcaseBusiness, Globe2, ImagePlus, Mail, Phone, ShieldCheck, Trash2, UserRound } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { BadgeCheck, BriefcaseBusiness, Copy, Globe2, ImagePlus, Mail, Phone, Share2, ShieldCheck, Trash2, UserRound, Users, WalletCards } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
@@ -11,8 +11,55 @@ export default function Profile() {
   const { user, refresh } = useAuth();
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [referral, setReferral] = useState(null);
+  const [referralLoading, setReferralLoading] = useState(true);
+  const [referralError, setReferralError] = useState(false);
   const country = COUNTRIES.find((c) => c.code === user?.country);
   const kycVerified = user?.kyc_status === 'verified';
+
+  const loadReferral = async () => {
+    setReferralLoading(true);
+    setReferralError(false);
+    try {
+      const { data } = await api.get('/referrals/me');
+      setReferral(data);
+    } catch {
+      setReferralError(true);
+    } finally {
+      setReferralLoading(false);
+    }
+  };
+
+  useEffect(() => { loadReferral(); }, []);
+
+  const referralLink = referral?.code
+    ? `${window.location.origin}/register?ref=${encodeURIComponent(referral.code)}`
+    : '';
+  const copyReferralLink = async () => {
+    if (!referralLink) return;
+    try {
+      await navigator.clipboard.writeText(referralLink);
+      toast.success('Lien de parrainage copié.');
+    } catch {
+      toast.error('Impossible de copier le lien. Sélectionnez-le pour le copier manuellement.');
+    }
+  };
+  const shareReferralLink = async () => {
+    if (!referralLink) return;
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Mon lien de parrainage Biz-transPay',
+          text: 'Inscrivez-vous sur Biz-transPay avec mon lien de parrainage.',
+          url: referralLink,
+        });
+      } catch (error) {
+        if (error.name !== 'AbortError') toast.error('Le partage a échoué.');
+      }
+      return;
+    }
+    await copyReferralLink();
+  };
 
   return (
     <div className="max-w-3xl mx-auto space-y-5" data-testid="page-profile">
@@ -116,6 +163,89 @@ export default function Profile() {
         </div>
       </div>
 
+      <section className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_4px_20px_rgba(15,23,42,0.04)]" aria-labelledby="referral-title" data-testid="profile-referral">
+        <div className="border-b border-blue-100 bg-blue-50/60 px-5 py-5 sm:px-6">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#2563EB] text-white">
+              <Users className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 id="referral-title" className="font-cabinet text-lg font-extrabold text-slate-900">Mon parrainage</h2>
+              <p className="mt-1 text-sm text-slate-600">Suivez les inscriptions qualifiées et votre commission, en toute transparence.</p>
+            </div>
+          </div>
+        </div>
+        {referralLoading ? (
+          <div className="space-y-3 p-5 sm:p-6" aria-label="Chargement du parrainage">
+            <div className="h-4 w-40 animate-pulse rounded bg-slate-100" />
+            <div className="h-12 animate-pulse rounded-xl bg-slate-100" />
+            <div className="h-20 animate-pulse rounded-xl bg-slate-100" />
+          </div>
+        ) : referralError ? (
+          <div className="p-5 sm:p-6" role="alert">
+            <p className="text-sm font-semibold text-slate-800">Vos informations de parrainage ne sont pas disponibles.</p>
+            <p className="mt-1 text-xs text-slate-500">Réessayez dans quelques instants.</p>
+            <button type="button" onClick={loadReferral} className="mt-3 rounded-full border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500">Réessayer</button>
+          </div>
+        ) : (
+          <div className="space-y-5 p-5 sm:p-6">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+              <div className="min-w-0">
+                <label htmlFor="referral-link" className="mb-1.5 block text-xs font-bold text-slate-600">Votre lien personnel</label>
+                <input id="referral-link" readOnly value={referralLink} className="w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <p className="mt-2 text-xs text-slate-500">Code personnel : <span className="font-mono font-bold text-slate-800">{referral?.code || '—'}</span></p>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={copyReferralLink} disabled={!referralLink} className="inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-full bg-[#2563EB] px-4 py-2 text-xs font-bold text-white hover:bg-[#1D4ED8] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Copy className="h-3.5 w-3.5" aria-hidden="true" /> Copier
+                </button>
+                <button type="button" onClick={shareReferralLink} disabled={!referralLink} className="inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-full border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 hover:text-[#2563EB] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Share2 className="h-3.5 w-3.5" aria-hidden="true" /> Partager
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-slate-100 bg-slate-50/80 p-4">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500"><Users className="h-4 w-4 text-[#2563EB]" /> Inscriptions reçues</div>
+                <p className="mt-2 font-cabinet text-2xl font-extrabold text-slate-900">{referral?.invited_count ?? 0}</p>
+                <p className="mt-1 text-xs text-slate-500">Le détail des personnes invitées reste privé.</p>
+              </div>
+              <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+                <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-500"><BadgeCheck className="h-4 w-4 text-[#2563EB]" /> Inscriptions qualifiées</div>
+                <p className="mt-2 font-cabinet text-2xl font-extrabold text-slate-900">{referral?.qualified_count ?? 0}<span className="ml-1 text-sm font-semibold text-slate-500">/ {referral?.required_count ?? 5}</span></p>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100" role="progressbar" aria-label="Progression des inscriptions qualifiées" aria-valuemin="0" aria-valuemax={referral?.required_count ?? 5} aria-valuenow={Math.min(referral?.qualified_count ?? 0, referral?.required_count ?? 5)}>
+                  <div className="h-full rounded-full bg-[#2563EB] transition-[width]" style={{ width: `${Math.min(100, Math.max(0, ((referral?.qualified_count ?? 0) / Math.max(1, referral?.required_count ?? 5)) * 100))}%` }} />
+                </div>
+                <p className="mt-2 text-xs text-slate-600">{Math.max(0, (referral?.required_count ?? 5) - (referral?.qualified_count ?? 0))} inscription(s) qualifiée(s) avant le seuil.</p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 rounded-xl border border-slate-100 p-4">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700"><WalletCards className="h-4 w-4" /></div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-slate-900">Commission unique</h3>
+                {referral?.commission ? (
+                  <>
+                    <p className="mt-1 text-sm text-slate-700">
+                      {formatAmount(referral.commission.amount, referral.commission.currency)}
+                      {referral.commission.rate_percent != null && <span className="text-slate-500"> · {referral.commission.rate_percent}%</span>}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">Statut : {commissionStatus(referral.commission.status)}</p>
+                  </>
+                ) : (
+                  <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                    {((referral?.qualified_count ?? 0) >= (referral?.required_count ?? 5))
+                      ? 'Votre seuil est atteint. La commission est en attente de confirmation.'
+                      : `Une seule commission sera attribuée après ${referral?.required_count ?? 5} inscriptions qualifiées. Progression : ${referral?.qualified_count ?? 0} sur ${referral?.required_count ?? 5}.`}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
       <Settings embedded />
     </div>
   );
@@ -137,4 +267,25 @@ function Info({ icon: Icon, label, value }) {
 
 function initials(name = '') {
   return name.split(' ').filter(Boolean).map((part) => part[0]).slice(0, 2).join('').toUpperCase() || 'U';
+}
+
+function formatAmount(amount, currency) {
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return `${amount ?? '—'} ${currency || ''}`.trim();
+  try {
+    return new Intl.NumberFormat('fr-FR', { style: 'currency', currency: currency || 'XOF', maximumFractionDigits: 2 }).format(numeric);
+  } catch {
+    return `${numeric.toLocaleString('fr-FR')} ${currency || ''}`.trim();
+  }
+}
+
+function commissionStatus(status) {
+  const labels = {
+    pending: 'En attente',
+    approved: 'Validée',
+    paid: 'Payée',
+    cancelled: 'Annulée',
+    rejected: 'Refusée',
+  };
+  return labels[String(status || '').toLowerCase()] || status || 'En attente';
 }

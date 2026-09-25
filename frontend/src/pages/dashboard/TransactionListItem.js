@@ -8,6 +8,7 @@ export const TYPE_LABELS = {
   payment: 'Paiement API',
   exchange: 'Conversion',
   withdrawal: 'Retrait',
+  referral_commission: 'Commission de parrainage',
 };
 
 export const STATUS_LABELS = {
@@ -18,7 +19,8 @@ export const STATUS_LABELS = {
 };
 
 export function money(value, currency) {
-  const digits = ['USDT', 'BTC', 'ETH'].includes(String(currency).toUpperCase()) ? 6 : 0;
+  const digits = ['USDT', 'BTC', 'ETH'].includes(String(currency).toUpperCase())
+    ? 6 : (Number.isInteger(Number(value)) ? 0 : 2);
   return `${Number(value || 0).toLocaleString('fr-FR', { maximumFractionDigits: digits })} ${currency || ''}`.trim();
 }
 
@@ -38,6 +40,7 @@ export function typeLabel(tx) {
 
 export function partyLabel(tx) {
   const meta = tx.metadata || {};
+  if (tx.type === 'referral_commission') return 'Biz-transPay';
   if (tx.direction === 'in') {
     return meta.customer_name || meta.full_name || meta.customer_email || meta.phone_number || tx.counterparty || 'Expéditeur externe';
   }

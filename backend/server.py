@@ -63,6 +63,7 @@ import fedapay  # FedaPay Mobile Money integration (server-side only)
 import paydunya  # PayDunya SoftPay deposits (server-side only)
 import mbiyo  # Mbiyo Mobile Money integration (server-side only)
 import afribapay  # AfribaPAY Mobile Money integration (server-side only)
+import referrals  # One-time referral qualifications and commission settlement
 
 # ---------- DB ----------
 postgres_store, db = create_database(os.environ.get("DATABASE_URL", ""))
@@ -376,6 +377,7 @@ async def _require_turnstile(
 
 _paydunya_reconcile_task = None
 _integration_outbox_task = None
+_referral_reconcile_task = None
 MOMO_PENDING_TIMEOUT_MINUTES = 10
 
 class BizAPIError(HTTPException):
@@ -771,9 +773,16 @@ async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
             {"_id": 0},
         )
         if existing:
-            return Transaction(**existing)
+            tx = Transaction(**existing)
+            await _process_referral_transaction(tx.model_dump())
+            return tx
     tx = Transaction(
-        id=new_id(),
+        # The document store enforces unique document IDs, while its legacy
+        # create_index compatibility layer does not create a unique index for
+        # metadata.operation_id. Give the referral ledger a stable ID so
+        # concurrent claim repairs cannot insert two commission rows.
+        id=(str(uuid.uuid5(uuid.NAMESPACE_URL, operation_id))
+            if tx_type == "referral_commission" and operation_id else new_id()),
         user_id=user_id,
         type=tx_type,
         direction=direction,
@@ -795,9 +804,26 @@ async def record_tx(user_id: str, tx_type: str, direction: str, amount: float,
                 {"_id": 0},
             )
             if existing:
-                return Transaction(**existing)
+                tx = Transaction(**existing)
+                await _process_referral_transaction(tx.model_dump())
+                return tx
         raise
+    await _process_referral_transaction(tx.model_dump())
     return tx
+
+
+async def _process_referral_transaction(tx: dict) -> None:
+    if (tx.get("status") != "completed"
+            or tx.get("direction") != "in"
+            or tx.get("type") not in {"deposit", "link_payment", "payment"}
+            or tx.get("currency") not in {"XOF", "XAF"}):
+        return
+    try:
+        await referrals.process_transaction(db, tx, _credit_wallet_once, record_tx)
+    except Exception:
+        # The customer payment is already settled. The periodic reconciliation
+        # retries referral work without making that settlement fail.
+        logger.exception("Referral qualification failed for transaction %s", tx.get("id"))
 
 
 # ==================== NOTIFICATIONS ====================
@@ -3224,6 +3250,28 @@ async def _ensure_platform_owner_role(user: dict) -> dict:
     return restored
 
 
+@api.get("/referrals/invite/{code}")
+async def referral_invite(code: str):
+    """Public invite preview: disclose only the sponsor's display username."""
+    try:
+        sponsor_id = str(uuid.UUID(code))
+    except (ValueError, AttributeError):
+        raise HTTPException(404, "Lien de parrainage invalide")
+    sponsor = await db.users.find_one(
+        {"id": sponsor_id, "is_blocked": {"$ne": True},
+         "is_banned": {"$ne": True}},
+        {"_id": 0, "username": 1},
+    )
+    if not sponsor:
+        raise HTTPException(404, "Lien de parrainage invalide")
+    return {"username": sponsor["username"]}
+
+
+@api.get("/referrals/me")
+async def my_referrals(uid: str = Depends(get_current_user_id)):
+    return await referrals.get_summary(db, uid)
+
+
 @api.post("/auth/register")
 async def register(req: RegisterRequest, request: Request, response: Response):
     await _require_turnstile(req.turnstile_token, request, "register")
@@ -3242,6 +3290,25 @@ async def register(req: RegisterRequest, request: Request, response: Response):
         raise HTTPException(400, "Email déjà utilisé")
     if await db.users.find_one({"username": req.username.lower()}):
         raise HTTPException(400, "Nom d'utilisateur déjà pris")
+
+    sponsor = None
+    if req.referral_code:
+        try:
+            sponsor_id = str(uuid.UUID(req.referral_code.strip()))
+        except (ValueError, AttributeError):
+            raise HTTPException(400, "Lien de parrainage invalide")
+        sponsor = await db.users.find_one(
+            {"id": sponsor_id, "is_blocked": {"$ne": True},
+             "is_banned": {"$ne": True}},
+            {"_id": 0, "id": 1, "username": 1, "phone": 1, "email": 1},
+        )
+        if not sponsor:
+            raise HTTPException(400, "Lien de parrainage invalide")
+        if (sponsor.get("username") == req.username.lower()
+                or sponsor.get("email") == req.email.lower()
+                or re.sub(r"\D", "", sponsor.get("phone") or "")
+                == re.sub(r"\D", "", req.phone)):
+            raise HTTPException(400, "Auto-parrainage interdit")
 
     is_first = False
     bootstrap_token = None
@@ -3298,6 +3365,9 @@ async def register(req: RegisterRequest, request: Request, response: Response):
         "is_banned": False,
         "withdrawals_blocked": False,
     }
+    if sponsor:
+        user_doc["referred_by_user_id"] = sponsor["id"]
+        user_doc["referral_registered_at"] = now_iso()
     try:
         await db.users.insert_one(user_doc)
     except Exception:
@@ -8070,6 +8140,7 @@ async def _upsert_momo_ledger(d: dict, *, amount: float, currency: str,
         "direction": "in", "amount": amount, "currency": currency,
         "status": "completed", "reference": f"BTP-PD-{d['id'][:16]}",
         "description": description, "created_at": d.get("created_at", now_iso()),
+        "completed_at": d.get("approved_at") or now_iso(),
         "metadata": metadata,
     }
     try:
@@ -8094,6 +8165,13 @@ async def _upsert_momo_ledger(d: dict, *, amount: float, currency: str,
         },
         upsert=True,
     )
+    await db.transactions.update_one(
+        {"id": ledger_id, "completed_at": {"$exists": False}},
+        {"$set": {"completed_at": d.get("approved_at") or now_iso()}},
+    )
+    completed_tx = await db.transactions.find_one({"id": ledger_id}, {"_id": 0})
+    if completed_tx:
+        await _process_referral_transaction(completed_tx)
 
 
 async def _credit_momo_deposit(d: dict) -> None:
@@ -12132,6 +12210,8 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         return "platform:reset"
     if path.startswith("/admin/maintenance/legacy-merchant-api"):
         return "platform:reset"
+    if path.startswith("/admin/referrals/config"):
+        return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
     if path.startswith("/admin/platform/config") or path.startswith("/admin/settings"):
         return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
     if path.startswith("/admin/email-notifications"):
@@ -13560,6 +13640,8 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
             "mfa_enrollments",
             "platform_bootstrap",
             "transactions",
+            "referral_commissions",
+            "referral_settings",
             "payment_links",
             "link_payments",
             "crypto_deposits",
@@ -13612,6 +13694,7 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
     #    every counter reset to 0).
     wipe_collections = [
         "transactions",
+        "referral_commissions",
         "payment_links",
         "link_payments",
         "crypto_deposits",
@@ -13635,7 +13718,22 @@ async def admin_platform_reset(req: AdminPlatformResetReq,
     # 3) Reset balances of preserved super_admins to 0
     await db.users.update_many(
         {"id": {"$in": keep_ids}},
-        {"$set": {"balance_xof": 0.0, "balance_xaf": 0.0, "balance_usdt": 0.0}},
+        {
+            "$set": {"balance_xof": 0.0, "balance_xaf": 0.0, "balance_usdt": 0.0},
+            "$unset": {
+                "referral_first_tx_id": "",
+                "referral_first_amount": "",
+                "referral_first_currency": "",
+                "referral_qualified_at": "",
+                "referred_by_user_id": "",
+                "referral_registered_at": "",
+            },
+            "$pull": {
+                "wallet_credit_operation_ids": {
+                    "$regex": r"^referral-commission:"
+                },
+            },
+        },
     )
 
     # Audit (recreates the collection we just wiped — that's fine, gives us a
@@ -14097,6 +14195,7 @@ async def admin_approve_transaction(
     # Amount actually credited/debited (already net of fees on our side).
     credit_amount = float(meta.get("amount_net", amt) or amt)
 
+    balance_applied = False
     if typ == "deposit":
         # Credit user's balance now.
         field = _transaction_wallet_field(tx.get("currency"))
@@ -14105,16 +14204,21 @@ async def admin_approve_transaction(
         balance_applied = await _credit_wallet_once(
             uid, field, credit_amount, f"manual-approve:{tx_id}")
 
+    approved_at = now_iso()
     changed = await db.transactions.update_one(
         {"id": tx_id, "status": "pending"}, {"$set": {
         "status": "completed",
-        "approved_at": now_iso(),
+        "approved_at": approved_at,
+        "completed_at": approved_at,
         "approved_by": admin["username"],
         "manual_action": "approved",
         }})
+    completed_tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if typ == "deposit" and completed_tx and completed_tx.get("status") == "completed":
+        await _process_referral_transaction(completed_tx)
     if not changed.modified_count and not balance_applied:
         return {"ok": True, "already_applied": True,
-                "tx": await db.transactions.find_one({"id": tx_id}, {"_id": 0})}
+                "tx": completed_tx}
 
     await audit(admin["id"], admin["username"], "tx_approve",
                 target_user_id=uid, details={"type": typ, "amount": amt, "tx_id": tx_id})
@@ -14422,6 +14526,27 @@ async def admin_get_transfer_config(admin=Depends(get_admin)):
 class AdminPlatformConfigReq(BaseModel):
     conversion_fee: Optional[dict] = None
     auto_withdrawals_disabled: Optional[bool] = None
+
+
+class AdminReferralConfigReq(BaseModel):
+    rate_percent: float = Field(..., ge=2.0, le=2.5)
+
+
+@api.get("/admin/referrals/config")
+async def admin_get_referral_config(admin=Depends(get_admin)):
+    return await referrals.get_rate(db)
+
+
+@api.patch("/admin/referrals/config")
+async def admin_set_referral_config(
+    req: AdminReferralConfigReq,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    result = await referrals.set_rate(db, req.rate_percent)
+    await audit(admin["id"], admin["username"], "update_referral_rate",
+                details={"rate_percent": result["rate_percent"]})
+    return result
 
 
 @api.get("/admin/platform/config")
@@ -15262,9 +15387,20 @@ async def api_security_middleware(request: Request, call_next):
     return response
 
 
+async def _referral_reconcile_loop() -> None:
+    while True:
+        try:
+            await referrals.reconcile(db, _credit_wallet_once, record_tx)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Referral reconciliation failed; retrying")
+        await asyncio.sleep(300)
+
+
 @app.on_event("startup")
 async def startup_db_client():
-    global _paydunya_reconcile_task, _integration_outbox_task
+    global _paydunya_reconcile_task, _integration_outbox_task, _referral_reconcile_task
     await postgres_store.connect()
     try:
         await db.sessions.create_index("expires_at", expireAfterSeconds=0,
@@ -15346,6 +15482,8 @@ async def startup_db_client():
             "metadata.operation_id": {"$type": "string"},
         })
     await _resume_transaction_email_outbox()
+    if not _referral_reconcile_task or _referral_reconcile_task.done():
+        _referral_reconcile_task = asyncio.create_task(_referral_reconcile_loop())
     integration_worker = globals().get("_integration_outbox_worker")
     if integration_worker and (
             not _integration_outbox_task or _integration_outbox_task.done()):
@@ -15354,11 +15492,18 @@ async def startup_db_client():
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    global _paydunya_reconcile_task, _integration_outbox_task
+    global _paydunya_reconcile_task, _integration_outbox_task, _referral_reconcile_task
     if _paydunya_reconcile_task:
         _paydunya_reconcile_task.cancel()
         _paydunya_reconcile_task = None
     if _integration_outbox_task:
         _integration_outbox_task.cancel()
         _integration_outbox_task = None
+    if _referral_reconcile_task:
+        _referral_reconcile_task.cancel()
+        try:
+            await _referral_reconcile_task
+        except asyncio.CancelledError:
+            pass
+        _referral_reconcile_task = None
     await postgres_store.close()

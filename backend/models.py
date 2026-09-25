@@ -23,6 +23,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
     turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
+    referral_code: Optional[str] = Field(None, min_length=6, max_length=50)
 
 
 class LoginRequest(BaseModel):
@@ -186,7 +187,7 @@ class PaymentLink(BaseModel):
 class Transaction(BaseModel):
     id: str
     user_id: str
-    type: Literal["deposit", "transfer", "withdrawal", "payment", "link_payment", "exchange"]
+    type: Literal["deposit", "transfer", "withdrawal", "payment", "link_payment", "exchange", "referral_commission"]
     direction: Literal["in", "out"]
     amount: float
     currency: str

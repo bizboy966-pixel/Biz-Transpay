@@ -6,7 +6,7 @@ import api from '@/api';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem, { money, typeLabel, TYPE_LABELS, STATUS_LABELS } from './TransactionListItem';
 
-const TYPES = ['all', 'deposit', 'transfer', 'link_payment', 'payment', 'exchange', 'withdrawal'];
+const TYPES = ['all', 'deposit', 'transfer', 'link_payment', 'payment', 'exchange', 'withdrawal', 'referral_commission'];
 const STATUSES = ['all', 'completed', 'pending', 'failed', 'cancelled'];
 
 function csvValue(value) {

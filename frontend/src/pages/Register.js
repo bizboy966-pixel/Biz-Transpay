@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { User, AtSign, Globe, Phone, Mail, Lock, Eye, EyeOff, UserPlus } from 'lucide-react';
 import { toast } from 'sonner';
+import api from '@/api';
 import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
@@ -12,6 +13,7 @@ import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidge
 export default function Register() {
   const { t } = useTranslation();
   const nav = useNavigate();
+  const location = useLocation();
   const { register } = useAuth();
   const turnstile = useTurnstileConfig();
   const turnstileRef = useRef(null);
@@ -24,13 +26,45 @@ export default function Register() {
   const [showPwd, setShowPwd] = useState(false);
   const [showPwd2, setShowPwd2] = useState(false);
   const [loading, setLoading] = useState(false);
+  const referralCode = new URLSearchParams(location.search).get('ref')?.trim() || '';
+  const [referral, setReferral] = useState({ status: 'idle', username: '' });
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const country = COUNTRIES.find((c) => c.code === form.country) || COUNTRIES[0];
 
+  useEffect(() => {
+    let active = true;
+    if (!referralCode) {
+      setReferral({ status: 'idle', username: '' });
+      return () => { active = false; };
+    }
+    setReferral({ status: 'loading', username: '' });
+    api.get(`/referrals/invite/${encodeURIComponent(referralCode)}`)
+      .then(({ data }) => {
+        if (active && data?.username) setReferral({ status: 'valid', username: data.username });
+        else if (active) setReferral({ status: 'invalid', username: '' });
+      })
+      .catch((error) => {
+        if (active) {
+          setReferral({
+            status: error.response?.status === 404 ? 'invalid' : 'error',
+            username: '',
+          });
+        }
+      });
+    return () => { active = false; };
+  }, [referralCode]);
+
   const validate = () => {
     const e = {};
+    if (referralCode && referral.status !== 'valid') {
+      e.referral = referral.status === 'loading'
+        ? 'Vérification du code de parrainage en cours.'
+        : referral.status === 'error'
+          ? 'Impossible de vérifier le code de parrainage. Réessayez avant de créer votre compte.'
+          : 'Ce lien de parrainage est invalide. Vérifiez le lien avant de créer votre compte.';
+    }
     if (!form.full_name) e.full_name = t('register.errors.required');
     if (!form.username) e.username = t('register.errors.required');
     else if (form.username.length < 6) e.username = '6 caractères minimum.';
@@ -53,6 +87,17 @@ export default function Register() {
 
   const onSubmit = async (ev) => {
     ev.preventDefault();
+    if (referralCode && referral.status !== 'valid') {
+      setErrors((current) => ({
+        ...current,
+        referral: referral.status === 'loading'
+          ? 'Vérification du code de parrainage en cours.'
+          : referral.status === 'error'
+            ? 'Impossible de vérifier le code de parrainage. Réessayez avant de créer votre compte.'
+            : 'Ce lien de parrainage est invalide. Vérifiez le lien avant de créer votre compte.',
+      }));
+      return;
+    }
     if (!validate()) return;
     setLoading(true);
     try {
@@ -62,6 +107,7 @@ export default function Register() {
         phone: `${country.dial} ${form.phone}`, email: form.email,
         password: form.password,
         turnstile_token: turnstileToken,
+        ...(referralCode ? { referral_code: referralCode } : {}),
       });
       toast.success('Compte créé avec succès !');
       if (data?.mfa_setup_required) {
@@ -189,10 +235,37 @@ export default function Register() {
             {errors.terms && <p className="mt-1 text-xs text-red-500">{errors.terms}</p>}
           </div>
 
+          {referralCode && (
+            <div
+              className={`mt-5 rounded-xl border px-4 py-3 text-sm ${
+                ['invalid', 'error'].includes(referral.status)
+                  ? 'border-red-200 bg-red-50 text-red-800'
+                  : 'border-blue-100 bg-blue-50/70 text-slate-700'
+              }`}
+              role={['invalid', 'error'].includes(referral.status) ? 'alert' : 'status'}
+              aria-live="polite"
+              data-testid="register-referral-status"
+            >
+              {referral.status === 'loading' && 'Vérification du lien de parrainage…'}
+              {referral.status === 'valid' && (
+                <span><strong>Invité par :</strong> {referral.username}</span>
+              )}
+              {referral.status === 'invalid' && (
+                <span><strong>Code de parrainage invalide.</strong> Votre attribution ne sera pas supprimée : corrigez le lien avant de continuer.</span>
+              )}
+              {referral.status === 'error' && (
+                <span><strong>Vérification indisponible.</strong> Le code ne sera pas ignoré. Réessayez lorsque la connexion sera rétablie.</span>
+              )}
+              {errors.referral && referral.status !== 'invalid' && (
+                <span className="block mt-1 text-xs">{errors.referral}</span>
+              )}
+            </div>
+          )}
+
           {turnstileToken ? (
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (referralCode && referral.status !== 'valid')}
               data-testid="btn-submit-register"
               className="bt-button-primary mt-8 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2 disabled:cursor-not-allowed"
             >

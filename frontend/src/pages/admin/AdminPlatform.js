@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { Save, Repeat, PauseCircle, PlayCircle, AlertTriangle, Trash2, X, Smartphone, Bitcoin } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
+import { useAuth } from '@/context/AuthContext';
 
 export default function AdminPlatform() {
+  const { user } = useAuth();
   const [cfg, setCfg] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -15,10 +17,46 @@ export default function AdminPlatform() {
   const [fullWiping, setFullWiping] = useState(false);
   const [features, setFeatures] = useState(null);
   const [savingFeature, setSavingFeature] = useState(null);
+  const [referralLoading, setReferralLoading] = useState(true);
+  const [referralError, setReferralError] = useState(false);
+  const [referralSaving, setReferralSaving] = useState(false);
+  const [referralRate, setReferralRate] = useState('');
+  const canEditReferralRate = user?.permissions?.includes('*') || user?.permissions?.includes('settings:write');
 
   const load = () => api.get('/admin/platform/config').then(({ data }) => setCfg(data));
   const loadFeatures = () => api.get('/admin/settings/features').then(({ data }) => setFeatures(data));
-  useEffect(() => { load(); loadFeatures(); }, []);
+  const loadReferralConfig = async () => {
+    setReferralLoading(true);
+    setReferralError(false);
+    try {
+      const { data } = await api.get('/admin/referrals/config');
+      setReferralRate(data?.rate_percent ?? '');
+    } catch {
+      setReferralError(true);
+    } finally {
+      setReferralLoading(false);
+    }
+  };
+  useEffect(() => { load(); loadFeatures(); loadReferralConfig(); }, []);
+
+  const saveReferralConfig = async (event) => {
+    event.preventDefault();
+    const rate = Number(referralRate);
+    if (!Number.isFinite(rate) || rate < 2 || rate > 2.5) {
+      toast.error('Saisissez un taux compris entre 2 % et 2,5 %.');
+      return;
+    }
+    setReferralSaving(true);
+    try {
+      const { data } = await api.patch('/admin/referrals/config', { rate_percent: rate });
+      setReferralRate(data?.rate_percent ?? rate);
+      toast.success('Taux de parrainage enregistré.');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Impossible d’enregistrer le taux de parrainage.');
+    } finally {
+      setReferralSaving(false);
+    }
+  };
 
   const toggleFeature = async (key, value) => {
     setSavingFeature(key);
@@ -84,6 +122,51 @@ export default function AdminPlatform() {
           <Save className="w-3.5 h-3.5" /> Enregistrer
         </button>
       </div>
+
+      <section className="rounded-2xl border border-blue-100 bg-white p-4 sm:p-5" aria-labelledby="referral-config-title" data-testid="admin-referral-config">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <h2 id="referral-config-title" className="font-cabinet font-bold text-slate-900">Commission de parrainage</h2>
+            <p className="mt-0.5 text-[11px] text-slate-500">Taux appliqué à la commission unique après 5 inscriptions qualifiées.</p>
+          </div>
+          {referralLoading ? (
+            <div className="h-9 w-40 animate-pulse rounded-lg bg-slate-100" aria-label="Chargement du taux" />
+          ) : referralError ? (
+            <button type="button" onClick={loadReferralConfig} className="self-start rounded-full border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500">Réessayer</button>
+          ) : (
+            <form onSubmit={saveReferralConfig} className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+              <div className="flex-1 sm:w-32">
+                <label htmlFor="referral-rate-percent" className="mb-1 block text-[11px] font-semibold text-slate-600">Taux (%)</label>
+                <input
+                  id="referral-rate-percent"
+                  type="number"
+                  min="2"
+                  max="2.5"
+                  step="0.01"
+                  value={referralRate}
+                  onChange={(event) => setReferralRate(event.target.value)}
+                  disabled={!canEditReferralRate || referralSaving}
+                  readOnly={!canEditReferralRate}
+                  aria-describedby="referral-rate-help"
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+                />
+              </div>
+              {canEditReferralRate && (
+                <button type="submit" disabled={referralSaving || referralRate === ''} className="inline-flex min-h-9 items-center justify-center gap-2 rounded-full bg-[#2563EB] px-4 py-2 text-xs font-bold text-white hover:bg-[#1D4ED8] focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Save className="h-3.5 w-3.5" /> {referralSaving ? 'Enregistrement…' : 'Enregistrer'}
+                </button>
+              )}
+            </form>
+          )}
+        </div>
+        {!referralLoading && !referralError && (
+          <p id="referral-rate-help" className="mt-2 text-[10px] text-slate-500">
+            {canEditReferralRate
+              ? 'Valeur comprise entre 2 % et 2,5 %. Seuls les rôles autorisés aux paramètres peuvent modifier ce taux.'
+              : 'Lecture seule : votre rôle ne dispose pas de l’autorisation settings:write.'}
+          </p>
+        )}
+      </section>
 
       {/* Conversion fees */}
       <div className="bg-white border border-slate-100 rounded-2xl p-5">

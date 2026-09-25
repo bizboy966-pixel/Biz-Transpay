@@ -21,7 +21,8 @@ const COUNTRIES = {
 
 function money(value, currency) {
   if (value === null || value === undefined || value === '') return '—';
-  const digits = ['USDT', 'BTC', 'ETH'].includes(String(currency).toUpperCase()) ? 6 : 0;
+  const digits = ['USDT', 'BTC', 'ETH'].includes(String(currency).toUpperCase())
+    ? 6 : (Number.isInteger(Number(value)) ? 0 : 2);
   return `${Number(value).toLocaleString('fr-FR', { maximumFractionDigits: digits })} ${currency || ''}`.trim();
 }
 
@@ -47,6 +48,7 @@ function typeLabel(tx) {
     link_payment: 'Paiement reçu (lien)',
     payment: 'Paiement reçu (API)',
     exchange: 'Conversion',
+    referral_commission: 'Commission de parrainage',
   };
   return labels[tx.type] || tx.type || 'Transaction';
 }
