@@ -391,6 +391,15 @@ async def _request(method: str, path: str, config: dict, body: Optional[dict] = 
     return payload if isinstance(payload, dict) else {"data": payload}
 
 
+async def get_balance(config: dict) -> dict:
+    """Read the configured PayDunya account balances.
+
+    PayDunya documents this endpoint as approximate; callers must label the
+    returned values accordingly rather than presenting them as exact funds.
+    """
+    return await _request("GET", "/api/v2/disburse/check-balance", config)
+
+
 async def create_invoice(config: dict, *, amount: float, currency: str,
                          token: str, customer: dict, callback_url: str,
                          description: str = "", return_url: str = "",

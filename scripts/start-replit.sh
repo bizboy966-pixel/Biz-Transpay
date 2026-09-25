@@ -48,6 +48,9 @@ done
 
 (
   cd "$ROOT_DIR/backend"
+  # The published VM owns Telegram long polling by default; local preview can
+  # opt in explicitly when it is not competing for the same bot token.
+  TELEGRAM_COMMAND_POLLING_ENABLED="${TELEGRAM_COMMAND_POLLING_ENABLED:-false}" \
   python -m uvicorn server:app --host 0.0.0.0 --port 8000
 ) &
 BACKEND_PID=$!

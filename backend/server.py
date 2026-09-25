@@ -983,12 +983,24 @@ async def _telegram_party_lines(
 ) -> list[str]:
     """Show operational sender/recipient context with contact data masked."""
     if deposit:
+        payer_name = (
+            deposit.get("full_name") or deposit.get("customer_name")
+            or deposit.get("payer_name") or "Client externe"
+        )
+        payer_email = (
+            deposit.get("email") or deposit.get("customer_email")
+            or deposit.get("payer_email")
+        )
+        payer_phone = (
+            deposit.get("phone_number") or deposit.get("customer_phone")
+            or deposit.get("payer_phone") or deposit.get("phone")
+        )
         recipient = await _telegram_user_summary(deposit.get("user_id"))
         return [
             "━━━━ 👤 <b>EXPÉDITEUR (PAYEUR)</b> ━━━━",
-            f"👤 Nom : <b>{html_escape(str(deposit.get('full_name') or 'Client externe')[:120])}</b>",
-            f"📧 Email : <code>{html_escape(_telegram_mask_email(deposit.get('email')) or '—')}</code>",
-            f"📞 Téléphone : <code>{html_escape(_telegram_mask_phone(deposit.get('phone_number')) or '—')}</code>",
+            f"👤 Nom : <b>{html_escape(str(payer_name)[:120])}</b>",
+            f"📧 Email : <code>{html_escape(_telegram_mask_email(payer_email) or '—')}</code>",
+            f"📞 Téléphone : <code>{html_escape(_telegram_mask_phone(payer_phone) or '—')}</code>",
             f"🌍 Pays : <b>{html_escape(str(deposit.get('country_label') or deposit.get('country') or '—'))}</b>",
             "━━━━ 🏦 <b>BÉNÉFICIAIRE</b> ━━━━",
             f"👤 Nom : <b>{html_escape(recipient.get('name', 'Compte Biz-transPay'))}</b>",
@@ -1012,6 +1024,14 @@ async def _telegram_party_lines(
         ]
 
     if tx.get("direction") == "in":
+        sender_email = (
+            meta.get("customer_email") or meta.get("payer_email")
+            or meta.get("email")
+        )
+        sender_phone = (
+            meta.get("customer_phone") or meta.get("payer_phone")
+            or meta.get("phone_number") or meta.get("phone")
+        )
         sender = {}
         if transfer_type == "biz_to_biz" and counterparty:
             sender_doc = await db.users.find_one(
@@ -1020,7 +1040,8 @@ async def _telegram_party_lines(
             sender = await _telegram_user_summary((sender_doc or {}).get("id"))
         return [
             f"Expéditeur : <b>{html_escape(sender.get('name') or str(counterparty or 'Source externe')[:120])}</b>",
-            f"Email expéditeur : <code>{html_escape(sender.get('email', '—'))}</code>",
+            f"Email expéditeur : <code>{html_escape(sender.get('email') or _telegram_mask_email(sender_email) or '—')}</code>",
+            f"Téléphone expéditeur : <code>{html_escape(sender.get('phone') or _telegram_mask_phone(sender_phone) or '—')}</code>",
             f"Destinataire : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
             f"Email destinataire : <code>{html_escape(owner.get('email', '—'))}</code>",
         ]
@@ -1261,16 +1282,51 @@ def _telegram_command_parts(text: str) -> tuple[str, str]:
     return command.lower(), raw_parts[1].strip() if len(raw_parts) > 1 else ""
 
 
+_TELEGRAM_SEARCH_CONTACT_FIELDS = (
+    "email", "customer_email", "payer_email", "phone", "phone_number",
+    "customer_phone", "payer_phone", "recipient_phone", "sender_phone",
+    "mobile_money_phone", "metadata.email",
+    "metadata.customer_email", "metadata.payer_email", "metadata.phone",
+    "metadata.phone_number", "metadata.customer_phone", "metadata.payer_phone",
+    "metadata.recipient_phone", "metadata.sender_phone",
+    "metadata.mobile_money_phone",
+)
+_TELEGRAM_SEARCH_REFERENCE_FIELDS = (
+    "provider_reference", "external_reference", "merchant_reference",
+    "transaction_id", "provider_transaction_id", "provider_id", "reference_id",
+    "transaction_reference", "payment_reference", "biztranspay_reference",
+    "paydunya_reference", "paydunya_token", "paydunya_disbursement_token",
+    "mbiyo_transaction_id", "afribapay_transaction_id", "afribapay_order_id",
+    "fedapay_id", "fedapay_reference", "fedapay_payout_id",
+    "izipay_intent_id", "izipay_payout_id",
+    "metadata.provider_reference", "metadata.provider_id",
+    "metadata.transaction_id", "metadata.provider_transaction_id",
+    "metadata.reference_id", "metadata.reference",
+    "metadata.transaction_reference", "metadata.payment_reference",
+    "metadata.biztranspay_reference",
+    "metadata.external_id", "metadata.external_reference",
+    "metadata.merchant_reference", "metadata.paydunya_reference",
+    "metadata.paydunya_token", "metadata.paydunya_disbursement_token",
+    "metadata.mbiyo_transaction_id",
+    "metadata.afribapay_transaction_id", "metadata.afribapay_order_id",
+    "metadata.fedapay_id", "metadata.fedapay_reference",
+    "metadata.fedapay_payout_id",
+    "metadata.izipay_intent_id", "metadata.izipay_payout_id",
+    "metadata.tx_hash", "metadata.txid", "metadata.tx_id",
+)
+
+
 async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     query = str(query or "").strip()
     if not query or len(query) > 100:
         return []
     needle = _literal_regex_term(query, field_name="Identifiant")
+    rx = {"$regex": needle, "$options": "i"}
     user_ids: list[str] = []
     users = await db.users.find(
-        {"email": {"$regex": f"^{needle}$", "$options": "i"}},
+        {"$or": [{"email": rx}, {"phone": rx}]},
         {"_id": 0, "id": 1},
-    ).to_list(10)
+    ).to_list(20)
     user_ids.extend(str(user["id"]) for user in users if user.get("id"))
 
     matches: list[dict] = []
@@ -1284,9 +1340,14 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     tx_or = [
         {"id": query},
         {"reference": query},
-        {"id": {"$regex": needle, "$options": "i"}},
-        {"reference": {"$regex": needle, "$options": "i"}},
+        {"id": rx},
+        {"reference": rx},
     ]
+    tx_or.extend(
+        {field: rx}
+        for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
+                      *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
+    )
     if user_ids:
         tx_or.append({"user_id": {"$in": user_ids}})
     tx_query = {
@@ -1305,11 +1366,23 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     if kind == "depot":
         deposit_or = [
             {"id": query},
-            {"paydunya_reference": query},
-            {"mbiyo_transaction_id": query},
-            {"fedapay_id": query},
-            {"email": {"$regex": needle, "$options": "i"}},
+            {"id": rx},
+            {"reference": query},
+            {"reference": rx},
         ]
+        deposit_or.extend(
+            {field: rx}
+            for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
+                          *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
+        )
+        deposit_ref_marker = "BTP-PD-"
+        ref_marker_at = query.lower().find(deposit_ref_marker.lower())
+        if ref_marker_at >= 0:
+            ref_suffix = query[ref_marker_at + len(deposit_ref_marker):]
+            if ref_suffix:
+                deposit_or.append({
+                    "id": {"$regex": re.escape(ref_suffix), "$options": "i"}
+                })
         if user_ids:
             deposit_or.append({"user_id": {"$in": user_ids}})
         deposit_docs = await db.momo_deposits.find(
@@ -1321,8 +1394,15 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
             {"session_id": query},
             {"id": query},
             {"reference": query},
-            {"email": {"$regex": needle, "$options": "i"}},
+            {"session_id": rx},
+            {"id": rx},
+            {"reference": rx},
         ]
+        payment_or.extend(
+            {field: rx}
+            for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
+                          *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
+        )
         if user_ids:
             payment_or.append({"user_id": {"$in": user_ids}})
         payment_docs = await db.payment_transactions.find(
@@ -1336,10 +1416,33 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     seen: set[str] = set()
     for match in matches:
         record = match["record"]
-        key = f"{match['source']}:{record.get('id') or record.get('session_id')}"
-        if key in seen:
+        metadata = record.get("metadata") or {}
+        candidate_keys = [
+            f"id:{record.get('id')}",
+            f"session:{record.get('session_id')}",
+            f"reference:{record.get('reference')}",
+        ]
+        provider_reference = next((
+            record.get(key) or metadata.get(key)
+            for key in (
+                "provider_reference", "paydunya_reference",
+                "paydunya_disbursement_token",
+                "mbiyo_transaction_id", "afribapay_transaction_id",
+                "afribapay_order_id", "fedapay_id", "fedapay_reference",
+                "fedapay_payout_id", "izipay_intent_id", "izipay_payout_id",
+                "provider_id", "provider_transaction_id", "transaction_id",
+            )
+            if record.get(key) or metadata.get(key)
+        ), None)
+        if provider_reference:
+            candidate_keys.append(f"provider:{provider_reference}")
+        candidate_keys = [
+            key for key in candidate_keys
+            if not key.endswith(":None") and not key.endswith(":")
+        ]
+        if any(key in seen for key in candidate_keys):
             continue
-        seen.add(key)
+        seen.update(candidate_keys)
         deduped.append(match)
     return deduped[:5]
 
@@ -1358,9 +1461,72 @@ def _telegram_status_label(status: Optional[str]) -> str:
     return labels.get(str(status or "").lower(), str(status or "inconnu"))
 
 
+_TELEGRAM_PROVIDER_LABELS = {
+    "paydunya": "Pay Junior (PayDunya)",
+    "afribapay": "Africa Pay (AfribaPAY)",
+    "izipay": "Easy Change Pay (IzichangePay)",
+    "izichangepay": "Easy Change Pay (IzichangePay)",
+    "mbiyo": "Bio Pay (Mbiyo)",
+    "fedapay": "FedaPay",
+}
+
+
+def _telegram_provider_label(provider: Any) -> str:
+    name = str(provider or "").strip()
+    if not name:
+        return "—"
+    return _TELEGRAM_PROVIDER_LABELS.get(name.lower(), name)
+
+
+def _telegram_record_provider(record: dict) -> Optional[str]:
+    metadata = record.get("metadata") or {}
+    provider = record.get("provider") or metadata.get("provider")
+    if provider:
+        return str(provider)
+    provider_fields = (
+        ("paydunya", (
+            "paydunya_reference", "paydunya_token",
+            "paydunya_disbursement_token",
+        )),
+        ("afribapay", ("afribapay_transaction_id", "afribapay_order_id")),
+        ("mbiyo", ("mbiyo_transaction_id",)),
+        ("fedapay", (
+            "fedapay_id", "fedapay_reference", "fedapay_payout_id",
+        )),
+        ("izipay", ("izipay_intent_id", "izipay_payout_id")),
+    )
+    for name, fields in provider_fields:
+        if any(record.get(field) or metadata.get(field) for field in fields):
+            return name
+    return None
+
+
+def _telegram_provider_reference(record: dict) -> Optional[str]:
+    metadata = record.get("metadata") or {}
+    for key in (
+        "provider_reference", "paydunya_reference", "paydunya_token",
+        "paydunya_disbursement_token",
+        "afribapay_transaction_id", "afribapay_order_id",
+        "mbiyo_transaction_id", "fedapay_reference", "fedapay_id",
+        "fedapay_payout_id",
+        "izipay_intent_id", "izipay_payout_id", "provider_id",
+        "provider_transaction_id", "transaction_id",
+    ):
+        value = record.get(key) or metadata.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
 async def _telegram_record_text(kind: str, match: dict) -> str:
     source = match["source"]
     record = match["record"]
+    kind_labels = {"depot": "Dépôt", "retrait": "Retrait", "echange": "Échange"}
+    kind_label = kind_labels.get(kind, kind.title())
+    provider = _telegram_provider_label(_telegram_record_provider(record))
+    provider_reference = _telegram_provider_reference(record)
+    created_at = _telegram_display_time(record.get("created_at"))
+
     if source == "transaction":
         owner = await _telegram_user_summary(record.get("user_id"))
         party_lines = await _telegram_party_lines(transaction=record)
@@ -1371,54 +1537,185 @@ async def _telegram_record_text(kind: str, match: dict) -> str:
         extra = ""
         if record.get("type") == "exchange":
             extra = (
-                f"\nConversion : {meta.get('from_currency', record.get('currency'))}"
-                f" → {meta.get('to_currency', '—')}"
-                f"\nMontant reçu : {meta.get('received', '—')}"
+                f"\nConversion : {html_escape(str(meta.get('from_currency', record.get('currency'))))}"
+                f" → {html_escape(str(meta.get('to_currency', '—')))}"
+                f"\nMontant reçu : {html_escape(str(meta.get('received', '—')))}"
             )
-        return "\n".join([
-            f"<b>{kind.title()} — {_telegram_status_label(record.get('status'))}</b>",
+        lines = [
+            f"<b>{kind_label} — {html_escape(_telegram_status_label(record.get('status')))}</b>",
             f"Numéro : <code>{html_escape(str(identifier))}</code>",
             f"Référence : <code>{html_escape(str(reference))}</code>",
+            f"Prestataire : <b>{html_escape(provider)}</b>",
+            f"Réf. prestataire : <code>{html_escape(provider_reference or '—')}</code>",
             f"Montant : <b>{html_escape(str(amount))}</b>",
+            f"Date : {html_escape(created_at)}",
             f"Compte : {html_escape(owner.get('name', '—'))}",
             f"Email compte : <code>{html_escape(owner.get('email', '—'))}</code>",
             *party_lines,
-            extra,
-        ])
+        ]
+        if extra:
+            lines.append(extra)
+        return "\n".join(lines)
 
     if source == "deposit":
         party_lines = await _telegram_party_lines(deposit=record)
         identifier = record.get("id") or "—"
-        provider_ref = (
-            record.get("paydunya_reference")
-            or record.get("mbiyo_transaction_id")
-            or record.get("fedapay_id")
-            or "—"
-        )
         amount = (
             record.get("amount")
             or record.get("requested_amount")
             or record.get("wallet_credit_amount")
             or 0
         )
+        internal_reference = record.get("reference") or (
+            f"BTP-PD-{str(record.get('id'))[:16]}" if record.get("id") else "—"
+        )
         return "\n".join([
-            f"<b>Dépôt — {_telegram_status_label(record.get('status'))}</b>",
+            f"<b>Dépôt — {html_escape(_telegram_status_label(record.get('status')))}</b>",
             f"Numéro : <code>{html_escape(str(identifier))}</code>",
-            f"Référence fournisseur : <code>{html_escape(str(provider_ref))}</code>",
+            f"Référence Biz-transPay : <code>{html_escape(str(internal_reference))}</code>",
+            f"Prestataire : <b>{html_escape(provider)}</b>",
+            f"Réf. prestataire : <code>{html_escape(provider_reference or '—')}</code>",
             f"Montant : <b>{html_escape(str(amount))} {html_escape(str(record.get('currency', '')))}</b>",
+            f"Date : {html_escape(created_at)}",
             f"Opérateur : {html_escape(str(record.get('operator_name') or record.get('operator') or '—'))}",
             *party_lines,
         ])
 
     owner = await _telegram_user_summary(record.get("user_id"))
+    payer_email = (
+        record.get("email") or record.get("customer_email")
+        or record.get("payer_email")
+    )
+    payer_phone = (
+        record.get("phone_number") or record.get("customer_phone")
+        or record.get("payer_phone") or record.get("phone")
+    )
     return "\n".join([
-        f"<b>Dépôt — {_telegram_status_label(record.get('status') or record.get('payment_status'))}</b>",
+        f"<b>Dépôt — {html_escape(_telegram_status_label(record.get('status') or record.get('payment_status')))}</b>",
         f"Numéro : <code>{html_escape(str(record.get('id') or record.get('session_id') or '—'))}</code>",
         f"Référence paiement : <code>{html_escape(str(record.get('reference') or record.get('session_id') or '—'))}</code>",
+        f"Prestataire : <b>{html_escape(provider)}</b>",
+        f"Réf. prestataire : <code>{html_escape(provider_reference or '—')}</code>",
         f"Montant : <b>{html_escape(str(record.get('amount', 0)))} {html_escape(str(record.get('currency', '')))}</b>",
+        f"Date : {html_escape(created_at)}",
         f"Destinataire : <b>{html_escape(owner.get('name', 'Compte Biz-transPay'))}</b>",
         f"Email destinataire : <code>{html_escape(owner.get('email', '—'))}</code>",
+        f"Email payeur : <code>{html_escape(_telegram_mask_email(payer_email) or '—')}</code>",
+        f"Téléphone payeur : <code>{html_escape(_telegram_mask_phone(payer_phone) or '—')}</code>",
     ])
+
+
+async def _telegram_paydunya_balance_result() -> dict:
+    result = {"label": _TELEGRAM_PROVIDER_LABELS["paydunya"], "state": "unavailable"}
+    try:
+        config = await get_paydunya_config(decrypt=True)
+        if not config.get("enabled"):
+            result.update(state="unavailable", reason="Désactivé.")
+            return result
+        credentials = config.get("_credentials") or {}
+        if not all(credentials.get(key) for key in (
+            "master_key", "private_key", "token",
+        )):
+            result.update(state="unavailable", reason="Non configuré.")
+            return result
+        totals = _paydunya_balance_totals(await paydunya.get_balance(config))
+        result.update(
+            state="available",
+            mode=str(config.get("mode") or "test").upper(),
+            approximate=True,
+            totals=totals,
+        )
+    except Exception as exc:  # noqa: BLE001 - no provider payloads in Telegram
+        logger.warning(
+            "Telegram PayDunya balance lookup unavailable (%s)",
+            type(exc).__name__,
+        )
+        result["reason"] = "Indisponible pour le moment."
+    return result
+
+
+async def _telegram_mbiyo_balance_result() -> dict:
+    result = {"label": _TELEGRAM_PROVIDER_LABELS["mbiyo"], "state": "unavailable"}
+    try:
+        config = await get_mbiyo_config(decrypt=True)
+        if not config.get("enabled"):
+            result.update(state="unavailable", reason="Désactivé.")
+            return result
+        api_key = str(config.get("_api_key") or "").strip()
+        if not api_key:
+            result.update(state="unavailable", reason="Non configuré.")
+            return result
+        client = mbiyo.MbiyoClient(api_key, config.get("base_url", mbiyo.BASE_URL))
+        totals = _mbiyo_wallet_totals(await client.balances())
+        result.update(
+            state="available",
+            mode=str(config.get("mode") or "test").upper(),
+            totals=totals,
+        )
+    except Exception as exc:  # noqa: BLE001 - no provider payloads in Telegram
+        logger.warning(
+            "Telegram Mbiyo balance lookup unavailable (%s)",
+            type(exc).__name__,
+        )
+        result["reason"] = "Indisponible pour le moment."
+    return result
+
+
+async def _telegram_provider_totals_text() -> str:
+    paydunya_result, mbiyo_result = await asyncio.gather(
+        _telegram_paydunya_balance_result(),
+        _telegram_mbiyo_balance_result(),
+    )
+    results = [
+        paydunya_result,
+        {
+            "label": _TELEGRAM_PROVIDER_LABELS["afribapay"],
+            "state": "unsupported",
+        },
+        {
+            "label": _TELEGRAM_PROVIDER_LABELS["izipay"],
+            "state": "unsupported",
+        },
+        mbiyo_result,
+    ]
+    lines = [
+        "<b>Soldes actuels des prestataires</b>",
+        f"Actualisé : {html_escape(_telegram_display_time(now_iso()))}",
+        "",
+    ]
+    for result in results:
+        label = html_escape(result["label"])
+        if result["state"] == "unsupported":
+            lines.append(
+                f"<b>{label}</b> : solde indisponible via l’API intégrée."
+            )
+            continue
+        if result["state"] != "available":
+            lines.append(
+                f"<b>{label}</b> : {html_escape(result.get('reason') or 'Indisponible.')}"
+            )
+            continue
+
+        mode = html_escape(result.get("mode") or "—")
+        qualifier = " — estimation approximative" if result.get("approximate") else ""
+        lines.append(f"<b>{label}</b> — mode {mode}{qualifier}")
+        totals = result.get("totals") or []
+        if not totals:
+            lines.append("• Aucun solde retourné.")
+            continue
+        for item in totals:
+            currency = html_escape(str(item.get("currency") or ""))
+            amount = html_escape(str(item.get("balance") or "0"))
+            prefix = "Total estimé" if result.get("approximate") else "Total"
+            lines.append(f"• {prefix} {currency} : <b>{amount}</b>")
+
+    lines.extend([
+        "",
+        "Africa Pay et Easy Change Pay ne publient pas de lecture de solde "
+        "dans les API actuellement intégrées.",
+        "PayDunya précise que son solde API est une estimation.",
+    ])
+    return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
 
 
 async def _telegram_handle_command(message: dict) -> None:
@@ -1436,23 +1733,31 @@ async def _telegram_handle_command(message: dict) -> None:
         "withdraw": "retrait",
         "echange": "echange",
         "exchange": "echange",
+        "total": "total",
     }
     if command in {"start", "help", "aide"}:
         await _send_telegram_message(
             chat_id,
             "Commandes disponibles :\n"
-            "/depot <numéro, référence ou email>\n"
-            "/retrait <numéro, référence ou email>\n"
-            "/echange <numéro, référence ou email>",
+            "/depot ou /dépôt <email, téléphone, référence ou ID>\n"
+            "/retrait <email, téléphone, référence ou ID>\n"
+            "/echange ou /échange <email, téléphone, référence ou ID>\n"
+            "/total",
         )
         return
     kind = aliases.get(command)
     if not kind:
         return
+    if kind == "total":
+        if query:
+            await _send_telegram_message(chat_id, "Utilisation : /total")
+            return
+        await _send_telegram_message(chat_id, await _telegram_provider_totals_text())
+        return
     if not query:
         await _send_telegram_message(
             chat_id,
-            f"Utilisation : /{command} <numéro, référence ou email>",
+            f"Utilisation : /{command} <email, téléphone, référence ou ID>",
         )
         return
     matches = await _telegram_search_records(kind, query)
@@ -11878,6 +12183,38 @@ def _mbiyo_collection(payload: Any, aliases: tuple[str, ...],
     if any(not isinstance(item, dict) for item in records):
         raise ValueError("Mbiyo data list contains a non-object item")
     return records
+
+
+def _paydunya_balance_totals(payload: Any) -> list[dict]:
+    """Aggregate documented PayDunya country-account balances by currency."""
+    if not isinstance(payload, dict) or payload.get("success") is not True:
+        raise ValueError("PayDunya did not return a successful balance response")
+    totals: dict[str, Decimal] = {}
+    for key, value in payload.items():
+        country_match = re.fullmatch(r"balance\s+([a-z]{2})", str(key).strip(), re.I)
+        if not country_match:
+            continue
+        amount_match = re.fullmatch(
+            r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+([a-z]{3})",
+            str(value).strip(),
+            re.I,
+        )
+        if not amount_match:
+            raise ValueError("Malformed PayDunya balance value")
+        try:
+            amount = Decimal(amount_match.group(1))
+        except (InvalidOperation, TypeError, ValueError):
+            raise ValueError("Invalid PayDunya balance amount")
+        if not amount.is_finite():
+            raise ValueError("Invalid PayDunya balance amount")
+        currency = amount_match.group(2).upper()
+        totals[currency] = totals.get(currency, Decimal("0")) + amount
+    if not totals:
+        raise ValueError("PayDunya response did not include country balances")
+    return [
+        {"currency": currency, "balance": format(amount, "f")}
+        for currency, amount in sorted(totals.items())
+    ]
 
 
 def _mbiyo_value(item: dict, *names: str) -> Any:
