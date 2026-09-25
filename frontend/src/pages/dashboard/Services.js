@@ -15,7 +15,7 @@ export default function Services() {
         <button
           type="button"
           data-testid="service-api"
-          onClick={() => navigate('/dashboard/api')}
+           onClick={() => navigate('/dashboard/integration')}
           className="group flex w-full items-center gap-4 text-left bg-slate-950 text-white border border-slate-800 rounded-2xl p-5 shadow-[0_12px_30px_rgba(15,23,42,0.16)] hover:-translate-y-0.5 hover:shadow-[0_18px_36px_rgba(15,23,42,0.22)] transition-all"
         >
           <div className="w-12 h-12 shrink-0 rounded-xl bg-blue-500/15 text-blue-300 flex items-center justify-center">
@@ -23,7 +23,7 @@ export default function Services() {
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-cabinet font-bold text-sm">Espace développeur API</h2>
+             <h2 className="font-cabinet font-bold text-sm">API & Intégration</h2>
               <span className="rounded-full border border-blue-400/25 bg-blue-400/10 px-2 py-0.5 text-[10px] font-bold text-blue-200">API v1</span>
             </div>
             <p className="mt-1 text-xs leading-relaxed text-slate-300">Clés test et live, guides d'intégration et webhooks signés pour vos paiements Mobile Money.</p>

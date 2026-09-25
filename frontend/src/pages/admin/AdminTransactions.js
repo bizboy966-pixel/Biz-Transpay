@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Download, ArrowDownToLine, ArrowUpFromLine, Eye, Bitcoin, Smartphone, RefreshCw } from 'lucide-react';
+import { Search, Download, ArrowDownToLine, ArrowUpFromLine, Eye, Bitcoin, Smartphone, RefreshCw, AlertTriangle } from 'lucide-react';
 import api from '@/api';
 import AdminTxDetailModal from './AdminTxDetailModal';
 
@@ -14,6 +14,11 @@ function txChannel(tx) {
   return isCrypto ? 'crypto' : 'mobile_money';
 }
 
+function isMbiyoAmbiguous(tx) {
+  const metadata = tx?.metadata || {};
+  return Boolean(metadata.mbiyo_submission_review_required || metadata.mbiyo_submission_unknown);
+}
+
 export default function AdminTransactions({ filterType }) {
   const [txs, setTxs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -22,6 +27,7 @@ export default function AdminTransactions({ filterType }) {
   const [type, setType] = useState(filterType || searchParams.get('type') || '');
   const [status, setStatus] = useState(searchParams.get('status') || '');
   const [channel, setChannel] = useState(searchParams.get('channel') || '');
+  const [mbiyoReview, setMbiyoReview] = useState(searchParams.get('mbiyo_review') || '');
   const [selectedId, setSelectedId] = useState(null);
 
   const load = () => {
@@ -51,15 +57,18 @@ export default function AdminTransactions({ filterType }) {
     if (type) np.set('type', type);
     if (status) np.set('status', status);
     if (channel) np.set('channel', channel);
+    if (mbiyoReview) np.set('mbiyo_review', mbiyoReview);
     setSearchParams(np, { replace: true });
     /* eslint-disable-next-line */
-  }, [type, status, channel]);
+  }, [type, status, channel, mbiyoReview]);
 
   // Client-side channel filter (backend doesn't yet support it as a query).
   const filtered = useMemo(() => {
-    if (!channel) return txs;
-    return txs.filter((t) => txChannel(t) === channel);
-  }, [txs, channel]);
+    let result = txs;
+    if (channel) result = result.filter((t) => txChannel(t) === channel);
+    if (mbiyoReview === 'required') result = result.filter(isMbiyoAmbiguous);
+    return result;
+  }, [txs, channel, mbiyoReview]);
 
   const pendingCount = useMemo(() => filtered.filter(t => t.status === 'pending').length, [filtered]);
 
@@ -116,6 +125,11 @@ export default function AdminTransactions({ filterType }) {
           <option value="pending">En attente</option>
           <option value="failed">Rejetés</option>
         </select>
+        <select value={mbiyoReview} onChange={(e) => setMbiyoReview(e.target.value)} data-testid="admin-tx-mbiyo-review"
+                className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold">
+          <option value="">Tous les contrôles</option>
+          <option value="required">Mbiyo à vérifier</option>
+        </select>
         <button onClick={load} data-testid="btn-refresh" className="inline-flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold hover:bg-slate-50">
           <RefreshCw className="w-3.5 h-3.5" /> Actualiser
         </button>
@@ -169,11 +183,13 @@ export default function AdminTransactions({ filterType }) {
                 const network = meta.network;
                 const txHash = meta.tx_hash;
                 const ch = txChannel(tx);
+                const mbiyoAmbiguous = isMbiyoAmbiguous(tx);
                 return (
                   <tr key={tx.id} data-testid={`admin-tx-row-${tx.id}`} className="border-t border-slate-50 hover:bg-slate-50/50">
                     <td className="px-5 py-3 font-mono text-xs text-slate-700">
                       <div>{tx.reference}</div>
                       {txHash && <div className="text-[10px] text-slate-400 truncate max-w-[180px]" title={txHash}>{txHash}</div>}
+                      {mbiyoAmbiguous && <span className="mt-1 inline-flex items-center gap-1 rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-bold text-red-700"><AlertTriangle className="h-3 w-3" /> Mbiyo : résultat inconnu</span>}
                     </td>
                     <td className="px-5 py-3">
                       <div className="text-xs font-semibold text-slate-900">{tx.user?.full_name || '—'}</div>

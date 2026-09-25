@@ -303,6 +303,19 @@ class Collection:
     def __init__(self, store: "PostgresDocumentStore", name: str):
         self.store, self.name = store, name
 
+    async def _lock_mutations(self, connection) -> None:
+        """Serialize read/match/write mutations for this collection.
+
+        The two-key advisory-lock form is supported by PostgreSQL versions
+        predating ``hashtextextended`` too. Hash collisions can only cause
+        unrelated collections to serialize; they cannot weaken correctness.
+        """
+        await connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))",
+            "postgres_document_store",
+            self.name,
+        )
+
     async def _rows(self, connection=None) -> list[dict]:
         conn = connection or await self.store.pool.acquire()
         try:
@@ -355,34 +368,39 @@ class Collection:
         those first-write paths failed after the MongoDB migration.
         """
         async with self.store.pool.acquire() as conn:
-            async with conn.transaction():
-                rows = await self._rows(conn)
-                matches = [doc for doc in rows if _matches(doc, query)]
-                if not matches:
-                    if not upsert:
-                        return Result()
-                    doc = copy.deepcopy(replacement)
-                    doc.setdefault("_id", str(uuid.uuid4()))
-                    doc_id = str(doc.get("id") or doc["_id"])
-                    await conn.execute(
-                        """INSERT INTO document_store(collection, doc_id, document)
-                           VALUES($1,$2,$3::jsonb)""",
-                        self.name, doc_id, self.store.encode(doc),
-                    )
-                    return Result(upserted_id=doc_id)
+            try:
+                async with conn.transaction():
+                    await self._lock_mutations(conn)
+                    rows = await self._rows(conn)
+                    matches = [doc for doc in rows if _matches(doc, query)]
+                    if not matches:
+                        if not upsert:
+                            return Result()
+                        doc = copy.deepcopy(replacement)
+                        doc.setdefault("_id", str(uuid.uuid4()))
+                        doc_id = str(doc.get("id") or doc["_id"])
+                        await conn.execute(
+                            """INSERT INTO document_store(collection, doc_id, document)
+                               VALUES($1,$2,$3::jsonb)""",
+                            self.name, doc_id, self.store.encode(doc),
+                        )
+                        return Result(upserted_id=doc_id)
 
-                old = matches[0]
-                doc = copy.deepcopy(replacement)
-                doc.setdefault("_id", old.get("_id", str(uuid.uuid4())))
-                old_doc_id = str(old.get("id") or old["_id"])
-                new_doc_id = str(doc.get("id") or old_doc_id)
-                await conn.execute(
-                    """UPDATE document_store
-                       SET doc_id=$3, document=$4::jsonb, updated_at=now()
-                       WHERE collection=$1 AND doc_id=$2""",
-                    self.name, old_doc_id, new_doc_id, self.store.encode(doc),
-                )
-                return Result(matched_count=1, modified_count=int(doc != old))
+                    old = matches[0]
+                    doc = copy.deepcopy(replacement)
+                    doc.setdefault("_id", old.get("_id", str(uuid.uuid4())))
+                    old_doc_id = str(old.get("id") or old["_id"])
+                    new_doc_id = str(doc.get("id") or old_doc_id)
+                    await conn.execute(
+                        """UPDATE document_store
+                           SET doc_id=$3, document=$4::jsonb, updated_at=now()
+                           WHERE collection=$1 AND doc_id=$2""",
+                        self.name, old_doc_id, new_doc_id, self.store.encode(doc),
+                    )
+                    return Result(matched_count=1, modified_count=int(doc != old))
+            except asyncpg.UniqueViolationError as exc:
+                from pymongo.errors import DuplicateKeyError
+                raise DuplicateKeyError(str(exc)) from exc
 
     async def update_one(self, query: dict, update: dict, upsert: bool = False) -> Result:
         return await self._update(query, update, upsert, many=False)
@@ -392,22 +410,27 @@ class Collection:
 
     async def _update(self, query, update, upsert, many):
         async with self.store.pool.acquire() as conn:
-            async with conn.transaction():
-                rows = await self._rows(conn)
-                matches = [doc for doc in rows if _matches(doc, query)]
-                if not matches and upsert:
-                    base = {key: value for key, value in query.items() if not key.startswith("$") and not isinstance(value, dict)}
-                    doc = _apply_update(base, update, inserting=True)
-                    doc.setdefault("_id", str(uuid.uuid4()))
-                    doc_id = str(doc.get("id") or doc["_id"])
-                    await conn.execute("INSERT INTO document_store(collection,doc_id,document) VALUES($1,$2,$3::jsonb)", self.name, doc_id, self.store.encode(doc))
-                    return Result(matched_count=0, modified_count=0, upserted_id=doc_id)
-                chosen = matches if many else matches[:1]
-                for old in chosen:
-                    new = _apply_update(old, update)
-                    doc_id = str(new.get("id") or new.get("_id"))
-                    await conn.execute("UPDATE document_store SET document=$3::jsonb, updated_at=now() WHERE collection=$1 AND doc_id=$2", self.name, doc_id, self.store.encode(new))
-                return Result(matched_count=len(chosen), modified_count=sum(a != b for a, b in zip(chosen, [_apply_update(d, update) for d in chosen])))
+            try:
+                async with conn.transaction():
+                    await self._lock_mutations(conn)
+                    rows = await self._rows(conn)
+                    matches = [doc for doc in rows if _matches(doc, query)]
+                    if not matches and upsert:
+                        base = {key: value for key, value in query.items() if not key.startswith("$") and not isinstance(value, dict)}
+                        doc = _apply_update(base, update, inserting=True)
+                        doc.setdefault("_id", str(uuid.uuid4()))
+                        doc_id = str(doc.get("id") or doc["_id"])
+                        await conn.execute("INSERT INTO document_store(collection,doc_id,document) VALUES($1,$2,$3::jsonb)", self.name, doc_id, self.store.encode(doc))
+                        return Result(matched_count=0, modified_count=0, upserted_id=doc_id)
+                    chosen = matches if many else matches[:1]
+                    for old in chosen:
+                        new = _apply_update(old, update)
+                        doc_id = str(new.get("id") or new.get("_id"))
+                        await conn.execute("UPDATE document_store SET document=$3::jsonb, updated_at=now() WHERE collection=$1 AND doc_id=$2", self.name, doc_id, self.store.encode(new))
+                    return Result(matched_count=len(chosen), modified_count=sum(a != b for a, b in zip(chosen, [_apply_update(d, update) for d in chosen])))
+            except asyncpg.UniqueViolationError as exc:
+                from pymongo.errors import DuplicateKeyError
+                raise DuplicateKeyError(str(exc)) from exc
 
     async def delete_one(self, query: dict) -> Result:
         return await self._delete(query, False)
@@ -417,13 +440,15 @@ class Collection:
 
     async def _delete(self, query, many):
         async with self.store.pool.acquire() as conn:
-            rows = await self._rows(conn)
-            matches = [doc for doc in rows if _matches(doc, query)]
-            if not many:
-                matches = matches[:1]
-            for doc in matches:
-                await conn.execute("DELETE FROM document_store WHERE collection=$1 AND doc_id=$2", self.name, str(doc.get("id") or doc["_id"]))
-            return Result(deleted_count=len(matches))
+            async with conn.transaction():
+                await self._lock_mutations(conn)
+                rows = await self._rows(conn)
+                matches = [doc for doc in rows if _matches(doc, query)]
+                if not many:
+                    matches = matches[:1]
+                for doc in matches:
+                    await conn.execute("DELETE FROM document_store WHERE collection=$1 AND doc_id=$2", self.name, str(doc.get("id") or doc["_id"]))
+                return Result(deleted_count=len(matches))
 
     async def count_documents(self, query: dict) -> int:
         return len([doc for doc in await self._rows() if _matches(doc, query or {})])

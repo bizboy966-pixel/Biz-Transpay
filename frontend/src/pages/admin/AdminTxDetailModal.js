@@ -51,10 +51,14 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
   const [busy, setBusy] = useState(null); // 'approve' | 'reject'
   const [showReject, setShowReject] = useState(false);
   const [reason, setReason] = useState('');
+  const [providerOutcome, setProviderOutcome] = useState('');
+  const [providerOutcomeEvidenceReference, setProviderOutcomeEvidenceReference] = useState('');
+  const [outcomeAttested, setOutcomeAttested] = useState(false);
 
   useEffect(() => {
     if (!open || !txId) return;
     setLoading(true); setTx(null); setShowReject(false); setReason('');
+    setProviderOutcome(''); setProviderOutcomeEvidenceReference(''); setOutcomeAttested(false);
     api.get(`/admin/transactions/${txId}`)
       .then(({ data }) => setTx(data))
       .catch(() => toast.error('Erreur de chargement'))
@@ -64,6 +68,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
   if (!open) return null;
 
   const meta = tx?.metadata || {};
+  const mbiyoAmbiguous = Boolean(meta.mbiyo_submission_review_required || meta.mbiyo_submission_unknown);
   const user = tx?.user || {};
   const isDeposit = tx?.type === 'deposit';
   const isWithdrawal = tx?.type === 'withdrawal' || (tx?.type === 'transfer' && tx?.direction === 'out');
@@ -75,12 +80,32 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
   const amount = Number(tx?.amount || 0);
   const feeVal = Number(meta.fee ?? meta.fee_amount ?? 0);
   const netVal = Number(meta.amount_net ?? meta.net_amount ?? (isDeposit ? amount - feeVal : amount - feeVal));
+  const approveOutcomes = ['provider_confirmed_paid', 'operator_verified_manual_completion'];
+  const rejectOutcomes = ['provider_confirmed_not_paid', 'provider_confirmed_rejected'];
+  const evidenceReady = providerOutcomeEvidenceReference.trim()
+    && providerOutcomeEvidenceReference.trim().length <= 240
+    && outcomeAttested;
+
+  const flaggedEvidence = (action) => {
+    const allowedOutcomes = action === 'approve' ? approveOutcomes : rejectOutcomes;
+    if (!mbiyoAmbiguous || (evidenceReady && allowedOutcomes.includes(providerOutcome))) return true;
+    toast.error('Sélectionnez un résultat autorisé, renseignez la référence de preuve et confirmez l’attestation.');
+    return false;
+  };
 
   const approve = async () => {
+    if (!flaggedEvidence('approve')) return;
     if (window.prompt(`Confirmer la validation de cette ${isDeposit ? 'entrée' : 'sortie'} ?\nSaisissez CONFIRMER pour continuer.`)?.trim().toUpperCase() !== 'CONFIRMER') return;
     setBusy('approve');
     try {
-      await api.post(`/admin/transactions/${tx.id}/approve`, { confirmation: 'CONFIRMER' });
+      await api.post(`/admin/transactions/${tx.id}/approve`, {
+        confirmation: 'CONFIRMER',
+        ...(mbiyoAmbiguous ? {
+          provider_outcome: providerOutcome,
+          provider_outcome_evidence_reference: providerOutcomeEvidenceReference.trim(),
+          provider_outcome_attested: true,
+        } : {}),
+      });
       toast.success('Transaction validée');
       onUpdated?.();
       onClose();
@@ -108,10 +133,19 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
   };
 
   const reject = async () => {
+    if (!flaggedEvidence('reject')) return;
     if (window.prompt('Confirmer le rejet de cette transaction ?\nSaisissez CONFIRMER pour continuer.')?.trim().toUpperCase() !== 'CONFIRMER') return;
     setBusy('reject');
     try {
-      await api.post(`/admin/transactions/${tx.id}/reject`, { reason: reason.trim() || null, confirmation: 'CONFIRMER' });
+      await api.post(`/admin/transactions/${tx.id}/reject`, {
+        reason: reason.trim() || null,
+        confirmation: 'CONFIRMER',
+        ...(mbiyoAmbiguous ? {
+          provider_outcome: providerOutcome,
+          provider_outcome_evidence_reference: providerOutcomeEvidenceReference.trim(),
+          provider_outcome_attested: true,
+        } : {}),
+      });
       toast.success(isWithdrawal ? 'Rejeté — solde recrédité' : 'Rejeté');
       onUpdated?.();
       onClose();
@@ -209,15 +243,27 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
 
               {/* Additional info spanning full width */}
               {(tx.description || meta.rejection_reason || tx.rejection_reason
-                || meta.manual_review_required) && (
+                || meta.manual_review_required || mbiyoAmbiguous) && (
                 <div className="md:col-span-2 mt-3 pt-3 border-t border-slate-100">
+                  {mbiyoAmbiguous && (
+                    <div className="mb-3 flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-[13px] text-red-950">
+                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-700" />
+                      <div>
+                        <div className="font-semibold">Résultat Mbiyo inconnu — contrôle indépendant obligatoire</div>
+                        <div className="mt-0.5 leading-relaxed">
+                          Le résultat du prestataire n’a pas pu être confirmé et le débit est réservé.
+                          Ne remboursez pas et ne validez pas cette transaction avant d’obtenir une preuve indépendante du prestataire.
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {meta.manual_review_required && (
                     <div className="mb-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-[13px] text-amber-900 flex items-start gap-2">
                       <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-600" />
                       <div>
-                        <div className="font-semibold">Validation manuelle requise</div>
+                         <div className="font-semibold">Liquidité prestataire — validation manuelle requise</div>
                         <div className="mt-0.5">
-                          Le portefeuille du prestataire est insuffisant.
+                           Le portefeuille du prestataire est insuffisant.
                           Effectuez le paiement manuellement, puis cliquez sur
                           « Valider », ou utilisez « Rejeter » pour rembourser le client.
                         </div>
@@ -242,6 +288,31 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                 </div>
               )}
 
+              {mbiyoAmbiguous && tx.status === 'pending' && (
+                <div className="md:col-span-2 mt-4 rounded-xl border border-red-200 bg-red-50/60 p-4">
+                  <div className="mb-3 text-sm font-semibold text-red-950">Preuve prestataire requise avant toute décision</div>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <label className="text-xs font-semibold text-slate-700">
+                      Résultat prestataire pour {showReject ? 'le rejet' : 'la validation'}
+                      <select value={providerOutcome} onChange={(e) => setProviderOutcome(e.target.value)} data-testid="select-mbiyo-provider-outcome" className="mt-1.5 w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20">
+                        <option value="">Sélectionner un résultat</option>
+                        {(showReject ? rejectOutcomes : approveOutcomes).map((outcome) => <option key={outcome} value={outcome}>{outcome}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-xs font-semibold text-slate-700 md:row-span-2">
+                      Référence de preuve indépendante
+                      <textarea value={providerOutcomeEvidenceReference} onChange={(e) => setProviderOutcomeEvidenceReference(e.target.value.slice(0, 240))} data-testid="input-mbiyo-provider-outcome-evidence-reference" maxLength={240} rows={3} placeholder="Référence, identifiant ou trace de confirmation du prestataire." className="mt-1.5 w-full resize-none rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20" />
+                      <span className="mt-1 block text-[10px] font-normal text-slate-500">{providerOutcomeEvidenceReference.length}/240</span>
+                    </label>
+                    <label className="flex items-start gap-2 text-xs font-normal leading-relaxed text-red-950">
+                      <input type="checkbox" checked={outcomeAttested} onChange={(e) => setOutcomeAttested(e.target.checked)} data-testid="checkbox-mbiyo-attestation" className="mt-0.5 accent-red-700" />
+                      Je confirme avoir vérifié cette preuve indépendamment et assume l’issue choisie.
+                    </label>
+                  </div>
+                  {!evidenceReady && <div className="mt-3 text-[11px] font-semibold text-red-700">Le résultat, la référence de preuve (240 caractères maximum) et l’attestation sont obligatoires.</div>}
+                </div>
+              )}
+
               {/* Reject reason input */}
               {showReject && (
                 <div className="md:col-span-2 mt-4 p-4 rounded-xl bg-red-50 border border-red-200">
@@ -255,8 +326,8 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                     className="w-full px-3 py-2 rounded-lg border border-red-300 bg-white focus:outline-none focus:ring-2 focus:ring-red-500/20 text-sm resize-none"
                   />
                   <div className="mt-2 flex justify-end gap-2">
-                    <button onClick={() => { setShowReject(false); setReason(''); }} data-testid="btn-cancel-reject" className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-white">Annuler</button>
-                    <button onClick={reject} disabled={busy === 'reject'} data-testid="btn-confirm-reject" className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-40 inline-flex items-center gap-1">
+                     <button onClick={() => { setShowReject(false); setReason(''); setProviderOutcome(''); }} data-testid="btn-cancel-reject" className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-white">Annuler</button>
+                     <button onClick={reject} disabled={busy === 'reject' || (mbiyoAmbiguous && (!evidenceReady || !rejectOutcomes.includes(providerOutcome)))} data-testid="btn-confirm-reject" className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 disabled:opacity-40 inline-flex items-center gap-1">
                       <XCircle className="w-3.5 h-3.5" />
                       {busy === 'reject' ? 'Rejet…' : 'Confirmer le rejet'}
                     </button>
@@ -288,7 +359,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
             </button>
             <button
               onClick={approve}
-              disabled={busy === 'approve'}
+              disabled={busy === 'approve' || (mbiyoAmbiguous && (!evidenceReady || !approveOutcomes.includes(providerOutcome)))}
               data-testid="btn-approve"
               className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-sm disabled:opacity-40 inline-flex items-center justify-center gap-1.5">
               <CheckCircle2 className="w-4 h-4" />

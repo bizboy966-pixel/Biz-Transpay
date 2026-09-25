@@ -373,6 +373,7 @@ async def _require_turnstile(
 _APP_STARTED_AT = datetime.now(timezone.utc)
 API_VERSION = "1.0.0"
 _paydunya_reconcile_task = None
+_integration_outbox_task = None
 MOMO_PENDING_TIMEOUT_MINUTES = 10
 
 # ==================== V1 PUBLIC API HELPERS ====================
@@ -2501,11 +2502,19 @@ def _validate_http_url(value: str, field_name: str) -> str:
 async def _is_safe_outbound_http_url(value: str) -> bool:
     """Reject webhook targets that resolve to local or private networks."""
     try:
+        return bool(await _resolve_safe_outbound_http_ips(value))
+    except (HTTPException, OSError, ValueError):
+        return False
+
+
+async def _resolve_safe_outbound_http_ips(value: str) -> list[str]:
+    """Resolve once and return only an all-public DNS answer set for pinning."""
+    try:
         normalized = _validate_http_url(value, "URL")
         parsed = urlparse(normalized)
         hostname = (parsed.hostname or "").strip().lower().rstrip(".")
         if not hostname or hostname in {"localhost", "localhost.localdomain"}:
-            return False
+            return []
         infos = await asyncio.to_thread(
             socket.getaddrinfo,
             hostname,
@@ -2514,10 +2523,12 @@ async def _is_safe_outbound_http_url(value: str) -> bool:
         )
         addresses = {str(item[4][0]) for item in infos if item[4]}
         if not addresses:
-            return False
-        return all(ipaddress.ip_address(address).is_global for address in addresses)
+            return []
+        if not all(ipaddress.ip_address(address).is_global for address in addresses):
+            return []
+        return sorted(addresses)
     except (HTTPException, OSError, ValueError):
-        return False
+        return []
 
 
 async def _validate_outbound_http_url(value: str, field_name: str = "URL") -> str:
@@ -4783,7 +4794,9 @@ async def transfer(req: TransferRequest, request: Request,
                           "total_debit": fees["charged_amount"], "fee_snapshot": fees,
                           "idempotency_key": mobile_idempotency_key,
                           "request_fingerprint": mobile_request_fingerprint,
-                           "debit_phase": "pending"})
+                            "debit_phase": "pending",
+                            "mbiyo_submission_phase": "not_submitted",
+                            "mbiyo_submission_phase_at": now_iso()})
             await db.transactions.update_one(
                 {"id": tx_out.id}, {"$set": {"metadata.order_id": tx_out.id}}
             )
@@ -4799,6 +4812,20 @@ async def transfer(req: TransferRequest, request: Request,
                                                        "metadata.debit_applied": True,
                                                        "metadata.debit_applied_at": now_iso()}})
             try:
+                dispatch_claim = await db.transactions.update_one(
+                    {"id": tx_out.id, "status": "pending",
+                     "metadata.mbiyo_submission_phase": "not_submitted"},
+                    {"$set": {
+                        "metadata.mbiyo_submission_phase": "dispatching",
+                        "metadata.mbiyo_submission_phase_at": now_iso(),
+                    }},
+                )
+                if dispatch_claim.modified_count != 1:
+                    await _mark_mbiyo_submission_manual_review(
+                        tx_out.id, "dispatch_phase_persist_failed",
+                        "Unable to durably record Mbiyo payout dispatch phase")
+                    raise HTTPException(
+                        503, "Le retrait est réservé pour vérification manuelle.")
                 response = await mbiyo.MbiyoClient(
                     mb_cfg["_api_key"], mb_cfg.get("base_url", mbiyo.BASE_URL)).payout(
                     amount=provider_payout_amount, currency=req.currency.upper(),
@@ -4813,10 +4840,35 @@ async def transfer(req: TransferRequest, request: Request,
                 data = response.get("data") if isinstance(response.get("data"), dict) else response
                 provider_id = data.get("transaction_id") or data.get("id") or data.get("reference")
                 provider_status = mbiyo.status_value(response)
-                await db.transactions.update_one(
+                provider_update = await db.transactions.update_one(
                     {"id": tx_out.id}, {"$set": {"metadata.mbiyo_transaction_id": provider_id,
                                                 "metadata.mbiyo_status": provider_status,
+                                                 "metadata.mbiyo_submission_phase": (
+                                                     "provider_id_persisted" if provider_id
+                                                     else "response_without_provider_id"),
+                                                 "metadata.mbiyo_submission_phase_at": now_iso(),
                                                 "metadata.next_reconcile_at": now_iso()}})
+                if not provider_update.matched_count:
+                    await _mark_mbiyo_submission_manual_review(
+                        tx_out.id, "provider_response_persistence_failed",
+                        "Mbiyo responded but its payout identifier could not be persisted")
+                    raise HTTPException(
+                        502, "Le résultat du retrait doit être vérifié manuellement.")
+                if not provider_id:
+                    await _mark_mbiyo_submission_manual_review(
+                        tx_out.id, "provider_response_missing_id",
+                        "Mbiyo responded without a transaction identifier")
+                    return {
+                        "transaction": await db.transactions.find_one(
+                            {"id": tx_out.id}, {"_id": 0}),
+                        "fee": fees["total_fee"],
+                        "processed_amount": processed_amount,
+                        "total_debit": fees["charged_amount"],
+                        "recipient_gets": fees["wallet_credit_amount"],
+                        "operator": op.get("name"),
+                        "pending_manual": True,
+                        "message": "Le résultat du retrait doit être vérifié par un administrateur.",
+                    }
                 if provider_status in mbiyo.SUCCESS_STATUSES:
                     fresh_tx = await db.transactions.find_one({"id": tx_out.id}, {"_id": 0})
                     await _reconcile_mbiyo_withdrawal(fresh_tx)
@@ -4849,26 +4901,22 @@ async def transfer(req: TransferRequest, request: Request,
                             "traitement par l'administrateur."
                         ),
                     }
-                if exc.status < 500:
-                    await _refund_mobile_withdrawal(tx_out.id, exc.message)
+                await _mark_mbiyo_submission_manual_review(
+                    tx_out.id, "dispatch_outcome_unknown", exc.message)
                 await db.transactions.update_one(
                     {"id": tx_out.id},
                     {"$set": {"metadata.error": str(exc)[:240],
                               "metadata.provider_status": exc.status,
-                              "metadata.submission_unknown": exc.status >= 500}})
-                message_lower = exc.message.lower()
-                if "insufficient" in message_lower and "balance" in message_lower:
-                    detail = (
-                        "Le solde de décaissement pour cet opérateur est "
-                        "insuffisant. Votre solde Biz-transPay a été remboursé.")
-                else:
-                    detail = (
-                        ("Le retrait Mobile Money a été refusé. Votre solde "
-                         "Biz-transPay a été remboursé." if exc.status < 500 else
-                         "Le retrait est en cours de vérification."))
+                              "metadata.submission_unknown": True}})
                 raise HTTPException(
-                    400 if exc.status < 500 else 502, detail)
+                    502,
+                    "Le retrait a peut-être été transmis au prestataire. "
+                    "Le solde reste réservé et une vérification manuelle est requise.")
             except Exception as exc:
+                if isinstance(exc, HTTPException):
+                    raise
+                await _mark_mbiyo_submission_manual_review(
+                    tx_out.id, "dispatch_outcome_unknown", str(exc))
                 await db.transactions.update_one(
                     {"id": tx_out.id},
                     {"$set": {"metadata.error": str(exc)[:240],
@@ -6796,6 +6844,29 @@ def _momo_pending_expiry(d: dict) -> Optional[datetime]:
     return None
 
 
+async def _notify_integration_business_transition(
+        uid: str, kind: str, business_id: str, status: str) -> None:
+    """Durably enqueue an integration event without coupling payment settlement to HTTP."""
+    hook = globals().get("_integration_status_transition")
+    if not hook:
+        return
+    try:
+        await hook(uid, kind, str(business_id), status)
+    except Exception:
+        logger.exception("Unable to enqueue integration status event for %s", business_id)
+
+
+async def _notify_integration_link_payment(
+        uid: str, link_id: str, payment_id: str, status: str) -> None:
+    hook = globals().get("_integration_link_payment_transition")
+    if not hook:
+        return
+    try:
+        await hook(uid, str(link_id), str(payment_id), status)
+    except Exception:
+        logger.exception("Unable to enqueue integration link payment event %s", payment_id)
+
+
 async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
     """Fail an unresolved payment once its ten-minute verification window ends."""
     if not d or d.get("status") != "pending":
@@ -6819,7 +6890,7 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
     )
     link_payment_id = d.get("link_payment_id")
     if link_payment_id:
-        await db.link_payments.update_one(
+        failed_payment = await db.link_payments.update_one(
             {"id": link_payment_id, "status": "pending"},
             {"$set": {
                 "status": "failed",
@@ -6827,6 +6898,16 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
                 "failed_at": now,
             }},
         )
+        if failed_payment.modified_count:
+            link_payment = await db.link_payments.find_one(
+                {"id": link_payment_id}, {"_id": 0})
+            await _notify_integration_link_payment(
+                d.get("user_id", ""),
+                str((link_payment or {}).get("link_id") or d.get("link_id") or ""),
+                link_payment_id, "failed")
+    if result.modified_count:
+        await _notify_integration_business_transition(
+            d.get("user_id", ""), "deposit", d["id"], "failed")
     return result.modified_count == 1
 
 
@@ -6941,10 +7022,23 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
             await _credit_momo_deposit(fresh)
         return True
     if status in mbiyo.FAILURE_STATUSES:
-        await db.momo_deposits.update_one(
+        failed = await db.momo_deposits.update_one(
             {"id": dep_id, "status": {"$ne": "approved"}},
             {"$set": {"status": "failed", "retryable": False}},
         )
+        if failed.modified_count:
+            await _notify_integration_business_transition(
+                d.get("user_id", ""), "deposit", dep_id, "failed")
+            if d.get("link_payment_id"):
+                payment_change = await db.link_payments.update_one(
+                    {"id": d["link_payment_id"], "status": "pending"},
+                    {"$set": {"status": "failed", "failed_at": now_iso()}})
+                if payment_change.modified_count:
+                    lp = await db.link_payments.find_one(
+                        {"id": d["link_payment_id"]}, {"_id": 0})
+                    await _notify_integration_link_payment(
+                        d.get("user_id", ""), str((lp or {}).get("link_id") or ""),
+                        d["link_payment_id"], "failed")
     return False
 
 
@@ -6989,8 +7083,12 @@ async def _paydunya_reconcile_loop() -> None:
                     "status": {"$in": ["pending", "refund_pending"]},
                     "$or": [
                         {"status": "refund_pending"},
-                        {"metadata.next_reconcile_at": {"$exists": False}},
-                        {"metadata.next_reconcile_at": {"$lte": due}},
+                        {"status": "pending",
+                         "metadata.mbiyo_submission_review_required": {"$ne": True},
+                         "metadata.next_reconcile_at": {"$exists": False}},
+                        {"status": "pending",
+                         "metadata.mbiyo_submission_review_required": {"$ne": True},
+                         "metadata.next_reconcile_at": {"$lte": due}},
                     ],
                 },
                 {"_id": 0},
@@ -7006,11 +7104,8 @@ async def _paydunya_reconcile_loop() -> None:
                         if withdrawal_meta.get("mbiyo_transaction_id"):
                             await _reconcile_mbiyo_withdrawal(withdrawal)
                         else:
-                            await db.transactions.update_one(
-                                {"id": withdrawal["id"], "status": "pending"},
-                                {"$set": {"metadata.next_reconcile_at": (
-                                    datetime.now(timezone.utc)
-                                    + timedelta(seconds=60)).isoformat()}})
+                            await _reconcile_mbiyo_without_provider_id(
+                                withdrawal, tokenless_grace)
                     elif (withdrawal_meta.get("provider") == "paydunya"
                           and withdrawal_meta.get("paydunya_invoice_token")):
                         await _reconcile_mobile_withdrawal(withdrawal)
@@ -7199,6 +7294,7 @@ async def _credit_momo_deposit(d: dict) -> None:
                   "amount_gross": gross, "fee": fee,
                   "gateway_fee": gateway_fee, "platform_fee": platform_fee,
                   "amount_net": net}})
+    await _notify_integration_business_transition(uid, "deposit", dep_id, "approved")
 
     if await _claim_momo_flag(dep_id, "notification_claimed"):
         await notify(uid, "deposit_success", "Dépôt Mobile Money confirmé",
@@ -7221,13 +7317,18 @@ async def _credit_momo_deposit(d: dict) -> None:
         await db.momo_deposits.update_one(
             {"id": dep_id}, {"$set": {"webhook_sent": True}})
     elif d.get("source") == "link_payment" and d.get("link_payment_id"):
-        await db.link_payments.update_one(
+        paid_payment = await db.link_payments.update_one(
             {"id": d["link_payment_id"], "status": "pending"},
             {"$set": {"status": "paid", "paid_at": now_iso(),
                       "amount_net": net, "fee": fee}})
+        lp = await db.link_payments.find_one(
+            {"id": d["link_payment_id"]}, {"_id": 0})
+        if paid_payment.modified_count:
+            await _notify_integration_link_payment(
+                uid, str((lp or {}).get("link_id") or d.get("link_id") or ""),
+                d["link_payment_id"], "paid")
         await db.momo_deposits.update_one(
             {"id": dep_id}, {"$set": {"link_payment_claimed": True}})
-        lp = await db.link_payments.find_one({"id": d["link_payment_id"]}, {"_id": 0})
         if lp:
             await _upsert_momo_ledger(
                 d, amount=net, currency=currency,
@@ -7910,6 +8011,8 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
         {"id": tx_id, "status": "refund_pending"},
         {"$set": {"status": "failed", "metadata.refunded": True,
                   "metadata.refunded_at": now_iso()}})
+    await _notify_integration_business_transition(
+        tx["user_id"], "payout", tx_id, "failed")
     if credited.modified_count:
         await notify(tx["user_id"], "withdrawal_failed",
                      "Retrait Mobile Money échoué",
@@ -7985,6 +8088,8 @@ async def _hold_mobile_withdrawal_for_provider_funds(
         provider_status_field: "awaiting_provider_funds",
         "metadata.manual_review_at": now_iso(),
     }
+    if provider == "mbiyo":
+        updates["metadata.mbiyo_submission_review_required"] = True
     result = await db.transactions.update_one(
         {"id": tx_id, "status": "pending"},
         {"$set": updates, "$unset": {"metadata.next_reconcile_at": ""}},
@@ -8008,6 +8113,120 @@ async def _hold_mobile_withdrawal_for_provider_funds(
             },
         )
     return await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+
+
+async def _mark_mbiyo_submission_manual_review(
+        tx_id: str, reason: str, detail: str = "") -> Optional[dict]:
+    """Reserve an ambiguous Mbiyo payout for the existing admin transaction review flow."""
+    tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+    if not tx or tx.get("status") != "pending":
+        return tx
+    meta = tx.get("metadata") or {}
+    if meta.get("mbiyo_transaction_id"):
+        # Once a provider ID is durable, normal status reconciliation remains
+        # safe; transient status-query failures must not hide it from the poller.
+        return tx
+    changed = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending",
+         "metadata.mbiyo_transaction_id": {"$in": [None, ""]}},
+        {"$set": {
+            "metadata.manual_review_required": True,
+            "metadata.manual_review_reason": reason,
+            "metadata.mbiyo_submission_review_required": True,
+            "metadata.mbiyo_submission_unknown": True,
+            "metadata.mbiyo_status": "manual_review_required",
+            "metadata.provider_name": "mbiyo",
+            "metadata.provider_error": str(detail or "")[:240],
+            "metadata.manual_review_at": now_iso(),
+        }, "$unset": {"metadata.next_reconcile_at": ""}},
+    )
+    if changed.modified_count:
+        await notify(
+            tx["user_id"], "withdrawal_manual_review",
+            "Retrait en attente de vérification",
+            (
+                "Le prestataire n'a pas fourni un résultat vérifiable pour "
+                "votre retrait. Le montant reste réservé jusqu'à vérification "
+                "par un administrateur."
+            ),
+            data={
+                "transaction_id": tx_id, "reference": tx.get("reference"),
+                "amount": tx.get("amount"), "currency": tx.get("currency"),
+                "transfer_type": "biz_to_mobile", "reason": reason,
+            },
+        )
+    return await db.transactions.find_one({"id": tx_id}, {"_id": 0})
+
+
+async def _reconcile_mbiyo_without_provider_id(
+        tx: dict, grace_before: str) -> str:
+    """Refund only persisted pre-dispatch cases; quarantine ambiguous submissions."""
+    if not tx:
+        return ""
+    if tx.get("status") != "pending":
+        return str(tx.get("status") or "")
+    tx_id = str(tx["id"])
+    metadata = tx.get("metadata") or {}
+    if metadata.get("mbiyo_transaction_id"):
+        return "provider_id_present"
+    if metadata.get("mbiyo_submission_review_required"):
+        return "manual_review"
+
+    phase = metadata.get("mbiyo_submission_phase")
+    phase_at = (
+        metadata.get("mbiyo_submission_phase_at")
+        or metadata.get("debit_applied_at")
+        or tx.get("created_at")
+    )
+    if not phase_at:
+        phase_at = now_iso()
+    try:
+        parsed_phase_at = datetime.fromisoformat(str(phase_at).replace("Z", "+00:00"))
+        if parsed_phase_at.tzinfo is None:
+            parsed_phase_at = parsed_phase_at.replace(tzinfo=timezone.utc)
+        grace_elapsed = parsed_phase_at <= datetime.fromisoformat(
+            str(grace_before).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        grace_elapsed = False
+    if not grace_elapsed:
+        await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {"metadata.next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()}},
+        )
+        return "pending"
+
+    if phase == "not_submitted":
+        debit_marker = await db.users.find_one(
+            {"id": tx["user_id"], "withdrawal_debit_ids": tx_id},
+            {"_id": 0, "id": 1},
+        )
+        if debit_marker:
+            await _refund_mobile_withdrawal(
+                tx_id, "mbiyo_payout_not_submitted")
+            return "failed"
+        await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {
+                "status": "failed",
+                "metadata.debit_phase": "not_applied",
+                "metadata.failure_reason": "wallet_debit_not_applied",
+                "metadata.mbiyo_status": "not_submitted",
+            }},
+        )
+        return "failed"
+
+    # dispatching and legacy records without a phase are ambiguous: leave the
+    # debit reserved and stop automatic retries until provider evidence or an
+    # operator decision arrives.
+    reason = (
+        "mbiyo_dispatch_outcome_unknown" if phase == "dispatching"
+        else "mbiyo_legacy_submission_phase_unknown"
+    )
+    await _mark_mbiyo_submission_manual_review(
+        tx_id, reason,
+        "No Mbiyo transaction ID is available after dispatch grace period")
+    return "manual_review"
 
 
 async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:
@@ -8040,6 +8259,8 @@ async def _complete_mbiyo_withdrawal(tx_id: str, provider_status: str) -> bool:
         return False
     tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if tx:
+        await _notify_integration_business_transition(
+            tx["user_id"], "payout", tx_id, "completed")
         await notify(
             tx["user_id"], "withdrawal_success",
             "Retrait Mobile Money confirmé",
@@ -8202,6 +8423,8 @@ async def _reconcile_mobile_withdrawal(tx: dict) -> str:
             {"$set": {"status": "completed",
                       "metadata.paydunya_status": status}})
         if changed.modified_count:
+            await _notify_integration_business_transition(
+                tx["user_id"], "payout", tx["id"], "completed")
             await notify(tx["user_id"], "withdrawal_success",
                          "Retrait Mobile Money confirmé",
                          f"Votre retrait de {tx['amount']:,.0f} {tx.get('currency', '')} a été envoyé au bénéficiaire.",
@@ -8354,7 +8577,7 @@ async def _settle_izipay_payment(
         operation_id = f"izipay:link:{merchant_ref}"
         await _credit_wallet_once(
             link["user_id"], "balance_usdt", net, operation_id)
-        await db.link_payments.update_one(
+        paid = await db.link_payments.update_one(
             {"id": merchant_ref, "status": "settling"},
             {"$set": {
                 "status": "paid", "paid_at": now_iso(),
@@ -8370,6 +8593,9 @@ async def _settle_izipay_payment(
                 "credit_operation_id": operation_id,
             }},
         )
+        if paid.modified_count:
+            await _notify_integration_link_payment(
+                link["user_id"], link["id"], merchant_ref, "paid")
         await db.payment_links.update_one(
             {"id": link["id"],
              "link_payment_operation_ids": {"$ne": merchant_ref}},
@@ -8511,6 +8737,12 @@ async def _fail_izipay_payment(merchant_ref: str, provider_status: str) -> None:
                       "failed_at": now_iso()}},
         )
         if result.modified_count:
+            link = await db.payment_links.find_one(
+                {"id": lp.get("link_id")}, {"_id": 0, "user_id": 1})
+            if link:
+                await _notify_integration_link_payment(
+                    link.get("user_id", ""), lp.get("link_id", ""),
+                    merchant_ref, status)
             await _release_single_use_link(
                 lp["link_id"], lp.get("single_use_claim_id"))
         return
@@ -8964,6 +9196,8 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
     }
     await db.link_payments.update_one(
         {"id": lp_id}, {"$set": doc}, upsert=True)
+    await _notify_integration_link_payment(
+        link["user_id"], link["id"], lp_id, "pending")
     doc.pop("_id", None)
     return doc
 
@@ -9171,14 +9405,25 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 {"$set": {"link_payment_id": lp_id}},
             )
             await db.link_payments.insert_one(lp)
-            if result.get("status") == "approved":
-                # Immediate provider success can precede creation of the local
-                # link-payment row. Re-run the exactly-once credit finalizer now
-                # so its idempotent link ledger/counter side effects are repaired.
-                fresh_dep = await db.momo_deposits.find_one(
-                    {"id": dep_id}, {"_id": 0})
-                if fresh_dep:
-                    await _credit_momo_deposit(fresh_dep)
+            fresh_dep = await db.momo_deposits.find_one(
+                {"id": dep_id}, {"_id": 0})
+            actual_deposit_status = (fresh_dep or {}).get("status")
+            if actual_deposit_status == "approved" and fresh_dep:
+                await _credit_momo_deposit(fresh_dep)
+                await _notify_integration_link_payment(
+                    link["user_id"], link["id"], lp_id, "paid")
+            elif actual_deposit_status == "failed":
+                await db.link_payments.update_one(
+                    {"id": lp_id, "status": "pending"},
+                    {"$set": {"status": "failed", "failed_at": now_iso()}})
+                await _notify_integration_link_payment(
+                    link["user_id"], link["id"], lp_id, "failed")
+            elif lp.get("status") == "pending":
+                await _notify_integration_link_payment(
+                    link["user_id"], link["id"], lp_id, "pending")
+            # Immediate provider success can precede creation of the local
+            # link-payment row. Re-run the exactly-once credit finalizer above
+            # so its idempotent link ledger/counter side effects are repaired.
             public_result = _public_link_payment_status(lp)
             if finalize_capability:
                 public_result["finalize_capability"] = finalize_capability
@@ -9351,6 +9596,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                       "auth_mode": "pin" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else None,
                       "otp_required": admin_op.get("endpoint_slug") == "wizall-money-senegal",
                       "challenge_status": "required" if admin_op.get("endpoint_slug") == "wizall-money-senegal" else "pending"}})
+        await _notify_integration_link_payment(
+            link["user_id"], link["id"], lp_id, "pending")
         if admin_op.get("endpoint_slug") == "wizall-money-senegal":
             finalize_capability, capability_hash, capability_expires = _new_finalize_capability()
             await db.link_payments.update_one(
@@ -9373,6 +9620,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         await db.link_payments.update_one(
             {"id": lp_id, "status": "pending"},
             {"$set": {"status": "failed", "prompt_error": safe_error}})
+        await _notify_integration_link_payment(
+            link["user_id"], link["id"], lp_id, "failed")
         raise HTTPException(400 if exc.status < 500 else 502,
                             "La passerelle Mobile Money a refusé la demande.")
     except Exception as exc:
@@ -9383,6 +9632,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         await db.link_payments.update_one(
             {"id": lp_id, "status": "pending"},
             {"$set": {"status": "failed", "prompt_error": str(exc)[:240]}})
+        await _notify_integration_link_payment(
+            link["user_id"], link["id"], lp_id, "failed")
         raise HTTPException(502, "Échec du déclenchement du paiement Mobile Money")
     doc.pop("_id", None)
     result = _public_link_payment_status(doc)
@@ -12020,6 +12271,39 @@ async def conversion_quote(from_currency: str, to_currency: str, amount: float):
     }
 
 
+async def _recover_integration_exchange(intent: dict) -> Optional[dict]:
+    """Repair an exchange ledger row from its persisted debit/credit snapshot."""
+    uid = str(intent.get("user_id") or "")
+    operation_id = str(intent.get("operation_id") or "")
+    if not uid or not operation_id:
+        return None
+    user = await db.users.find_one({
+        "id": uid,
+        "wallet_debit_operation_ids": operation_id,
+        "wallet_credit_operation_ids": operation_id,
+    }, {"_id": 0, "id": 1})
+    if not user:
+        return None
+    fee = float(intent["fee"])
+    from_currency, to_currency = intent["from_currency"], intent["to_currency"]
+    tx = await record_tx(
+        uid, "exchange", "out", float(intent["amount"]), str(from_currency),
+        description=f"Conversion {from_currency} → {to_currency}",
+        metadata={
+            "rate": float(intent["rate"]), "fee": fee,
+            "received": float(intent["received"]),
+            "from_currency": from_currency, "to_currency": to_currency,
+            "pair": intent["pair"], "gateway_fee": 0.0,
+            "platform_fee": fee, "operation_id": operation_id,
+        },
+        operation_id=f"{operation_id}:out")
+    await db.integration_exchange_intents.update_one(
+        {"id": intent["id"]},
+        {"$set": {"status": "ledger_recovered", "transaction_id": tx.id,
+                  "updated_at": now_iso()}})
+    return tx.model_dump()
+
+
 @api.post("/exchange")
 async def do_exchange(req: ExchangeRequest,
                       uid: str = Depends(require_recent_auth)):
@@ -12066,6 +12350,24 @@ async def do_exchange(req: ExchangeRequest,
         if cached and cached.get("body") is not None:
             return cached["body"]
     operation_id = f"exchange:{uid}:{exchange_key or new_id()}"
+    integration_intent = None
+    if exchange_key.startswith("btpi_"):
+        integration_intent = {
+            "id": f"{uid}:{exchange_key}", "user_id": uid,
+            "idempotency_key": exchange_key, "operation_id": operation_id,
+            "amount": float(req.amount), "fee": float(fee),
+            "rate": float(rate), "received": float(received),
+            "from_currency": fc, "to_currency": tc, "pair": key,
+            "status": "prepared", "created_at": now_iso(),
+        }
+        try:
+            await db.integration_exchange_intents.insert_one(integration_intent)
+        except DuplicateKeyError:
+            prior_intent = await db.integration_exchange_intents.find_one(
+                {"id": integration_intent["id"], "user_id": uid}, {"_id": 0})
+            if not prior_intent or prior_intent.get("operation_id") != operation_id:
+                raise HTTPException(409, "Exchange idempotency recovery conflict")
+            integration_intent = prior_intent
     # Both legs and their operation markers are changed in one Mongo update.
     # This prevents a crash between debit and credit from destroying value.
     debited = await db.users.update_one(
@@ -12079,6 +12381,10 @@ async def do_exchange(req: ExchangeRequest,
     )
     if not debited.modified_count:
         raise HTTPException(400, "Solde insuffisant ou opération déjà appliquée")
+    if integration_intent:
+        await db.integration_exchange_intents.update_one(
+            {"id": integration_intent["id"], "user_id": uid},
+            {"$set": {"status": "applied", "updated_at": now_iso()}})
 
     tx_out = await record_tx(
         uid, "exchange", "out", req.amount, fc,
@@ -12247,8 +12553,9 @@ async def list_links(uid: str = Depends(get_current_user_id)):
     return docs
 
 
-@api.post("/links", response_model=PaymentLink)
-async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_user_id)):
+async def _create_payment_link(
+        req: PaymentLinkCreate, uid: str,
+        deterministic_id: Optional[str] = None) -> PaymentLink:
     if not req.title.strip():
         raise HTTPException(400, "Le nom du lien est requis")
     safe_logo = _validate_image_source(req.logo, "Logo")
@@ -12260,7 +12567,7 @@ async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_use
         if req.min_amount <= 0 or req.max_amount <= req.min_amount:
             raise HTTPException(400, "Montant maximum doit être supérieur au minimum")
     link = PaymentLink(
-        id=new_id(),
+        id=deterministic_id or new_id(),
         user_id=uid,
         slug=secrets.token_urlsafe(8),
         title=req.title.strip(),
@@ -12279,6 +12586,11 @@ async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_use
     )
     await db.payment_links.insert_one(link.model_dump())
     return link
+
+
+@api.post("/links", response_model=PaymentLink)
+async def create_link(req: PaymentLinkCreate, uid: str = Depends(get_current_user_id)):
+    return await _create_payment_link(req, uid)
 
 
 @api.get("/links/public/{slug}")
@@ -15177,6 +15489,15 @@ class AdminResetPwd(BaseModel):
 
 class AdminConfirmationRequest(BaseModel):
     confirmation: Optional[str] = None
+    provider_outcome: Optional[Literal[
+        "provider_confirmed_paid",
+        "operator_verified_manual_completion",
+        "provider_confirmed_not_paid",
+        "provider_confirmed_rejected",
+    ]] = None
+    provider_outcome_evidence_reference: Optional[str] = Field(
+        None, min_length=1, max_length=240)
+    provider_outcome_attested: bool = False
 
 
 @api.get("/admin/benefits/details")
@@ -16166,6 +16487,109 @@ async def admin_refresh_transaction(tx_id: str, admin=Depends(get_admin)):
     return {"ok": True, "tx": tx, "upstream_status": upstream_status, "mapped_status": mapped}
 
 
+_MBIYO_APPROVE_OUTCOMES = {
+    "provider_confirmed_paid",
+    "operator_verified_manual_completion",
+}
+_MBIYO_REJECT_OUTCOMES = {
+    "provider_confirmed_not_paid",
+    "provider_confirmed_rejected",
+}
+
+
+def _requires_mbiyo_submission_evidence(tx: dict) -> bool:
+    metadata = tx.get("metadata") or {}
+    return (
+        tx.get("type") == "withdrawal"
+        and tx.get("direction") == "out"
+        and (
+            metadata.get("mbiyo_submission_review_required") is True
+            or metadata.get("mbiyo_submission_unknown") is True
+        )
+    )
+
+
+async def _record_mbiyo_submission_evidence(
+        tx: dict, action: str, body: Any, admin: dict) -> Optional[dict]:
+    """Require and persist action-specific evidence for ambiguous Mbiyo payouts."""
+    if not _requires_mbiyo_submission_evidence(tx):
+        return None
+
+    outcome = getattr(body, "provider_outcome", None)
+    evidence_reference = str(
+        getattr(body, "provider_outcome_evidence_reference", "") or ""
+    ).strip()
+    attested = getattr(body, "provider_outcome_attested", False) is True
+    allowed_outcomes = (
+        _MBIYO_APPROVE_OUTCOMES if action == "approve"
+        else _MBIYO_REJECT_OUTCOMES
+    )
+    if outcome not in allowed_outcomes or not evidence_reference or not attested:
+        action_guidance = (
+            "Approbation : indiquez une confirmation de paiement du prestataire "
+            "ou une exécution manuelle vérifiée par un opérateur."
+            if action == "approve" else
+            "Rejet : indiquez une confirmation du prestataire qu’aucun paiement "
+            "n’a été effectué ou que le retrait a été rejeté."
+        )
+        raise HTTPException(
+            422,
+            detail={
+                "code": "MBIYO_OUTCOME_EVIDENCE_REQUIRED",
+                "message": (
+                    "Une preuve indépendante du résultat du prestataire, sa "
+                    "référence et votre attestation explicite sont requises. "
+                    + action_guidance
+                ),
+            },
+        )
+
+    recorded_at = now_iso()
+    review = {
+        "action": action,
+        "provider_outcome": outcome,
+        "evidence_reference": evidence_reference,
+        "admin_attested": True,
+        "admin_id": admin["id"],
+        "admin_username": admin["username"],
+        "recorded_at": recorded_at,
+    }
+    metadata = dict(tx.get("metadata") or {})
+    metadata["mbiyo_submission_admin_review"] = review
+    result = await db.transactions.update_one(
+        {
+            "id": tx["id"],
+            "status": "pending",
+            "metadata": tx.get("metadata") or {},
+            "$or": [
+                {"metadata.mbiyo_submission_review_required": True},
+                {"metadata.mbiyo_submission_unknown": True},
+            ],
+        },
+        {"$set": {"metadata": metadata}},
+    )
+    if not result.modified_count:
+        raise HTTPException(
+            409,
+            "La transaction a changé pendant l’enregistrement de la preuve. "
+            "Vérifiez son état avant toute nouvelle action.",
+        )
+    await audit(
+        admin["id"], admin["username"],
+        f"mbiyo_ambiguous_submission_{action}",
+        target_user_id=tx["user_id"],
+        details={
+            "tx_id": tx["id"],
+            "action": action,
+            "provider_outcome": outcome,
+            "evidence_reference": evidence_reference,
+            "admin_attested": True,
+            "recorded_at": recorded_at,
+        },
+    )
+    return review
+
+
 @api.post("/admin/transactions/{tx_id}/approve")
 async def admin_approve_transaction(
     tx_id: str,
@@ -16186,6 +16610,8 @@ async def admin_approve_transaction(
         raise HTTPException(404, "Transaction introuvable")
     if tx.get("status") != "pending":
         raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
+
+    await _record_mbiyo_submission_evidence(tx, "approve", body, admin)
 
     typ = tx.get("type")
     direction = tx.get("direction")
@@ -16231,6 +16657,15 @@ async def admin_approve_transaction(
 class AdminRejectRequest(BaseModel):
     reason: Optional[str] = None
     confirmation: Optional[str] = None
+    provider_outcome: Optional[Literal[
+        "provider_confirmed_paid",
+        "operator_verified_manual_completion",
+        "provider_confirmed_not_paid",
+        "provider_confirmed_rejected",
+    ]] = None
+    provider_outcome_evidence_reference: Optional[str] = Field(
+        None, min_length=1, max_length=240)
+    provider_outcome_attested: bool = False
 
 
 @api.post("/admin/transactions/{tx_id}/reject")
@@ -16249,6 +16684,8 @@ async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
         raise HTTPException(404, "Transaction introuvable")
     if tx.get("status") != "pending":
         raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
+
+    await _record_mbiyo_submission_evidence(tx, "reject", body, admin)
 
     typ = tx.get("type")
     direction = tx.get("direction")
@@ -17090,6 +17527,9 @@ async def public_stats():
 
 
 # ---------- register ----------
+from integration_api import create_router as create_integration_router
+
+api.include_router(create_integration_router(globals()), prefix="/integration")
 app.include_router(api)
 
 # Production publishes use one HTTP process on port 5000. Serve the already
@@ -17344,7 +17784,7 @@ async def api_log_middleware(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup_db_client():
-    global _paydunya_reconcile_task
+    global _paydunya_reconcile_task, _integration_outbox_task
     await postgres_store.connect()
     try:
         await db.sessions.create_index("expires_at", expireAfterSeconds=0,
@@ -17361,6 +17801,12 @@ async def startup_db_client():
             "expires_at", expireAfterSeconds=0, name="password_reset_tokens_ttl")
         await db.password_reset_limits.create_index(
             "expires_at", expireAfterSeconds=0, name="password_reset_limits_ttl")
+        await db.integration_rate_limits.delete_many({
+            "$or": [
+                {"expires_at": {"$lte": now_iso()}},
+                {"expires_at": {"$exists": False}},
+            ],
+        })
     except Exception:
         logger.exception("Unable to initialize authentication security indexes")
     try:
@@ -17420,12 +17866,19 @@ async def startup_db_client():
             "metadata.operation_id": {"$type": "string"},
         })
     await _resume_transaction_email_outbox()
+    integration_worker = globals().get("_integration_outbox_worker")
+    if integration_worker and (
+            not _integration_outbox_task or _integration_outbox_task.done()):
+        _integration_outbox_task = asyncio.create_task(integration_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    global _paydunya_reconcile_task
+    global _paydunya_reconcile_task, _integration_outbox_task
     if _paydunya_reconcile_task:
         _paydunya_reconcile_task.cancel()
         _paydunya_reconcile_task = None
+    if _integration_outbox_task:
+        _integration_outbox_task.cancel()
+        _integration_outbox_task = None
     await postgres_store.close()

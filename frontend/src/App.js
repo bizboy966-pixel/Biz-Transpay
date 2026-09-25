@@ -24,6 +24,8 @@ import Exchange from '@/pages/dashboard/Exchange';
 import ApiKeys from '@/pages/dashboard/ApiKeys';
 import ApiDocs from '@/pages/dashboard/ApiDocs';
 import Services from '@/pages/dashboard/Services';
+import Integration from '@/pages/dashboard/integration/Integration';
+import IntegrationDocs from '@/pages/dashboard/integration/IntegrationDocs';
 import Profile from '@/pages/dashboard/Profile';
 import AdminLayout from '@/pages/admin/AdminLayout';
 import AdminHome from '@/pages/admin/AdminHome';
@@ -91,6 +93,7 @@ function App() {
           <Route path="/payment/success" element={<PaymentSuccess />} />
           <Route path="/payment/cancel" element={<PaymentCancel />} />
           <Route path="/docs" element={<ApiDocs publicMode />} />
+          <Route path="/integration/docs" element={<IntegrationDocs />} />
           <Route path="/dashboard" element={<Protected><DashboardLayout /></Protected>}>
             <Route index element={<DashboardHome />} />
             <Route path="transactions" element={<Transactions />} />
@@ -106,6 +109,7 @@ function App() {
             <Route path="exchange" element={<Exchange />} />
             <Route path="api" element={<ApiKeys />} />
             <Route path="api/docs" element={<ApiDocs />} />
+            <Route path="integration" element={<Integration />} />
           </Route>
           <Route path="/admin" element={<AdminOnly><AdminLayout /></AdminOnly>}>
             <Route index element={<AdminHomeEntry />} />
