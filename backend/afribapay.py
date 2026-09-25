@@ -209,7 +209,6 @@ def client_from_config(config: dict, timeout: float = 20) -> "AfriPayClient":
         api_base_url,
         payout_base_url,
         timeout=timeout,
-        agent_id=str(config.get("_agent_id") or ""),
     )
 
 
@@ -226,9 +225,8 @@ class AfriPayClient:
 
     def __init__(self, api_user: str, api_key: str, merchant_key: str = "",
                  api_base_url: str = BASE_URL, payout_base_url: str = PAYOUT_BASE_URL,
-                 timeout: float = 20, agent_id: str = ""):
+                 timeout: float = 20):
         self.api_user, self.api_key, self.merchant_key = api_user, api_key, merchant_key
-        self.agent_id = agent_id
         self.api_base_url = (api_base_url or BASE_URL).rstrip("/")
         self.payout_base_url = (payout_base_url or PAYOUT_BASE_URL).rstrip("/")
         self.timeout = timeout

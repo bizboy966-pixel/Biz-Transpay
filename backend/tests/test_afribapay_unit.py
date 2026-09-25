@@ -68,11 +68,12 @@ def test_client_contract_and_token_cache(monkeypatch):
     assert len([call for call in calls if call[1].endswith("/token")]) == 1
     assert calls[1][0:2] == ("POST", "https://api-sandbox.afribapay.com/v1/pay/payin")
     assert calls[1][2]["headers"]["Authorization"] == "Bearer token"
+    assert "agent_id" not in calls[1][2]["json"]
     configured_client = afribapay.client_from_config({
         "mode": "sandbox", "_api_user": "u", "_api_key": "k",
         "_merchant_key": "m", "_agent_id": "agent-123",
     })
-    assert configured_client.agent_id == "agent-123"
+    assert not hasattr(configured_client, "agent_id")
 
 
 def test_payout_otp_and_status_endpoints(monkeypatch):

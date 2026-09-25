@@ -3889,7 +3889,8 @@ async def get_afribapay_config(decrypt: bool = False) -> dict:
     doc["catalog"] = _normalize_afribapay_catalog(doc.get("catalog") or [])
     if decrypt:
         decrypted = {}
-        for key in ("api_user", "api_key", "merchant_key", "agent_id"):
+        # Agent ID is admin-managed metadata only; do not decrypt it into the API client.
+        for key in ("api_user", "api_key", "merchant_key"):
             encrypted = doc.get(f"{key}_encrypted")
             if encrypted:
                 decrypted[key] = afribapay.decrypt_secret(
@@ -3897,7 +3898,6 @@ async def get_afribapay_config(decrypt: bool = False) -> dict:
         doc["_api_user"] = decrypted.get("api_user", "")
         doc["_api_key"] = decrypted.get("api_key", "")
         doc["_merchant_key"] = decrypted.get("merchant_key", "")
-        doc["_agent_id"] = decrypted.get("agent_id", "")
     return doc
 
 

@@ -7,8 +7,8 @@ AfribaPAY's official documentation states that its sandbox can process real paym
 
 The generic country-code list includes more destinations than the confirmed Mobile Money operator catalogue. Do not add a country based on the generic list alone; require documented operator and currency availability.
 
-The published API schema identifies API User (Basic Auth username), API Key (Basic Auth password), and `merchant_key`, but does not define where an Agent ID belongs in requests. Keep the Agent ID encrypted in admin settings and do not send it until its request location and scope are confirmed.
+The published API schema identifies API User (Basic Auth username), API Key (Basic Auth password), and `merchant_key`, but does not define an Agent ID request field. The user confirmed Agent ID is admin-only metadata: keep it encrypted and never decrypt it into or send it through the API client.
 
 **Why:** Sandbox testing can move real funds, and generic country acceptance does not prove that a country has a supported Mobile Money route.
 
-**How to apply:** Keep live activation gated on provider-confirmed hosts and route availability. Use unit tests with mocked HTTP for integration behavior; ask for the Agent ID request contract rather than guessing its payload field.
+**How to apply:** Keep live activation gated on provider-confirmed hosts and route availability. Use unit tests with mocked HTTP for integration behavior and assert that Agent ID is absent from outbound requests.
