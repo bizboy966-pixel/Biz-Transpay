@@ -25,6 +25,9 @@ class MemoryCollection:
     def __init__(self, docs=None):
         self.docs = list(docs or [])
 
+    async def create_index(self, *args, **kwargs):
+        return None
+
     @staticmethod
     def _value(doc, path):
         value = doc
@@ -107,6 +110,118 @@ class MemoryDB:
         self.momo_deposits = MemoryCollection()
         self.merchant_payouts = MemoryCollection()
         self.transactions = MemoryCollection()
+
+
+@pytest.mark.parametrize(
+    ("configured_code", "requested_code"),
+    [("togocel_tg", "tmoney_tg"),
+     ("togocel_tg", "t-money-togo"),
+     ("togocel_tg", "togocel_tg"),
+     ("moov_tg", "moov_tg")],
+)
+@run_async
+async def test_public_link_payment_accepts_active_configured_operator(
+        monkeypatch, configured_code, requested_code):
+    db = MemoryDB()
+    db.payment_links.docs.append({
+        "id": "link-1", "slug": "test-link", "active": True,
+        "amount": 1000, "amount_type": "fixed",
+        "currency": "XOF", "user_id": "merchant-1",
+        "title": "Test", "fee_bearer": "customer",
+    })
+    monkeypatch.setattr(server, "db", db)
+    operator = {
+        "country": "TG", "code": configured_code, "currency": "XOF",
+        "name": "Opérateur", "active": True, "min": 100, "max": 500000,
+        "endpoint_slug": "t-money-togo" if configured_code == "togocel_tg" else "moov-togo",
+    }
+    cfg = {
+        "enabled": True, "mode": "live",
+        "master_key_encrypted": "configured",
+        "private_key_encrypted": "configured",
+        "token_encrypted": "configured",
+        "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [operator],
+    }
+    async def value(payload):
+        return payload
+    async def no_turnstile(*args):
+        return None
+    async def no_notify(*args):
+        return None
+    submitted = []
+    async def create_invoice(*args, **kwargs):
+        return {"token": "invoice-1"}
+    async def softpay(*args, **kwargs):
+        submitted.append(kwargs["operator"]["code"])
+        return {"response_code": "00", "reference": "provider-1"}
+    monkeypatch.setattr(server, "_require_turnstile", no_turnstile)
+    monkeypatch.setattr(
+        server, "get_paydunya_config", lambda decrypt=False: value(cfg))
+    monkeypatch.setattr(server, "get_mbiyo_config",
+                        lambda decrypt=False: value({"enabled": False, "catalog": []}))
+    monkeypatch.setattr(server.paydunya, "create_invoice", create_invoice)
+    monkeypatch.setattr(server.paydunya, "softpay_payment", softpay)
+    monkeypatch.setattr(server, "_notify_integration_link_payment", no_notify)
+    request = Request({
+        "type": "http", "method": "POST", "path": "/api/links/pay/mobile-money",
+        "scheme": "https", "headers": [(b"host", b"example.test")],
+        "query_string": b"", "server": ("example.test", 443),
+    })
+    payload = server.LinkPayMoMoRequest(
+        slug="test-link", full_name="Test Buyer", email="buyer@example.test",
+        country="TG", operator=requested_code, phone_number="90112233")
+
+    result = await server.start_link_payment_momo(payload, request)
+
+    assert result["method"] == "mobile_money"
+    assert result["status"] == "pending"
+    assert submitted == [configured_code]
+    assert db.momo_deposits.docs[0]["operator_snapshot"]["code"] == configured_code
+    assert len(db.link_payments.docs) == 1
+
+
+@pytest.mark.parametrize("restriction", ["active", "archived", "hidden"])
+@run_async
+async def test_public_link_payment_keeps_tmoney_restrictions(monkeypatch, restriction):
+    db = MemoryDB()
+    db.payment_links.docs.append({
+        "id": "link-1", "slug": "test-link", "active": True,
+        "amount": 1000, "amount_type": "fixed",
+        "currency": "XOF", "user_id": "merchant-1",
+    })
+    monkeypatch.setattr(server, "db", db)
+    operator = {"country": "TG", "code": "togocel_tg",
+                "currency": "XOF", "active": True}
+    operator[restriction] = False if restriction == "active" else True
+    cfg = {
+        "enabled": True, "master_key_encrypted": "configured",
+        "private_key_encrypted": "configured", "token_encrypted": "configured",
+        "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [operator],
+    }
+    async def value(payload):
+        return payload
+    async def no_turnstile(*args):
+        return None
+    monkeypatch.setattr(server, "_require_turnstile", no_turnstile)
+    monkeypatch.setattr(
+        server, "get_paydunya_config", lambda decrypt=False: value(cfg))
+    monkeypatch.setattr(server, "get_mbiyo_config",
+                        lambda decrypt=False: value({"enabled": False, "catalog": []}))
+    request = Request({
+        "type": "http", "method": "POST", "path": "/api/links/pay/mobile-money",
+        "headers": [(b"host", b"example.test")], "query_string": b"",
+    })
+    payload = server.LinkPayMoMoRequest(
+        slug="test-link", full_name="Test Buyer", email="buyer@example.test",
+        country="TG", operator="tmoney_tg", phone_number="90112233")
+
+    with pytest.raises(HTTPException) as exc:
+        await server.start_link_payment_momo(payload, request)
+    assert exc.value.status_code == 400
+    assert not db.momo_deposits.docs
+    assert not db.link_payments.docs
 
 
 def test_public_mobile_money_config_hides_provider_identity():

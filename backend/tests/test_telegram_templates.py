@@ -2,9 +2,48 @@
 import asyncio
 import sys
 from pathlib import Path
+from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
+
+
+def test_rate_limit_blocks_without_telegram_message(monkeypatch):
+    events = []
+    async def alert(event_type, *args, **kwargs):
+        events.append(event_type)
+    async def identity(request):
+        return {"ip": "203.0.113.10", "user_id": None}
+    async def blocked(profile, identity):
+        return {"limit": 12, "retry_after": 30, "reset": 12345}
+    async def should_not_call_next(request):
+        raise AssertionError("A blocked request must not reach the handler")
+
+    monkeypatch.setattr(server, "_edge_ip_blocked", lambda request: False)
+    monkeypatch.setattr(server, "_queue_security_telegram_alert", alert)
+    monkeypatch.setattr(server, "_global_rate_identity", identity)
+    monkeypatch.setattr(server, "_global_rate_consume", blocked)
+    request = Request({
+        "type": "http", "method": "GET",
+        "path": "/api/deposits/mobile-money/deposit-id",
+        "headers": [(b"host", b"example.test")], "query_string": b"",
+    })
+    response = asyncio.run(
+        server.api_security_middleware(request, should_not_call_next))
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "30"
+    assert not events
+
+    oversized = Request({
+        "type": "http", "method": "POST", "path": "/api/deposits/mobile-money",
+        "headers": [(b"host", b"example.test"),
+                    (b"content-length", str(server.MAX_REQUEST_BYTES + 1).encode())],
+        "query_string": b"",
+    })
+    response = asyncio.run(
+        server.api_security_middleware(oversized, should_not_call_next))
+    assert response.status_code == 413
+    assert events == ["request_too_large"]
 
 
 def test_telegram_masks_contact_information():

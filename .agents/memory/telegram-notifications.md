@@ -51,3 +51,9 @@ not a feed of every customer session.
 **How to apply:** Route admin login and KYC lifecycle alerts through the
 allowlisted asynchronous queue, keep user notifications and SSE fan-out
 separate, and mask IP addresses and contact fields.
+
+Do not forward ordinary application rate-limit hits to the Telegram operations chat; retain the HTTP 429 protection and other security alerts.
+
+**Why:** Normal repeated payment-status polling can exceed a tight endpoint rate limit and flood the operations chat with misleading automated-traffic warnings.
+
+**How to apply:** Keep rate limiting independent of Telegram delivery. Preserve alerts for distinct security controls such as blocked IPs, oversized requests, and CSRF rejections.

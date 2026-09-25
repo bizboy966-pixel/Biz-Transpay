@@ -9230,12 +9230,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
     if not cfg.get("enabled") or not paydunya.mode_is_enabled(cfg, "softpay_direct"):
         raise HTTPException(503, "Le paiement direct Mobile Money est désactivé")
 
-    admin_op = next((op for op in cfg.get("catalog", [])
-                     if op.get("country", "").upper() == req.country.upper()
-                     and op.get("code", "").lower() == req.operator.lower()
-                     and op.get("active", True)
-                     and not op.get("archived", False)
-                     and not op.get("hidden", False)), None)
+    admin_op = _active_operator(
+        cfg.get("catalog") or [], req.country, req.operator)
     if not admin_op:
         raise HTTPException(400, "Cet opérateur est désactivé.")
     payment_flow = paydunya.payment_flow(admin_op, amount)
@@ -13391,17 +13387,6 @@ async def api_security_middleware(request: Request, call_next):
         identity = await _global_rate_identity(request)
         blocked = await _global_rate_consume(profile, identity)
         if blocked:
-            await _queue_security_telegram_alert(
-                "rate_limit_triggered",
-                request,
-                outcome="Trafic bloqué par la limitation de débit.",
-                solution=(
-                    "Surveiller la répétition pendant les prochaines minutes. "
-                    "Si elle continue, bloquer la source et vérifier les comptes ou clés API ciblés."
-                ),
-                profile=profile,
-                user_id=str(identity.get("user_id") or "platform"),
-            )
             response = _global_rate_response(profile, blocked)
             _apply_edge_security_headers(response, request)
             return response
