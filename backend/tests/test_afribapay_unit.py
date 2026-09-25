@@ -34,6 +34,16 @@ def test_payment_flows():
                                    "otp_required": True})["kind"] == "wallet_otp"
 
 
+def test_credentials_require_all_four_admin_values():
+    keys = ("api_user", "api_key", "merchant_key", "agent_id")
+    config = {f"{key}_encrypted": "encrypted" for key in keys}
+    assert afribapay.credentials_configured(config)
+    for key in keys:
+        missing = dict(config)
+        del missing[f"{key}_encrypted"]
+        assert not afribapay.credentials_configured(missing)
+
+
 def test_client_contract_and_token_cache(monkeypatch):
     calls = []
     class FakeClient:
@@ -58,6 +68,11 @@ def test_client_contract_and_token_cache(monkeypatch):
     assert len([call for call in calls if call[1].endswith("/token")]) == 1
     assert calls[1][0:2] == ("POST", "https://api-sandbox.afribapay.com/v1/pay/payin")
     assert calls[1][2]["headers"]["Authorization"] == "Bearer token"
+    configured_client = afribapay.client_from_config({
+        "mode": "sandbox", "_api_user": "u", "_api_key": "k",
+        "_merchant_key": "m", "_agent_id": "agent-123",
+    })
+    assert configured_client.agent_id == "agent-123"
 
 
 def test_payout_otp_and_status_endpoints(monkeypatch):

@@ -3889,7 +3889,7 @@ async def get_afribapay_config(decrypt: bool = False) -> dict:
     doc["catalog"] = _normalize_afribapay_catalog(doc.get("catalog") or [])
     if decrypt:
         decrypted = {}
-        for key in ("api_user", "api_key", "merchant_key"):
+        for key in ("api_user", "api_key", "merchant_key", "agent_id"):
             encrypted = doc.get(f"{key}_encrypted")
             if encrypted:
                 decrypted[key] = afribapay.decrypt_secret(
@@ -3897,6 +3897,7 @@ async def get_afribapay_config(decrypt: bool = False) -> dict:
         doc["_api_user"] = decrypted.get("api_user", "")
         doc["_api_key"] = decrypted.get("api_key", "")
         doc["_merchant_key"] = decrypted.get("merchant_key", "")
+        doc["_agent_id"] = decrypted.get("agent_id", "")
     return doc
 
 
@@ -4011,6 +4012,7 @@ def _afribapay_public_config(cfg: dict, admin: bool = False) -> dict:
             "api_user_configured": bool(cfg.get("api_user_encrypted")),
             "api_key_configured": bool(cfg.get("api_key_encrypted")),
             "merchant_key_configured": bool(cfg.get("merchant_key_encrypted")),
+            "agent_id_configured": bool(cfg.get("agent_id_encrypted")),
             "sandbox_api_base_url": cfg.get(
                 "sandbox_api_base_url", afribapay.BASE_URL),
             "sandbox_payout_base_url": cfg.get(
@@ -14310,9 +14312,11 @@ class AfribapayProviderUpdate(BaseModel):
     api_user: Optional[str] = None
     api_key: Optional[str] = None
     merchant_key: Optional[str] = None
+    agent_id: Optional[str] = None
     clear_api_user: bool = False
     clear_api_key: bool = False
     clear_merchant_key: bool = False
+    clear_agent_id: bool = False
 
 
 def _validate_afribapay_catalog(catalog: list[dict]) -> list[dict]:
@@ -14393,7 +14397,7 @@ async def admin_update_afribapay(
         updates["catalog"] = _validate_afribapay_catalog(req.catalog)
         updates["setup_version"] = 1
     session_secret = os.environ.get("SESSION_SECRET", "")
-    for key in ("api_user", "api_key", "merchant_key"):
+    for key in ("api_user", "api_key", "merchant_key", "agent_id"):
         if data.get(f"clear_{key}"):
             unset[f"{key}_encrypted"] = ""
         elif data.get(key) and str(data[key]).strip():

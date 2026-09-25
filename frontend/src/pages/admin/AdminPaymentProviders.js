@@ -326,7 +326,10 @@ function AfribapayPanel() {
   const [saving, setSaving] = useState(false);
   const [filter, setFilter] = useState('all');
   const fields = [
-    ['api_user', 'Utilisateur API'], ['api_key', 'Clé API'], ['merchant_key', 'Clé marchand'],
+    ['api_user', 'Clé publique API (API User)'],
+    ['api_key', 'Clé secrète API'],
+    ['merchant_key', 'Clé du marchand'],
+    ['agent_id', 'Identifiant agent'],
   ];
   useEffect(() => {
     api.get('/admin/payment-providers/afribapay')
@@ -376,7 +379,7 @@ function AfribapayPanel() {
           {['sandbox_api_base_url', 'sandbox_payout_base_url', 'live_api_base_url', 'live_payout_base_url'].map((key) => <label key={key} className="text-[10px] font-semibold text-slate-600">{key.replaceAll('_', ' ')}<input value={config[key] || ''} onChange={(e) => set(key, e.target.value)} className="mt-1 w-full px-2 py-2 border border-slate-200 rounded-lg text-xs font-mono" /></label>)}
         </div>
       </div>
-      <div className="grid sm:grid-cols-3 gap-3">
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {fields.map(([key, label]) => <label key={key} className="text-xs font-semibold text-slate-700">{label} <span className="text-[10px] text-slate-400">{config[`${key}_configured`] ? '(configuré)' : '(non configuré)'}</span><input type="password" value={draft[key] || ''} onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} placeholder="Saisir pour remplacer" autoComplete="new-password" className="mt-1 w-full px-3 py-2.5 border border-slate-200 rounded-xl text-sm font-mono" /></label>)}
       </div>
       <div className="flex gap-2 overflow-x-auto">{[['all', 'Tous'], ...countries.map((c) => [c, c])].map(([value, label]) => <button type="button" key={value} onClick={() => setFilter(value)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${filter === value ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>{label}</button>)}</div>
