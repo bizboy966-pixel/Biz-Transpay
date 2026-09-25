@@ -26,6 +26,7 @@
 - [Backend test environment](backend-test-environment.md) — integration tests need an explicit local/Preview base URL; external Preview TLS and shared rate limits can invalidate results.
 - [Cloudflare Turnstile hostnames](cloudflare-turnstile.md) — real Turnstile keys reject unlisted Preview domains with client error 110200; configure Hostname Management explicitly.
 - [Telegram notification delivery](telegram-notifications.md) — platform notifications use a non-blocking Telegram queue with an allowlisted, redacted event payload.
+- [Telegram command ownership](telegram-command-ownership.md) — inbound commands need one receiver; an active webhook blocks polling with 409 even when only one worker runs.
 - [Developer API safety](developer-api-safety.md) — Sandbox writes require official isolated tests; otherwise block them, and retain uncertain idempotency claims.
 - [KYC image payloads](kyc-image-payloads.md) — compress multiple identity photos client-side before sending base64 data to avoid request-size failures.
 - [Public developer documentation](public-developer-documentation.md) — separate technical country eligibility from configured availability and expose only provider-neutral integration data.
