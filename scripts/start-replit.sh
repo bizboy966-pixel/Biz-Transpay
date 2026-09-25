@@ -53,7 +53,7 @@ done
 BACKEND_PID=$!
 
 for _ in {1..30}; do
-  if curl -fsS http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
@@ -63,7 +63,7 @@ for _ in {1..30}; do
   sleep 1
 done
 
-if ! curl -fsS http://127.0.0.1:8000/api/v1/health >/dev/null 2>&1; then
+if ! curl -fsS http://127.0.0.1:8000/openapi.json >/dev/null 2>&1; then
   echo "Backend did not become ready on port 8000" >&2
   exit 1
 fi

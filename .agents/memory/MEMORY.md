@@ -29,3 +29,4 @@
 - [Developer API safety](developer-api-safety.md) — Sandbox writes require official isolated tests; otherwise block them, and retain uncertain idempotency claims.
 - [KYC image payloads](kyc-image-payloads.md) — compress multiple identity photos client-side before sending base64 data to avoid request-size failures.
 - [Public developer documentation](public-developer-documentation.md) — separate technical country eligibility from configured availability and expose only provider-neutral integration data.
+- [Legacy merchant-data retirement](legacy-merchant-data-retirement.md) — production purges need runtime access and corroborated ownership; never infer provenance from a shared payment label alone.

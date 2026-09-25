@@ -81,8 +81,7 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       const pathName = window.location.pathname;
       const isPublicPaymentLink = pathName === '/pay' || pathName.startsWith('/pay/');
-       const isPublicDocs = pathName === '/docs' || pathName.startsWith('/docs/')
-         || pathName === '/integration/docs' || pathName.startsWith('/integration/docs/');
+      const isPublicDocs = pathName === '/integration/docs' || pathName.startsWith('/integration/docs/');
       if (
         !isPublicPaymentLink
         && !isPublicDocs

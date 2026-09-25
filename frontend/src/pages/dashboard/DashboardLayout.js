@@ -45,7 +45,7 @@ export default function DashboardLayout() {
       to: '/dashboard/services',
       i: LayoutGrid,
       l: t('dashboard.services'),
-      activePaths: ['/dashboard/links', '/dashboard/api'],
+      activePaths: ['/dashboard/links'],
     },
     { to: '/dashboard/profile', i: UserRound, l: t('dashboard.profile') },
   ];

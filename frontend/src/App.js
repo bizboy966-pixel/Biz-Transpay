@@ -21,8 +21,6 @@ import Support from '@/pages/dashboard/Support';
 import Transfer from '@/pages/dashboard/Transfer';
 import Deposit from '@/pages/dashboard/Deposit';
 import Exchange from '@/pages/dashboard/Exchange';
-import ApiKeys from '@/pages/dashboard/ApiKeys';
-import ApiDocs from '@/pages/dashboard/ApiDocs';
 import Services from '@/pages/dashboard/Services';
 import Integration from '@/pages/dashboard/integration/Integration';
 import IntegrationDocs from '@/pages/dashboard/integration/IntegrationDocs';
@@ -92,7 +90,6 @@ function App() {
           <Route path="/pay/:slug" element={<PublicLink />} />
           <Route path="/payment/success" element={<PaymentSuccess />} />
           <Route path="/payment/cancel" element={<PaymentCancel />} />
-          <Route path="/docs" element={<ApiDocs publicMode />} />
           <Route path="/integration/docs" element={<IntegrationDocs />} />
           <Route path="/dashboard" element={<Protected><DashboardLayout /></Protected>}>
             <Route index element={<DashboardHome />} />
@@ -107,8 +104,6 @@ function App() {
             <Route path="services" element={<Services />} />
             <Route path="profile" element={<Profile />} />
             <Route path="exchange" element={<Exchange />} />
-            <Route path="api" element={<ApiKeys />} />
-            <Route path="api/docs" element={<ApiDocs />} />
             <Route path="integration" element={<Integration />} />
           </Route>
           <Route path="/admin" element={<AdminOnly><AdminLayout /></AdminOnly>}>
