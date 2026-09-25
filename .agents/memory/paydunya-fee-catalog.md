@@ -56,3 +56,9 @@ Public Mobile Money operator codes can differ from their provider catalogue IDs.
 **Why:** A canonical T-Money code can pass the public catalogue and initial routing yet be rejected by a later raw-string comparison against the configured PayDunya code.
 
 **How to apply:** Reuse the existing active-operator resolver at execution boundaries; do not globally rewrite stored provider codes or loosen country and activation filters.
+
+PayDunya account eligibility for pay-in can be restricted by country even when operators are listed as locally active. A provider response that the pay-in channel is not allowed is an upstream account permission decision, not evidence that an operator code or phone format needs rewriting.
+
+**Why:** PayDunya's SoftPay documentation describes country-specific account restrictions, and a live account returned a channel-not-allowed response for locally enabled operators.
+
+**How to apply:** Confirm provider authorization for a country before promising production availability. Do not retry a rejected payment through a second provider after an invoice has been created; change routing only after verifying the alternate provider is configured and approved.
