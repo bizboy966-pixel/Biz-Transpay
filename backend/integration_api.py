@@ -62,7 +62,7 @@ ENDPOINTS = [
      "purpose": "Télécharger la documentation destinée aux développeurs."},
     {"method": "POST", "path": "/api/integration/v1/deposits",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
-     "purpose": "Lancer un dépôt Mobile Money en production."},
+     "purpose": "Lancer un dépôt Mobile Money en production ; les frais sont inclus dans le montant payé et déduits du crédit marchand."},
     {"method": "GET", "path": "/api/integration/v1/deposits/{deposit_id}",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
      "purpose": "Consulter un dépôt appartenant au propriétaire et à l’environnement des clés."},
@@ -71,7 +71,7 @@ ENDPOINTS = [
      "purpose": "Lister les dépôts de ce propriétaire et de cet environnement."},
     {"method": "POST", "path": "/api/integration/v1/payouts",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
-     "purpose": "Lancer un retrait Mobile Money en production après autorisation explicite."},
+     "purpose": "Lancer un retrait Mobile Money en production après autorisation explicite ; les frais s’ajoutent au débit marchand sans réduire le montant reçu."},
     {"method": "GET", "path": "/api/integration/v1/payouts/{payout_id}",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
      "purpose": "Consulter un retrait appartenant au propriétaire et à l’environnement des clés."},
@@ -1033,8 +1033,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         claim_doc, replay = await claim(credential, key, "deposit", payload)
         if replay:
             return claim_doc["response"]
+        # The integration's amount is the payer's total, irrespective of a
+        # legacy fee_bearer value supplied by an existing API client.
         req = ctx["MobileMoneyDepositRequest"](
-            **payload, idempotency_key=f"btpi_{claim_doc['id'][:64]}")
+            **{**payload, "fee_bearer": "merchant"},
+            idempotency_key=f"btpi_{claim_doc['id'][:64]}")
         result = await ctx["start_mobile_money_deposit"](
             req, request, credential["user_id"])
         business_id = result.get("id") or result.get("deposit_id")
@@ -1075,7 +1078,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             transfer_type="biz_to_mobile", recipient=body.recipient,
             country=body.country, operator=body.operator, amount=body.amount,
             currency=body.currency, description=body.description or "",
-            fee_bearer=body.fee_bearer,
+            fee_bearer="sender",
             idempotency_key=f"btpi_{claim_doc['id'][:64]}")
         if body.reference:
             req.metadata = {"integration_reference": body.reference}
@@ -1309,7 +1312,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             "amount": 10000, "requested_amount": 10000,
             "charged_amount": 10000, "amount_net": 9500,
             "gateway_fee": 300, "platform_fee": 200, "total_fee": 500,
-            "fee_bearer": "client", "currency": "XOF",
+            "fee_bearer": "merchant", "currency": "XOF",
             "operator": {"code": "tmoney_tg", "label": "TMoney"},
             "operator_name": "TMoney", "phone_number": "90000000",
             "payment_flow": {}, "auth_mode": None, "otp_required": False,
@@ -1416,7 +1419,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 "payout": {
                     "transaction": transaction_row, "fee": 250,
                     "processed_amount": 5000, "total_debit": 5250,
-                    "recipient_gets": 4750, "operator": "TMoney",
+                    "recipient_gets": 5000, "operator": "TMoney",
                 },
             },
             ("GET", "/api/integration/v1/payouts/{payout_id}"): transaction_row,
@@ -1523,7 +1526,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             },
             ("POST", "/api/integration/v1/deposits"): {
                 "body": [
-                    body_field("amount", "number", True, "Montant positif du dépôt.", 10000),
+                    body_field("amount", "number", True, "Montant total payé par le client, frais inclus ; le marchand reçoit ce montant moins les frais.", 10000),
                     body_field("currency", "string", True, "Devise du dépôt.", "XOF"),
                     body_field("country", "string", True, "Code pays ISO-2.", "TG"),
                     body_field("operator", "string", True, "Code configuré de l’opérateur Mobile Money.",
@@ -1535,14 +1538,14 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     body_field("description", "string|null", False, "Description du dépôt.", "Order 125"),
                     body_field("otp", "string|null", False, "Code OTP si l’opérateur le demande.", "123456"),
                     body_field("fee_bearer", "string", False,
-                               "Valeur parmi sender, receiver, client ou merchant.",
+                               "Ancien paramètre accepté pour compatibilité, ignoré : les frais sont toujours inclus dans le montant payé et déduits du crédit marchand.",
                                "client", "client"),
                 ],
                 "request": {
                     "amount": 10000, "currency": "XOF", "country": "TG",
                     "operator": "tmoney_tg", "phone_number": "90000000",
                     "email": "buyer@example.com", "full_name": "Buyer",
-                    "reference": "order-125", "fee_bearer": "client",
+                    "reference": "order-125",
                 },
                 "errors": common_bearer_errors + [
                     error(400, idempotency_required_error),
@@ -1556,7 +1559,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             },
             ("POST", "/api/integration/v1/payouts"): {
                 "body": [
-                    body_field("amount", "number", True, "Montant positif du retrait.", 5000),
+                    body_field("amount", "number", True, "Montant reçu intact par le bénéficiaire ; les frais sont ajoutés au débit du marchand.", 5000),
                     body_field("currency", "string", True, "Devise du retrait.", "XOF"),
                     body_field("country", "string", True, "Code pays ISO-2 du bénéficiaire.", "TG"),
                     body_field("operator", "string", True, "Code configuré de l’opérateur Mobile Money.",
@@ -1564,7 +1567,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     body_field("recipient", "string", True, "Numéro de téléphone du bénéficiaire.", "90000000"),
                     body_field("reference", "string|null", False, "Référence du marchand.", "payout-125"),
                     body_field("description", "string|null", False, "Description du retrait.", "Supplier payout"),
-                    body_field("fee_bearer", "string", False, "Valeur parmi sender ou receiver.",
+                    body_field("fee_bearer", "string", False, "Ancien paramètre accepté pour compatibilité, ignoré : les frais sont toujours ajoutés au débit du marchand et le bénéficiaire reçoit le montant demandé.",
                                "sender", "sender"),
                 ],
                 "request": {
@@ -2001,10 +2004,10 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                   "Les routes versionnées exigent Authorization: Bearer <clé secrète> et X-Public-Key du même environnement. Créez, renouvelez ou supprimez les clés dans la console du marchand ; stockez la clé secrète uniquement sur votre serveur. Pour connecter un autre agent, partagez cette documentation, jamais les clés secrètes dans une conversation ou un dépôt."},
                 {"id": "sandbox", "title": "Environnements test et live", "description":
                  "L’estimation de change est accessible dans les deux environnements. Les routes de création financière refusent les identifiants test avec HTTP 503 tant qu’un environnement de test isolé et officiel du prestataire n’est pas configuré ; aucun fonds n’est déplacé. Les retraits exigent en plus une autorisation explicite en production et la portée payouts:write."},
-                {"id": "deposits", "title": "Dépôts", "description":
-                 "POST /api/integration/v1/deposits lance un dépôt Mobile Money et renvoie {id,status,deposit}. La route GET par identifiant renvoie l’état public du dépôt ; la route de liste renvoie les enregistrements d’opération d’intégration. Envoyez Idempotency-Key lors de la création."},
-                {"id": "payouts", "title": "Retraits", "description":
-                 "POST /api/integration/v1/payouts renvoie {id,status,payout} ; payout contient le résultat du transfert. Activez l’autorisation de retrait en production avant d’accorder payouts:write. Un état pending ne prouve pas que l’opération est terminée."},
+                 {"id": "deposits", "title": "Dépôts", "description":
+                  "POST /api/integration/v1/deposits lance un dépôt Mobile Money et renvoie {id,status,deposit}. Le montant demandé est le total payé par le client : pour 2 000 de paiement et 500 de frais, le client paie 2 000 et le portefeuille marchand reçoit 1 500. Le champ fee_bearer historique est accepté mais ignoré. La route GET par identifiant renvoie l’état public du dépôt ; la route de liste renvoie les enregistrements d’opération d’intégration. Envoyez Idempotency-Key lors de la création."},
+                 {"id": "payouts", "title": "Retraits", "description":
+                  "POST /api/integration/v1/payouts renvoie {id,status,payout} ; payout contient le résultat du transfert. Le bénéficiaire reçoit le montant demandé intact : pour 2 000 de retrait et 500 de frais, le portefeuille marchand est débité de 2 500 et le bénéficiaire reçoit 2 000. Le champ fee_bearer historique est accepté mais ignoré. Activez l’autorisation de retrait en production avant d’accorder payouts:write. Un état pending ne prouve pas que l’opération est terminée."},
                 {"id": "exchanges", "title": "Change", "description":
                  "GET /api/integration/v1/exchanges/quote renvoie from_currency, to_currency, amount, fee, rate, received et fee_currency. POST effectue l’opération de change et renvoie son résultat terminé avec la transaction du registre."},
                 {"id": "links", "title": "Liens de paiement", "description":

@@ -317,6 +317,84 @@ def test_idempotency_claim_replays_without_calling_business_handler():
     assert len(db.integration_operations.docs) == 1
 
 
+@pytest.mark.parametrize("legacy_bearer", [None, "client", "sender", "merchant"])
+def test_integration_deposit_includes_fees_in_payer_total(legacy_bearer):
+    db = DB()
+    calls = []
+
+    async def deposit_handler(model, _request, uid):
+        calls.append((model, uid))
+        fees = server.paydunya.calculate_fees(
+            model.amount, {"currency": "XOF", "gateway_fee_fixed": 500},
+            model.fee_bearer,
+        )
+        return {"id": "deposit-1", "status": "pending", **fees}
+
+    router = create_router(ctx(db, start_mobile_money_deposit=deposit_handler))
+    endpoint = route(router, "/v1/deposits", "POST")
+    body_type = inspect.signature(endpoint).parameters["body"].annotation
+    body_values = dict(amount=2000, currency="XOF", country="TG",
+                       operator="tmoney_tg", phone_number="90000000",
+                       email="buyer@example.com", full_name="Buyer")
+    if legacy_bearer is not None:
+        body_values["fee_bearer"] = legacy_bearer
+    body = body_type(**body_values)
+    assert body.model_dump()["fee_bearer"] == (legacy_bearer or "client")
+    result = run(endpoint(
+        body, req({"Idempotency-Key": f"deposit-inclusive-{legacy_bearer}"}),
+        {"user_id": "biz", "environment": "live", "scopes": ["deposits:write"]},
+    ))
+    assert calls[0][1] == "biz"
+    assert calls[0][0].fee_bearer == "merchant"
+    assert result["deposit"]["charged_amount"] == 2000
+    assert result["deposit"]["wallet_credit_amount"] == 1500
+    assert result["deposit"]["total_fee"] == 500
+    assert run(endpoint(
+        body, req({"Idempotency-Key": f"deposit-inclusive-{legacy_bearer}"}),
+        {"user_id": "biz", "environment": "live", "scopes": ["deposits:write"]},
+    )) == result
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("legacy_bearer", [None, "receiver", "sender"])
+def test_integration_payout_adds_fees_to_merchant_debit(legacy_bearer):
+    db = DB()
+    calls = []
+
+    async def transfer_handler(model, _request, uid):
+        calls.append((model, uid))
+        fees = server.paydunya.calculate_fees(
+            model.amount, {"currency": "XOF", "gateway_fee_fixed": 500},
+            model.fee_bearer,
+        )
+        return {
+            "transaction": {"id": "payout-1", "status": "pending"},
+            "fee": fees["total_fee"],
+            "total_debit": fees["charged_amount"],
+            "recipient_gets": fees["wallet_credit_amount"],
+        }
+
+    router = create_router(ctx(db, transfer=transfer_handler))
+    endpoint = route(router, "/v1/payouts", "POST")
+    body_type = inspect.signature(endpoint).parameters["body"].annotation
+    body_values = dict(amount=2000, currency="XOF", country="TG",
+                       operator="tmoney_tg", recipient="90000000")
+    if legacy_bearer is not None:
+        body_values["fee_bearer"] = legacy_bearer
+    body = body_type(**body_values)
+    credential = {"user_id": "biz", "environment": "live",
+                  "scopes": ["payouts:write"], "payout_opt_in": True}
+    request = req({"Idempotency-Key": f"payout-external-{legacy_bearer}"})
+    result = run(endpoint(body, request, credential))
+    assert calls[0][1] == "biz"
+    assert calls[0][0].fee_bearer == "sender"
+    assert result["payout"]["fee"] == 500
+    assert result["payout"]["total_debit"] == 2500
+    assert result["payout"]["recipient_gets"] == 2000
+    assert run(endpoint(body, request, credential)) == result
+    assert len(calls) == 1
+
+
 def test_reads_are_user_and_environment_scoped():
     db = DB(integration_operations=Collection([{
         "id": "x", "user_id": "other", "environment": "live",
@@ -1128,7 +1206,7 @@ def test_documentation_metadata_matches_openapi_and_real_response_shapes():
         return {
             "transaction": {"id": "payout-actual", "status": "pending"},
             "fee": 250, "processed_amount": 5000, "total_debit": 5250,
-            "recipient_gets": 4750, "operator": "TMoney",
+            "recipient_gets": 5000, "operator": "TMoney",
         }
 
     payout_router = create_router(ctx(DB(), transfer=transfer_result))
