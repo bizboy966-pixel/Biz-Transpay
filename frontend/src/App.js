@@ -44,6 +44,7 @@ import AdminBenefits from '@/pages/admin/AdminBenefits';
 import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
 import AdminFunds from '@/pages/admin/AdminFunds';
 import AdminEmailNotifications from '@/pages/admin/AdminEmailNotifications';
+import AdminLegacyCleanup from '@/pages/admin/AdminLegacyCleanup';
 import ReauthGate from '@/components/ReauthGate';
 import '@/App.css';
 
@@ -127,6 +128,7 @@ function App() {
             <Route path="benefits" element={<AdminBenefits />} />
              <Route path="payment-providers" element={<AdminPaymentProviders />} />
              <Route path="funds" element={<AdminFunds />} />
+              <Route path="maintenance/legacy-merchant-api" element={<AdminLegacyCleanup />} />
           </Route>
         </Routes>
       </BrowserRouter>

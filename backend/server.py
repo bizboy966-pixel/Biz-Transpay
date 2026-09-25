@@ -14,6 +14,7 @@ import re
 import base64
 import socket
 import unicodedata
+from collections import Counter
 from html import escape as html_escape
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal, InvalidOperation
@@ -43,7 +44,7 @@ from models import (  # noqa: E402
     RegisterRequest, LoginRequest, UserPublic, AuthResponse,
     PaymentLinkCreate, PaymentLinkUpdate, PaymentLink,
     Transaction, TransferRequest, DepositRequest, CryptoDepositRequest, LinkPayRequest, ExchangeRequest,
-    KycSubmit, ApiKeys, WebhookConfig, UpdateProfile, ChangePassword,
+    KycSubmit, UpdateProfile, ChangePassword,
     TicketCreate, Ticket, new_id, now_iso,
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
     ReauthenticationRequest, PasswordResetRequest, PasswordResetConfirm,
@@ -53,6 +54,9 @@ import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token  # noqa: E402
 from email_delivery import send_resend_email  # noqa: E402
 from postgres_document_store import create_database  # noqa: E402
+from scripts.retire_merchant_api_data import (  # noqa: E402
+    OLD_COLLECTIONS, SELECTOR as LEGACY_MERCHANT_SELECTOR, digest as legacy_merchant_digest,
+)
 import jwt as pyjwt  # for SSE query-token verification
 import izipay  # IzichangePay integration (server-side only)
 import fedapay  # FedaPay Mobile Money integration (server-side only)
@@ -10533,6 +10537,8 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         return "fees:write" if method != "GET" else "fees:read"
     if path.startswith("/admin/platform/reset"):
         return "platform:reset"
+    if path.startswith("/admin/maintenance/legacy-merchant-api"):
+        return "platform:reset"
     if path.startswith("/admin/platform/config") or path.startswith("/admin/settings"):
         return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
     if path.startswith("/admin/email-notifications"):
@@ -13195,6 +13201,73 @@ async def public_stats():
 
 
 # ---------- register ----------
+class LegacyMerchantCleanupRequest(BaseModel):
+    confirmation: str
+    fingerprint: str
+
+
+def _require_legacy_cleanup_owner(admin: dict) -> None:
+    if admin.get("platform_owner") is not True or admin.get("role") != "super_admin":
+        raise HTTPException(403, "Réservé au propriétaire de la plateforme")
+
+
+async def _legacy_cleanup_selection(conn) -> tuple[list, dict, str]:
+    rows = await conn.fetch(
+        f"SELECT collection, doc_id FROM document_store WHERE {LEGACY_MERCHANT_SELECTOR}"
+        " ORDER BY collection, doc_id", OLD_COLLECTIONS,
+    )
+    return rows, dict(Counter(row["collection"] for row in rows)), legacy_merchant_digest(rows)
+
+
+@api.get("/admin/maintenance/legacy-merchant-api")
+async def preview_legacy_merchant_cleanup(
+    admin: dict = Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    _require_legacy_cleanup_owner(admin)
+    async with postgres_store.pool.acquire() as conn:
+        async with conn.transaction():
+            rows, counts, fingerprint = await _legacy_cleanup_selection(conn)
+    return {"counts": counts, "total": len(rows), "fingerprint": fingerprint}
+
+
+@api.post("/admin/maintenance/legacy-merchant-api")
+async def execute_legacy_merchant_cleanup(
+    body: LegacyMerchantCleanupRequest,
+    admin: dict = Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    _require_legacy_cleanup_owner(admin)
+    if body.confirmation != "RETIRER_ANCIENNE_API":
+        raise HTTPException(428, "Saisissez exactement RETIRER_ANCIENNE_API")
+    async with postgres_store.pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("LOCK TABLE document_store IN SHARE ROW EXCLUSIVE MODE")
+            rows, counts, fingerprint = await _legacy_cleanup_selection(conn)
+            if not rows or body.fingerprint != fingerprint:
+                raise HTTPException(409, "Sélection modifiée ou vide : actualisez l'aperçu avant de confirmer")
+            removed = await conn.fetch(
+                f"DELETE FROM document_store WHERE {LEGACY_MERCHANT_SELECTOR}"
+                " RETURNING collection, doc_id", OLD_COLLECTIONS,
+            )
+            removed = sorted(removed, key=lambda row: (row["collection"], row["doc_id"]))
+            if legacy_merchant_digest(removed) != fingerprint:
+                raise RuntimeError("Sélection modifiée : suppression annulée")
+            audit_id = new_id()
+            await conn.execute(
+                """INSERT INTO document_store(collection, doc_id, document)
+                   VALUES('admin_logs', $1, $2::jsonb)""",
+                audit_id, postgres_store.encode({
+                    "id": audit_id, "admin_id": admin["id"],
+                    "action": "legacy_merchant_api_data_cleanup",
+                    "details": {"counts": counts, "total": len(removed),
+                                "fingerprint": fingerprint},
+                    "created_at": now_iso(),
+                }),
+            )
+    return {"counts": counts, "total": len(removed), "deleted": len(removed)}
+
+
 from integration_api import create_router as create_integration_router
 
 api.include_router(create_integration_router(globals()), prefix="/integration")

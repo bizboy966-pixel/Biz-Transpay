@@ -26,6 +26,7 @@ const NAV = [
   { to: '/admin/support', i: MessageCircle, l: 'Support & Chat', permission: 'support:read' },
   { section: 'Administration' },
   { to: '/admin/admins', i: ShieldCheck, l: 'Administrateurs', permission: 'admin_users:read' },
+  { to: '/admin/maintenance/legacy-merchant-api', i: SettingsIcon, l: 'Nettoyage API historique', permission: 'platform:reset' },
 ];
 
 export default function AdminLayout() {

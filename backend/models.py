@@ -276,18 +276,6 @@ class KycSubmit(BaseModel):
     selfie: Optional[str] = Field(None, max_length=4_200_000)
 
 
-# ---------- API keys ----------
-class ApiKeys(BaseModel):
-    public_key: str
-    secret_key: str
-    webhook_url: Optional[str] = ""
-    created_at: str
-
-
-class WebhookConfig(BaseModel):
-    webhook_url: str
-
-
 # ---------- Settings ----------
 class UpdateProfile(BaseModel):
     full_name: Optional[str] = Field(None, min_length=1, max_length=120)
