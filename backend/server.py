@@ -6241,12 +6241,8 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
         raise HTTPException(503, "Passerelle Mobile Money non configurée")
     if not paydunya.mode_is_enabled(cfg, "softpay_direct"):
         raise HTTPException(503, "Le paiement direct Mobile Money est désactivé")
-    admin_op = next((op for op in cfg.get("catalog", [])
-                     if op.get("country", "").upper() == req.country.upper()
-                     and op.get("code", "").lower() == req.operator.lower()
-                     and op.get("active", True)
-                     and not op.get("archived", False)
-                     and not op.get("hidden", False)), None)
+    admin_op = _active_operator(
+        cfg.get("catalog") or [], req.country, req.operator)
     if not admin_op:
         raise HTTPException(400, "Opérateur non disponible pour ce pays")
     payment_flow = paydunya.payment_flow(admin_op, req.amount)

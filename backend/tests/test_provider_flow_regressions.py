@@ -173,13 +173,14 @@ async def test_deposit_provider_falls_back_when_paydunya_has_no_enabled_mode(
         "TG", "tmoney_tg", "XOF") == "mbiyo"
 
 
+@pytest.mark.parametrize("configured_code", ["tmoney_tg", "togocel_tg"])
 @run_async
-async def test_deposit_provider_uses_ready_paydunya_route(monkeypatch):
+async def test_deposit_provider_uses_ready_paydunya_route(monkeypatch, configured_code):
     async def value(payload):
         return payload
 
     shared_route = {
-        "country": "TG", "code": "tmoney_tg", "currency": "XOF",
+        "country": "TG", "code": configured_code, "currency": "XOF",
         "active": True,
     }
     monkeypatch.setattr(server, "get_paydunya_config", lambda: value({

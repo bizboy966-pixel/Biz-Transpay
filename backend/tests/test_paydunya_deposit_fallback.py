@@ -58,7 +58,8 @@ def _request():
     })
 
 
-def test_softpay_timeout_keeps_tracker_inside_biztranspay(monkeypatch):
+@pytest.mark.parametrize("requested_code", ["togocel_tg", "tmoney_tg", "t-money-togo"])
+def test_softpay_timeout_keeps_tracker_inside_biztranspay(monkeypatch, requested_code):
     fake_db = _DB()
     monkeypatch.setattr(server, "db", fake_db)
     config = {
@@ -113,7 +114,7 @@ def test_softpay_timeout_keeps_tracker_inside_biztranspay(monkeypatch):
             email="buyer@example.test",
             full_name="Test Buyer",
             country="TG",
-            operator="togocel_tg",
+            operator=requested_code,
             phone_number="90112233",
         ),
         _request(),
@@ -131,6 +132,7 @@ def test_softpay_timeout_keeps_tracker_inside_biztranspay(monkeypatch):
     assert stored["status"] == "pending"
     assert stored["payment_fallback"] == "hosted_checkout"
     assert stored["submission_unknown"] is True
+    assert stored["operator_snapshot"]["code"] == "togocel_tg"
     assert "failed_at" not in stored
     public = server._public_momo_deposit(stored)
     assert public["payment_kind"] == "phone"
@@ -138,6 +140,42 @@ def test_softpay_timeout_keeps_tracker_inside_biztranspay(monkeypatch):
     assert public["redirect_url"] is None
     assert public["checkout_url"] is None
     assert "ne relancez pas" in public["message"]
+
+
+@pytest.mark.parametrize("restriction", ["active", "archived", "hidden"])
+def test_direct_deposit_does_not_accept_unavailable_tmoney_alias(monkeypatch, restriction):
+    fake_db = _DB()
+    monkeypatch.setattr(server, "db", fake_db)
+    operator = {
+        "country": "TG", "code": "togocel_tg", "currency": "XOF",
+        "active": True, "min": 100, "max": 500000,
+    }
+    operator[restriction] = False if restriction == "active" else True
+    config = {
+        "enabled": True, "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [operator],
+    }
+    monkeypatch.setattr(
+        server, "get_paydunya_config",
+        lambda decrypt=False: asyncio.sleep(0, result=config),
+    )
+    monkeypatch.setattr(
+        server, "_paydunya_public_config",
+        lambda config: {"enabled": True, "mobile_money_enabled": True},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(server.create_mobile_money_deposit(
+            server.MobileMoneyDepositRequest(
+                amount=1000, currency="XOF", email="buyer@example.test",
+                full_name="Test Buyer", country="TG", operator="tmoney_tg",
+                phone_number="90112233",
+            ),
+            _request(), "user-1",
+        ))
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Opérateur non disponible pour ce pays"
+    assert not fake_db.momo_deposits.docs
 
 
 def test_softpay_response_checkout_url_is_not_a_customer_redirect(monkeypatch):

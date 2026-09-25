@@ -50,3 +50,9 @@ with the admin configuration and the actual payment route.
 **How to apply:** Build the public deposit Mobile Money fee list from the same
 filtered active/visible provider entries used by the deposit flow, preserving
 the configured percentage, fixed fee, currency, and limits.
+
+Public Mobile Money operator codes can differ from their provider catalogue IDs. Every stage of a deposit—route selection and provider-specific initiation—must use the same country-scoped equivalence check against active, visible, non-archived rows.
+
+**Why:** A canonical T-Money code can pass the public catalogue and initial routing yet be rejected by a later raw-string comparison against the configured PayDunya code.
+
+**How to apply:** Reuse the existing active-operator resolver at execution boundaries; do not globally rewrite stored provider codes or loosen country and activation filters.
