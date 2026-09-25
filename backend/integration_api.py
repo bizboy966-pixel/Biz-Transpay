@@ -36,6 +36,10 @@ ENDPOINTS = [
      "auth": "Session Biz-transPay du marchand (réauthentification récente)",
      "auth_type": "recent_session",
      "purpose": "Activer ou désactiver la paire de clés et autoriser explicitement les retraits."},
+    {"method": "DELETE", "path": "/api/integration/credentials/{environment}",
+     "auth": "Session Biz-transPay du marchand (réauthentification récente)",
+     "auth_type": "recent_session",
+     "purpose": "Supprimer définitivement la paire de clés et la configuration webhook de cet environnement, sans supprimer l’historique financier."},
     {"method": "PUT", "path": "/api/integration/webhooks/{environment}",
      "auth": "Session Biz-transPay du marchand (réauthentification récente)",
      "auth_type": "recent_session",
@@ -804,6 +808,9 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         active: bool
         payout_opt_in: Optional[bool] = None
 
+    class DeleteCredentialBody(BaseModel):
+        confirmation: Literal["SUPPRIMER"]
+
     class WebhookBody(BaseModel):
         url: str = Field(..., min_length=8, max_length=2048)
         active: bool = True
@@ -931,6 +938,30 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         if not result.matched_count:
             raise HTTPException(404, "Integration credentials not found")
         return {"environment": env, "active": body.active}
+
+    @router.delete("/credentials/{environment}")
+    async def delete_credentials(environment: str, body: DeleteCredentialBody,
+                                 uid: str = Depends(recent_browser_owner)):
+        """Revoke one environment's keys and webhook without removing financial history."""
+        env = check_env(environment)
+        async with ctx["postgres_store"].pool.acquire() as conn:
+            async with conn.transaction():
+                removed = await conn.fetch(
+                    """DELETE FROM document_store
+                       WHERE collection = 'integration_credentials'
+                         AND document->>'user_id' = $1
+                         AND document->>'environment' = $2
+                       RETURNING doc_id""", uid, env,
+                )
+                if not removed:
+                    raise HTTPException(404, "Integration credentials not found")
+                await conn.execute(
+                    """DELETE FROM document_store
+                       WHERE collection = 'integration_webhooks'
+                         AND document->>'user_id' = $1
+                         AND document->>'environment' = $2""", uid, env,
+                )
+        return {"environment": env, "deleted": True}
 
     @router.put("/webhooks/{environment}")
     async def configure_webhook(environment: str, body: WebhookBody,
@@ -1638,7 +1669,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         ]
 
         decorated = []
+        # The public guide is for server-to-server integrations, not the
+        # authenticated browser console that manages credentials and webhooks.
         for index, item in enumerate(ENDPOINTS):
+            if item["auth_type"] not in {"bearer", "public"}:
+                continue
             path, method = item["path"].split("?", 1)[0], item["method"]
             key = (method, path)
             params = []
@@ -1953,6 +1988,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             })
         return {
             "title": "API d’intégration Biz-transPay",
+            "documentation_url": "https://biz-transppayy.com/integration/docs",
+            "api_base_url": "https://biz-transppayy.com",
             "description": (
                 "Utilisez les routes d’intégration disponibles pour créer et consulter des dépôts, "
                 "des retraits, des opérations de change, des liens de paiement et des opérations."
@@ -1961,7 +1998,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 {"id": "startup", "title": "Bien démarrer", "description":
                  "Définissez BIZ_BASE_URL sur l’origine qui héberge cette API. Créez des identifiants distincts pour les environnements test et live depuis les paramètres d’intégration Biz-transPay ; la clé secrète n’est affichée qu’une fois. N’envoyez les deux clés que depuis un serveur de confiance."},
                 {"id": "authentication", "title": "Authentification", "description":
-                 "Les routes versionnées de l’API exigent Authorization: Bearer <secret> et X-Public-Key provenant du même environnement. Les routes de configuration du navigateur utilisent la session authentifiée du marchand ; les requêtes de modification depuis le navigateur exigent aussi X-CSRF-Token correspondant au cookie btp_csrf. Les modifications sensibles des identifiants et des webhooks nécessitent une réauthentification récente."},
+                  "Les routes versionnées exigent Authorization: Bearer <clé secrète> et X-Public-Key du même environnement. Créez, renouvelez ou supprimez les clés dans la console du marchand ; stockez la clé secrète uniquement sur votre serveur. Pour connecter un autre agent, partagez cette documentation, jamais les clés secrètes dans une conversation ou un dépôt."},
                 {"id": "sandbox", "title": "Environnements test et live", "description":
                  "L’estimation de change est accessible dans les deux environnements. Les routes de création financière refusent les identifiants test avec HTTP 503 tant qu’un environnement de test isolé et officiel du prestataire n’est pas configuré ; aucun fonds n’est déplacé. Les retraits exigent en plus une autorisation explicite en production et la portée payouts:write."},
                 {"id": "deposits", "title": "Dépôts", "description":
@@ -1975,7 +2012,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 {"id": "transactions", "title": "Opérations et états", "description":
                  "GET /api/integration/v1/transactions liste les opérations pour le propriétaire et l’environnement des identifiants. Utilisez les routes GET propres à chaque ressource pour consulter l’état actuel d’un dépôt, d’un retrait ou d’une opération de change. Seuls completed/approved/paid/success indiquent une réussite ; pending n’est pas un état final."},
                 {"id": "security", "title": "Sécurité", "description":
-                 "Conservez les clés secrètes et les secrets de signature des webhooks côté serveur. Renouvelez les identifiants exposés, n’accordez que les portées nécessaires et utilisez une nouvelle Idempotency-Key pour chaque mutation. En cas d’issue incertaine, ne relancez jamais l’opération avec une nouvelle clé. Pour les mutations dans le navigateur, envoyez le cookie btp_csrf et le X-CSRF-Token correspondant."},
+                  "Conservez les clés secrètes et les secrets de signature des webhooks côté serveur. Renouvelez les identifiants exposés et n’accordez que les portées nécessaires. Utilisez une Idempotency-Key unique par nouvelle opération ; en cas de résultat incertain, consultez l’état et réessayez uniquement la requête identique avec la même clé. Ne lancez pas une seconde opération avec une nouvelle clé."},
                 {"id": "integration-examples", "title": "Exemples d’intégration", "description":
                  "Chaque route ci-dessous comporte un exemple de requête en cURL, PHP, JavaScript et Python. Les exemples utilisent BIZ_BASE_URL et des variables d’environnement pour les identifiants ; ne modifiez que les valeurs acceptées par le schéma de la route.",
                  "examples": {
@@ -1992,7 +2029,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                      "python": "import time, hmac, hashlib, json\nraw_body = request.get_data(cache=True)\ntimestamp = request.headers.get('X-BizTransPay-Timestamp', '')\nsignature = request.headers.get('X-BizTransPay-Signature', '')\nif not timestamp.isdigit() or abs(time.time() - int(timestamp)) > 300:\n    abort(401)\nexpected = 'sha256=' + hmac.new(webhook_secret.encode(), timestamp.encode() + b'.' + raw_body, hashlib.sha256).hexdigest()\nif not hmac.compare_digest(expected, signature):\n    abort(401)\nevent = json.loads(raw_body)",
                  }},
                 {"id": "http", "title": "Codes de réponse HTTP", "description":
-                 "200 : requête acceptée ou ressource renvoyée. 400 : Idempotency-Key invalide ou absente, ou condition métier non satisfaite. 401 : identifiants ou session absents/invalides. 403 : clé désactivée, portée manquante, compte non marchand, rejet CSRF ou autorisation de retrait absente. 404 : opération ou ressource appartenant au propriétaire introuvable. 409 : conflit ou issue incertaine d’idempotence, ou test de webhook inactif. 422 : paramètre, chemin ou corps invalide, ou destination de webhook non sûre. 428 : réauthentification récente requise pour une mutation sensible dans le navigateur. 429 : limite de débit de l’API versionnée dépassée. 502 : échec du test de webhook ou du prestataire. 503 : environnement de test ou prestataire indisponible."},
+                  "200 : requête acceptée ou ressource renvoyée. 400 : Idempotency-Key invalide ou absente, ou condition métier non satisfaite. 401 : identifiants absents ou invalides. 403 : clé désactivée, portée manquante, compte non marchand ou autorisation de retrait absente. 404 : opération ou ressource appartenant au propriétaire introuvable. 409 : conflit ou issue incertaine d’idempotence. 422 : paramètres ou corps invalides. 429 : limite de débit atteinte. 502 : échec du prestataire. 503 : environnement de test ou prestataire indisponible."},
                 {"id": "errors", "title": "Erreurs et nouvelles tentatives", "description":
                  "Les corps d’erreur suivent la structure FastAPI {detail: ...}. Les erreurs de validation contiennent un tableau d’erreurs de champ ; les erreurs de portée et d’Idempotency-Key absente utilisent les objets detail structurés indiqués pour chaque route. Réutilisez une même Idempotency-Key uniquement pour une requête identique ; une issue incertaine 409 n’autorise pas à soumettre une seconde opération."},
             ],
@@ -2033,6 +2070,10 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         story = [
             Paragraph(escape(payload["title"]), styles["Title"]),
             Paragraph(escape(payload["description"]), styles["BodyText"]),
+            Paragraph("Documentation publique : " + escape(payload["documentation_url"]),
+                      styles["BodyText"]),
+            Paragraph("URL de base API : " + escape(payload["api_base_url"]),
+                      styles["BodyText"]),
             Spacer(1, 8),
         ]
         for section in payload["sections"]:

@@ -7,4 +7,4 @@ Public developer documentation should distinguish technical country/operator eli
 
 **Why:** Static provider catalogues describe possible integrations, while credentials, enabled modes, and merchant configuration vary by environment. Conflating the two can advertise an unusable route or make a development preview appear to describe production.
 
-**How to apply:** Keep route selection server-side; expose eligible and active catalogues separately; omit provider identities, configuration, fee splits, and secrets. State which environment supplies the live-availability list.
+**How to apply:** Keep route selection server-side; expose eligible and active catalogues separately; omit provider identities, configuration, fee splits, and secrets. State which environment supplies the live-availability list. For public integration guides, document external server-to-server contracts and webhook verification, not internal browser-session, CSRF, or credential-management mechanics; a shareable URL only reflects the new guide after publication.

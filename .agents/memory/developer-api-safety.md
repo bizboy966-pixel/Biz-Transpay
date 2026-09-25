@@ -30,3 +30,9 @@ reappear after the customer deleted it.
 **How to apply:** Show an empty developer-key state until an explicit create or
 regenerate action; when the last multi-key record is deleted, remove its
 legacy compatibility copy so migration cannot resurrect it.
+
+Deleting an integration environment must revoke its keys and remove its webhook configuration without deleting financial operations, idempotency claims, or payment history.
+
+**Why:** Credential deletion is an access-control action, not a cancellation or rollback of already submitted financial work. Removing idempotency history can let an earlier uncertain payment be submitted again.
+
+**How to apply:** Require fresh merchant authentication and explicit confirmation for deletion. State clearly that in-flight operations may continue and historical records remain. A re-created integration receives new credentials rather than reviving old secrets.

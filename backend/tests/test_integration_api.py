@@ -844,6 +844,7 @@ def test_security_mutations_require_recent_browser_authentication():
         ("/credentials", "POST"),
         ("/credentials/{environment}/regenerate", "POST"),
         ("/credentials/{environment}", "PATCH"),
+        ("/credentials/{environment}", "DELETE"),
         ("/webhooks/{environment}", "PUT"),
         ("/webhooks/{environment}/regenerate-secret", "POST"),
     ):
@@ -865,6 +866,77 @@ def test_payout_scope_is_explicit_and_mutated_under_recent_auth_route():
     credential = db.integration_credentials.docs[0]
     assert credential["payout_opt_in"] is True
     assert "payouts:write" in credential["scopes"]
+
+
+def test_delete_credentials_revokes_one_environment_and_preserves_history():
+    db = DB()
+    for env in ("test", "live"):
+        db.integration_credentials.docs.append({
+            "id": f"biz:{env}", "user_id": "biz", "environment": env,
+        })
+        db.integration_webhooks.docs.append({
+            "id": f"biz:{env}", "user_id": "biz", "environment": env,
+        })
+    db.integration_credentials.docs.append({
+        "id": "other:live", "user_id": "other", "environment": "live",
+    })
+    db.integration_operations.docs.append({
+        "id": "pending-operation", "user_id": "biz", "environment": "live",
+    })
+    db.integration_idempotency.docs.append({
+        "id": "claim", "user_id": "biz", "environment": "live",
+    })
+
+    class Connection:
+        def __init__(self):
+            self.queries = []
+
+        def transaction(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def fetch(self, query, uid, env):
+            self.queries.append(query)
+            matching = [doc for doc in db.integration_credentials.docs
+                        if doc["user_id"] == uid and doc["environment"] == env]
+            db.integration_credentials.docs = [
+                doc for doc in db.integration_credentials.docs if doc not in matching]
+            return [{"doc_id": doc["id"]} for doc in matching]
+
+        async def execute(self, query, uid, env):
+            self.queries.append(query)
+            db.integration_webhooks.docs = [
+                doc for doc in db.integration_webhooks.docs
+                if doc["user_id"] != uid or doc["environment"] != env]
+
+    conn = Connection()
+    store = SimpleNamespace(pool=SimpleNamespace(acquire=lambda: conn))
+    endpoint = route(create_router(ctx(db, postgres_store=store)),
+                     "/credentials/{environment}", "DELETE")
+    body_type = inspect.signature(endpoint).parameters["body"].annotation
+    assert body_type.model_fields["confirmation"].is_required()
+    with pytest.raises(ValueError):
+        body_type(confirmation="no")
+    with pytest.raises(HTTPException) as not_found:
+        run(endpoint("live", body_type(confirmation="SUPPRIMER"), "missing"))
+    assert not_found.value.status_code == 404
+    assert run(endpoint("live", body_type(confirmation="SUPPRIMER"), "biz")) == {
+        "environment": "live", "deleted": True,
+    }
+    assert [(doc["user_id"], doc["environment"])
+            for doc in db.integration_credentials.docs] == [
+                ("biz", "test"), ("other", "live"),
+            ]
+    assert [doc["environment"] for doc in db.integration_webhooks.docs] == ["test"]
+    assert db.integration_operations.docs[0]["id"] == "pending-operation"
+    assert db.integration_idempotency.docs[0]["id"] == "claim"
+    assert all("document->>'user_id' = $1" in query
+               and "document->>'environment' = $2" in query for query in conn.queries)
 
 
 def test_documentation_json_pdf_and_route_method_coverage():
@@ -941,9 +1013,18 @@ def test_documentation_metadata_matches_openapi_and_real_response_shapes():
         assert all(error_item["description"].endswith(".")
                    for error_item in endpoint["errors"])
 
-    assert documented[("GET", "/api/integration/settings")]["response"].keys() >= {
-        "environment", "credentials", "available", "message", "webhook", "warning",
-    }
+    assert all(
+        item["auth_type"] in {"bearer", "public"}
+        for item in integration_api.ENDPOINTS
+        if (item["method"], item["path"].split("?", 1)[0]) in documented
+    )
+    assert ("GET", "/api/integration/settings") not in documented
+    assert ("DELETE", "/api/integration/credentials/{environment}") not in documented
+    assert payload["documentation_url"] == "https://biz-transppayy.com/integration/docs"
+    public_text = str(payload)
+    assert "btp_session" not in public_text
+    assert "btp_csrf" not in public_text
+    assert "BIZ_SESSION_TOKEN" not in public_text
     quote = documented[("GET", "/api/integration/v1/exchanges/quote")]
     assert set(quote["response"]) == {
         "from_currency", "to_currency", "amount", "fee", "rate", "received",

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Clipboard, Code2, ExternalLink, Eye, EyeOff, KeyRound, Link2, Loader2, RefreshCw, Send, ShieldCheck, Terminal, Webhook, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Clipboard, Code2, ExternalLink, Eye, EyeOff, KeyRound, Link2, Loader2, RefreshCw, Send, ShieldCheck, Terminal, Trash2, Webhook, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -10,6 +10,8 @@ const ENVIRONMENTS = {
 };
 
 const errorMessage = (error, fallback) => error?.response?.data?.detail || fallback;
+const PUBLIC_DOCS_URL = 'https://biz-transppayy.com/integration/docs';
+const DELETE_CONFIRMATION_PHRASE = 'SUPPRIMER';
 
 function Badge({ children, tone = 'slate' }) {
   const styles = {
@@ -84,15 +86,21 @@ export default function Integration() {
   const [reveal, setReveal] = useState(null);
   const [webhookUrl, setWebhookUrl] = useState('');
   const [deliveries, setDeliveries] = useState(null);
+  const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
+  const [deleteConfirmationPhrase, setDeleteConfirmationPhrase] = useState('');
 
-  const load = async (env = environment) => {
+  const load = async (env = environment, { clearWebhookData = false } = {}) => {
     setLoading(true); setError('');
     try {
       const { data } = await api.get(`/integration/settings?environment=${env}`);
       setSettings(data || {});
-      setWebhookUrl(data?.webhook?.url || '');
-      const deliveryResponse = await api.get(`/integration/webhooks/${env}/deliveries`);
-      setDeliveries(deliveryResponse.data?.data || deliveryResponse.data || []);
+      setWebhookUrl(clearWebhookData ? '' : data?.webhook?.url || '');
+      if (clearWebhookData || !data?.credentials || !data?.webhook) {
+        setDeliveries([]);
+      } else {
+        const deliveryResponse = await api.get(`/integration/webhooks/${env}/deliveries`);
+        setDeliveries(deliveryResponse.data?.data || deliveryResponse.data || []);
+      }
     } catch (err) {
       setError(errorMessage(err, 'Impossible de charger la configuration d’intégration.'));
     } finally { setLoading(false); }
@@ -126,6 +134,24 @@ export default function Integration() {
     setBusy('toggle');
     try { await api.patch(`/integration/credentials/${environment}`, { active: !settings?.credentials?.active }); toast.success(settings?.credentials?.active ? 'Identifiants désactivés' : 'Identifiants activés'); await load(); }
     catch (err) { toast.error(errorMessage(err, 'Le statut des identifiants n’a pas pu être modifié.')); } finally { setBusy(''); }
+  };
+  const deleteCredentials = async () => {
+    if (deleteConfirmationPhrase !== DELETE_CONFIRMATION_PHRASE) return;
+    setBusy('delete');
+    try {
+      const { data } = await api.delete(`/integration/credentials/${environment}`, {
+        data: { confirmation: DELETE_CONFIRMATION_PHRASE },
+      });
+      if (!data?.deleted) throw new Error('La suppression n’a pas été confirmée par le serveur.');
+      setDeleteConfirmationOpen(false);
+      setDeleteConfirmationPhrase('');
+      setWebhookUrl('');
+      setDeliveries([]);
+      toast.success(`Identifiants ${ENVIRONMENTS[environment].label} supprimés`);
+      await load(environment, { clearWebhookData: true });
+    } catch (err) {
+      toast.error(errorMessage(err, err.message || 'Les identifiants n’ont pas pu être supprimés.'));
+    } finally { setBusy(''); }
   };
   const togglePayoutAuthorization = async () => {
     const nextValue = !payoutEnabled;
@@ -178,11 +204,16 @@ export default function Integration() {
       <div><div className="mb-2 inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-700"><Code2 className="h-3.5 w-3.5" /> API & Intégration</div><h1 className="font-cabinet text-3xl font-extrabold tracking-tight text-slate-900">Connectez Biz-transPay à votre plateforme.</h1><p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500">Gérez vos identifiants et vos webhooks sans exposer de secret côté client.</p></div>
       <EnvironmentToggle value={environment} onChange={setEnvironment} />
     </div>
+    <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+      <div className="min-w-0"><div className="text-xs font-bold text-slate-800">URL de la documentation publique (après publication)</div><a href={PUBLIC_DOCS_URL} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 break-all text-xs text-blue-700 underline underline-offset-2 hover:text-blue-900">{PUBLIC_DOCS_URL}<ExternalLink className="h-3 w-3 shrink-0" /></a></div>
+      <div className="flex shrink-0 items-center gap-2"><CopyButton value={PUBLIC_DOCS_URL} label="Copier le lien" /><a href={PUBLIC_DOCS_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50"><ExternalLink className="h-3.5 w-3.5" />Ouvrir</a></div>
+    </div>
+    <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p><strong>Ne partagez jamais vos clés API ni vos secrets avec l’agent d’intégration dans le chat.</strong> Les clés secrètes doivent rester sur votre serveur.</p></div>
     <div className={`flex items-start gap-3 rounded-2xl border p-4 ${environment === 'live' ? 'border-emerald-200 bg-emerald-50 text-emerald-950' : 'border-blue-200 bg-blue-50 text-blue-950'}`}><ShieldCheck className="mt-0.5 h-5 w-5 shrink-0" /><div><div className="text-sm font-bold">{env.title}</div><p className="mt-1 text-xs leading-relaxed">{environment === 'live' ? 'Les opérations peuvent toucher vos fonds réels. Vérifiez votre serveur, vos URLs et vos contrôles avant d’activer Live.' : 'Sandbox n’appelle pas vos opérations financières réelles. Utilisez-le pour valider votre intégration avant le passage en Live.'}</p></div></div>
     {loading ? <Skeleton /> : error ? <div className="rounded-2xl border border-red-200 bg-red-50 p-8 text-center"><AlertTriangle className="mx-auto h-6 w-6 text-red-600" /><p className="mt-3 text-sm font-semibold text-red-900">{error}</p><button type="button" onClick={() => load()} className="mt-4 inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-xs font-bold text-white"><RefreshCw className="h-3.5 w-3.5" /> Réessayer</button></div> : <>
        {environment === 'test' && <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950"><div className="flex items-center gap-2 font-bold"><AlertTriangle className="h-4 w-4" /> Sandbox indisponible pour les écritures financières</div><p className="mt-1 text-xs">{settings?.message || 'Cet environnement ne déclenche pas d’opérations financières. Utilisez-le pour préparer votre intégration, puis vérifiez votre serveur en Live.'}</p></div>}
       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2"><KeyRound className="h-4 w-4 text-blue-600" /><h2 className="font-cabinet text-lg font-extrabold text-slate-900">Identifiants API</h2>{hasCredentials && <Badge tone={active ? 'emerald' : 'red'}>{active ? 'Actifs' : 'Désactivés'}</Badge>}</div><p className="mt-1 text-xs text-slate-500">La clé secrète reste uniquement en mémoire après sa création ou sa rotation.</p></div><div className="flex flex-wrap gap-2"><Link to="/integration/docs" className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"><BookOpen className="h-3.5 w-3.5" /> Documentation</Link>{hasCredentials && <><button type="button" onClick={toggleCredentials} disabled={!!busy} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">{busy === 'toggle' ? 'Mise à jour…' : active ? 'Désactiver' : 'Activer'}</button><button type="button" onClick={regenerateCredentials} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700">{busy === 'regenerate' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Régénérer</button></>}</div></div>
+         <div className="flex flex-col gap-3 border-b border-slate-100 p-5 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex items-center gap-2"><KeyRound className="h-4 w-4 text-blue-600" /><h2 className="font-cabinet text-lg font-extrabold text-slate-900">Identifiants API</h2>{hasCredentials && <Badge tone={active ? 'emerald' : 'red'}>{active ? 'Actifs' : 'Désactivés'}</Badge>}</div><p className="mt-1 text-xs text-slate-500">La clé secrète reste uniquement en mémoire après sa création ou sa rotation.</p></div><div className="flex flex-wrap gap-2"><Link to="/integration/docs" className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"><BookOpen className="h-3.5 w-3.5" /> Documentation</Link>{hasCredentials && <><button type="button" onClick={toggleCredentials} disabled={!!busy} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50">{busy === 'toggle' ? 'Mise à jour…' : active ? 'Désactiver' : 'Activer'}</button><button type="button" onClick={regenerateCredentials} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700">{busy === 'regenerate' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Régénérer</button><button type="button" onClick={() => { setDeleteConfirmationPhrase(''); setDeleteConfirmationOpen(true); }} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50"><Trash2 className="h-3.5 w-3.5" /> Supprimer</button></>}</div></div>
         <div className="p-5">{hasCredentials ? <div className="grid gap-4 md:grid-cols-2"><div><label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Clé publique</label><div className="mt-2 flex items-center justify-between gap-2 rounded-xl bg-slate-50 p-3 font-mono text-xs text-slate-700"><span className="break-all">{settings.credentials.public_key}</span><CopyButton value={settings.credentials.public_key} /></div></div><div><label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Clé secrète</label><div className="mt-2 rounded-xl bg-slate-50 p-3 font-mono text-xs text-slate-500">•••••••••••••••••••• <span className="font-sans text-[11px]">non récupérable</span></div></div></div> : <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-5 sm:flex-row sm:items-center"><div><h3 className="text-sm font-bold text-slate-900">Aucun identifiant {env.label}</h3><p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-500">La création est une action explicite. Gardez la clé secrète sur votre serveur et ne la partagez jamais dans une application publique.</p></div><button type="button" onClick={createCredentials} disabled={!!busy} className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">{busy === 'credentials' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <KeyRound className="h-3.5 w-3.5" />} Créer les identifiants</button></div>}</div>
       </section>
        {environment === 'live' && <section className="rounded-2xl border border-amber-200 bg-white shadow-sm">
@@ -207,5 +238,12 @@ export default function Integration() {
       </section>
     </>}
     <SecretReveal reveal={reveal} onClose={() => setReveal(null)} />
+    {deleteConfirmationOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="delete-credentials-title">
+      <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-red-200 bg-white shadow-2xl">
+        <div className="flex items-start gap-3 border-b border-slate-100 p-5"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-100 text-red-700"><AlertTriangle className="h-5 w-5" /></div><div className="flex-1"><h2 id="delete-credentials-title" className="font-cabinet text-lg font-extrabold text-slate-900">Supprimer les identifiants {env.label} ?</h2><p className="mt-1 text-xs leading-relaxed text-slate-600">Cette action est définitive et nécessite une authentification récente.</p></div><button type="button" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === 'delete'} aria-label="Fermer" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-40"><X className="h-4 w-4" /></button></div>
+        <div className="space-y-3 p-5 text-xs leading-relaxed text-slate-700"><p>Les anciennes clés ne permettront plus de nouvelles requêtes après suppression et la configuration du webhook de cet environnement sera supprimée. Les opérations déjà lancées ne sont pas annulées.</p><p className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-blue-950"><strong>Vos opérations historiques, paiements et journaux de livraison sont conservés.</strong> Seuls les identifiants et la configuration du webhook sont supprimés.</p><label className="block font-bold text-slate-700">Tapez <span className="font-mono text-red-700">{DELETE_CONFIRMATION_PHRASE}</span> pour confirmer<input autoFocus value={deleteConfirmationPhrase} onChange={(event) => setDeleteConfirmationPhrase(event.target.value)} className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 font-mono text-sm outline-none focus:border-red-500 focus:ring-2 focus:ring-red-100" /></label></div>
+        <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50 p-4"><button type="button" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === 'delete'} className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-white">Annuler</button><button type="button" onClick={deleteCredentials} disabled={!!busy || deleteConfirmationPhrase !== DELETE_CONFIRMATION_PHRASE} className="inline-flex items-center gap-2 rounded-lg bg-red-700 px-4 py-2 text-sm font-bold text-white hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-40">{busy === 'delete' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}Supprimer définitivement</button></div>
+      </div>
+    </div>}
   </div>;
 }

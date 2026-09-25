@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, BookOpen, Check, Copy, Download, Menu, Search, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, Check, Copy, Download, ExternalLink, Menu, Search, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import api from '@/api';
+
+const PUBLIC_DOCS_URL = 'https://biz-transppayy.com/integration/docs';
 
 const asList = (value) => {
   if (Array.isArray(value)) return value;
@@ -50,6 +52,32 @@ function CodeBlock({ value }) {
       <pre className="overflow-x-auto rounded-xl bg-slate-950 p-4 pr-20 font-mono text-xs leading-relaxed text-slate-100">
         <code>{value}</code>
       </pre>
+    </div>
+  );
+}
+
+function PublicDocsActions() {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(PUBLIC_DOCS_URL);
+      setCopied(true);
+      toast.success('Lien public copié');
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error('Copie indisponible');
+    }
+  };
+
+  return (
+    <div className="flex shrink-0 items-center gap-1 rounded-lg border border-slate-200 bg-white p-1">
+      <a href={PUBLIC_DOCS_URL} target="_blank" rel="noreferrer" aria-label="Ouvrir la documentation publique" title={PUBLIC_DOCS_URL} className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50">
+        <ExternalLink className="h-3.5 w-3.5" /><span className="hidden xl:inline">Lien public</span>
+      </a>
+      <button type="button" onClick={copy} aria-label="Copier le lien public de la documentation" title={`Copier ${PUBLIC_DOCS_URL}`} className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] font-bold text-slate-600 hover:bg-slate-50">
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}<span className="hidden xl:inline">{copied ? 'Copié' : 'Copier'}</span>
+      </button>
     </div>
   );
 }
@@ -207,7 +235,7 @@ export default function IntegrationDocs() {
           <Link to="/dashboard/integration" className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-slate-900"><ArrowLeft className="h-4 w-4" /> Console d’intégration</Link>
           <div className="hidden items-center gap-2 md:flex"><BookOpen className="h-4 w-4 text-blue-600" /><span className="font-cabinet text-sm font-extrabold text-slate-900">Documentation Biz-transPay</span></div>
           <div className="relative ml-auto hidden md:block"><Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Rechercher" className="w-56 rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-xs outline-none focus:border-blue-500" /></div>
-          <button type="button" onClick={download} aria-label="Télécharger la documentation PDF" className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700"><Download className="h-3.5 w-3.5" /><span className="hidden sm:inline">Télécharger la documentation PDF</span><span className="sm:hidden">PDF</span></button>
+          <div className="ml-auto flex items-center gap-2 md:ml-0"><PublicDocsActions /><button type="button" onClick={download} aria-label="Télécharger la documentation PDF" className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-xs font-bold text-white hover:bg-slate-700"><Download className="h-3.5 w-3.5" /><span className="hidden sm:inline">Télécharger la documentation PDF</span><span className="sm:hidden">PDF</span></button></div>
         </div>
       </header>
       <div className="mx-auto flex max-w-7xl">
@@ -223,6 +251,11 @@ export default function IntegrationDocs() {
             <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-bold text-blue-700"><BookOpen className="h-3.5 w-3.5" /> API d’intégration</div>
             <h1 className="mt-4 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">{documentation?.title || 'Intégrer Biz-transPay'}</h1>
             <p className="mt-3 max-w-2xl text-sm leading-relaxed text-slate-600">{documentation?.description || 'Référence publique des endpoints disponibles pour connecter vos opérations financières.'}</p>
+            <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+              <div className="text-xs font-bold text-blue-950">URL publique à partager après publication de cette version</div>
+              <a href={PUBLIC_DOCS_URL} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-semibold text-blue-700 underline underline-offset-2 hover:text-blue-900">{PUBLIC_DOCS_URL}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>
+            </div>
+            <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950"><span aria-hidden="true">⚠</span><p><strong>Ne partagez jamais vos clés API ni vos secrets avec l’agent d’intégration dans le chat.</strong> Gardez toutes les clés secrètes sur votre serveur.</p></div>
           </section>
           {loading && <div className="mt-8 space-y-4"><div className="h-24 animate-pulse rounded-2xl bg-slate-200" /><div className="h-72 animate-pulse rounded-2xl bg-slate-200" /></div>}
           {!loading && error && <div className="mt-8 rounded-2xl border border-red-200 bg-red-50 p-8 text-center text-sm font-semibold text-red-900">{error}</div>}
