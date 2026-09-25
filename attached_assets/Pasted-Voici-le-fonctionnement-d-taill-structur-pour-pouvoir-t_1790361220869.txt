@@ -1,0 +1,163 @@
+Voici le fonctionnement détaillé, structuré pour pouvoir être transmis directement à l’équipe de développement :
+
+## Système de parrainage et de commissions — Biz-transPay
+
+### 1. Lien de parrainage dans le profil
+
+Ajouter dans la page **Profil** de chaque utilisateur une section **« Mon parrainage »**.
+
+Cette section doit contenir :
+
+* le **lien personnel de parrainage** de l’utilisateur ;
+* son **code d’invitation unique** ;
+* un bouton **« Copier le lien »** ;
+* un bouton **« Partager »** permettant de partager facilement le lien.
+
+Exemple :
+
+> **Mon lien de parrainage**
+> `https://biz-transppayy.com/register?ref=USERNAME`
+> [Copier le lien] [Partager]
+
+Le lien doit être unique pour chaque utilisateur.
+
+---
+
+### 2. Identification du parrain lors de l'inscription
+
+Lorsqu'une personne ouvre un lien de parrainage, le système doit automatiquement récupérer le code du parrain.
+
+Sur la page d'inscription, afficher en bas :
+
+> **Invité par : [Nom d'utilisateur du parrain]**
+
+Le champ **« Invité par »** ne doit pas être librement modifiable par le nouvel utilisateur.
+
+Le parrain doit être enregistré dans la base de données au moment de la création du compte.
+
+---
+
+## 3. Conditions pour débloquer les commissions
+
+Un utilisateur **ne reçoit pas immédiatement de commission** lorsqu'il partage simplement son lien.
+
+Pour devenir éligible aux commissions, il doit satisfaire **toutes les conditions suivantes** :
+
+### Condition 1 — 5 personnes invitées
+
+L'utilisateur doit avoir invité **au moins 5 personnes différentes** grâce à son lien personnel.
+
+### Condition 2 — Les 5 personnes doivent effectuer leur KYC
+
+Les 5 personnes invitées doivent avoir terminé et obtenu la **validation de leur vérification KYC**.
+
+Une simple inscription ne suffit donc pas.
+
+### Condition 3 — Les 5 personnes doivent effectuer une première transaction
+
+Après validation de leur KYC, chacune des 5 personnes doit effectuer **sa première transaction** sur Biz-transPay.
+
+La transaction doit être réellement validée par le système.
+
+Les transactions annulées, échouées ou simplement en attente ne doivent pas être considérées comme une première transaction validée.
+
+---
+
+## 4. Déclenchement de la commission
+
+Une fois que les **5 personnes** ont rempli toutes les conditions :
+
+**5 invitations → 5 KYC validés → 5 premières transactions validées**
+
+le système devient éligible au calcul de la commission.
+
+La commission est calculée sur **une seule personne parmi les 5 personnes invitées**.
+
+Le système doit sélectionner **la personne ayant effectué la transaction éligible au montant le plus faible** parmi ces cinq premières transactions.
+
+La commission sera comprise entre :
+
+**2 % et 2,5 % maximum**
+
+selon le taux qui sera défini dans la configuration de la plateforme.
+
+---
+
+## 5. Commission unique
+
+La commission est accordée **une seule fois et uniquement sur la première transaction éligible** de la personne concernée.
+
+### Exemple
+
+Un utilisateur invite :
+
+* 👤 Utilisateur A
+* 👤 Utilisateur B
+* 👤 Utilisateur C
+* 👤 Utilisateur D
+* 👤 Utilisateur E
+
+Les cinq utilisateurs :
+
+✅ s'inscrivent avec le lien du parrain
+✅ valident leur KYC
+✅ effectuent chacun leur première transaction
+
+Le système compare les montants de leurs premières transactions.
+
+Supposons :
+
+* A : 100 000 FCFA
+* B : 50 000 FCFA
+* C : 25 000 FCFA
+* D : 10 000 FCFA
+* E : 40 000 FCFA
+
+La transaction la plus faible est celle de **D : 10 000 FCFA**.
+
+La commission est donc calculée **uniquement sur les 10 000 FCFA de D**.
+
+À **2 %** :
+
+**10 000 × 2 % = 200 FCFA**
+
+À **2,5 %** :
+
+**10 000 × 2,5 % = 250 FCFA**
+
+Le parrain reçoit donc une seule commission sur cette transaction.
+
+---
+
+## 6. Aucune commission sur les transactions suivantes
+
+Après la première transaction éligible d'un utilisateur invité, **aucune nouvelle commission de parrainage ne doit être générée sur ses transactions suivantes**.
+
+Exemple :
+
+D effectue :
+
+* Première transaction : 10 000 FCFA → **éligible à la commission**
+* Deuxième transaction : 50 000 FCFA → **aucune commission**
+* Troisième transaction : 100 000 FCFA → **aucune commission**
+
+La commission de parrainage est donc **unique par utilisateur invité**, et dans le système que tu décris, **une seule personne parmi les cinq invités est finalement retenue pour générer cette commission**.
+
+---
+
+## 7. Protection contre les abus
+
+Le système doit également empêcher :
+
+* l'auto-parrainage ;
+* la création de plusieurs comptes pour obtenir des commissions ;
+* l'utilisation répétée du même utilisateur comme nouvelle invitation ;
+* la modification du parrain après inscription ;
+* la génération de plusieurs commissions pour une même première transaction ;
+* le déclenchement d'une commission avant validation réelle du KYC et de la transaction.
+
+Chaque commission doit avoir un **ID unique**, un statut et une référence vers la transaction ayant déclenché la commission.
+
+### Résumé du parcours
+
+**Lien de parrainage → Inscription → KYC validé → 5 personnes qualifiées → 5 premières transactions validées → comparaison des 5 montants → sélection de la plus petite → commission de 2 à 2,5 % → commission versée une seule fois.**
