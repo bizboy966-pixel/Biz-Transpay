@@ -11241,6 +11241,101 @@ async def delete_link(link_id: str, uid: str = Depends(get_current_user_id)):
 
 
 # ==================== TRANSACTIONS ====================
+def _failed_incoming_deposit_search_terms(needle: str, rx: dict) -> list[dict]:
+    """Only expose failed incoming deposits from history searches by identity/reference."""
+    terms = [
+        {"id": rx}, {"reference": rx}, {"merchant_reference": rx},
+        {"phone_number": rx}, {"phone": rx}, {"customer_phone": rx},
+        {"payer_phone": rx}, {"email": rx}, {"customer_email": rx},
+        {"payer_email": rx}, {"provider_reference": rx},
+        {"paydunya_reference": rx}, {"paydunya_token": rx},
+        {"mbiyo_transaction_id": rx}, {"afribapay_transaction_id": rx},
+        {"afribapay_order_id": rx}, {"fedapay_id": rx},
+        {"provider_id": rx}, {"transaction_id": rx},
+        {"metadata.phone_number": rx}, {"metadata.customer_phone": rx},
+        {"metadata.email": rx}, {"metadata.customer_email": rx},
+        {"metadata.provider_reference": rx},
+    ]
+    # The user-facing Biz-transPay deposit reference is generated from the
+    # deposit ID when the successful ledger row is created.
+    reference_marker = "BTP-PD-"
+    marker_at = needle.lower().find(reference_marker.lower())
+    if marker_at >= 0:
+        suffix = needle[marker_at + len(reference_marker):]
+        if suffix:
+            terms.append({
+                "id": {"$regex": re.escape(suffix), "$options": "i"}
+            })
+    return terms
+
+
+def _failed_momo_deposit_history_row(deposit: dict) -> dict:
+    """Return a safe transaction-shaped view of an owner's failed deposit."""
+    deposit_id = str(deposit.get("id") or "")
+    provider_reference = next((
+        deposit.get(key) for key in (
+            "provider_reference", "paydunya_reference", "mbiyo_transaction_id",
+            "afribapay_transaction_id", "fedapay_id", "provider_id",
+            "transaction_id", "paydunya_token", "afribapay_order_id",
+        ) if deposit.get(key) not in (None, "")
+    ), None)
+    phone = next((
+        deposit.get(key) for key in (
+            "phone_number", "customer_phone", "payer_phone", "phone",
+        ) if deposit.get(key) not in (None, "")
+    ), None)
+    email = next((
+        deposit.get(key) for key in (
+            "email", "customer_email", "payer_email",
+        ) if deposit.get(key) not in (None, "")
+    ), None)
+    name = next((
+        deposit.get(key) for key in ("full_name", "customer_name", "payer_name")
+        if deposit.get(key) not in (None, "")
+    ), None)
+    metadata = {
+        "provider": deposit.get("provider"),
+        "provider_reference": provider_reference,
+        "phone_number": phone,
+        "customer_phone": phone,
+        "email": email,
+        "customer_email": email,
+        "customer_name": name,
+        "operator": deposit.get("operator"),
+        "operator_name": deposit.get("operator_name"),
+        "country_code": deposit.get("country") or deposit.get("country_code"),
+        "external_reference": (
+            deposit.get("merchant_reference") or deposit.get("external_reference")
+        ),
+    }
+    for key in (
+        "gateway_fee", "platform_fee", "total_fee", "charged_amount",
+        "fee_bearer",
+    ):
+        if deposit.get(key) is not None:
+            metadata[key] = deposit[key]
+    amount = next((
+        deposit.get(key) for key in (
+            "wallet_credit_amount", "amount", "processed_amount",
+            "requested_amount",
+        ) if deposit.get(key) is not None
+    ), 0)
+    return {
+        "id": deposit_id,
+        "user_id": deposit.get("user_id"),
+        "type": "deposit",
+        "direction": "in",
+        "amount": amount,
+        "currency": deposit.get("currency"),
+        "status": "failed",
+        "reference": f"BTP-PD-{deposit_id[:16]}",
+        "description": "Dépôt Mobile Money échoué",
+        "counterparty": name or email or phone or "Expéditeur Mobile Money",
+        "created_at": deposit.get("created_at"),
+        "metadata": metadata,
+    }
+
+
 @api.get("/transactions")
 async def list_transactions(
     uid: str = Depends(get_current_user_id),
@@ -11249,17 +11344,29 @@ async def list_transactions(
     q: Optional[str] = None,
     limit: int = Query(200, le=1000),
 ):
-    query: dict = {"user_id": uid}
+    # Only completed incoming deposits appear in the normal ledger. Other
+    # incoming deposit outcomes remain searchable; outgoing outcomes are kept.
+    query: dict = {
+        "user_id": uid,
+        "$nor": [{
+            "type": "deposit", "direction": "in",
+            "status": {"$ne": "completed"},
+        }],
+    }
     if type:
         query["type"] = type
     if status:
         query["status"] = status
-    if q:
+    needle = str(q or "").strip()
+    failed_search_terms = []
+    owner_matches = False
+    if needle:
         # Escape regex-special chars so user input like "0x..." works verbatim.
-        esc = _literal_regex_term(q, field_name="Recherche")
+        esc = _literal_regex_term(needle, field_name="Recherche")
         rx = {"$regex": esc, "$options": "i"}
         search_terms = [
-            {"id": rx}, {"reference": rx}, {"counterparty": rx},
+            {"id": rx}, {"reference": rx}, {"provider_reference": rx},
+            {"external_reference": rx}, {"counterparty": rx},
             {"description": rx}, {"currency": rx}, {"type": rx},
             {"metadata.tx_hash": rx}, {"metadata.txid": rx}, {"metadata.tx_id": rx},
             {"metadata.wallet_address": rx}, {"metadata.deposit_address": rx},
@@ -11267,8 +11374,11 @@ async def list_transactions(
             {"metadata.email": rx}, {"metadata.phone_number": rx},
             {"metadata.customer_phone": rx}, {"metadata.external_id": rx},
             {"metadata.external_reference": rx}, {"metadata.provider_reference": rx},
+            {"metadata.provider_id": rx}, {"metadata.transaction_id": rx},
             {"metadata.paydunya_reference": rx}, {"metadata.paydunya_token": rx},
             {"metadata.izipay_intent_id": rx}, {"metadata.izipay_payout_id": rx},
+            {"metadata.mbiyo_transaction_id": rx},
+            {"metadata.afribapay_transaction_id": rx},
             {"metadata.merchant_payment_id": rx}, {"metadata.payment_id": rx},
             {"metadata.link_id": rx}, {"metadata.link_payment_id": rx},
             {"metadata.coin": rx}, {"metadata.network": rx},
@@ -11297,10 +11407,44 @@ async def list_transactions(
         owner_values = [
             str(owner.get(k) or "").lower() for k in ("email", "phone")
         ] if owner else []
-        if needle.lower() and any(needle.lower() in value for value in owner_values):
+        owner_matches = any(needle.lower() in value for value in owner_values)
+        if owner_matches:
             search_terms.insert(0, {"user_id": uid})
         query["$or"] = search_terms
+        failed_search_terms = _failed_incoming_deposit_search_terms(needle, rx)
+        if owner_matches:
+            failed_search_terms.append({"user_id": uid})
     docs = await db.transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    # Raw Mobile Money deposit attempts are kept separately from the credited
+    # ledger. Include failed attempts only when a supported search identifies
+    # them; never let a status/type filter alone expose them in the default list.
+    if (needle and failed_search_terms
+            and type in (None, "deposit")
+            and status in (None, "failed")):
+        failed_query = {
+            "user_id": uid, "type": "deposit", "direction": "in",
+            "status": "failed", "$or": failed_search_terms,
+        }
+        failed_ledger = await db.transactions.find(
+            failed_query, {"_id": 0}
+        ).sort("created_at", -1).to_list(limit)
+        failed_deposits = await db.momo_deposits.find({
+            "user_id": uid, "status": "failed",
+            "$or": failed_search_terms,
+        }, {"_id": 0}).sort("created_at", -1).to_list(limit)
+        by_id = {str(doc.get("id")): doc for doc in docs if doc.get("id")}
+        for doc in failed_ledger:
+            if doc.get("id"):
+                by_id.setdefault(str(doc["id"]), doc)
+        for deposit in failed_deposits:
+            history_row = _failed_momo_deposit_history_row(deposit)
+            if history_row["id"]:
+                by_id.setdefault(history_row["id"], history_row)
+        docs = sorted(
+            by_id.values(),
+            key=lambda doc: str(doc.get("created_at") or ""),
+            reverse=True,
+        )[:limit]
     return docs
 
 
@@ -13269,14 +13413,24 @@ async def admin_transactions(admin=Depends(get_admin), q: Optional[str] = None,
         ).to_list(1000)
         user_ids = [u["id"] for u in matching_users]
         query["$or"] = [
-            {"id": rx}, {"reference": rx}, {"counterparty": rx},
+            {"id": rx}, {"reference": rx}, {"provider_reference": rx},
+            {"external_reference": rx}, {"counterparty": rx},
             {"description": rx}, {"currency": rx}, {"type": rx},
             {"metadata.tx_hash": rx},
             {"metadata.wallet_address": rx},
             {"metadata.deposit_address": rx},
             {"metadata.customer_email": rx},
+            {"metadata.email": rx}, {"metadata.phone_number": rx},
+            {"metadata.customer_phone": rx},
+            {"metadata.provider_reference": rx},
+            {"metadata.paydunya_reference": rx},
+            {"metadata.paydunya_token": rx},
+            {"metadata.mbiyo_transaction_id": rx},
+            {"metadata.afribapay_transaction_id": rx},
+            {"metadata.provider_id": rx},
             {"metadata.izipay_intent_id": rx},
             {"metadata.merchant_payment_id": rx},
+            {"metadata.external_reference": rx},
             {"metadata.link_id": rx},
             {"metadata.coin": rx},
             {"metadata.recipient": rx},

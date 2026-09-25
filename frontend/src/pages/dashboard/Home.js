@@ -169,7 +169,7 @@ export default function DashboardHome() {
           data-testid="dashboard-search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && nav(`/dashboard/transactions?q=${query}`)}
+          onKeyDown={(e) => e.key === 'Enter' && nav(`/dashboard/transactions?q=${encodeURIComponent(query.trim())}`)}
           placeholder={t('dashboard.search_ph')}
           className="flex-1 py-2 sm:py-2.5 outline-none text-xs sm:text-sm bg-transparent"
         />
