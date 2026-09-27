@@ -84,7 +84,7 @@ export default function Transfer() {
         </div>
       )}
 
-      {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} turnstile={turnstile} />}
+      {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} turnstile={turnstile} walletCryptoEnabled={features?.wallet_crypto_enabled !== false} />}
       {step === 2 && type === 'biz_to_mobile' && <BizToMobileForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
       {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
 
@@ -272,12 +272,14 @@ function WithdrawalEmailOtpPanel({
 }
 
 // ------- BIZ TO BIZ -------
-function BizToBizForm({ onDone, balance, turnstile }) {
+function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
   const turnstileRef = useRef(null);
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('XOF');
+  const [cryptoWallets, setCryptoWallets] = useState([]);
+  const [cryptoCatalogError, setCryptoCatalogError] = useState('');
   const [description, setDescription] = useState('');
   const [recipient, setRecipient] = useState(null);
   const [lookupErr, setLookupErr] = useState(null);
@@ -285,6 +287,22 @@ function BizToBizForm({ onDone, balance, turnstile }) {
   const [pending, setPending] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
   const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_biz');
+
+  useEffect(() => {
+    let active = true;
+    api.get('/conversion/crypto-wallets')
+      .then(({ data }) => {
+        if (!active) return;
+        setCryptoWallets(Array.isArray(data) ? data : []);
+        setCryptoCatalogError('');
+      })
+      .catch(() => {
+        if (!active) return;
+        setCryptoWallets([]);
+        setCryptoCatalogError('Impossible de charger les actifs crypto disponibles.');
+      });
+    return () => { active = false; };
+  }, []);
 
   const lookup = async () => {
     setLookupErr(null); setRecipient(null);
@@ -297,7 +315,24 @@ function BizToBizForm({ onDone, balance, turnstile }) {
   };
 
   const amt = parseFloat(amount) || 0;
-  const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
+  const cryptoWallet = cryptoWallets.find((wallet) => wallet.id === currency);
+  const currencyLabel = cryptoWallet
+    ? `${cryptoWallet.coin} · ${cryptoWallet.network_name || cryptoWallet.network}`
+    : currency;
+  const bal = cryptoWallet
+    ? Number(cryptoWallet.balance || 0)
+    : Number(balance?.[`balance_${currency.toLowerCase()}`] || 0);
+  const currencyOptions = [
+    { value: 'XOF', label: 'XOF' },
+    { value: 'XAF', label: 'XAF' },
+    { value: 'USDT', label: 'USDT' },
+    ...(walletCryptoEnabled
+      ? cryptoWallets.map((wallet) => ({
+        value: wallet.id,
+        label: `${wallet.coin} · ${wallet.network_name || wallet.network}`,
+      }))
+      : []),
+  ];
   const canSubmit = recipient && amt > 0 && amt <= bal && turnstileToken;
 
   const submit = async () => {
@@ -373,14 +408,21 @@ function BizToBizForm({ onDone, balance, turnstile }) {
       <div className="grid grid-cols-[1fr_auto] gap-2 sm:gap-3">
         <Field label="Montant">
           <input data-testid="b2b-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10000" min="1" className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-          <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Solde : {bal.toLocaleString()} {currency}</div>
+          <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Solde : {bal.toLocaleString()} {currencyLabel}</div>
         </Field>
         <Field label="Devise">
           <select data-testid="b2b-currency" value={currency} onChange={(e) => setCurrency(e.target.value)} className="px-2.5 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
-            <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USDT</option>
+            {currencyOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
           </select>
         </Field>
       </div>
+      {cryptoCatalogError && (
+        <div role="alert" className="text-[10px] sm:text-xs text-amber-700">
+          {cryptoCatalogError}
+        </div>
+      )}
 
       <Field label="Description (optionnel)">
         <input data-testid="b2b-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
@@ -402,10 +444,10 @@ function BizToBizForm({ onDone, balance, turnstile }) {
       {confirmOpen && recipient && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="b2b-confirm-modal" rows={[
           ['Bénéficiaire', `${recipient.full_name} (@${recipient.username})`],
-          ['Montant', `${amt.toLocaleString()} ${currency}`, 'strong'],
+          ['Montant', `${amt.toLocaleString()} ${currencyLabel}`, 'strong'],
           ['Frais', '0 (gratuit)', 'green'],
-          ['Total débité', `${amt.toLocaleString()} ${currency}`, 'strong'],
-          ['Le bénéficiaire reçoit', `${amt.toLocaleString()} ${currency}`, 'green'],
+          ['Total débité', `${amt.toLocaleString()} ${currencyLabel}`, 'strong'],
+          ['Le bénéficiaire reçoit', `${amt.toLocaleString()} ${currencyLabel}`, 'green'],
         ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-b2b-confirm" />
       )}
     </div>

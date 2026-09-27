@@ -1,6 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -183,6 +184,7 @@ def test_exchange_catalog_returns_only_active_network_wallets(monkeypatch):
 
     assert [wallet["id"] for wallet in catalog] == ["BTC.BTC", "USDT.TRC20"]
     assert [wallet["balance"] for wallet in catalog] == [0.25, 8.0]
+    assert [wallet["value_usdt"] for wallet in catalog] == [12500.0, 8.0]
     assert all("wallet_field" not in wallet for wallet in catalog)
     assert all(wallet["id"] != "USDT" for wallet in catalog)
 
@@ -310,6 +312,123 @@ def test_crypto_exchange_applies_configured_fee_to_actual_conversion(monkeypatch
     assert result["received"] == pytest.approx(294000)
     assert updates["update"]["$inc"][crypto_wallet_field] == -0.01
     assert updates["update"]["$inc"]["balance_xof"] == pytest.approx(294000)
+
+
+def test_biz_to_biz_crypto_transfer_uses_the_selected_network_wallet(monkeypatch):
+    wallet_field = server._crypto_wallet_field("USDT.TRC20")
+    active_assets = {
+        "USDT.TRC20": {
+            "code": "USDT.TRC20",
+            "coin": "USDT",
+            "network": "TRC20",
+            "wallet_field": wallet_field,
+            "usdt_rate": 1.0,
+        },
+    }
+    transfer_calls = {"debits": [], "credits": [], "transactions": []}
+
+    async def require_turnstile(*args, **kwargs):
+        return None
+
+    async def get_user(user_id):
+        assert user_id == "sender-1"
+        return {
+            "id": "sender-1",
+            "username": "sender",
+            wallet_field: 5.0,
+        }
+
+    async def get_app_features():
+        return {"wallet_crypto_enabled": True}
+
+    async def exchange_assets():
+        return active_assets
+
+    async def email_settings():
+        return {"withdrawal_otp_enabled": False}
+
+    async def transfer_config():
+        return {}
+
+    async def debit(user_id, field, amount, operation_id):
+        transfer_calls["debits"].append((user_id, field, amount))
+        return True
+
+    async def credit(user_id, field, amount, operation_id):
+        transfer_calls["credits"].append((user_id, field, amount))
+        return True
+
+    async def record_tx(user_id, tx_type, direction, amount, currency, **kwargs):
+        transfer_calls["transactions"].append({
+            "user_id": user_id,
+            "type": tx_type,
+            "direction": direction,
+            "amount": amount,
+            "currency": currency,
+        })
+        return SimpleNamespace(
+            id=f"tx-{len(transfer_calls['transactions'])}",
+            model_dump=lambda: {"id": f"tx-{len(transfer_calls['transactions'])}"},
+        )
+
+    async def notify(*args, **kwargs):
+        return None
+
+    class Users:
+        async def find_one(self, query):
+            return {
+                "id": "recipient-1",
+                "username": "recipient",
+                "full_name": "Recipient User",
+            }
+
+    monkeypatch.setattr(server, "_require_turnstile", require_turnstile)
+    monkeypatch.setattr(server, "get_user", get_user)
+    monkeypatch.setattr(server, "get_app_features", get_app_features)
+    monkeypatch.setattr(server, "_active_exchange_crypto_assets", exchange_assets)
+    monkeypatch.setattr(server, "_transaction_email_settings", email_settings)
+    monkeypatch.setattr(server, "get_transfer_config", transfer_config)
+    monkeypatch.setattr(server, "_debit_wallet_once", debit)
+    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    monkeypatch.setattr(server, "record_tx", record_tx)
+    monkeypatch.setattr(server, "notify", notify)
+    monkeypatch.setattr(server, "db", SimpleNamespace(users=Users()))
+    request = SimpleNamespace(state=SimpleNamespace(merchant_api=False))
+    transfer_request = server.TransferRequest(
+        transfer_type="biz_to_biz",
+        recipient="recipient",
+        amount=2.5,
+        currency="USDT.TRC20",
+    )
+
+    result = asyncio.run(server.transfer(
+        transfer_request, request, uid="sender-1"))
+
+    assert result["recipient"]["username"] == "recipient"
+    assert transfer_calls["debits"] == [
+        ("sender-1", wallet_field, 2.5),
+    ]
+    assert transfer_calls["credits"] == [
+        ("recipient-1", wallet_field, 2.5),
+    ]
+    assert [
+        tx["currency"] for tx in transfer_calls["transactions"]
+    ] == ["USDT.TRC20", "USDT.TRC20"]
+
+    active_assets.clear()
+    with pytest.raises(server.HTTPException) as exc:
+        asyncio.run(server.transfer(
+            server.TransferRequest(
+                transfer_type="biz_to_biz",
+                recipient="recipient",
+                amount=1,
+                currency="USDT.TRC20",
+            ),
+            request,
+            uid="sender-1",
+        ))
+    assert exc.value.status_code == 400
+    assert len(transfer_calls["debits"]) == 1
 
 
 def test_exchange_rejects_unassigned_legacy_usdt():

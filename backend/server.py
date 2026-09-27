@@ -5523,6 +5523,12 @@ async def cancel_transfer_email_otp(
     return {"ok": True}
 
 
+TRANSFER_BASE_CURRENCIES = frozenset({
+    "XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX", "TZS", "KES",
+    "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP", "USDT",
+})
+
+
 @api.post("/transfers")
 async def transfer(req: TransferRequest, request: Request,
                    uid: str = Depends(require_recent_auth)):
@@ -5581,10 +5587,25 @@ async def transfer(req: TransferRequest, request: Request,
     if req.transfer_type == "biz_to_bank":
         raise HTTPException(410, "Le transfert bancaire n'est plus disponible sur Biz-transPay.")
 
-    field = (
-        "balance_usdt" if req.transfer_type == "biz_to_crypto"
-        else f"balance_{req.currency.lower()}"
-    )
+    currency_code = str(req.currency or "").strip().upper()
+    req.currency = currency_code
+    if req.transfer_type == "biz_to_biz" and currency_code in _EASY_CHANGE_ASSET_BY_ID:
+        features = await get_app_features()
+        if not features.get("wallet_crypto_enabled", True):
+            raise HTTPException(400, "Les portefeuilles crypto sont désactivés")
+        active_crypto_assets = await _active_exchange_crypto_assets()
+        crypto_asset = active_crypto_assets.get(currency_code)
+        if not crypto_asset or not crypto_asset.get("wallet_field"):
+            raise HTTPException(
+                400, "Cet actif crypto/réseau n’est pas disponible pour le transfert")
+        field = crypto_asset["wallet_field"]
+    elif currency_code in TRANSFER_BASE_CURRENCIES:
+        field = (
+            "balance_usdt" if req.transfer_type == "biz_to_crypto"
+            else f"balance_{currency_code.lower()}"
+        )
+    else:
+        raise HTTPException(400, "Devise de transfert non prise en charge")
     if req.transfer_type != "biz_to_crypto" and u.get(field, 0) < req.amount:
         raise HTTPException(400, "Solde insuffisant")
 
@@ -11880,17 +11901,19 @@ async def public_conversion_crypto_wallets(
     user = await get_user(uid)
     if not user:
         raise HTTPException(404, "Utilisateur introuvable")
-    return [
-        {
+    result = []
+    for asset_id, asset in sorted(assets.items()):
+        balance = float(user.get(asset["wallet_field"], 0.0) or 0.0)
+        result.append({
             "id": asset_id,
             "code": asset_id,
             "coin": asset["coin"],
             "network": asset["network"],
             "network_name": asset["network_name"],
-            "balance": float(user.get(asset["wallet_field"], 0.0) or 0.0),
-        }
-        for asset_id, asset in sorted(assets.items())
-    ]
+            "balance": balance,
+            "value_usdt": round(balance * float(asset["usdt_rate"]), 6),
+        })
+    return result
 
 
 async def _exchange_currency_info(

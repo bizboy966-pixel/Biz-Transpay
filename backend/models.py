@@ -212,10 +212,9 @@ class TransferRequest(BaseModel):
     bank: Optional[str] = None
     fee_bearer: Optional[Literal["sender", "receiver"]] = "sender"
     amount: float
-    currency: Literal[
-        "XOF", "XAF", "CDF", "USD", "GMD", "GNF", "UGX", "TZS", "KES",
-        "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP", "USDT"
-    ]
+    # Internal Biz-trans transfers may also use a fixed crypto/network asset
+    # id such as USDT.TRC20. The endpoint validates all currency values.
+    currency: str = Field(..., min_length=2, max_length=32)
     description: Optional[str] = ""
     metadata: Optional[dict] = None
     idempotency_key: Optional[str] = None

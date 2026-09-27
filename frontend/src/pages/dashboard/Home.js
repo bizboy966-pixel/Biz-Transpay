@@ -64,10 +64,20 @@ export default function DashboardHome() {
     () => activeCryptoWallets.filter((wallet) => wallet?.id),
     [activeCryptoWallets],
   );
+  const highestValueCryptoWallet = useMemo(
+    () => cryptoWalletOptions.reduce((best, wallet) => (
+      !best
+        || Number(wallet.value_usdt ?? wallet.balance ?? 0)
+          > Number(best.value_usdt ?? best.balance ?? 0)
+        ? wallet
+        : best
+    ), null),
+    [cryptoWalletOptions],
+  );
   useEffect(() => {
     if (cryptoWalletOptions.some((wallet) => wallet.id === selectedCryptoWallet)) return;
-    setSelectedCryptoWallet(cryptoWalletOptions[0]?.id || '');
-  }, [cryptoWalletOptions, selectedCryptoWallet]);
+    setSelectedCryptoWallet(highestValueCryptoWallet?.id || '');
+  }, [cryptoWalletOptions, highestValueCryptoWallet, selectedCryptoWallet]);
   const selectedWallet = cryptoWalletOptions.find(
     (wallet) => wallet.id === selectedCryptoWallet,
   );

@@ -26,3 +26,15 @@ The historical unassigned `balance_usdt` is not an Exchange currency. Exchange s
 **Why:** Showing an unassigned ticker beside network-specific wallets implies a network provenance that the historical balance does not have.
 
 **How to apply:** If the legacy balance must be displayed, keep it outside Exchange’s asset selector and never map it to a network wallet.
+
+Internal Biz-to-Biz crypto transfers must use an exact active deposit-catalog asset/network ID and debit and credit the same network-specific wallet field. Never convert the asset or fall back to the legacy `balance_usdt`.
+
+**Why:** A same-platform transfer should preserve the asset and network selected by the sender; silently changing either can misstate balances or send value into the wrong wallet.
+
+**How to apply:** Validate the selected ID against the active deposit catalog on the server and use that catalog entry’s wallet field on both sides of the transfer.
+
+When the dashboard defaults to a crypto wallet, compare active wallets by their USDT-equivalent value and keep manual selection available.
+
+**Why:** Raw quantities of different coins cannot be compared meaningfully.
+
+**How to apply:** Use the catalog’s normalized USDT value for default ranking; do not replace a still-valid user selection.
