@@ -3,6 +3,7 @@ import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Clipboard, C
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import api from '@/api';
+import ComplianceWarningModal from '@/components/ComplianceWarningModal';
 
 const ENVIRONMENTS = {
   test: { label: 'Sandbox', title: 'Environnement de test', tone: 'blue' },
@@ -88,6 +89,7 @@ export default function Integration() {
   const [deliveries, setDeliveries] = useState(null);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [deleteConfirmationPhrase, setDeleteConfirmationPhrase] = useState('');
+  const [complianceConfirmationOpen, setComplianceConfirmationOpen] = useState(false);
 
   const load = async (env = environment, { clearWebhookData = false } = {}) => {
     setLoading(true); setError('');
@@ -109,14 +111,15 @@ export default function Integration() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(environment); }, [environment]);
 
-  const createCredentials = async () => {
-    if (!window.confirm(`Créer des identifiants ${environment === 'live' ? 'Live' : 'Sandbox'} ? Cette action crée un secret qui ne sera visible qu’une fois.`)) return;
+  const createCredentials = () => setComplianceConfirmationOpen(true);
+  const confirmCreateCredentials = async () => {
     setBusy('credentials');
     try {
       const { data } = await api.post('/integration/credentials', {
         environment,
         payout_opt_in: false,
       });
+      setComplianceConfirmationOpen(false);
       setReveal({ secret: data.secret_key, type: 'Clé secrète', environment: ENVIRONMENTS[environment].label });
       await load();
     } catch (err) { toast.error(errorMessage(err, 'Les identifiants n’ont pas pu être créés.')); } finally { setBusy(''); }
@@ -238,6 +241,7 @@ export default function Integration() {
       </section>
     </>}
     <SecretReveal reveal={reveal} onClose={() => setReveal(null)} />
+    {complianceConfirmationOpen && <ComplianceWarningModal onConfirm={confirmCreateCredentials} onCancel={() => setComplianceConfirmationOpen(false)} busy={busy === 'credentials'} />}
     {deleteConfirmationOpen && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="delete-credentials-title">
       <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-red-200 bg-white shadow-2xl">
         <div className="flex items-start gap-3 border-b border-slate-100 p-5"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-red-100 text-red-700"><AlertTriangle className="h-5 w-5" /></div><div className="flex-1"><h2 id="delete-credentials-title" className="font-cabinet text-lg font-extrabold text-slate-900">Supprimer les identifiants {env.label} ?</h2><p className="mt-1 text-xs leading-relaxed text-slate-600">Cette action est définitive et nécessite une authentification récente.</p></div><button type="button" onClick={() => setDeleteConfirmationOpen(false)} disabled={busy === 'delete'} aria-label="Fermer" className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 disabled:opacity-40"><X className="h-4 w-4" /></button></div>

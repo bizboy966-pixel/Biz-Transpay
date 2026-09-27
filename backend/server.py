@@ -12765,7 +12765,7 @@ async def get_kyc(uid: str = Depends(get_current_user_id)):
 
 @api.post("/kyc/submit")
 async def submit_kyc(req: KycSubmit, uid: str = Depends(get_current_user_id)):
-    data = req.model_dump()
+    data = req.model_dump(mode="json")
     for field_name, required in (
         ("document_front", True),
         ("document_back", False),

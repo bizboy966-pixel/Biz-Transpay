@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { IdCard, Upload, CheckCircle2, Clock, XCircle, AlertTriangle, ShieldCheck, User, Phone, FileText, Briefcase } from 'lucide-react';
+import { IdCard, Upload, CheckCircle2, Clock, XCircle, AlertTriangle, ShieldCheck, User, Phone, FileText, Briefcase, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
@@ -30,6 +30,9 @@ export default function Kyc() {
     document_type: 'cni',
     document_number: '',
     activity_description: 'Commerce en ligne',
+    activity_details: '',
+    platform_status: 'not_available',
+    platform_url: '',
     document_front: '',
     document_back: '',
     selfie: '',
@@ -99,7 +102,10 @@ export default function Kyc() {
     }
     setLoading(true);
     try {
-      await api.post('/kyc/submit', form);
+      await api.post('/kyc/submit', {
+        ...form,
+        platform_url: form.platform_status === 'available' ? form.platform_url.trim() : null,
+      });
       toast.success('Demande soumise. En attente de validation.');
       setStatus('pending');
       refresh();
@@ -199,6 +205,31 @@ export default function Kyc() {
                 {ACTIVITIES.map((a) => <option key={a} value={a}>{a}</option>)}
               </select>
             </Field>
+            <Field label="Décrivez précisément votre activité (obligatoire)" icon={FileText}>
+              <textarea data-testid="kyc-activity-details" required minLength={10} maxLength={2000} value={form.activity_details} onChange={(e) => setForm({ ...form, activity_details: e.target.value })} rows={4} placeholder="Quels produits ou services proposez-vous ? À quels clients et par quels moyens vendez-vous ?" className="w-full resize-y rounded-xl border border-slate-200 py-2.5 pl-9 pr-3 text-sm outline-none focus:border-[#2563EB]" />
+            </Field>
+            <div className="mt-3">
+              <div className="mb-2 text-xs font-semibold text-slate-700">Votre plateforme est-elle déjà disponible ?</div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[
+                  { value: 'available', title: 'Oui, elle est disponible', description: 'Ajoutez le lien de votre plateforme.' },
+                  { value: 'not_available', title: 'Pas encore disponible', description: 'Soumettez une demande pour une plateforme en préparation.' },
+                ].map((option) => (
+                  <label key={option.value} className={`flex cursor-pointer items-start gap-2 rounded-xl border-2 p-3 transition-colors ${form.platform_status === option.value ? 'border-[#2563EB] bg-blue-50/60' : 'border-slate-200 hover:border-slate-300'}`}>
+                    <input type="radio" name="platform_status" value={option.value} required checked={form.platform_status === option.value} onChange={() => setForm({ ...form, platform_status: option.value, platform_url: option.value === 'available' ? form.platform_url : '' })} className="mt-0.5 accent-[#2563EB]" data-testid={`kyc-platform-${option.value}`} />
+                    <span>
+                      <span className="block text-xs font-bold text-slate-900">{option.title}</span>
+                      <span className="mt-0.5 block text-[10px] text-slate-500">{option.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            {form.platform_status === 'available' && (
+              <Field label="Lien vers votre plateforme (obligatoire)" icon={ExternalLink}>
+                <input data-testid="kyc-platform-url" type="url" required maxLength={2048} value={form.platform_url} onChange={(e) => setForm({ ...form, platform_url: e.target.value })} placeholder="https://votre-plateforme.com" className="w-full rounded-xl border border-slate-200 py-2.5 pl-9 pr-3 text-sm outline-none focus:border-[#2563EB]" />
+              </Field>
+            )}
           </Section>
 
           {/* Section 4 - Uploads */}
@@ -214,7 +245,7 @@ export default function Kyc() {
           </Section>
 
           <button type="submit" disabled={loading} data-testid="btn-submit-kyc" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3.5 rounded-xl disabled:opacity-60 text-sm">
-            {loading ? '…' : 'Soumettre la demande de vérification'}
+            {loading ? '…' : form.platform_status === 'available' ? 'Soumettre la demande de vérification' : 'Soumettre et demander l’intégration de ma plateforme'}
           </button>
         </form>
       )}

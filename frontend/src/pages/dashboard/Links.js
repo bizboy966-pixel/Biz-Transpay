@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import api from '@/api';
 import LinkLogo from '@/components/LinkLogo';
 import { SafeImage } from '@/components/SafeImage';
+import ComplianceWarningModal from '@/components/ComplianceWarningModal';
 
 const LINK_COPY = {
   general: 'Informations générales',
@@ -32,6 +33,7 @@ export default function Links() {
   const [showQr, setShowQr] = useState(null);
   const [showShare, setShowShare] = useState(null);
   const [showDetails, setShowDetails] = useState(null);
+  const [showCompliance, setShowCompliance] = useState(false);
   const [searchParams] = useSearchParams();
 
   const load = () => api.get('/links').then(({ data }) => setLinks(data)).catch(() => {});
@@ -39,9 +41,19 @@ export default function Links() {
   useEffect(() => {
     if (searchParams.get('create') === '1') {
       setEditing(null);
-      setShowForm(true);
+      setShowCompliance(true);
     }
   }, [searchParams]);
+
+  const beginLinkCreation = () => {
+    setEditing(null);
+    setShowCompliance(true);
+  };
+  const confirmLinkCreation = () => {
+    setShowCompliance(false);
+    setEditing(null);
+    setShowForm(true);
+  };
 
   // Public share URL — always uses the OFFICIAL domain in production so the
   // preview host never leaks into merchant-facing share/copy actions.
@@ -76,7 +88,7 @@ export default function Links() {
           <h1 className="font-cabinet text-2xl font-extrabold tracking-tighter text-slate-900">Liens de paiement</h1>
           <p className="text-slate-500 text-xs mt-1">Créez et gérez vos liens de paiement personnalisés.</p>
         </div>
-        <button onClick={() => { setEditing(null); setShowForm(true); }} data-testid="btn-open-new-link" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2.5 rounded-full text-xs shadow-[0_8px_20px_-8px_rgba(37,99,235,0.5)]">
+        <button onClick={beginLinkCreation} data-testid="btn-open-new-link" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2.5 rounded-full text-xs shadow-[0_8px_20px_-8px_rgba(37,99,235,0.5)]">
           <Plus className="w-3.5 h-3.5" /> Créer un lien de paiement
         </button>
       </div>
@@ -85,7 +97,7 @@ export default function Links() {
         <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-14 text-center">
           <div className="w-14 h-14 mx-auto rounded-2xl bg-blue-50 flex items-center justify-center"><Link2 className="w-6 h-6 text-[#2563EB]" /></div>
           <p className="mt-4 text-sm text-slate-500">Aucun lien de paiement pour l'instant.</p>
-          <button onClick={() => setShowForm(true)} className="mt-4 text-xs font-semibold text-[#2563EB]">Créer votre premier lien →</button>
+          <button onClick={beginLinkCreation} className="mt-4 text-xs font-semibold text-[#2563EB]">Créer votre premier lien →</button>
         </div>
       )}
 
@@ -139,6 +151,7 @@ export default function Links() {
         })}
       </div>
 
+      {showCompliance && <ComplianceWarningModal onConfirm={confirmLinkCreation} onCancel={() => setShowCompliance(false)} />}
       {showForm && <LinkForm initial={editing} onClose={() => { setShowForm(false); setEditing(null); }} onSaved={() => { setShowForm(false); setEditing(null); load(); }} />}
       {showQr && <QrModal link={showQr} url={publicUrl(showQr.slug)} onClose={() => setShowQr(null)} />}
       {showShare && <ShareModal url={publicUrl(showShare.slug)} title={showShare.title} onClose={() => setShowShare(null)} />}
@@ -173,24 +186,9 @@ function LinkForm({ initial, onClose, onSaved }) {
 
   const previewAmount = form.amount_type === 'fixed' ? parseFloat(form.amount) || 0 : parseFloat(form.max_amount) || 0;
 
-  const submit = async (e) => {
-    e.preventDefault();
+  const saveLink = async (payload) => {
     setPending(true);
     try {
-      const payload = {
-        title: form.title,
-        currency: form.currency,
-        description: form.description,
-        logo: form.logo || null,
-        amount_type: form.amount_type,
-        amount: form.amount_type === 'fixed' ? parseFloat(form.amount) : 0,
-        crypto_amount: form.amount_type === 'fixed' ? parseFloat(form.crypto_amount) : null,
-        min_amount: form.amount_type === 'free' ? parseFloat(form.min_amount) : null,
-        max_amount: form.amount_type === 'free' ? parseFloat(form.max_amount) : null,
-        crypto_min_amount: form.amount_type === 'free' ? parseFloat(form.crypto_min_amount) : null,
-        crypto_max_amount: form.amount_type === 'free' ? parseFloat(form.crypto_max_amount) : null,
-        fee_bearer: form.fee_bearer,
-      };
       if (isEdit) {
         await api.patch(`/links/${initial.id}`, payload);
         toast.success('Lien mis à jour');
@@ -201,6 +199,24 @@ function LinkForm({ initial, onClose, onSaved }) {
       onSaved();
     } catch (err) { toast.error(err.response?.data?.detail || 'Erreur'); }
     finally { setPending(false); }
+  };
+  const submit = (e) => {
+    e.preventDefault();
+    const payload = {
+      title: form.title,
+      currency: form.currency,
+      description: form.description,
+      logo: form.logo || null,
+      amount_type: form.amount_type,
+      amount: form.amount_type === 'fixed' ? parseFloat(form.amount) : 0,
+      crypto_amount: form.amount_type === 'fixed' ? parseFloat(form.crypto_amount) : null,
+      min_amount: form.amount_type === 'free' ? parseFloat(form.min_amount) : null,
+      max_amount: form.amount_type === 'free' ? parseFloat(form.max_amount) : null,
+      crypto_min_amount: form.amount_type === 'free' ? parseFloat(form.crypto_min_amount) : null,
+      crypto_max_amount: form.amount_type === 'free' ? parseFloat(form.crypto_max_amount) : null,
+      fee_bearer: form.fee_bearer,
+    };
+    saveLink(payload);
   };
 
   return (

@@ -58,6 +58,8 @@ export default function AdminKyc() {
               <div className="flex items-center gap-1.5"><IdCard className="w-3 h-3 text-slate-400" /> {DOC_TYPE_LABEL[k.document_type] || k.document_type} — {k.document_number}</div>
               <div className="flex items-center gap-1.5"><Phone className="w-3 h-3 text-slate-400" /> {k.phone}</div>
               <div className="flex items-center gap-1.5"><Briefcase className="w-3 h-3 text-slate-400" /> {k.activity_description}</div>
+                <div className="line-clamp-2 pt-1 text-[11px] text-slate-600">{k.activity_details || 'Description détaillée non renseignée'}</div>
+                <div className="pt-1 text-[11px] font-semibold text-slate-700">{k.platform_status === 'available' ? 'Plateforme disponible' : 'Plateforme en préparation — demande soumise'}</div>
               <div className="text-[10px] text-slate-400 pt-1">Soumis le {new Date(k.submitted_at).toLocaleString()}</div>
             </div>
             <div className="mt-3 grid grid-cols-3 gap-1.5">
@@ -80,6 +82,21 @@ export default function AdminKyc() {
               <Row I={Phone} l="Téléphone" v={selected.phone} />
               <Row I={IdCard} l="Document" v={`${DOC_TYPE_LABEL[selected.document_type] || selected.document_type} — ${selected.document_number}`} />
               <Row I={Briefcase} l="Activité" v={selected.activity_description} />
+            </div>
+            <div className="mb-4 space-y-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Description détaillée de l’activité</div>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-slate-800">{selected.activity_details || 'Non renseignée'}</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Plateforme</div>
+                <div className="mt-1 text-sm text-slate-800">{selected.platform_status === 'available' ? 'Déjà disponible' : 'Pas encore disponible — demande de validation soumise'}</div>
+                {selected.platform_status === 'available' && selected.platform_url && (
+                  <a href={selected.platform_url} target="_blank" rel="noreferrer" className="mt-1 inline-flex max-w-full items-center gap-1 break-all text-sm font-semibold text-blue-700 underline underline-offset-2">
+                    {selected.platform_url}<ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                  </a>
+                )}
+              </div>
             </div>
             <div className="grid grid-cols-3 gap-2 mb-4">
               <DocThumb src={selected.document_front} label="Recto" onClick={() => setViewImg({ src: selected.document_front, label: 'Recto' })} big />

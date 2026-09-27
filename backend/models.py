@@ -1,5 +1,5 @@
 """Pydantic models for Biz-transPay."""
-from pydantic import BaseModel, Field, EmailStr, ConfigDict
+from pydantic import AnyHttpUrl, BaseModel, Field, EmailStr, ConfigDict, model_validator
 from typing import Optional, List, Literal
 from datetime import datetime, timezone
 import uuid
@@ -287,9 +287,23 @@ class KycSubmit(BaseModel):
     document_type: Literal["cni", "passport", "driver_license"]
     document_number: str = Field(..., min_length=1, max_length=100)
     activity_description: str = Field(..., min_length=1, max_length=500)
+    activity_details: str = Field(..., min_length=10, max_length=2000)
+    platform_status: Literal["available", "not_available"]
+    platform_url: Optional[AnyHttpUrl] = None
     document_front: Optional[str] = Field(None, max_length=4_200_000)  # raster data URL
     document_back: Optional[str] = Field(None, max_length=4_200_000)
     selfie: Optional[str] = Field(None, max_length=4_200_000)
+
+    @model_validator(mode="after")
+    def validate_platform_details(self):
+        self.activity_details = self.activity_details.strip()
+        if len(self.activity_details) < 10:
+            raise ValueError("La description de l’activité doit contenir au moins 10 caractères utiles.")
+        if self.platform_status == "available" and self.platform_url is None:
+            raise ValueError("L’adresse de la plateforme est obligatoire si elle est déjà disponible.")
+        if self.platform_status == "not_available" and self.platform_url is not None:
+            raise ValueError("Ne renseignez pas de lien si la plateforme n’est pas encore disponible.")
+        return self
 
 
 # ---------- Settings ----------
