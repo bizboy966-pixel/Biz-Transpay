@@ -39,7 +39,7 @@ export default function DashboardLayout() {
   ];
   const bottomNav = [
     { to: '/dashboard', end: true, i: Home, image: '/images/home-dashboard-icon.webp', l: t('dashboard.bottom_home') },
-    { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions') },
+    { to: '/dashboard/transactions', i: Receipt, image: '/images/transactions-dashboard-icon.webp', l: t('dashboard.transactions') },
     { to: '/dashboard/deposit', i: ScanLine, image: '/images/deposit-dashboard-icon.webp', l: t('dashboard.deposit'), prominent: true },
     {
       to: '/dashboard/services',
