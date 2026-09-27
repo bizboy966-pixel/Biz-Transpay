@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import hashlib
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -406,13 +407,17 @@ def test_resend_failure_is_swallowed_and_marked_failed(monkeypatch):
     assert outbox.docs[0]["failure_type"] == "RuntimeError"
 
 
-def test_resend_adapter_uses_mock_transport_and_idempotency_header():
+def test_resend_adapter_uses_mock_transport_and_idempotency_header(monkeypatch):
     captured = {}
 
     async def handler(request):
         captured["key"] = request.headers.get("Idempotency-Key")
         captured["authorization"] = request.headers.get("Authorization")
         return httpx.Response(202, json={"id": "mock-message"})
+
+    monkeypatch.delenv("REPLIT_CONNECTORS_HOSTNAME", raising=False)
+    monkeypatch.delenv("REPL_IDENTITY", raising=False)
+    monkeypatch.delenv("WEB_REPL_RENEWAL", raising=False)
 
     async def run():
         await email_delivery.send_resend_email(
@@ -431,6 +436,130 @@ def test_resend_adapter_uses_mock_transport_and_idempotency_header():
         "key": "idempotent-test",
         "authorization": "Bearer offline-test-value",
     }
+
+
+def test_resend_adapter_uses_replit_connector_without_api_key(monkeypatch):
+    captured = {}
+
+    async def handler(request):
+        captured["url"] = str(request.url)
+        captured["connector"] = request.headers.get("Connector-Name")
+        captured["idempotency"] = request.headers.get("Idempotency-Key")
+        captured["proxy_token"] = request.headers.get("X-Replit-Token")
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(202, json={"id": "mock-connector-message"})
+
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.setenv("REPLIT_CONNECTORS_HOSTNAME", "localhost:8080")
+    monkeypatch.setenv("REPL_IDENTITY", "offline-connector-identity")
+    monkeypatch.delenv("WEB_REPL_RENEWAL", raising=False)
+
+    async def run():
+        await email_delivery.send_resend_email(
+            sender="notifications@example.com",
+            recipient="member@example.com",
+            subject="Test",
+            text="Offline connector test",
+            html="<p>Offline connector test</p>",
+            idempotency_key="connector-idempotent-test",
+            transport=httpx.MockTransport(handler),
+        )
+
+    asyncio.run(run())
+    assert captured == {
+        "url": "http://localhost:8080/api/v2/proxy/emails",
+        "connector": "resend",
+        "idempotency": "connector-idempotent-test",
+        "proxy_token": "repl offline-connector-identity",
+        "authorization": None,
+        "payload": {
+            "from": "notifications@example.com",
+            "to": ["member@example.com"],
+            "subject": "Test",
+            "text": "Offline connector test",
+            "html": "<p>Offline connector test</p>",
+        },
+    }
+
+
+def test_resend_adapter_uses_deployment_connector_token(monkeypatch):
+    captured = {}
+
+    async def handler(request):
+        captured["url"] = str(request.url)
+        captured["proxy_token"] = request.headers.get("X-Replit-Token")
+        return httpx.Response(202, json={"id": "mock-deployment-message"})
+
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.setenv("REPLIT_CONNECTORS_HOSTNAME", "connectors.replit.test")
+    monkeypatch.delenv("REPL_IDENTITY", raising=False)
+    monkeypatch.setenv("WEB_REPL_RENEWAL", "offline-deployment-renewal")
+
+    async def run():
+        await email_delivery.send_resend_email(
+            sender="notifications@example.com",
+            recipient="member@example.com",
+            subject="Test",
+            text="Offline deployment connector test",
+            html="<p>Offline deployment connector test</p>",
+            idempotency_key="deployment-idempotent-test",
+            transport=httpx.MockTransport(handler),
+        )
+
+    asyncio.run(run())
+    assert captured == {
+        "url": "https://connectors.replit.test/api/v2/proxy/emails",
+        "proxy_token": "depl offline-deployment-renewal",
+    }
+
+
+def test_resend_adapter_prefers_connector_over_legacy_api_key(monkeypatch):
+    captured = {}
+
+    async def handler(request):
+        captured["url"] = str(request.url)
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["connector"] = request.headers.get("Connector-Name")
+        return httpx.Response(202, json={"id": "mock-preferred-connector"})
+
+    monkeypatch.setenv("RESEND_API_KEY", "offline-legacy-key")
+    monkeypatch.setenv("REPLIT_CONNECTORS_HOSTNAME", "localhost:8080")
+    monkeypatch.setenv("REPL_IDENTITY", "offline-connector-identity")
+    monkeypatch.delenv("WEB_REPL_RENEWAL", raising=False)
+
+    async def run():
+        await email_delivery.send_resend_email(
+            api_key="offline-legacy-key",
+            sender="notifications@example.com",
+            recipient="member@example.com",
+            subject="Test",
+            text="Connector preference test",
+            html="<p>Connector preference test</p>",
+            idempotency_key="connector-preferred",
+            transport=httpx.MockTransport(handler),
+        )
+
+    asyncio.run(run())
+    assert captured == {
+        "url": "http://localhost:8080/api/v2/proxy/emails",
+        "authorization": None,
+        "connector": "resend",
+    }
+
+
+def test_transaction_email_status_accepts_attached_resend_connector(monkeypatch):
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.setenv("REPLIT_CONNECTORS_HOSTNAME", "connectors.replit.test")
+    monkeypatch.setenv("REPL_IDENTITY", "offline-connector-identity")
+    status = server._transaction_email_status({
+        "enabled": False,
+        "withdrawal_otp_enabled": True,
+        "sender_email": "notifications@example.com",
+    })
+    assert status["resend_configured"] is True
+    assert status["ready_to_send"] is True
+    assert status["withdrawal_otp_active"] is True
 
 
 def test_withdrawal_email_otp_gates_biz_to_biz_and_is_one_time(monkeypatch):
@@ -606,6 +735,9 @@ def test_admin_cannot_enable_withdrawal_otp_without_resend(monkeypatch):
     settings = _Collection()
     monkeypatch.setattr(server, "db", SimpleNamespace(settings=settings))
     monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    monkeypatch.delenv("REPLIT_CONNECTORS_HOSTNAME", raising=False)
+    monkeypatch.delenv("REPL_IDENTITY", raising=False)
+    monkeypatch.delenv("WEB_REPL_RENEWAL", raising=False)
 
     with pytest.raises(server.HTTPException) as error:
         asyncio.run(server.admin_update_email_notifications(

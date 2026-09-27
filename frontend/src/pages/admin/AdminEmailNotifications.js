@@ -168,7 +168,7 @@ export default function AdminEmailNotifications() {
           <div>
             <h2 className="font-bold text-slate-900">Expéditeur Resend</h2>
             <p className="mt-1 text-xs text-slate-500">
-              Saisissez une adresse que vous avez confirmée et dont le domaine est validé dans Resend.
+              Saisissez une adresse sur un domaine validé dans Resend.
             </p>
           </div>
           <input
@@ -177,13 +177,13 @@ export default function AdminEmailNotifications() {
             onChange={(event) => setSenderEmail(event.target.value)}
             disabled={!canEdit}
             maxLength={254}
-            placeholder="notifications@votre-domaine.com"
+            placeholder="notifications@biz-transppayy.com"
             className="bt-field"
           />
           {!settings.resend_configured && (
             <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <p>Le secret <code>RESEND_API_KEY</code> doit être configuré dans les Secrets Replit. Ne le saisissez pas ici.</p>
+              <p>Connectez Resend via les intégrations Replit. Les anciennes configurations peuvent conserver <code>RESEND_API_KEY</code> dans les Secrets ; ne saisissez aucune clé ici.</p>
             </div>
           )}
           {!settings.password_reset_ready && (

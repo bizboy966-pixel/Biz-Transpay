@@ -54,7 +54,7 @@ from models import (  # noqa: E402
 )
 import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token  # noqa: E402
-from email_delivery import send_resend_email  # noqa: E402
+from email_delivery import resend_is_configured, send_resend_email  # noqa: E402
 from postgres_document_store import create_database  # noqa: E402
 from scripts.retire_merchant_api_data import (  # noqa: E402
     OLD_COLLECTIONS, SELECTOR as LEGACY_MERCHANT_SELECTOR, digest as legacy_merchant_digest,
@@ -2170,7 +2170,7 @@ async def _transaction_email_settings() -> dict:
 
 def _transaction_email_status(settings: dict) -> dict:
     sender = str(settings.get("sender_email") or "").strip()
-    api_key_ready = bool(os.environ.get("RESEND_API_KEY", "").strip())
+    resend_ready = resend_is_configured()
     sender_ready = bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", sender))
     return {
         "enabled": bool(settings.get("enabled")),
@@ -2178,14 +2178,14 @@ def _transaction_email_status(settings: dict) -> dict:
         "recipient_type": "transaction_user",
         "event_types": list(settings.get("event_types") or []),
         "content_fields": list(settings.get("content_fields") or []),
-        "resend_configured": api_key_ready,
+        "resend_configured": resend_ready,
         "sender_configured": sender_ready,
-        "ready_to_send": api_key_ready and sender_ready,
-        "active": bool(settings.get("enabled") and api_key_ready and sender_ready),
+        "ready_to_send": resend_ready and sender_ready,
+        "active": bool(settings.get("enabled") and resend_ready and sender_ready),
         "withdrawal_otp_enabled": bool(settings.get("withdrawal_otp_enabled")),
         "withdrawal_otp_active": bool(
             settings.get("withdrawal_otp_enabled")
-            and api_key_ready
+            and resend_ready
             and sender_ready
         ),
     }
@@ -15613,14 +15613,14 @@ async def admin_update_email_notifications(
     if req.enabled and not delivery_status["ready_to_send"]:
         raise HTTPException(
             409,
-            "Confirmez une adresse d’expédition et configurez RESEND_API_KEY "
-            "dans les Secrets Replit avant d’activer les envois.",
+            "Connectez Resend aux intégrations Replit (ou configurez RESEND_API_KEY "
+            "dans les Secrets) et confirmez une adresse d’expédition avant d’activer les envois.",
         )
     if withdrawal_otp_enabled and not delivery_status["ready_to_send"]:
         raise HTTPException(
             409,
-            "Confirmez une adresse d’expédition et configurez RESEND_API_KEY "
-            "dans les Secrets Replit avant d’activer la confirmation OTP.",
+            "Connectez Resend aux intégrations Replit (ou configurez RESEND_API_KEY "
+            "dans les Secrets) et confirmez une adresse d’expédition avant d’activer la confirmation OTP.",
         )
     candidate["updated_at"] = now_iso()
     candidate["updated_by"] = admin["id"]

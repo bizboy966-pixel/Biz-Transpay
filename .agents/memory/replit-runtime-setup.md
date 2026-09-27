@@ -38,3 +38,16 @@ intermittently.
 **How to apply:** Track both child PIDs, wait for either service to exit, and
 terminate both children from signal and exit traps. Verify lifecycle changes
 with two consecutive workflow restarts, not only a first successful start.
+
+For some integrations, an app-code snippet can reference a Python connector
+package that is not available from the active Replit package registry. The
+runtime-injected Replit connector proxy may still be available without adding
+that package.
+
+**Why:** The generated Resend Python package could not be resolved by the
+workspace package manager, while Replit's documented proxy contract was usable.
+
+**How to apply:** Check the active registry before adding connector SDK
+dependencies. If the package is unavailable, use the documented runtime proxy
+contract and mock the HTTP transport in tests; never expose provider credentials
+to the frontend or send live messages as a smoke test.
