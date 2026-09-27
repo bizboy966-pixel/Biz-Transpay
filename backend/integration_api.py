@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Literal, Optional
 from urllib.parse import urlsplit
 
@@ -16,7 +17,7 @@ import httpcore
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from pymongo.errors import DuplicateKeyError
 
 
@@ -105,6 +106,27 @@ ENDPOINTS = [
     {"method": "GET", "path": "/api/integration/v1/transactions",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
      "purpose": "Lister les opérations d’intégration de cet environnement."},
+    {"method": "GET", "path": "/api/integration/v1/crypto/assets",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Lister les actifs et réseaux crypto activés pour les dépôts ou les retraits."},
+    {"method": "POST", "path": "/api/integration/v1/crypto/deposits",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Créer une adresse de dépôt crypto pour créditer le portefeuille réseau du marchand."},
+    {"method": "GET", "path": "/api/integration/v1/crypto/deposits/{deposit_id}",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Consulter un dépôt crypto et son état de confirmation."},
+    {"method": "GET", "path": "/api/integration/v1/crypto/deposits",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Lister les dépôts crypto créés par cette intégration."},
+    {"method": "POST", "path": "/api/integration/v1/crypto/payouts",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Envoyer une crypto sur le réseau choisi depuis le portefeuille réseau du marchand."},
+    {"method": "GET", "path": "/api/integration/v1/crypto/payouts/{payout_id}",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Consulter le statut d’un retrait crypto."},
+    {"method": "GET", "path": "/api/integration/v1/crypto/payouts",
+     "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
+     "purpose": "Lister les retraits crypto créés par cette intégration."},
 ]
 
 
@@ -216,6 +238,49 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 "required_scope": scope,
             })
 
+    def public_crypto_deposit(doc: dict) -> dict:
+        shown = {key: doc.get(key) for key in (
+            "id", "status", "amount", "asset_code", "coin", "network",
+            "credit_currency", "deposit_address", "memo", "memo_type",
+            "amount_to_send", "expires_at", "fee_pct", "fee_fixed",
+            "fee", "amount_net", "tx_hash",
+            "created_at", "updated_at",
+        )}
+        shown["pending_manual"] = (
+            doc.get("status") in {"creating", "provider_unknown"}
+            and not doc.get("deposit_address"))
+        return shown
+
+    def public_crypto_payout(tx: dict) -> dict:
+        metadata = tx.get("metadata") or {}
+        return {
+            "id": tx.get("id"), "status": tx.get("status"),
+            "amount": metadata.get("amount_gross", tx.get("amount")),
+            "asset_code": metadata.get("asset_code", tx.get("currency")),
+            "coin": metadata.get("crypto"), "network": metadata.get("network"),
+            "wallet_address": metadata.get("wallet_address", tx.get("counterparty")),
+            "destination_memo": metadata.get("destination_memo"),
+            "fee": metadata.get("fee"), "fee_bearer": metadata.get("fee_bearer"),
+            "recipient_gets": metadata.get("recipient_gets"),
+            "total_debit": metadata.get("total_debit"),
+            "pending_manual": bool(metadata.get("manual_review_required")
+                                   or metadata.get("provider_outcome_unknown")),
+            "tx_hash": metadata.get("tx_hash"), "created_at": tx.get("created_at"),
+        }
+
+    async def crypto_features(direction: str) -> None:
+        features = await ctx["get_app_features"]()
+        if features.get("wallet_crypto_enabled") is False or features.get(
+                "deposit_crypto_enabled" if direction == "deposit"
+                else "withdrawal_crypto_enabled") is False:
+            raise HTTPException(403, "Les opérations crypto sont désactivées")
+
+    def require_crypto_precision(amount: float) -> None:
+        # Both IziPay intent and payout handlers format the provider amount
+        # with six decimal places. Reject values they would silently round.
+        if Decimal(str(amount)).as_tuple().exponent < -6:
+            raise HTTPException(400, "Montant crypto limité à 6 décimales")
+
     async def rate_limit(credential: dict) -> None:
         window = int(time.time() // 60)
         doc_id = hashlib.sha256(
@@ -244,7 +309,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             })
         return key
 
-    async def claim(credential: dict, key: str, action: str, payload: Any) -> tuple[dict, bool]:
+    async def claim(credential: dict, key: str, action: str, payload: Any,
+                    reference: Optional[str] = None) -> tuple[dict, bool]:
         uid, env = credential["user_id"], credential["environment"]
         fingerprint = hashlib.sha256(json.dumps(
             payload, sort_keys=True, separators=(",", ":"), default=str
@@ -272,6 +338,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             "action": action, "fingerprint": fingerprint, "response": None,
             "created_at": now(),
         }
+        if reference is not None:
+            doc["reference"] = reference
         try:
             await db.integration_idempotency.insert_one(doc)
         except DuplicateKeyError:
@@ -307,13 +375,21 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 business = await db.momo_deposits.find_one(
                     {"id": str(business_id), "user_id": doc["user_id"]},
                     {"_id": 0, "status": 1})
-            elif kind in {"payout", "exchange"}:
+            elif kind == "crypto_deposit":
+                business = await db.crypto_deposits.find_one(
+                    {"id": str(business_id), "user_id": doc["user_id"]},
+                    {"_id": 0, "status": 1})
+            elif kind in {"payout", "exchange", "crypto_payout"}:
                 business = await db.transactions.find_one(
                     {"id": str(business_id), "user_id": doc["user_id"]},
                     {"_id": 0, "status": 1})
             if business and business.get("status"):
                 status = str(business["status"]).lower()
                 response["status"] = status
+                if kind == "crypto_deposit":
+                    response["deposit"]["status"] = status
+                elif kind == "crypto_payout":
+                    response["payout"]["status"] = status
         if business_id:
             operation = {
                 "id": f"{doc['id']}:{kind}", "user_id": doc["user_id"],
@@ -335,7 +411,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                               "reference": reference, "updated_at": now()}},
                 )
             if kind != "link":
-                terminal = status in {"completed", "success", "paid", "approved"}
+                terminal = status in {"completed", "success", "paid", "approved"} or (
+                    kind == "crypto_deposit" and status == "confirmed")
                 failed = status in {"failed", "cancelled", "rejected", "expired"}
                 event_kind = "payment" if kind == "deposit" else kind
                 suffix = "success" if terminal else ("failed" if failed else "pending")
@@ -345,6 +422,10 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     f"{event_kind}:{business_id}:{status}")
                 if kind == "deposit":
                     latest = await db.momo_deposits.find_one(
+                        {"id": str(business_id), "user_id": doc["user_id"]},
+                        {"_id": 0, "status": 1})
+                elif kind == "crypto_deposit":
+                    latest = await db.crypto_deposits.find_one(
                         {"id": str(business_id), "user_id": doc["user_id"]},
                         {"_id": 0, "status": 1})
                 else:
@@ -377,10 +458,25 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             business = await db.momo_deposits.find_one(
                 {"user_id": uid, "idempotency_key": internal_key}, {"_id": 0})
             business_id = (business or {}).get("id") or business_id
+        elif kind == "crypto_deposit":
+            business = await db.crypto_deposits.find_one(
+                {"user_id": uid, "idempotency_key": internal_key}, {"_id": 0})
+            business_id = (business or {}).get("id") or business_id
+            if not business and business_id:
+                business = await db.crypto_deposits.find_one(
+                    {"id": str(business_id), "user_id": uid}, {"_id": 0})
         elif kind == "payout":
             business = await db.transactions.find_one(
                 {"user_id": uid, "metadata.idempotency_key": internal_key,
                  "metadata.transfer_type": "biz_to_mobile"}, {"_id": 0})
+            business_id = (business or {}).get("id") or business_id
+            if not business and business_id:
+                business = await db.transactions.find_one(
+                    {"id": str(business_id), "user_id": uid}, {"_id": 0})
+        elif kind == "crypto_payout":
+            business = await db.transactions.find_one(
+                {"user_id": uid, "metadata.idempotency_key": internal_key,
+                 "metadata.transfer_type": "biz_to_crypto"}, {"_id": 0})
             business_id = (business or {}).get("id") or business_id
             if not business and business_id:
                 business = await db.transactions.find_one(
@@ -428,6 +524,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             public = ctx.get("_public_momo_deposit")
             shown = public(business) if public else business
             response = {"id": str(business_id), "status": status, "deposit": shown}
+        elif kind == "crypto_deposit":
+            response = {
+                "id": str(business_id), "status": status,
+                "deposit": public_crypto_deposit(business),
+            }
         elif kind == "payout":
             metadata = business.get("metadata") or {}
             payout = {
@@ -440,6 +541,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             if metadata.get("manual_review_required"):
                 payout["pending_manual"] = True
             response = {"id": str(business_id), "status": status, "payout": payout}
+        elif kind == "crypto_payout":
+            response = {
+                "id": str(business_id), "status": status,
+                "payout": public_crypto_payout(business),
+            }
         elif kind == "exchange":
             metadata = business.get("metadata") or {}
             response = {
@@ -458,7 +564,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             status = "active"
         await finish_claim(
             claim_doc, response, kind, str(business_id), status,
-            reference=(mapping or {}).get("reference"))
+            reference=(mapping or {}).get("reference") or claim_doc.get("reference"))
         return True
 
     async def deliver_event(uid: str, env: str, event_type: str, data: dict,
@@ -551,7 +657,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             {"$set": {"status": status, "updated_at": now()}})
 
     async def queue_operation_event(operation: dict, status: str) -> None:
-        terminal = status in {"completed", "success", "paid", "approved"}
+        terminal = status in {"completed", "success", "paid", "approved"} or (
+            operation["kind"] == "crypto_deposit" and status == "confirmed")
         failed = status in {"failed", "cancelled", "rejected", "expired"}
         suffix = "success" if terminal else ("failed" if failed else "pending")
         event_kind = "payment" if operation["kind"] == "deposit" else operation["kind"]
@@ -675,6 +782,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     continue
                 if operation["kind"] == "deposit":
                     actual = await db.momo_deposits.find_one({
+                        "id": operation["business_id"],
+                        "user_id": operation["user_id"],
+                    }, {"_id": 0, "status": 1})
+                elif operation["kind"] == "crypto_deposit":
+                    actual = await db.crypto_deposits.find_one({
                         "id": operation["business_id"],
                         "user_id": operation["user_id"],
                     }, {"_id": 0, "status": 1})
@@ -837,6 +949,23 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         reference: Optional[str] = None
         description: Optional[str] = None
         fee_bearer: Literal["sender", "receiver"] = "sender"
+
+    class CryptoDepositBody(BaseModel):
+        amount: float = Field(..., gt=0, allow_inf_nan=False)
+        asset_code: str = Field(..., min_length=3, max_length=32)
+        full_name: str = Field(..., min_length=1, max_length=120)
+        email: EmailStr
+        refund_address: str = Field(..., min_length=1, max_length=200)
+        reference: Optional[str] = Field(None, max_length=120)
+
+    class CryptoPayoutBody(BaseModel):
+        amount: float = Field(..., gt=0, allow_inf_nan=False)
+        asset_code: str = Field(..., min_length=3, max_length=32)
+        wallet_address: str = Field(..., min_length=1, max_length=200)
+        destination_memo: Optional[str] = Field(None, max_length=120)
+        fee_bearer: Literal["sender", "receiver"] = "sender"
+        reference: Optional[str] = Field(None, max_length=120)
+        description: Optional[str] = Field(None, max_length=500)
 
     class ExchangeBody(BaseModel):
         from_currency: str
@@ -1107,6 +1236,169 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                            credential: dict = Depends(authenticate)):
         return await list_operations(credential, "payout", limit)
 
+    @v1.get("/crypto/assets")
+    async def crypto_asset_catalog(
+            direction: Literal["deposit", "payout"] = "deposit",
+            credential: dict = Depends(authenticate)):
+        await crypto_features(direction)
+        if direction == "deposit":
+            assets = await ctx["crypto_assets"]()
+            return [{
+                "asset_code": asset["asset_code"],
+                "coin": asset["coin"], "network": asset["network"],
+                "network_name": asset["network_name"],
+                "minimum": asset["minimum"], "maximum": asset["maximum"],
+                "memo_required": asset["memo_required"],
+                "fee_pct": asset["fee_pct"], "fee_fixed": asset["fee_fixed"],
+            } for asset in assets]
+        coins = await ctx["public_crypto_coins"](credential["user_id"])
+        return [{
+            "asset_code": network["asset_code"],
+            "coin": coin["coin"], "network": network["code"],
+            "network_name": network["name"],
+            "minimum": network["min"], "maximum": network["max"],
+            "memo_required": network["memo_required"],
+            "balance": network["balance"],
+            "fee_pct": network["fee_pct"], "fee_fixed": network["fee_fixed"],
+        } for coin in coins for network in coin["networks"]]
+
+    @v1.post("/crypto/deposits")
+    async def start_crypto_deposit(body: CryptoDepositBody, request: Request,
+                                   credential: dict = Depends(authenticate)):
+        require_scope(credential, "deposits:write")
+        require_live(credential)
+        await crypto_features("deposit")
+        require_crypto_precision(body.amount)
+        key = require_idempotency(request)
+        payload = body.model_dump(mode="json")
+        claim_doc, replay = await claim(
+            credential, key, "crypto_deposit", payload, reference=body.reference)
+        if replay:
+            return claim_doc["response"]
+        try:
+            deposit = await ctx["create_crypto_deposit"](
+                ctx["CryptoDepositRequest"](
+                    amount=body.amount, asset_code=body.asset_code,
+                    full_name=body.full_name, email=body.email,
+                    refund_address=body.refund_address, origin_url="",
+                    idempotency_key=f"btpi_{claim_doc['id'][:64]}",
+                ), credential["user_id"])
+        except HTTPException as exc:
+            # The provider may have accepted the intent without returning an
+            # address. Make its durable local row discoverable by this key,
+            # without creating a second upstream intent.
+            if exc.status_code >= 500 and await recover_claim(credential, claim_doc):
+                return claim_doc["response"]
+            raise
+        response = {
+            "id": deposit["id"], "status": deposit["status"],
+            "deposit": public_crypto_deposit(deposit),
+        }
+        await finish_claim(
+            claim_doc, response, "crypto_deposit", deposit["id"],
+            status=deposit["status"], reference=body.reference)
+        return response
+
+    @v1.get("/crypto/deposits/{deposit_id}")
+    async def get_integration_crypto_deposit(
+            deposit_id: str, credential: dict = Depends(authenticate)):
+        op = await lookup_operation(credential, "crypto_deposit", deposit_id)
+        deposit = await ctx["get_crypto_deposit"](
+            deposit_id, credential["user_id"])
+        await emit_transition(op, str(deposit.get("status") or "pending").lower())
+        return public_crypto_deposit(deposit)
+
+    @v1.get("/crypto/deposits")
+    async def list_integration_crypto_deposits(
+            limit: int = Query(100, ge=1, le=500),
+            credential: dict = Depends(authenticate)):
+        return await list_operations(credential, "crypto_deposit", limit)
+
+    @v1.post("/crypto/payouts")
+    async def start_crypto_payout(body: CryptoPayoutBody, request: Request,
+                                  credential: dict = Depends(authenticate)):
+        require_scope(credential, "payouts:write")
+        require_live(credential)
+        if not credential.get("payout_opt_in"):
+            raise HTTPException(403, "Explicit live payout opt-in and payouts:write scope required")
+        await crypto_features("payout")
+        require_crypto_precision(body.amount)
+        key = require_idempotency(request)
+        # Use the same active provider code advertised to API clients, which
+        # may differ from the local fixed wallet ID (e.g. provider aliases).
+        coins = await ctx["public_crypto_coins"](credential["user_id"])
+        active = next((
+            (coin, network)
+            for coin in coins for network in coin["networks"]
+            if network["asset_code"].upper() == body.asset_code.strip().upper()
+        ), None)
+        spec = (ctx["_crypto_wallet_spec"](
+            coin=active[0]["coin"], network=active[1]["code"])
+            if active else None)
+        if not spec:
+            raise HTTPException(400, "Cryptomonnaie ou réseau non pris en charge")
+        if body.fee_bearer == "receiver":
+            fees = await ctx["_crypto_withdrawal_fee_components"](
+                spec["coin"], body.amount, asset_id=spec["id"])
+            recipient_gets = round(body.amount - fees["fee"], 8)
+            if recipient_gets <= 0 or Decimal(str(recipient_gets)).as_tuple().exponent < -6:
+                raise HTTPException(
+                    400, "Montant net après frais non représentable à 6 décimales")
+        payload = body.model_dump(mode="json")
+        claim_doc, replay = await claim(
+            credential, key, "crypto_payout", payload, reference=body.reference)
+        if replay:
+            return claim_doc["response"]
+        request.state.merchant_api = True
+        transfer_request = ctx["TransferRequest"](
+            transfer_type="biz_to_crypto",
+            recipient=body.wallet_address, wallet_address=body.wallet_address,
+            crypto=spec["coin"], network=spec["network_code"],
+            asset_code=body.asset_code.strip().upper(),
+            amount=body.amount, currency="USDT",
+            destination_memo=body.destination_memo,
+            fee_bearer=body.fee_bearer,
+            description=body.description or "",
+            idempotency_key=f"btpi_{claim_doc['id'][:64]}",
+            metadata={"integration_reference": body.reference} if body.reference else None,
+        )
+        result = await ctx["transfer"](
+            transfer_request, request, credential["user_id"])
+        tx = result.get("transaction") or {}
+        if hasattr(tx, "model_dump"):
+            tx = tx.model_dump()
+        business_id = tx.get("id")
+        if not business_id:
+            raise HTTPException(502, "Résultat du retrait crypto incertain")
+        latest = await db.transactions.find_one(
+            {"id": business_id, "user_id": credential["user_id"]}, {"_id": 0})
+        tx = latest or tx
+        response = {
+            "id": business_id, "status": tx.get("status", "pending"),
+            "payout": public_crypto_payout(tx),
+        }
+        await finish_claim(
+            claim_doc, response, "crypto_payout", business_id,
+            response["status"], reference=body.reference)
+        return response
+
+    @v1.get("/crypto/payouts/{payout_id}")
+    async def get_integration_crypto_payout(
+            payout_id: str, credential: dict = Depends(authenticate)):
+        op = await lookup_operation(credential, "crypto_payout", payout_id)
+        tx = await db.transactions.find_one(
+            {"id": payout_id, "user_id": credential["user_id"]}, {"_id": 0})
+        if not tx:
+            raise HTTPException(404, "Crypto payout not found")
+        await emit_transition(op, str(tx.get("status") or "pending").lower())
+        return public_crypto_payout(tx)
+
+    @v1.get("/crypto/payouts")
+    async def list_integration_crypto_payouts(
+            limit: int = Query(100, ge=1, le=500),
+            credential: dict = Depends(authenticate)):
+        return await list_operations(credential, "crypto_payout", limit)
+
     @v1.get("/exchanges/quote")
     async def exchange_quote(from_currency: str, to_currency: str, amount: float,
                              credential: dict = Depends(authenticate)):
@@ -1322,6 +1614,29 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             "submission_unknown": False, "message": None,
             "prompt_sent": False, "prompt_error": None, "failed_reason": None,
         }
+        crypto_deposit_row = {
+            "id": "crypto-deposit-id", "status": "pending",
+            "amount": 10, "asset_code": "USDT.TRC20", "coin": "USDT",
+            "network": "TRC20", "credit_currency": "USDT.TRC20",
+            "deposit_address": "TQn9Y2khEsLJW1ChVWFMSMeB6L6pHUHeer",
+            "memo": None, "memo_type": None, "amount_to_send": "10",
+            "expires_at": "2026-01-01T12:10:00+00:00",
+            "fee_pct": 4, "fee_fixed": 0,
+            "fee": None, "amount_net": None, "tx_hash": None,
+            "pending_manual": False,
+            "created_at": "2026-01-01T12:00:00+00:00",
+            "updated_at": "2026-01-01T12:00:00+00:00",
+        }
+        crypto_payout_row = {
+            "id": "crypto-payout-id", "status": "pending",
+            "amount": 10, "asset_code": "USDT.TRC20", "coin": "USDT",
+            "network": "TRC20",
+            "wallet_address": "TQn9Y2khEsLJW1ChVWFMSMeB6L6pHUHeer",
+            "destination_memo": None, "fee": 0.4,
+            "fee_bearer": "sender", "recipient_gets": 10,
+            "total_debit": 10.4, "pending_manual": False,
+            "tx_hash": None, "created_at": "2026-01-01T12:00:00+00:00",
+        }
         responses = {
             ("GET", "/api/integration/settings"): {
                 "environment": "test",
@@ -1470,6 +1785,28 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 "created_at": "2026-01-01T12:00:00+00:00",
             }],
             ("GET", "/api/integration/v1/transactions"): [op_row],
+            ("GET", "/api/integration/v1/crypto/assets"): [{
+                "asset_code": "USDT.TRC20", "coin": "USDT",
+                "network": "TRC20", "network_name": "TRON (TRC20)",
+                "minimum": 1, "maximum": 100000, "memo_required": False,
+                "fee_pct": 4, "fee_fixed": 0,
+            }],
+            ("POST", "/api/integration/v1/crypto/deposits"): {
+                "id": "crypto-deposit-id", "status": "pending",
+                "deposit": crypto_deposit_row,
+            },
+            ("GET", "/api/integration/v1/crypto/deposits/{deposit_id}"):
+                crypto_deposit_row,
+            ("GET", "/api/integration/v1/crypto/deposits"): [
+                op_row | {"kind": "crypto_deposit", "business_id": "crypto-deposit-id"}],
+            ("POST", "/api/integration/v1/crypto/payouts"): {
+                "id": "crypto-payout-id", "status": "pending",
+                "payout": crypto_payout_row,
+            },
+            ("GET", "/api/integration/v1/crypto/payouts/{payout_id}"):
+                crypto_payout_row,
+            ("GET", "/api/integration/v1/crypto/payouts"): [
+                op_row | {"kind": "crypto_payout", "business_id": "crypto-payout-id"}],
         }
 
         common_bearer_errors = [
@@ -1638,6 +1975,71 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     error(400, "Montant maximum doit être supérieur au minimum"),
                 ],
             },
+            ("POST", "/api/integration/v1/crypto/deposits"): {
+                "body": [
+                    body_field("amount", "number", True,
+                               "Montant natif à envoyer, positif, dans les limites du catalogue, avec au plus 6 décimales.", 10),
+                    body_field("asset_code", "string", True,
+                               "Identifiant exact de l’actif/réseau obtenu par GET /crypto/assets?direction=deposit.",
+                               "USDT.TRC20"),
+                    body_field("full_name", "string", True, "Nom du payeur.", "Buyer Example"),
+                    body_field("email", "string", True, "Adresse e-mail du payeur.", "buyer@example.com"),
+                    body_field("refund_address", "string", True,
+                               "Adresse de remboursement sur le même réseau.", "TQn9Y2khEsLJW1ChVWFMSMeB6L6pHUHeer"),
+                    body_field("reference", "string|null", False,
+                               "Référence du marchand.", "order-crypto-125"),
+                ],
+                "request": {
+                    "amount": 10, "asset_code": "USDT.TRC20",
+                    "full_name": "Buyer Example", "email": "buyer@example.com",
+                    "refund_address": "TQn9Y2khEsLJW1ChVWFMSMeB6L6pHUHeer",
+                    "reference": "order-crypto-125",
+                },
+                "errors": common_bearer_errors + [
+                    error(400, idempotency_required_error),
+                    error(400, "Montant crypto limité à 6 décimales"),
+                    error(403, scope_error),
+                    error(403, "Les opérations crypto sont désactivées"),
+                    error(400, "Cet actif est désactivé par l'administrateur"),
+                    error(409, "Operation outcome is uncertain; it will not be resubmitted. Retry later with the same Idempotency-Key."),
+                    error(502, "Résultat de la demande inconnu. Réessayez avec la même clé."),
+                ],
+            },
+            ("POST", "/api/integration/v1/crypto/payouts"): {
+                "body": [
+                    body_field("amount", "number", True,
+                               "Montant natif avant frais, positif, dans les limites de l’actif, avec au plus 6 décimales.", 10),
+                    body_field("asset_code", "string", True,
+                               "Identifiant exact de l’actif/réseau obtenu par GET /crypto/assets?direction=payout.",
+                               "USDT.TRC20"),
+                    body_field("wallet_address", "string", True,
+                               "Adresse du bénéficiaire sur ce réseau.", "TQn9Y2khEsLJW1ChVWFMSMeB6L6pHUHeer"),
+                    body_field("destination_memo", "string|null", False,
+                               "Mémo/tag obligatoire si indiqué par le catalogue."),
+                    body_field("fee_bearer", "string (sender|receiver)", False,
+                               "sender : frais ajoutés au débit ; receiver : frais déduits du montant reçu (rejet si le net exige plus de 6 décimales).",
+                               "sender", "sender"),
+                    body_field("reference", "string|null", False,
+                               "Référence du marchand.", "payout-crypto-125"),
+                    body_field("description", "string|null", False,
+                               "Description facultative.", "Supplier payout"),
+                ],
+                "request": {
+                    "amount": 10, "asset_code": "USDT.TRC20",
+                    "wallet_address": "TQn9Y2khEsLJW1ChVWFMSMeB6L6pHUHeer",
+                    "fee_bearer": "sender", "reference": "payout-crypto-125",
+                },
+                "errors": common_bearer_errors + [
+                    error(400, idempotency_required_error),
+                    error(400, "Montant crypto limité à 6 décimales"),
+                    error(400, "Montant net après frais non représentable à 6 décimales"),
+                    error(403, scope_error),
+                    error(403, "Explicit live payout opt-in and payouts:write scope required"),
+                    error(403, "Les opérations crypto sont désactivées"),
+                    error(400, "Cryptomonnaie ou réseau non pris en charge"),
+                    error(400, "Solde insuffisant (frais inclus)"),
+                ],
+            },
         }
 
         list_paths = {
@@ -1646,6 +2048,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             "/api/integration/v1/exchanges",
             "/api/integration/v1/links",
             "/api/integration/v1/transactions",
+            "/api/integration/v1/crypto/deposits",
+            "/api/integration/v1/crypto/payouts",
         }
         query_fields = {
             "/api/integration/settings": [
@@ -1659,6 +2063,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 param("to_currency", "query", True, "string",
                       "Devise de destination prise en charge.", "XAF"),
                 param("amount", "query", True, "number", "Montant à estimer.", 10000),
+            ],
+            "/api/integration/v1/crypto/assets": [
+                param("direction", "query", False, "string (deposit|payout)",
+                      "Filtrer les actifs réellement activés pour les dépôts ou les retraits dans l’environnement servi.",
+                      "deposit", "deposit"),
             ],
         }
         for path in list_paths:
@@ -1738,6 +2147,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     "/api/integration/v1/payouts": "payouts:write",
                     "/api/integration/v1/exchanges": "exchanges:write",
                     "/api/integration/v1/links": "links:write",
+                    "/api/integration/v1/crypto/deposits": "deposits:write",
+                    "/api/integration/v1/crypto/payouts": "payouts:write",
                 }.get(path)
                 route_scope_error = ({
                     "code": "INTEGRATION_SCOPE_REQUIRED",
@@ -1747,7 +2158,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 route_errors = common_bearer_errors + route_errors[
                     len(common_bearer_errors):] if schema else common_bearer_errors
                 if method == "GET" and path not in {
-                        "/api/integration/v1/exchanges/quote"}:
+                        "/api/integration/v1/exchanges/quote",
+                        "/api/integration/v1/crypto/assets"}:
                     if any(token in path for token in (
                             "{deposit_id}", "{payout_id}", "{exchange_id}", "{link_id}")):
                         route_errors.append(error(404, "Operation not found"))
@@ -1970,7 +2382,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     f"response = requests.{method.lower()}({py_url}, {python_options})")
             if path.startswith("/api/integration/v1/"):
                 section = path.split("/")[4]
-                if section not in {"deposits", "payouts", "exchanges", "links", "transactions"}:
+                if section not in {"deposits", "payouts", "exchanges", "links", "transactions", "crypto"}:
                     raise ValueError(f"Undocumented integration section: {path}")
             elif path.startswith("/api/integration/webhooks/"):
                 section = "webhooks"
@@ -2008,6 +2420,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                   "POST /api/integration/v1/deposits lance un dépôt Mobile Money et renvoie {id,status,deposit}. Le montant demandé est le total payé par le client : pour 2 000 de paiement et 500 de frais, le client paie 2 000 et le portefeuille marchand reçoit 1 500. Le champ fee_bearer historique est accepté mais ignoré. La route GET par identifiant renvoie l’état public du dépôt ; la route de liste renvoie les enregistrements d’opération d’intégration. Envoyez Idempotency-Key lors de la création."},
                  {"id": "payouts", "title": "Retraits", "description":
                   "POST /api/integration/v1/payouts renvoie {id,status,payout} ; payout contient le résultat du transfert. Le bénéficiaire reçoit le montant demandé intact : pour 2 000 de retrait et 500 de frais, le portefeuille marchand est débité de 2 500 et le bénéficiaire reçoit 2 000. Le champ fee_bearer historique est accepté mais ignoré. Activez l’autorisation de retrait en production avant d’accorder payouts:write. Un état pending ne prouve pas que l’opération est terminée."},
+                {"id": "crypto", "title": "Cryptomonnaies", "description":
+                  "GET /api/integration/v1/crypto/assets?direction=deposit|payout liste les actifs et réseaux actifs (asset_code) de l’environnement servi ; les clés test peuvent consulter ce catalogue, mais ne peuvent pas créer d’opération. POST /crypto/deposits crée une adresse de paiement à transmettre au payeur avec le montant amount_to_send, le réseau et, si nécessaire, le mémo ; seuls les dépôts confirmés sont crédités dans le portefeuille crypto/réseau du marchand. POST /crypto/payouts débite le portefeuille réseau correspondant puis lance un retrait on-chain ; la réponse pending ne signifie pas que le retrait est confirmé. Les montants acceptent au plus 6 décimales ; sender ajoute les frais au débit, receiver les déduit du montant reçu si le net est aussi représentable à 6 décimales. Les deux créations exigent Idempotency-Key et les portées deposits:write ou payouts:write ; les retraits exigent aussi l’autorisation explicite en production. Les routes GET par identifiant donnent l’état courant ; les listes renvoient les opérations de l’intégration. Le statut confirmed d’un dépôt, ou completed d’un retrait, signale la réussite. Les webhooks crypto_deposit.pending/success/failed et crypto_payout.pending/success/failed sont signés et émis avec l’identifiant et l’état ; vérifiez la signature et l’événement, puis consultez GET avant de finaliser une commande. Si pending_manual vaut true ou si le dépôt n’a pas encore d’adresse, ne transférez rien et demandez une vérification de l’opération ; les fonds d’un retrait incertain restent réservés. Ne réémettez pas un paiement sur une nouvelle clé si l’issue est incertaine. Les actifs désactivés ne sont plus proposés pour de nouvelles opérations, mais l’historique reste consultable."},
                 {"id": "exchanges", "title": "Change", "description":
                  "GET /api/integration/v1/exchanges/quote renvoie from_currency, to_currency, amount, fee, rate, received et fee_currency. POST effectue l’opération de change et renvoie son résultat terminé avec la transaction du registre."},
                 {"id": "links", "title": "Liens de paiement", "description":
