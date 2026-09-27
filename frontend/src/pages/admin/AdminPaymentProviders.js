@@ -185,7 +185,7 @@ export default function AdminPaymentProviders() {
             <div className="w-10 h-10 rounded-xl bg-violet-50 text-violet-600 flex items-center justify-center"><WalletCards className="w-5 h-5" /></div>
             <div>
               <h1 className="font-cabinet font-extrabold text-slate-900 text-lg sm:text-xl">Prestataire de paiement</h1>
-              <p className="text-xs text-slate-500 mt-0.5">PayDunya · Mobile Money direct pour Biz-transPay</p>
+              <p className="text-xs text-slate-500 mt-0.5">Configuration des prestataires et de leurs identifiants</p>
             </div>
           </div>
         </div>
@@ -314,9 +314,121 @@ export default function AdminPaymentProviders() {
           </div>
         )}
       </section>
+      <IziPayPanel />
       <AfribapayPanel />
       <MbiyoPanel />
     </div>
+  );
+}
+
+function IziPayPanel() {
+  const [config, setConfig] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [show, setShow] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
+
+  const load = () => {
+    setLoadError('');
+    api.get('/admin/payment-providers/izipay')
+      .then(({ data }) => setConfig(data))
+      .catch((err) => setLoadError(
+        err.response?.data?.detail || 'Impossible de charger Easy Change Pay',
+      ));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const payload = Object.fromEntries(
+        ['api_key', 'webhook_secret']
+          .filter((key) => draft[key]?.trim())
+          .map((key) => [key, draft[key].trim()]),
+      );
+      const { data } = await api.put('/admin/payment-providers/izipay', payload);
+      setConfig(data);
+      setDraft({});
+      toast.success('Identifiants Easy Change Pay enregistrés');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Impossible d’enregistrer Easy Change Pay');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!config) {
+    return (
+      <section className="bg-white border border-slate-100 rounded-2xl p-5 text-xs text-slate-500"
+        data-testid="izipay-settings">
+        {loadError ? (
+          <div role="alert" className="flex items-center justify-between gap-3">
+            <span>{loadError}</span>
+            <button type="button" onClick={load}
+              className="rounded-lg border border-slate-200 px-3 py-1.5 font-bold text-slate-700">
+              Réessayer
+            </button>
+          </div>
+        ) : 'Chargement des identifiants Easy Change Pay…'}
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-white border border-slate-100 rounded-2xl p-4 sm:p-5 space-y-4"
+      data-testid="izipay-settings">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${
+          config.configured ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'
+        }`}><KeyRound className="w-5 h-5" /></div>
+        <div className="flex-1">
+          <h2 className="font-cabinet font-bold text-slate-900">Easy Change Pay</h2>
+          <p className="text-[11px] text-slate-500">
+            Clé API et Web Secret pour les opérations crypto et la vérification des webhooks.
+          </p>
+        </div>
+        <span className={`text-[10px] font-bold ${
+          config.configured ? 'text-emerald-700' : 'text-amber-700'
+        }`}>
+          {config.configured ? 'Deux identifiants configurés' : 'Identifiants incomplets'}
+        </span>
+        <button type="button" onClick={save} disabled={saving}
+          data-testid="btn-save-izipay"
+          className="inline-flex items-center gap-2 bg-[#2563EB] text-white font-bold px-4 py-2.5 rounded-full text-xs disabled:opacity-50">
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+          Enregistrer
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Les identifiants sont chiffrés côté serveur et ne sont jamais renvoyés à cette page.
+        Un champ vide conserve la valeur déjà enregistrée.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <SecretInput
+          label="Clé API"
+          configured={config.api_key_configured}
+          value={draft.api_key || ''}
+          visible={show.api_key}
+          onToggle={() => setShow((current) => ({
+            ...current, api_key: !current.api_key,
+          }))}
+          onChange={(value) => setDraft((current) => ({ ...current, api_key: value }))}
+        />
+        <SecretInput
+          label="Web Secret"
+          configured={config.webhook_secret_configured}
+          value={draft.webhook_secret || ''}
+          visible={show.webhook_secret}
+          onToggle={() => setShow((current) => ({
+            ...current, webhook_secret: !current.webhook_secret,
+          }))}
+          onChange={(value) => setDraft((current) => ({
+            ...current, webhook_secret: value,
+          }))}
+        />
+      </div>
+    </section>
   );
 }
 

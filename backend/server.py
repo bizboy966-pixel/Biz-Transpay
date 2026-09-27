@@ -6126,6 +6126,7 @@ async def transfer(req: TransferRequest, request: Request,
         # ----- Validate crypto/network against IziPay assets (live) -----
         coin_upper = req.crypto.upper()
         net_upper = req.network.upper()
+        await _load_izipay_credentials()
         if not izipay.is_configured():
             raise HTTPException(503, "Passerelle crypto non configurée")
         try:
@@ -6451,6 +6452,7 @@ async def stripe_webhook(request: Request):
 @api.get("/crypto/assets")
 async def crypto_assets():
     """Public list of active, locally enabled assets in the fixed catalog."""
+    await _load_izipay_credentials()
     if not izipay.is_configured():
         return []
     try:
@@ -6515,6 +6517,7 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
     """Create a crypto deposit — direct in-app flow. Returns depositAddress
     + amount + expiry so the frontend can display them and poll for confirmation.
     """
+    await _load_izipay_credentials()
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
     if not math.isfinite(float(req.amount)) or req.amount <= 0:
@@ -10383,7 +10386,10 @@ async def _reconcile_intent(intent_id: str) -> None:
     completed but our webhook hasn't fired yet, finalize the deposit or link
     payment locally. Safe to call repeatedly — matches webhook's guard logic.
     """
-    if not intent_id or not izipay.is_configured():
+    if not intent_id:
+        return
+    await _load_izipay_credentials()
+    if not izipay.is_configured():
         return
     try:
         intent = await izipay.get_payment_intent(intent_id)
@@ -10417,6 +10423,7 @@ async def izipay_webhook(request: Request):
     raw = await request.body()
     sig = request.headers.get("X-IziPay-Signature") or request.headers.get("x-izipay-signature") or ""
     try:
+        await _load_izipay_credentials()
         event = izipay.verify_webhook(raw, sig)
     except HTTPException:
         raise
@@ -10598,6 +10605,7 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
     Uses direct intent (no redirect) — deposit address + amount are shown in-app.
     """
     await _require_turnstile(req.turnstile_token, request, "payment")
+    await _load_izipay_credentials()
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
     link = await db.payment_links.find_one({"slug": req.slug})
@@ -13055,6 +13063,7 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
     """Return only locally enabled and provider-active requested assets."""
     cfg = await get_transfer_config()
     crypto_section = (cfg.get("crypto") or {})
+    await _load_izipay_credentials()
     if not crypto_section.get("enabled", True) or not izipay.is_configured():
         return []
     try:
@@ -13142,6 +13151,7 @@ async def admin_crypto_coins(direction: str = "withdrawal",
     """Admin view of the fixed asset catalog and provider availability."""
     if direction not in {"deposit", "withdrawal"}:
         raise HTTPException(400, "Direction crypto invalide")
+    await _load_izipay_credentials()
     assets: list[dict] = []
     if izipay.is_configured():
         try:
@@ -14237,6 +14247,7 @@ async def admin_refresh_transaction(tx_id: str, admin=Depends(get_admin)):
     payout_id = meta.get("izipay_payout_id")
     if not payout_id:
         raise HTTPException(400, "Cette transaction n'a pas d'identifiant de payout à rafraîchir.")
+    await _load_izipay_credentials()
     if not izipay.is_configured():
         raise HTTPException(503, "Passerelle crypto non configurée")
     try:
