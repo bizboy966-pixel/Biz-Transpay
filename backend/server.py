@@ -11712,6 +11712,27 @@ async def _active_exchange_crypto_assets() -> dict[str, dict]:
     return result
 
 
+@api.get("/conversion/crypto-wallets")
+async def public_conversion_crypto_wallets(
+        uid: str = Depends(get_current_user_id)):
+    """List only crypto network wallets currently usable by Exchange."""
+    assets = await _active_exchange_crypto_assets()
+    user = await get_user(uid)
+    if not user:
+        raise HTTPException(404, "Utilisateur introuvable")
+    return [
+        {
+            "id": asset_id,
+            "code": asset_id,
+            "coin": asset["coin"],
+            "network": asset["network"],
+            "network_name": asset["network_name"],
+            "balance": float(user.get(asset["wallet_field"], 0.0) or 0.0),
+        }
+        for asset_id, asset in sorted(assets.items())
+    ]
+
+
 async def _exchange_currency_info(
     currency: str, crypto_assets: Optional[dict[str, dict]] = None
 ) -> dict:
@@ -11723,10 +11744,8 @@ async def _exchange_currency_info(
     if code in fiat:
         return fiat[code]
     if code == "USDT":
-        return {
-            "code": code, "wallet_field": "balance_usdt", "kind": "crypto",
-            "coin": "USDT", "usdt_rate": 1.0, "legacy_unassigned": True,
-        }
+        raise HTTPException(
+            400, "Le solde USDT non attribué n'est pas disponible dans Exchange.")
     if crypto_assets is None:
         crypto_assets = await _active_exchange_crypto_assets()
     info = crypto_assets.get(code)
@@ -11740,9 +11759,12 @@ async def _exchange_rate_context(
 ) -> dict:
     """Resolve safe wallet fields and configured cross-rates for a pair."""
     fc, tc = from_currency.upper(), to_currency.upper()
+    if "USDT" in {fc, tc}:
+        raise HTTPException(
+            400, "Le solde USDT non attribué n'est pas disponible dans Exchange.")
     requested_crypto = [
         code for code in (fc, tc)
-        if code not in {"XOF", "XAF", "USDT"}
+        if code not in {"XOF", "XAF"}
     ]
     crypto_assets = (
         await _active_exchange_crypto_assets() if requested_crypto else {}

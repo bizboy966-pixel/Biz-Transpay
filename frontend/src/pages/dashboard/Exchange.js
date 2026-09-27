@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
+import SelectionMenu from '@/components/SelectionMenu';
 import ComingSoon from '@/components/ComingSoon';
 
 /* Currency descriptor (also used to map to balance field on the user object). */
@@ -16,42 +17,54 @@ export default function Exchange() {
   const { user, refresh } = useAuth();
   const features = useFeatures();
   const [cfg, setCfg] = useState(null);
-  const [cryptoCoins, setCryptoCoins] = useState([]);
-  const [fromCur, setFromCur] = useState('USDT');
-  const [toCur, setToCur] = useState('XOF');
+  const [cryptoWallets, setCryptoWallets] = useState([]);
+  const [cryptoCatalogError, setCryptoCatalogError] = useState('');
+  const [fromCur, setFromCur] = useState('');
+  const [toCur, setToCur] = useState('');
   const [amount, setAmount] = useState('');
   const [quote, setQuote] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
 
+  const loadCryptoWallets = async () => {
+    try {
+      const { data } = await api.get('/conversion/crypto-wallets');
+      setCryptoWallets(Array.isArray(data) ? data : []);
+      setCryptoCatalogError('');
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      setCryptoCatalogError(
+        typeof detail === 'string'
+          ? detail
+          : 'Impossible de charger les portefeuilles crypto disponibles.',
+      );
+      setCryptoWallets([]);
+    }
+  };
+
   useEffect(() => {
     api.get('/conversion/config').then(({ data }) => setCfg(data)).catch(() => {});
-    api.get('/crypto/coins').then(({ data }) => setCryptoCoins(data || [])).catch(() => setCryptoCoins([]));
+    loadCryptoWallets();
+    // eslint-disable-next-line
   }, []);
 
   const CUR = useMemo(() => {
-    const cryptoWallets = cryptoCoins.flatMap((coin) => (coin.networks || []).map((network) => ({
-      code: network.wallet_id || network.catalog_asset_id,
-      label: `${coin.coin} · ${network.name || network.code}`,
-      coin: coin.coin,
-      network: network.code,
-      balance: Number(network.balance || 0),
+    const cryptoCurrencies = cryptoWallets.map((wallet) => ({
+      code: wallet.code || wallet.id,
+      label: `${wallet.coin} · ${wallet.network_name || wallet.network}`,
+      coin: wallet.coin,
+      network: wallet.network,
+      balance: Number(wallet.balance || 0),
       maxFrac: 8,
       walletFlag: 'wallet_crypto_enabled',
       tint: 'from-amber-400 to-orange-600',
       kind: 'crypto',
-    })));
+    })).filter((wallet) => wallet.code);
     return {
       ...BASE_CUR,
-      USDT: {
-        code: 'USDT', label: 'USDT · non attribué',
-        balance: Number(user?.balance_usdt || 0), maxFrac: 8,
-        walletFlag: 'wallet_crypto_enabled', tint: 'from-amber-400 to-orange-600',
-        kind: 'crypto',
-      },
-      ...Object.fromEntries(cryptoWallets.map((wallet) => [wallet.code, wallet])),
+      ...Object.fromEntries(cryptoCurrencies.map((wallet) => [wallet.code, wallet])),
     };
-  }, [cryptoCoins, user?.balance_usdt]);
+  }, [cryptoWallets]);
 
   // Available "from" currencies: wallet must be visible.
   const availableCurrencies = useMemo(() => {
@@ -82,32 +95,58 @@ export default function Exchange() {
     return acc;
   }, [cfg, availableCurrencies]);
 
-  // Reset destination whenever the source changes.
+  // Start with an active crypto wallet when available; never fall back to
+  // the historical, unassigned USDT balance.
+  const preferredFromCur = availableCurrencies.find(
+    (code) => CUR[code]?.kind === 'crypto',
+  ) || availableCurrencies[0] || '';
+  const effectiveFromCur = availableCurrencies.includes(fromCur)
+    ? fromCur
+    : preferredFromCur;
+  const destinationOptions = Array.from(availablePairs[effectiveFromCur] || []);
+  const effectiveToCur = destinationOptions.includes(toCur)
+    ? toCur
+    : destinationOptions[0] || '';
+
   useEffect(() => {
-    const options = Array.from(availablePairs[fromCur] || []);
-    if (options.length && !options.includes(toCur)) setToCur(options[0]);
-  }, [fromCur, availablePairs]);  // eslint-disable-line
+    if (fromCur !== effectiveFromCur) setFromCur(effectiveFromCur);
+  }, [fromCur, effectiveFromCur]);
+
+  useEffect(() => {
+    if (toCur !== effectiveToCur) setToCur(effectiveToCur);
+  }, [toCur, effectiveToCur]);
 
   // Live quote (debounced) — recomputed whenever inputs change.
   useEffect(() => {
-    if (!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) { setQuote(null); return; }
+    if (!amount || !effectiveFromCur || !effectiveToCur
+        || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+      setQuote(null);
+      return;
+    }
     const id = setTimeout(async () => {
       try {
         const { data } = await api.get('/conversion/quote', {
-          params: { from_currency: fromCur, to_currency: toCur, amount: parseFloat(amount) },
+          params: {
+            from_currency: effectiveFromCur,
+            to_currency: effectiveToCur,
+            amount: parseFloat(amount),
+          },
         });
         setQuote(data);
       } catch (e) { setQuote({ error: e.response?.data?.detail || 'Erreur' }); }
     }, 220);
     return () => clearTimeout(id);
-  }, [amount, fromCur, toCur]);
+  }, [amount, effectiveFromCur, effectiveToCur]);
 
-  const sourceCurrency = CUR[fromCur] || CUR.USDT;
-  const targetCurrency = CUR[toCur] || BASE_CUR.XOF;
+  const sourceCurrency = CUR[effectiveFromCur] || BASE_CUR.XOF;
+  const targetCurrency = CUR[effectiveToCur] || BASE_CUR.XOF;
   const balance = Number(sourceCurrency.balance ?? user?.[sourceCurrency.balanceKey] ?? 0);
   const hasAnyPair = Object.keys(availablePairs).length > 0;
 
   if (!features || !cfg) return <div className="text-slate-500 text-sm">Chargement…</div>;
+  if (!availableCurrencies.length) {
+    return <ComingSoon title="Aucun portefeuille disponible" message="Aucun portefeuille activé pour la conversion n’est disponible actuellement." />;
+  }
   if (!hasAnyPair) return <ComingSoon title="Conversion temporairement indisponible" message="Aucune paire de conversion n'est actuellement active. Revenez plus tard." />;
 
   const submit = async () => {
@@ -115,20 +154,26 @@ export default function Exchange() {
     if (parseFloat(amount) > balance) { toast.error('Solde insuffisant'); return; }
     setBusy(true);
     try {
-      const { data } = await api.post('/exchange', { from_currency: fromCur, to_currency: toCur, amount: parseFloat(amount) });
+      const { data } = await api.post('/exchange', {
+        from_currency: effectiveFromCur,
+        to_currency: effectiveToCur,
+        amount: parseFloat(amount),
+      });
       setDone(data);
       await refresh?.();
-      try {
-        const { data: updatedCoins } = await api.get('/crypto/coins');
-        setCryptoCoins(updatedCoins || []);
-      } catch { /* The wallet summary has already been refreshed. */ }
+      await loadCryptoWallets();
       toast.success('Conversion effectuée');
     } catch (e) { toast.error(e.response?.data?.detail || 'Erreur'); }
     finally { setBusy(false); }
   };
 
   const swap = () => {
-    if ((availablePairs[toCur] || new Set()).has(fromCur)) { setFromCur(toCur); setToCur(fromCur); setAmount(''); setQuote(null); }
+    if ((availablePairs[effectiveToCur] || new Set()).has(effectiveFromCur)) {
+      setFromCur(effectiveToCur);
+      setToCur(effectiveFromCur);
+      setAmount('');
+      setQuote(null);
+    }
     else toast.info('Cette paire inversée est désactivée par l\'administrateur.');
   };
 
@@ -148,8 +193,14 @@ export default function Exchange() {
     );
   }
 
-  const destOptions = Array.from(availablePairs[fromCur] || []);
-  const canSubmit = quote && !quote.error && parseFloat(amount) <= balance && !busy;
+  const sourceOptions = availableCurrencies.map((code) => ({
+    value: code, label: CUR[code].label, currency: CUR[code],
+  }));
+  const targetOptions = destinationOptions.map((code) => ({
+    value: code, label: CUR[code].label, currency: CUR[code],
+  }));
+  const canSubmit = quote && !quote.error && effectiveFromCur && effectiveToCur
+    && parseFloat(amount) <= balance && !busy;
 
   return (
     <div className="w-full min-w-0 max-w-lg mx-auto space-y-4 overflow-x-clip" data-testid="user-exchange-page">
@@ -161,6 +212,15 @@ export default function Exchange() {
             <p className="text-[11px] text-slate-500">Convertissez XOF, XAF et les portefeuilles crypto disponibles.</p>
           </div>
         </div>
+        {cryptoCatalogError ? (
+          <div role="alert" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+            {cryptoCatalogError}
+          </div>
+        ) : cryptoWallets.length === 0 ? (
+          <div className="mb-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+            Aucun portefeuille crypto n’est actuellement activé pour la conversion.
+          </div>
+        ) : null}
 
         {/* FROM */}
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
@@ -172,10 +232,18 @@ export default function Exchange() {
             <input type="number" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)}
               data-testid="input-amount"
               className="min-w-0 w-full flex-1 bg-transparent focus:outline-none text-2xl font-cabinet font-extrabold text-slate-900" />
-            <select value={fromCur} onChange={(e) => setFromCur(e.target.value)} data-testid="select-from"
-              className="shrink-0 max-w-[42%] bg-white px-2 sm:px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
-              {availableCurrencies.map((c) => <option key={c} value={c}>{CUR[c].label}</option>)}
-            </select>
+            <div className="w-[48%] min-w-0 shrink-0 sm:w-[46%]">
+              <SelectionMenu
+                value={effectiveFromCur}
+                onChange={(code) => { setFromCur(code); setQuote(null); }}
+                label="Actif source"
+                placeholder="Sélectionner"
+                testId="select-from"
+                options={sourceOptions}
+                renderValue={(option) => <CurrencyChoice currency={option.currency} compact />}
+                renderOption={(option) => <CurrencyChoice currency={option.currency} />}
+              />
+            </div>
           </div>
           {amount && parseFloat(amount) > balance && <div className="mt-1 text-[11px] text-red-600">Solde insuffisant</div>}
         </div>
@@ -197,10 +265,18 @@ export default function Exchange() {
             <div className="min-w-0 w-full flex-1 break-words text-2xl font-cabinet font-extrabold text-emerald-700" data-testid="output-received">
               {quote && !quote.error ? `+${Number(quote.received).toLocaleString(undefined, { maximumFractionDigits: targetCurrency.maxFrac })}` : '0'}
             </div>
-            <select value={toCur} onChange={(e) => setToCur(e.target.value)} data-testid="select-to"
-              className="shrink-0 max-w-[42%] bg-white px-2 sm:px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
-              {destOptions.map((c) => <option key={c} value={c}>{CUR[c].label}</option>)}
-            </select>
+            <div className="w-[48%] min-w-0 shrink-0 sm:w-[46%]">
+              <SelectionMenu
+                value={effectiveToCur}
+                onChange={(code) => { setToCur(code); setQuote(null); }}
+                label="Actif de destination"
+                placeholder="Sélectionner"
+                testId="select-to"
+                options={targetOptions}
+                renderValue={(option) => <CurrencyChoice currency={option.currency} compact />}
+                renderOption={(option) => <CurrencyChoice currency={option.currency} />}
+              />
+            </div>
           </div>
         </div>
 
@@ -221,6 +297,32 @@ export default function Exchange() {
         </button>
       </div>
     </div>
+  );
+}
+
+function CurrencyChoice({ currency, compact = false }) {
+  if (!currency) return <span>Sélectionner</span>;
+  const badgeColor = currency.kind === 'crypto'
+    ? 'bg-amber-100 text-amber-800'
+    : currency.code === 'XAF'
+      ? 'bg-emerald-100 text-emerald-800'
+      : 'bg-blue-100 text-blue-800';
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[9px] font-extrabold ${badgeColor}`}>
+        {currency.kind === 'crypto' ? currency.coin : currency.code}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-bold text-slate-900">{currency.label}</span>
+        {!compact && (
+          <span className="mt-0.5 block truncate text-[10px] font-medium text-slate-500">
+            {currency.kind === 'crypto'
+              ? `Solde : ${Number(currency.balance || 0).toLocaleString(undefined, { maximumFractionDigits: 8 })} ${currency.coin}`
+              : 'Portefeuille fiat'}
+          </span>
+        )}
+      </span>
+    </span>
   );
 }
 

@@ -2,6 +2,8 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import izipay
@@ -147,6 +149,53 @@ def test_exchange_cross_rates_resolve_crypto_network_wallets(monkeypatch):
     assert bnb_to_btc["from"]["wallet_field"] == assets["BNB.BNB"]["wallet_field"]
     assert bnb_to_btc["to"]["wallet_field"] == assets["BTC.BTC"]["wallet_field"]
     assert btc_to_xof["rate"] == 75.0
+
+
+def test_exchange_catalog_returns_only_active_network_wallets(monkeypatch):
+    assets = {
+        "BTC.BTC": {
+            "code": "BTC.BTC", "coin": "BTC", "network": "BTC",
+            "network_name": "Bitcoin", "wallet_field": server._crypto_wallet_field("BTC.BTC"),
+            "usdt_rate": 50000.0,
+        },
+        "USDT.TRC20": {
+            "code": "USDT.TRC20", "coin": "USDT", "network": "TRC20",
+            "network_name": "Tron", "wallet_field": server._crypto_wallet_field("USDT.TRC20"),
+            "usdt_rate": 1.0,
+        },
+    }
+
+    async def active_assets():
+        return assets
+
+    async def user_by_id(user_id):
+        assert user_id == "user-1"
+        return {
+            server._crypto_wallet_field("BTC.BTC"): 0.25,
+            server._crypto_wallet_field("USDT.TRC20"): 8.0,
+            "balance_usdt": 900.0,
+        }
+
+    monkeypatch.setattr(server, "_active_exchange_crypto_assets", active_assets)
+    monkeypatch.setattr(server, "get_user", user_by_id)
+
+    catalog = asyncio.run(server.public_conversion_crypto_wallets("user-1"))
+
+    assert [wallet["id"] for wallet in catalog] == ["BTC.BTC", "USDT.TRC20"]
+    assert [wallet["balance"] for wallet in catalog] == [0.25, 8.0]
+    assert all("wallet_field" not in wallet for wallet in catalog)
+    assert all(wallet["id"] != "USDT" for wallet in catalog)
+
+
+def test_exchange_rejects_unassigned_legacy_usdt():
+    with pytest.raises(server.HTTPException) as exc:
+        asyncio.run(server._exchange_rate_context(
+            {"conversion_rates": {"USDT_XOF": 600}},
+            "USDT",
+            "XOF",
+        ))
+
+    assert exc.value.status_code == 400
 
 
 def test_payout_sends_destination_memo_fee_bearer_and_idempotency(monkeypatch):

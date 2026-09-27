@@ -14,3 +14,9 @@ Withdrawals queued for manual fulfilment must reserve funds from the exact sourc
 **Why:** A pending payout must not leave the amount spendable while the platform still owes the requested transfer. Converting it to a generic USDT balance also breaks asset/network separation.
 
 **How to apply:** Follow the same debit and refund idempotency barriers for automated and manually queued withdrawals. Do not move or infer balances from the legacy unassigned USDT field.
+
+The historical unassigned `balance_usdt` is not an Exchange currency. Exchange selectors and mutations must use active catalog asset/network IDs only; keep the legacy balance unchanged and separate.
+
+**Why:** Showing an unassigned ticker beside network-specific wallets implies a network provenance that the historical balance does not have.
+
+**How to apply:** If the legacy balance must be displayed, keep it outside Exchange’s asset selector and never map it to a network wallet.

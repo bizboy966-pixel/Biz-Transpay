@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowUpRight, ArrowDownLeft, Link2, Repeat, Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
@@ -22,13 +22,19 @@ export default function DashboardHome() {
   const [query, setQuery] = useState('');
   const [showKycBanner, setShowKycBanner] = useState(true);
   const [hidden, setHidden] = useState(() => localStorage.getItem('btp_balance_hidden') === '1');
-  const [selectedCryptoWallet, setSelectedCryptoWallet] = useState('USDT.TRC20');
+  const [activeCryptoWallets, setActiveCryptoWallets] = useState([]);
+  const [cryptoWalletsLoading, setCryptoWalletsLoading] = useState(true);
+  const [selectedCryptoWallet, setSelectedCryptoWallet] = useState('');
 
   useEffect(() => {
     const loadDashboard = () => {
       api.get('/transactions', { params: { limit: RECENT_TRANSACTIONS_LIMIT } })
         .then(({ data }) => setTxs(Array.isArray(data) ? data.slice(0, RECENT_TRANSACTIONS_LIMIT) : []))
         .catch(() => setTxs([]));
+      api.get('/conversion/crypto-wallets')
+        .then(({ data }) => setActiveCryptoWallets(Array.isArray(data) ? data : []))
+        .catch(() => setActiveCryptoWallets([]))
+        .finally(() => setCryptoWalletsLoading(false));
       refresh();
     };
     loadDashboard();
@@ -54,27 +60,26 @@ export default function DashboardHome() {
 
   const needsKyc = user?.kyc_status !== 'verified' && showKycBanner;
 
-  const cryptoWalletOptions = [
-    {
-      id: 'USDT',
-      coin: 'USDT',
-      network_name: 'Non attribué',
-      balance: user?.balance_usdt ?? 0,
-      legacy: true,
-    },
-    ...(user?.crypto_wallets || []),
-  ];
+  const cryptoWalletOptions = useMemo(
+    () => activeCryptoWallets.filter((wallet) => wallet?.id),
+    [activeCryptoWallets],
+  );
+  useEffect(() => {
+    if (cryptoWalletOptions.some((wallet) => wallet.id === selectedCryptoWallet)) return;
+    setSelectedCryptoWallet(cryptoWalletOptions[0]?.id || '');
+  }, [cryptoWalletOptions, selectedCryptoWallet]);
   const selectedWallet = cryptoWalletOptions.find(
     (wallet) => wallet.id === selectedCryptoWallet,
-  ) || cryptoWalletOptions[0];
+  );
 
   const wallets = [
     { key: 'xof', curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
     { key: 'xaf', curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
     {
       key: 'crypto',
-      curr: selectedWallet?.coin || 'USDT',
-      network: selectedWallet?.network_name || 'Non attribué',
+      curr: selectedWallet?.coin || 'CRYPTO',
+      network: selectedWallet?.network_name || selectedWallet?.network
+        || (cryptoWalletsLoading ? 'Chargement…' : 'Aucun actif activé'),
       bal: selectedWallet?.balance ?? 0,
       gradient: 'from-emerald-500 via-emerald-600 to-teal-700',
       shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]',
@@ -162,12 +167,18 @@ export default function DashboardHome() {
               </div>
               {b.key === 'crypto' && (
                 <select
-                  aria-label="Choisir le portefeuille crypto"
+                  aria-label="Sélectionner un portefeuille crypto"
                   data-testid="select-dashboard-crypto-wallet"
-                  value={selectedWallet?.id || 'USDT'}
+                  value={selectedWallet?.id || ''}
                   onChange={(event) => setSelectedCryptoWallet(event.target.value)}
-                  className="absolute bottom-1.5 left-1/2 z-20 max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none sm:bottom-3 sm:px-2 sm:text-[10px]"
+                  disabled={!cryptoWalletOptions.length}
+                  className="absolute bottom-1.5 left-1/2 z-20 max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none transition-colors hover:bg-[#0A65D8] focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-80 sm:bottom-3 sm:px-2 sm:text-[10px]"
                 >
+                  <option value="" disabled className="text-slate-900">
+                    {cryptoWalletsLoading
+                      ? 'Chargement…'
+                      : cryptoWalletOptions.length ? 'Sélectionner' : 'Aucun actif activé'}
+                  </option>
                   {cryptoWalletOptions.map((wallet) => (
                     <option key={wallet.id} value={wallet.id} className="text-slate-900">
                       {wallet.coin} · {wallet.network_name || wallet.network}
