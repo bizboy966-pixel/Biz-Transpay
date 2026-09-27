@@ -160,6 +160,21 @@ export default function Deposit() {
         <p className="text-slate-500 text-xs sm:text-sm mt-1">Choisissez votre méthode de paiement.</p>
       </div>
 
+      {step === 1 && (
+        <figure
+          className="w-full overflow-hidden rounded-xl border border-slate-100 bg-slate-950"
+          style={{ aspectRatio: '2.2 / 1' }}
+        >
+          <img
+            src="/images/deposit-illustration.webp"
+            alt="Flèche verte indiquant un dépôt d’argent dans un portefeuille"
+            className="h-full w-full object-cover object-center"
+            loading="lazy"
+            decoding="async"
+          />
+        </figure>
+      )}
+
       <div className="flex items-center gap-1.5 sm:gap-2">
         {[1, 2, 3].map((s) => (
           <div key={s} className={`flex-1 h-1 rounded-full ${step >= s ? 'bg-[#2563EB]' : 'bg-slate-200'}`} />
