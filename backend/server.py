@@ -3550,54 +3550,6 @@ async def logout(request: Request, response: Response,
     return {"ok": True}
 
 
-@api.get("/auth/sessions")
-async def list_sessions(request: Request,
-                        uid: str = Depends(get_current_user_id)):
-    current_id = getattr(request.state, "session_id", None)
-    docs = await db.sessions.find(
-        {"user_id": uid, "revoked_at": {"$exists": False}},
-        {"_id": 0, "id": 1, "created_at": 1, "last_activity_at": 1,
-         "last_auth_at": 1, "expires_at": 1, "user_agent": 1, "ip": 1},
-    ).sort("last_activity_at", -1).to_list(50)
-    return [{
-        "id": doc["id"],
-        "created_at": _as_utc(doc["created_at"]).isoformat(),
-        "last_activity_at": _as_utc(doc["last_activity_at"]).isoformat(),
-        "last_auth_at": _as_utc(doc["last_auth_at"]).isoformat(),
-        "expires_at": _as_utc(doc["expires_at"]).isoformat(),
-        "user_agent": doc.get("user_agent") or "Navigateur inconnu",
-        "ip": doc.get("ip") or "",
-        "current": doc["id"] == current_id,
-    } for doc in docs]
-
-
-@api.delete("/auth/sessions/{session_id}")
-async def revoke_session(session_id: str, request: Request, response: Response,
-                         uid: str = Depends(get_current_user_id)):
-    result = await db.sessions.update_one(
-        {"id": session_id, "user_id": uid, "revoked_at": {"$exists": False}},
-        {"$set": {"revoked_at": datetime.now(timezone.utc),
-                  "revocation_reason": "user_revoked"}},
-    )
-    if result.matched_count == 0:
-        raise HTTPException(404, "Session introuvable")
-    if getattr(request.state, "session_id", None) == session_id:
-        _clear_session_cookie(response)
-    return {"ok": True}
-
-
-@api.post("/auth/sessions/revoke-all")
-async def revoke_all_sessions(request: Request, response: Response,
-                              uid: str = Depends(get_current_user_id)):
-    await db.sessions.update_many(
-        {"user_id": uid, "revoked_at": {"$exists": False}},
-        {"$set": {"revoked_at": datetime.now(timezone.utc),
-                  "revocation_reason": "user_revoked_all"}},
-    )
-    _clear_session_cookie(response)
-    return {"ok": True}
-
-
 @api.post("/auth/session/refresh")
 async def refresh_session(request: Request, response: Response,
                           uid: str = Depends(get_current_user_id)):
@@ -3971,6 +3923,7 @@ DEFAULT_APP_FEATURES = {
     "withdrawal_crypto_enabled": True,
     # Advanced modules — hide entire sections when off (sidebar entry + page).
     "links_enabled": True,
+    "payment_api_enabled": True,
 }
 
 
@@ -15600,6 +15553,7 @@ async def public_get_features():
         "withdrawal_xaf_enabled": bool(f.get("withdrawal_xaf_enabled", True)),
         "withdrawal_crypto_enabled": bool(f.get("withdrawal_crypto_enabled", True)),
         "links_enabled": bool(f.get("links_enabled", True)),
+        "payment_api_enabled": bool(f.get("payment_api_enabled", True)),
     }
 
 
@@ -15618,6 +15572,7 @@ class AdminFeaturesReq(BaseModel):
     withdrawal_xaf_enabled: Optional[bool] = None
     withdrawal_crypto_enabled: Optional[bool] = None
     links_enabled: Optional[bool] = None
+    payment_api_enabled: Optional[bool] = None
 
 
 @api.get("/admin/email-notifications")

@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Clipboard, Code2, ExternalLink, Eye, EyeOff, KeyRound, Link2, Loader2, RefreshCw, Send, ShieldCheck, Terminal, Trash2, Webhook, X } from 'lucide-react';
+import { AlertTriangle, BookOpen, Check, ChevronDown, ChevronRight, Clipboard, Code2, ExternalLink, Eye, EyeOff, KeyRound, Link2, Loader2, Pencil, Plus, RefreshCw, Send, ShieldCheck, Terminal, Trash2, Webhook, X } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import api from '@/api';
 import ComplianceWarningModal from '@/components/ComplianceWarningModal';
+import { useFeatures } from '@/hooks/useFeatures';
 
 const ENVIRONMENTS = {
   test: { label: 'Sandbox', title: 'Environnement de test', tone: 'blue' },
   live: { label: 'Live', title: 'Environnement de production', tone: 'emerald' },
 };
 
-const errorMessage = (error, fallback) => error?.response?.data?.detail || fallback;
+const errorMessage = (error, fallback) => {
+  const detail = error?.response?.data?.detail;
+  return typeof detail === 'string' ? detail : detail?.message || fallback;
+};
 const PUBLIC_DOCS_URL = 'https://biz-transppayy.com/integration/docs';
 const DELETE_CONFIRMATION_PHRASE = 'SUPPRIMER';
 
@@ -79,13 +83,16 @@ function Skeleton() {
 }
 
 export default function Integration() {
+  const features = useFeatures();
   const [environment, setEnvironment] = useState('test');
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [reveal, setReveal] = useState(null);
-  const [webhookUrl, setWebhookUrl] = useState('');
+  const [webhooks, setWebhooks] = useState([]);
+  const [webhookForm, setWebhookForm] = useState({ name: '', url: '' });
+  const [editingWebhook, setEditingWebhook] = useState(null);
   const [deliveries, setDeliveries] = useState(null);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [deleteConfirmationPhrase, setDeleteConfirmationPhrase] = useState('');
@@ -94,14 +101,17 @@ export default function Integration() {
   const load = async (env = environment, { clearWebhookData = false } = {}) => {
     setLoading(true); setError('');
     try {
-      const { data } = await api.get(`/integration/settings?environment=${env}`);
-      setSettings(data || {});
-      setWebhookUrl(clearWebhookData ? '' : data?.webhook?.url || '');
-      if (clearWebhookData || !data?.credentials || !data?.webhook) {
-        setDeliveries([]);
-      } else {
-        const deliveryResponse = await api.get(`/integration/webhooks/${env}/deliveries`);
-        setDeliveries(deliveryResponse.data?.data || deliveryResponse.data || []);
+      const [settingsResponse, webhookResponse, deliveryResponse] = await Promise.all([
+        api.get(`/integration/settings?environment=${env}`),
+        api.get(`/integration/webhooks/${env}`),
+        api.get(`/integration/webhooks/${env}/deliveries`),
+      ]);
+      setSettings(settingsResponse.data || {});
+      setWebhooks(webhookResponse.data?.webhooks || []);
+      setDeliveries(deliveryResponse.data?.data || deliveryResponse.data || []);
+      if (clearWebhookData) {
+        setWebhookForm({ name: '', url: '' });
+        setEditingWebhook(null);
       }
     } catch (err) {
       setError(errorMessage(err, 'Impossible de charger la configuration d’intégration.'));
@@ -109,7 +119,15 @@ export default function Integration() {
   };
   // The loader intentionally owns the request lifecycle for the selected environment.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(environment); }, [environment]);
+  useEffect(() => {
+    if (features?.payment_api_enabled === false) {
+      setLoading(false);
+      setError('');
+      return;
+    }
+    load(environment);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [environment]);
 
   const createCredentials = () => setComplianceConfirmationOpen(true);
   const confirmCreateCredentials = async () => {
@@ -148,7 +166,7 @@ export default function Integration() {
       if (!data?.deleted) throw new Error('La suppression n’a pas été confirmée par le serveur.');
       setDeleteConfirmationOpen(false);
       setDeleteConfirmationPhrase('');
-      setWebhookUrl('');
+      setWebhooks([]);
       setDeliveries([]);
       toast.success(`Identifiants ${ENVIRONMENTS[environment].label} supprimés`);
       await load(environment, { clearWebhookData: true });
@@ -175,23 +193,77 @@ export default function Integration() {
     event.preventDefault();
     setBusy('webhook');
     try {
-      const { data } = await api.put(`/integration/webhooks/${environment}`, { url: webhookUrl.trim(), active: true });
-      if (data?.webhook_secret) setReveal({ secret: data.webhook_secret, type: 'Secret webhook', environment: ENVIRONMENTS[environment].label });
-      toast.success('Webhook enregistré'); await load();
+      const payload = {
+        name: webhookForm.name.trim(),
+        url: webhookForm.url.trim(),
+      };
+      const { data } = editingWebhook
+        ? await api.patch(`/integration/webhooks/${environment}/${editingWebhook.id}`, payload)
+        : await api.post(`/integration/webhooks/${environment}`, payload);
+      if (data?.webhook_secret) {
+        setReveal({
+          secret: data.webhook_secret,
+          type: `Secret du webhook « ${payload.name} »`,
+          environment: ENVIRONMENTS[environment].label,
+        });
+      }
+      setWebhookForm({ name: '', url: '' });
+      setEditingWebhook(null);
+      toast.success(editingWebhook ? 'Webhook mis à jour' : 'Webhook ajouté');
+      await load();
     } catch (err) { toast.error(errorMessage(err, 'Le webhook n’a pas pu être enregistré.')); } finally { setBusy(''); }
   };
-  const webhookAction = async (action, message) => {
-    setBusy(action);
+  const startEditingWebhook = (webhook) => {
+    setEditingWebhook(webhook);
+    setWebhookForm({ name: webhook.name || '', url: webhook.url || '' });
+  };
+  const cancelEditingWebhook = () => {
+    setEditingWebhook(null);
+    setWebhookForm({ name: '', url: '' });
+  };
+  const webhookAction = async (action, message, webhook) => {
+    const busyKey = `${action}-${webhook.id}`;
+    setBusy(busyKey);
     try {
-      const { data } = await api.post(`/integration/webhooks/${environment}/${action === 'rotate' ? 'regenerate-secret' : 'test'}`, action === 'test' ? {} : undefined);
-      if (data?.webhook_secret) setReveal({ secret: data.webhook_secret, type: 'Nouveau secret webhook', environment: ENVIRONMENTS[environment].label });
+      const path = action === 'rotate'
+        ? `/integration/webhooks/${environment}/${webhook.id}/regenerate-secret`
+        : `/integration/webhooks/${environment}/${webhook.id}/test`;
+      const { data } = await api.post(path, action === 'test' ? {} : undefined);
+      if (data?.webhook_secret) {
+        setReveal({
+          secret: data.webhook_secret,
+          type: `Nouveau secret du webhook « ${webhook.name} »`,
+          environment: ENVIRONMENTS[environment].label,
+        });
+      }
       toast.success(message); await load();
     } catch (err) { toast.error(errorMessage(err, 'L’action webhook a échoué.')); } finally { setBusy(''); }
   };
-  const disableWebhook = async () => {
-    setBusy('disable');
-    try { await api.put(`/integration/webhooks/${environment}`, { url: webhookUrl.trim(), active: false }); toast.success('Webhook désactivé'); await load(); }
-    catch (err) { toast.error(errorMessage(err, 'Le webhook n’a pas pu être désactivé.')); } finally { setBusy(''); }
+  const toggleWebhook = async (webhook) => {
+    const busyKey = `toggle-${webhook.id}`;
+    setBusy(busyKey);
+    try {
+      await api.patch(`/integration/webhooks/${environment}/${webhook.id}`, {
+        active: !webhook.active,
+      });
+      toast.success(webhook.active ? 'Webhook désactivé' : 'Webhook activé');
+      await load();
+    } catch (err) {
+      toast.error(errorMessage(err, 'Le statut du webhook n’a pas pu être modifié.'));
+    } finally { setBusy(''); }
+  };
+  const deleteWebhook = async (webhook) => {
+    if (!window.confirm(`Supprimer le webhook « ${webhook.name} » ? Son historique sera conservé.`)) return;
+    const busyKey = `delete-${webhook.id}`;
+    setBusy(busyKey);
+    try {
+      await api.delete(`/integration/webhooks/${environment}/${webhook.id}`);
+      toast.success('Webhook supprimé');
+      if (editingWebhook?.id === webhook.id) cancelEditingWebhook();
+      await load();
+    } catch (err) {
+      toast.error(errorMessage(err, 'Le webhook n’a pas pu être supprimé.'));
+    } finally { setBusy(''); }
   };
   const active = settings?.credentials?.active;
   const hasCredentials = Boolean(settings?.credentials?.public_key);
@@ -201,6 +273,14 @@ export default function Integration() {
   const payoutEnabled = payoutOptIn === true || payoutScopeEnabled;
   const env = ENVIRONMENTS[environment];
   const deliveryRows = useMemo(() => Array.isArray(deliveries) ? deliveries : deliveries?.items || [], [deliveries]);
+
+  if (features?.payment_api_enabled === false) {
+    return <div className="mx-auto max-w-3xl rounded-2xl border border-amber-200 bg-amber-50 p-8 text-center" data-testid="payment-api-disabled">
+      <AlertTriangle className="mx-auto h-7 w-7 text-amber-700" />
+      <h1 className="mt-3 font-cabinet text-xl font-extrabold text-amber-950">API de paiement temporairement indisponible</h1>
+      <p className="mt-2 text-sm text-amber-900">L’accès à la gestion des identifiants et des intégrations API est désactivé par l’administration. Vos clés, opérations et historiques sont conservés.</p>
+    </div>;
+  }
 
   return <div className="mx-auto max-w-6xl space-y-6" data-testid="page-integration">
     <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
@@ -232,13 +312,114 @@ export default function Integration() {
            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3"><div className="font-bold text-slate-700">Scope actuel</div><div className="mt-1 font-mono text-slate-500">{payoutScopeEnabled ? 'payouts:write' : 'payouts:write absent'}</div></div>
          </div>
        </section>}
-      <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <div className="border-b border-slate-100 p-5"><div className="flex items-center gap-2"><Webhook className="h-4 w-4 text-blue-600" /><h2 className="font-cabinet text-lg font-extrabold text-slate-900">Webhooks</h2>{settings?.webhook?.active && <Badge tone="emerald">Actif</Badge>}</div><p className="mt-1 text-xs text-slate-500">Recevez les changements d’état signés sur votre serveur. Répondez rapidement avec un code HTTP 2xx.</p></div>
-        <div className="space-y-5 p-5"><form onSubmit={saveWebhook} className="flex flex-col gap-2 sm:flex-row sm:items-end"><label className="flex-1 text-xs font-bold text-slate-700">URL de destination<input type="url" required value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://votre-domaine.com/webhooks/biz-transpay" className="mt-1.5 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100" /></label><button type="submit" disabled={!!busy || !webhookUrl.trim()} className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-40">{busy === 'webhook' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link2 className="h-3.5 w-3.5" />} Enregistrer</button></form>
-          <div className="flex flex-wrap gap-2">{settings?.webhook?.active && <><button type="button" onClick={() => webhookAction('test', 'Test webhook envoyé')} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"><Send className="h-3.5 w-3.5" /> Envoyer un test</button><button type="button" onClick={() => webhookAction('rotate', 'Secret webhook régénéré')} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"><RefreshCw className="h-3.5 w-3.5" /> Régénérer le secret</button><button type="button" onClick={disableWebhook} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50"><EyeOff className="h-3.5 w-3.5" /> Désactiver</button></>}</div>
-          <div><div className="mb-2 flex items-center justify-between"><h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Dernières livraisons</h3><button type="button" onClick={() => load()} className="text-xs font-bold text-blue-600 hover:text-blue-700">Actualiser</button></div>{deliveryRows.length ? <div className="overflow-x-auto rounded-xl border border-slate-200"><table className="w-full min-w-[580px] text-left text-xs"><thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-2.5">Événement</th><th className="px-3 py-2.5">Statut</th><th className="px-3 py-2.5">Tentatives</th><th className="px-3 py-2.5">Date</th></tr></thead><tbody className="divide-y divide-slate-100">{deliveryRows.map((row, index) => <tr key={row.id || index}><td className="px-3 py-3 font-mono text-slate-700">{row.event || row.event_type || '—'}</td><td className="px-3 py-3"><Badge tone={row.success || row.status_code >= 200 && row.status_code < 300 ? 'emerald' : 'red'}>{row.status || row.status_code || 'Erreur'}</Badge></td><td className="px-3 py-3 text-slate-500">{row.attempts ?? row.attempt_count ?? '—'}</td><td className="px-3 py-3 text-slate-500">{row.created_at ? new Date(row.created_at).toLocaleString('fr-FR') : '—'}</td></tr>)}</tbody></table></div> : <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500"><Terminal className="mx-auto mb-2 h-5 w-5 text-slate-300" />Aucune livraison pour le moment.</div>}</div>
-        </div>
-      </section>
+       <section className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+         <div className="border-b border-slate-100 p-5">
+           <div className="flex flex-wrap items-center gap-2">
+             <Webhook className="h-4 w-4 text-blue-600" />
+             <h2 className="font-cabinet text-lg font-extrabold text-slate-900">Webhooks par site</h2>
+             <Badge tone={webhooks.some((webhook) => webhook.active) ? 'emerald' : 'slate'}>
+               {webhooks.filter((webhook) => webhook.active).length} actif(s)
+             </Badge>
+           </div>
+           <p className="mt-1 max-w-3xl text-xs leading-relaxed text-slate-500">
+             Ajoutez une destination pour chaque site. Les mêmes clés API servent à tous les sites ;
+             chaque destination possède son propre secret de signature et reçoit les événements en parallèle.
+           </p>
+         </div>
+         <div className="space-y-5 p-5">
+           <form onSubmit={saveWebhook} className="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+             <div className="mb-3 text-sm font-bold text-slate-800">
+               {editingWebhook ? `Modifier « ${editingWebhook.name} »` : 'Ajouter une destination webhook'}
+             </div>
+             <div className="grid gap-3 md:grid-cols-[minmax(150px,0.7fr)_minmax(250px,1.3fr)_auto] md:items-end">
+               <label className="text-xs font-bold text-slate-700">Nom du site
+                 <input
+                   type="text"
+                   required
+                   maxLength={80}
+                   value={webhookForm.name}
+                   onChange={(event) => setWebhookForm((current) => ({ ...current, name: event.target.value }))}
+                   placeholder="Boutique principale"
+                   className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                 />
+               </label>
+               <label className="text-xs font-bold text-slate-700">URL de destination
+                 <input
+                   type="url"
+                   required
+                   maxLength={2048}
+                   value={webhookForm.url}
+                   onChange={(event) => setWebhookForm((current) => ({ ...current, url: event.target.value }))}
+                   placeholder="https://votre-domaine.com/webhooks/biz-transpay"
+                   className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                 />
+               </label>
+               <div className="flex gap-2">
+                 {editingWebhook && <button type="button" onClick={cancelEditingWebhook} disabled={!!busy} className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50">Annuler</button>}
+                 <button type="submit" disabled={!!busy || !webhookForm.name.trim() || !webhookForm.url.trim()} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-40">
+                   {busy === 'webhook' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : editingWebhook ? <Check className="h-3.5 w-3.5" /> : <Plus className="h-3.5 w-3.5" />}
+                   {editingWebhook ? 'Enregistrer' : 'Ajouter'}
+                 </button>
+               </div>
+             </div>
+           </form>
+
+           {webhooks.length ? <div className="space-y-3">
+             {webhooks.map((webhook) => <article key={webhook.id} className="rounded-xl border border-slate-200 bg-white p-4">
+               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                 <div className="min-w-0 flex-1">
+                   <div className="flex flex-wrap items-center gap-2">
+                     <h3 className="font-cabinet text-sm font-extrabold text-slate-900">{webhook.name}</h3>
+                     <Badge tone={webhook.active ? 'emerald' : 'slate'}>{webhook.active ? 'Actif' : 'Désactivé'}</Badge>
+                     {webhook.is_default && <Badge>Principal</Badge>}
+                     <Badge tone={webhook.secret_configured ? 'blue' : 'amber'}>
+                       {webhook.secret_configured ? 'Secret configuré' : 'Secret manquant'}
+                     </Badge>
+                   </div>
+                   <p className="mt-2 break-all font-mono text-xs text-slate-600">{webhook.url}</p>
+                 </div>
+                 <div className="flex shrink-0 flex-wrap gap-2">
+                   <button type="button" onClick={() => startEditingWebhook(webhook)} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40"><Pencil className="h-3.5 w-3.5" /> Modifier</button>
+                   <button type="button" onClick={() => toggleWebhook(webhook)} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+                     {busy === `toggle-${webhook.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : webhook.active ? <EyeOff className="h-3.5 w-3.5" /> : <Check className="h-3.5 w-3.5" />}
+                     {webhook.active ? 'Désactiver' : 'Activer'}
+                   </button>
+                   <button type="button" onClick={() => webhookAction('test', 'Test webhook envoyé', webhook)} disabled={!!busy || !webhook.active} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+                     {busy === `test-${webhook.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />} Tester
+                   </button>
+                   <button type="button" onClick={() => webhookAction('rotate', 'Secret webhook régénéré', webhook)} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+                     {busy === `rotate-${webhook.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Nouveau secret
+                   </button>
+                   <button type="button" onClick={() => deleteWebhook(webhook)} disabled={!!busy} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-2.5 py-2 text-xs font-bold text-red-700 hover:bg-red-50 disabled:opacity-40">
+                     {busy === `delete-${webhook.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />} Supprimer
+                   </button>
+                 </div>
+               </div>
+             </article>)}
+           </div> : <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500">
+             <Terminal className="mx-auto mb-2 h-5 w-5 text-slate-300" />Aucune destination configurée pour cet environnement.
+           </div>}
+
+           <div>
+             <div className="mb-2 flex items-center justify-between">
+               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Dernières livraisons</h3>
+               <button type="button" onClick={() => load()} className="text-xs font-bold text-blue-600 hover:text-blue-700">Actualiser</button>
+             </div>
+             {deliveryRows.length ? <div className="overflow-x-auto rounded-xl border border-slate-200">
+               <table className="w-full min-w-[700px] text-left text-xs">
+                 <thead className="bg-slate-50 text-slate-500"><tr><th className="px-3 py-2.5">Destination</th><th className="px-3 py-2.5">Événement</th><th className="px-3 py-2.5">Statut</th><th className="px-3 py-2.5">Tentatives</th><th className="px-3 py-2.5">Date</th></tr></thead>
+                 <tbody className="divide-y divide-slate-100">{deliveryRows.map((row, index) => <tr key={row.id || index}>
+                   <td className="px-3 py-3 font-semibold text-slate-700">{row.destination_name || row.destination_id || row.url || '—'}</td>
+                   <td className="px-3 py-3 font-mono text-slate-700">{row.event || row.event_type || '—'}</td>
+                   <td className="px-3 py-3"><Badge tone={row.status === 'delivered' || row.success || row.status_code >= 200 && row.status_code < 300 ? 'emerald' : row.status === 'disabled' ? 'slate' : 'red'}>{row.status || row.status_code || 'Erreur'}</Badge></td>
+                   <td className="px-3 py-3 text-slate-500">{row.attempts ?? row.attempt_count ?? '—'}</td>
+                   <td className="px-3 py-3 text-slate-500">{row.completed_at || row.created_at ? new Date(row.completed_at || row.created_at).toLocaleString('fr-FR') : '—'}</td>
+                 </tr>)}</tbody>
+               </table>
+             </div> : <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-xs text-slate-500"><Terminal className="mx-auto mb-2 h-5 w-5 text-slate-300" />Aucune livraison pour le moment.</div>}
+           </div>
+         </div>
+       </section>
     </>}
     <SecretReveal reveal={reveal} onClose={() => setReveal(null)} />
     {complianceConfirmationOpen && <ComplianceWarningModal onConfirm={confirmCreateCredentials} onCancel={() => setComplianceConfirmationOpen(false)} busy={busy === 'credentials'} />}

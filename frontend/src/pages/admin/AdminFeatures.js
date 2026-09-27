@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Wallet, Coins, Bitcoin, ArrowDownToLine, ArrowUpFromLine, Eye, EyeOff, Check, X, AlertTriangle, Info, Link2 } from 'lucide-react';
+import { Wallet, Coins, Bitcoin, ArrowDownToLine, ArrowUpFromLine, Eye, EyeOff, Check, X, AlertTriangle, Info, Link2, Code2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 
@@ -234,6 +234,20 @@ export default function AdminFeatures() {
               disabled={saving === 'links_enabled'}
               size="lg"
               tid="toggle-links-enabled"
+            />
+          </div>
+          <div className={`p-4 rounded-xl flex items-center gap-3 ${features.payment_api_enabled ? 'bg-emerald-50 border border-emerald-200' : 'bg-slate-100 border border-slate-200'}`}>
+            <Code2 className="w-5 h-5 text-slate-500 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="font-cabinet font-bold text-sm text-slate-900">API de paiement</div>
+              <div className="text-[11px] text-slate-500">Clés API, opérations d’intégration et webhooks marchands</div>
+            </div>
+            <Toggle
+              checked={!!features.payment_api_enabled}
+              onChange={(v) => patch('payment_api_enabled', v)}
+              disabled={saving === 'payment_api_enabled'}
+              size="lg"
+              tid="toggle-payment-api-enabled"
             />
           </div>
         </div>

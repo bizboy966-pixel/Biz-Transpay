@@ -41,10 +41,29 @@ ENDPOINTS = [
      "auth": "Session Biz-transPay du marchand (réauthentification récente)",
      "auth_type": "recent_session",
      "purpose": "Supprimer définitivement la paire de clés et la configuration webhook de cet environnement, sans supprimer l’historique financier."},
+    {"method": "GET", "path": "/api/integration/webhooks/{environment}",
+     "auth": "Session Biz-transPay du marchand", "auth_type": "session",
+     "purpose": "Lister les destinations webhook de cet environnement."},
+    {"method": "POST", "path": "/api/integration/webhooks/{environment}",
+     "auth": "Session Biz-transPay du marchand (réauthentification récente)",
+     "auth_type": "recent_session",
+     "purpose": "Ajouter une destination webhook indépendante avec son propre secret."},
+    {"method": "PATCH", "path": "/api/integration/webhooks/{environment}/{webhook_id}",
+     "auth": "Session Biz-transPay du marchand (réauthentification récente)",
+     "auth_type": "recent_session",
+     "purpose": "Modifier le nom, l’URL ou l’état d’une destination webhook."},
+    {"method": "DELETE", "path": "/api/integration/webhooks/{environment}/{webhook_id}",
+     "auth": "Session Biz-transPay du marchand (réauthentification récente)",
+     "auth_type": "recent_session",
+     "purpose": "Supprimer une destination webhook sans supprimer son historique."},
     {"method": "PUT", "path": "/api/integration/webhooks/{environment}",
      "auth": "Session Biz-transPay du marchand (réauthentification récente)",
      "auth_type": "recent_session",
-     "purpose": "Définir l’URL du webhook et son état d’activation."},
+     "purpose": "Mettre à jour la destination principale historique (compatibilité)."},
+    {"method": "POST", "path": "/api/integration/webhooks/{environment}/{webhook_id}/regenerate-secret",
+     "auth": "Session Biz-transPay du marchand (réauthentification récente)",
+     "auth_type": "recent_session",
+     "purpose": "Renouveler le secret d’une destination ; il n’est renvoyé qu’une fois."},
     {"method": "POST", "path": "/api/integration/webhooks/{environment}/regenerate-secret",
      "auth": "Session Biz-transPay du marchand (réauthentification récente)",
      "auth_type": "recent_session",
@@ -54,7 +73,10 @@ ENDPOINTS = [
      "purpose": "Envoyer un événement de test signé."},
     {"method": "GET", "path": "/api/integration/webhooks/{environment}/deliveries",
      "auth": "Session Biz-transPay du marchand", "auth_type": "session",
-     "purpose": "Consulter les tentatives de livraison des webhooks."},
+     "purpose": "Consulter les tentatives de livraison de toutes les destinations."},
+    {"method": "POST", "path": "/api/integration/webhooks/{environment}/{webhook_id}/test",
+     "auth": "Session Biz-transPay du marchand", "auth_type": "session",
+     "purpose": "Envoyer un événement de test à une destination précise."},
     {"method": "GET", "path": "/api/integration/documentation",
      "auth": "Accès public", "auth_type": "public",
      "purpose": "Consulter la documentation destinée aux développeurs."},
@@ -129,6 +151,8 @@ ENDPOINTS = [
      "purpose": "Lister les retraits crypto créés par cette intégration."},
 ]
 
+MAX_WEBHOOK_DESTINATIONS = 20
+
 
 class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
     """Connect to a vetted IP while httpcore retains the original TLS hostname."""
@@ -169,6 +193,20 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             raise HTTPException(422, "environment must be test or live")
         return environment
 
+    async def payment_api_is_enabled() -> bool:
+        feature_loader = ctx.get("get_app_features")
+        if not callable(feature_loader):
+            return True
+        features = await feature_loader()
+        return bool(features.get("payment_api_enabled", True))
+
+    async def require_payment_api_enabled() -> None:
+        if not await payment_api_is_enabled():
+            raise HTTPException(403, detail={
+                "code": "PAYMENT_API_DISABLED",
+                "message": "L’API de paiement est temporairement désactivée.",
+            })
+
     def public_credential(doc: Optional[dict]) -> Optional[dict]:
         if not doc:
             return None
@@ -184,6 +222,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         user = await db.users.find_one({"id": uid}, {"_id": 0, "account_type": 1})
         if not user or user.get("account_type") != "merchant":
             raise HTTPException(403, "API integration is reserved for business accounts")
+        await require_payment_api_enabled()
         return uid
 
     async def recent_browser_owner(
@@ -195,6 +234,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         return uid
 
     async def authenticate(request: Request) -> dict:
+        await require_payment_api_enabled()
         auth = request.headers.get("Authorization", "")
         public_key = request.headers.get("X-Public-Key", "").strip()
         if not auth.lower().startswith("bearer ") or not public_key:
@@ -571,85 +611,169 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         return True
 
     async def deliver_event(uid: str, env: str, event_type: str, data: dict,
-                            event_id: Optional[str] = None) -> Optional[dict]:
-        wh = await db.integration_webhooks.find_one(
-            {"user_id": uid, "environment": env, "active": True}, {"_id": 0})
-        if not wh:
+                            event_id: Optional[str] = None,
+                            destination_id: Optional[str] = None) -> Optional[dict]:
+        if not await payment_api_is_enabled():
+            return {"event_id": event_id, "status": "disabled",
+                    "error": "Payment API disabled"}
+        query = {"user_id": uid, "environment": env, "active": True}
+        if destination_id:
+            query["id"] = destination_id
+        destinations = await db.integration_webhooks.find(
+            query, {"_id": 0}).sort("created_at", 1).to_list(
+                MAX_WEBHOOK_DESTINATIONS)
+        if not destinations:
             return {"event_id": event_id, "status": "unconfigured",
                     "error": "No active webhook configured"}
-        if not wh.get("url") or not wh.get("secret_encrypted"):
-            return {"event_id": event_id, "status": "failed",
-                    "error": "Webhook configuration is incomplete"}
-        url = wh["url"]
-        parsed_url = urlsplit(url)
-        hostname = (parsed_url.hostname or "").lower().rstrip(".")
-        if not hostname:
-            return {"event_id": event_id, "status": "failed",
-                    "error": "Webhook URL has no hostname"}
-        secret = ctx["_decrypt"](wh["secret_encrypted"])
-        if not secret:
-            return {"event_id": event_id, "status": "failed",
-                    "error": "Webhook signing secret is unavailable"}
+
         event_id = event_id or secrets.token_urlsafe(18)
-        delivery_id = secrets.token_urlsafe(18)
-        payload = {"id": event_id, "type": event_type, "data": data, "created_at": now()}
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
-        timestamp = str(int(time.time()))
-        signature = "sha256=" + hmac.new(
-            secret.encode(), f"{timestamp}.{body}".encode(), hashlib.sha256
-        ).hexdigest()
-        delivery = {
-            "id": delivery_id, "event_id": event_id,
-            "user_id": uid, "environment": env,
-            "event_type": event_type, "url": url, "payload": payload,
-            "attempts": 0, "status": "pending", "created_at": now(),
-        }
-        await db.integration_webhook_deliveries.insert_one(delivery)
-        status, code, err = "failed", None, None
-        for attempt in range(3):
+        legacy_default_id = f"{uid}:{env}"
+
+        async def deliver_to_destination(wh: dict) -> dict:
+            webhook_id = str(wh.get("id") or legacy_default_id)
+            name = wh.get("name") or (
+                "Site principal"
+                if wh.get("is_default") or webhook_id == legacy_default_id
+                else "Webhook")
+            url = str(wh.get("url") or "")
+            existing = await db.integration_webhook_deliveries.find_one({
+                "event_id": event_id, "user_id": uid,
+                "environment": env, "destination_id": webhook_id,
+            }, {"_id": 0})
+            if (existing is None
+                    and (wh.get("is_default") or webhook_id == legacy_default_id)
+                    and url):
+                # Older deliveries did not have a destination_id; associate
+                # those rows with the preserved default webhook.
+                existing = await db.integration_webhook_deliveries.find_one({
+                    "event_id": event_id, "user_id": uid,
+                    "environment": env, "url": url,
+                }, {"_id": 0})
+            if existing and existing.get("status") == "delivered":
+                return {
+                    "id": existing.get("id"), "event_id": event_id,
+                    "destination_id": webhook_id, "destination_name": name,
+                    "status": "delivered", "status_code": existing.get("status_code"),
+                    "error": None,
+                }
+
+            delivery_id = (existing or {}).get("id") or uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"biz-transpay-webhook:{event_id}:{webhook_id}",
+            ).hex
+            payload = (existing or {}).get("payload") or {
+                "id": event_id, "type": event_type, "data": data,
+                "created_at": now(),
+            }
+            previous_attempts = int((existing or {}).get("attempts", 0))
+            delivery = {
+                **(existing or {}),
+                "id": delivery_id, "event_id": event_id,
+                "user_id": uid, "environment": env,
+                "destination_id": webhook_id, "destination_name": name,
+                "event_type": event_type, "url": url, "payload": payload,
+                "attempts": previous_attempts, "status": "pending",
+                "created_at": (existing or {}).get("created_at") or now(),
+            }
+            if existing:
+                await db.integration_webhook_deliveries.update_one(
+                    {"id": delivery_id}, {"$set": delivery})
+            else:
+                await db.integration_webhook_deliveries.insert_one(delivery)
+
+            error = None
+            if not url or not wh.get("secret_encrypted"):
+                error = "Webhook configuration is incomplete"
+            parsed_url = urlsplit(url) if url else None
+            hostname = (parsed_url.hostname or "").lower().rstrip(".") if parsed_url else ""
+            if not error and not hostname:
+                error = "Webhook URL has no hostname"
+            secret = ctx["_decrypt"](wh["secret_encrypted"]) if not error else ""
+            if not error and not secret:
+                error = "Webhook signing secret is unavailable"
+
+            status, code = "failed", None
+            attempts_this_run = 0
+            if not error:
+                body = json.dumps(
+                    payload, separators=(",", ":"), sort_keys=True, default=str)
+                for attempt in range(3):
+                    if not await payment_api_is_enabled():
+                        status, error = "disabled", "Payment API disabled"
+                        break
+                    attempts_this_run += 1
+                    timestamp = str(int(time.time()))
+                    signature = "sha256=" + hmac.new(
+                        secret.encode(), f"{timestamp}.{body}".encode(),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    await db.integration_webhook_deliveries.update_one(
+                        {"id": delivery_id}, {"$set": {
+                            "status": "delivering",
+                            "attempts": previous_attempts + attempts_this_run,
+                            "last_attempt_at": now(),
+                        }})
+                    try:
+                        addresses = await ctx["_resolve_safe_outbound_http_ips"](url)
+                        if (not addresses
+                                or any(not ipaddress.ip_address(address).is_global
+                                       for address in addresses)):
+                            error = "Unsafe or private DNS answer"
+                            break
+                        pinned_ip = addresses[attempt % len(addresses)]
+                        transport = httpx.AsyncHTTPTransport(
+                            retries=0, trust_env=False)
+                        transport._pool._network_backend = _PinnedNetworkBackend(
+                            hostname, pinned_ip)
+                        async with httpx.AsyncClient(
+                                timeout=8, follow_redirects=False, trust_env=False,
+                                transport=transport) as client:
+                            resp = await client.post(url, content=body, headers={
+                                "Content-Type": "application/json",
+                                "X-BizTransPay-Timestamp": timestamp,
+                                "X-BizTransPay-Signature": signature,
+                                "X-BizTransPay-Event-Id": event_id,
+                                "X-BizTransPay-Event-Type": event_type,
+                            })
+                        code = resp.status_code
+                        if 200 <= code < 300:
+                            status, error = "delivered", None
+                            break
+                        error = f"HTTP {code}"
+                    except Exception as exc:  # persist failures without leaking details
+                        error = type(exc).__name__
+                    if attempt < 2:
+                        await asyncio.sleep(0.2 * (attempt + 1))
+
             await db.integration_webhook_deliveries.update_one(
                 {"id": delivery_id}, {"$set": {
-                    "status": "delivering", "attempts": attempt + 1,
-                    "last_attempt_at": now(),
+                    "status": status, "status_code": code, "error": error,
+                    "attempts": previous_attempts + attempts_this_run,
+                    "completed_at": now(),
                 }})
-            try:
-                addresses = await ctx["_resolve_safe_outbound_http_ips"](url)
-                if (not addresses
-                        or any(not ipaddress.ip_address(address).is_global
-                               for address in addresses)):
-                    err = "Unsafe or private DNS answer"
-                    break
-                pinned_ip = addresses[attempt % len(addresses)]
-                transport = httpx.AsyncHTTPTransport(
-                    retries=0, trust_env=False)
-                transport._pool._network_backend = _PinnedNetworkBackend(
-                    hostname, pinned_ip)
-                async with httpx.AsyncClient(
-                        timeout=8, follow_redirects=False, trust_env=False,
-                        transport=transport) as client:
-                    resp = await client.post(url, content=body, headers={
-                        "Content-Type": "application/json",
-                        "X-BizTransPay-Timestamp": timestamp,
-                        "X-BizTransPay-Signature": signature,
-                        "X-BizTransPay-Event-Id": event_id,
-                        "X-BizTransPay-Event-Type": event_type,
-                    })
-                code = resp.status_code
-                if 200 <= code < 300:
-                    status, err = "delivered", None
-                    break
-                err = f"HTTP {code}"
-            except Exception as exc:  # delivery failures are persisted, not leaked
-                err = type(exc).__name__
-            if attempt < 2:
-                await asyncio.sleep(0.2 * (attempt + 1))
-        await db.integration_webhook_deliveries.update_one(
-            {"id": delivery_id}, {"$set": {
-                "status": status, "status_code": code, "error": err,
-                "attempts": attempt + 1, "completed_at": now(),
-            }})
-        return {"id": delivery_id, "event_id": event_id,
-                "status": status, "status_code": code, "error": err}
+            return {
+                "id": delivery_id, "event_id": event_id,
+                "destination_id": webhook_id, "destination_name": name,
+                "status": status, "status_code": code, "error": error,
+            }
+
+        results = await asyncio.gather(
+            *(deliver_to_destination(wh) for wh in destinations))
+        statuses = {result["status"] for result in results}
+        status = (
+            "disabled" if "disabled" in statuses
+            else "failed" if "failed" in statuses
+            else "delivered"
+        )
+        failures = [result for result in results if result["status"] == "failed"]
+        return {
+            "id": next((result.get("id") for result in results if result.get("id")), None),
+            "event_id": event_id, "status": status,
+            "delivery_ids": [result.get("id") for result in results if result.get("id")],
+            "deliveries": results,
+            "error": failures[0].get("error") if failures else (
+                "Payment API disabled" if status == "disabled" else None),
+        }
 
     async def emit_transition(operation: dict, status: str) -> None:
         if status == operation.get("status"):
@@ -683,6 +807,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
 
     async def queue_event(uid: str, env: str, event_type: str, data: dict,
                           dedupe_key: str) -> None:
+        if not await payment_api_is_enabled():
+            return
         event_id = hashlib.sha256(
             f"{uid}:{env}:{event_type}:{dedupe_key}".encode()).hexdigest()
         try:
@@ -703,6 +829,19 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         })
 
     async def process_event(event: dict) -> None:
+        if not await payment_api_is_enabled():
+            await db.integration_webhook_events.update_one(
+                {"id": event["id"], "$or": [
+                    {"status": "queued"},
+                    {"status": "waiting_webhook"},
+                    {"status": "failed"},
+                    {"status": "processing"},
+                ]},
+                {"$set": {
+                    "status": "disabled", "last_error": "Payment API disabled",
+                    "next_retry_at": None, "completed_at": now(),
+                }})
+            return
         attempts_before = int(event.get("attempts", 0))
         stale_iso = datetime.fromtimestamp(
             datetime.now(timezone.utc).timestamp() - 120,
@@ -930,6 +1069,16 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         url: str = Field(..., min_length=8, max_length=2048)
         active: bool = True
 
+    class WebhookCreateBody(BaseModel):
+        name: str = Field(..., min_length=1, max_length=80)
+        url: str = Field(..., min_length=8, max_length=2048)
+        active: bool = True
+
+    class WebhookUpdateBody(BaseModel):
+        name: Optional[str] = Field(None, min_length=1, max_length=80)
+        url: Optional[str] = Field(None, min_length=8, max_length=2048)
+        active: Optional[bool] = None
+
     class DepositBody(BaseModel):
         amount: float = Field(..., gt=0)
         currency: str
@@ -993,7 +1142,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         key = await db.integration_credentials.find_one(
             {"user_id": uid, "environment": environment}, {"_id": 0})
         webhook = await db.integration_webhooks.find_one(
-            {"user_id": uid, "environment": environment}, {"_id": 0})
+            {"id": f"{uid}:{environment}", "user_id": uid,
+             "environment": environment}, {"_id": 0})
         return {
             "environment": environment, "credentials": public_credential(key),
             "available": environment == "live",
@@ -1095,24 +1245,122 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 )
         return {"environment": env, "deleted": True}
 
+    def public_webhook(doc: dict, uid: str, env: str) -> dict:
+        webhook_id = str(doc.get("id") or f"{uid}:{env}")
+        return {
+            "id": webhook_id,
+            "name": doc.get("name") or (
+                "Site principal"
+                if doc.get("is_default") or webhook_id == f"{uid}:{env}"
+                else "Webhook"),
+            "url": doc.get("url", ""),
+            "active": bool(doc.get("active")),
+            "secret_configured": bool(doc.get("secret_encrypted")),
+            "is_default": bool(
+                doc.get("is_default") or webhook_id == f"{uid}:{env}"),
+            "created_at": doc.get("created_at"),
+            "updated_at": doc.get("updated_at"),
+        }
+
+    @router.get("/webhooks/{environment}")
+    async def list_webhooks(environment: str, uid: str = Depends(browser_owner)):
+        env = check_env(environment)
+        docs = await db.integration_webhooks.find(
+            {"user_id": uid, "environment": env}, {"_id": 0}
+        ).sort("created_at", 1).to_list(MAX_WEBHOOK_DESTINATIONS)
+        return {
+            "environment": env,
+            "webhooks": [public_webhook(doc, uid, env) for doc in docs],
+        }
+
+    @router.post("/webhooks/{environment}")
+    async def create_webhook(environment: str, body: WebhookCreateBody,
+                             uid: str = Depends(recent_browser_owner)):
+        env = check_env(environment)
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(422, "Webhook name cannot be empty")
+        existing = await db.integration_webhooks.find(
+            {"user_id": uid, "environment": env}, {"_id": 0}
+        ).to_list(MAX_WEBHOOK_DESTINATIONS)
+        if len(existing) >= MAX_WEBHOOK_DESTINATIONS:
+            raise HTTPException(409, "Webhook destination limit reached")
+        url = await ctx["_validate_outbound_http_url"](body.url, "Webhook URL")
+        secret = "whsec_" + secrets.token_urlsafe(32)
+        doc = {
+            "id": "wh_" + secrets.token_urlsafe(18),
+            "user_id": uid, "environment": env, "name": name,
+            "url": url, "active": body.active, "is_default": False,
+            "secret_encrypted": ctx["_encrypt"](secret),
+            "created_at": now(), "updated_at": now(),
+        }
+        await db.integration_webhooks.insert_one(doc)
+        return {
+            "environment": env, "webhook": public_webhook(doc, uid, env),
+            "webhook_secret": secret, "secret_returned_once": True,
+        }
+
+    @router.patch("/webhooks/{environment}/{webhook_id}")
+    async def update_webhook(environment: str, webhook_id: str,
+                             body: WebhookUpdateBody,
+                             uid: str = Depends(recent_browser_owner)):
+        env = check_env(environment)
+        old = await db.integration_webhooks.find_one({
+            "id": webhook_id, "user_id": uid, "environment": env,
+        }, {"_id": 0})
+        if not old:
+            raise HTTPException(404, "Webhook configuration not found")
+        updates = body.model_dump(exclude_unset=True)
+        updates = {key: value for key, value in updates.items() if value is not None}
+        if "name" in updates:
+            updates["name"] = updates["name"].strip()
+            if not updates["name"]:
+                raise HTTPException(422, "Webhook name cannot be empty")
+        if "url" in updates:
+            updates["url"] = await ctx["_validate_outbound_http_url"](
+                updates["url"], "Webhook URL")
+        if not updates:
+            raise HTTPException(400, "Aucune modification")
+        updates["updated_at"] = now()
+        await db.integration_webhooks.update_one(
+            {"id": webhook_id, "user_id": uid, "environment": env},
+            {"$set": updates})
+        return {
+            "environment": env,
+            "webhook": public_webhook({**old, **updates}, uid, env),
+        }
+
+    @router.delete("/webhooks/{environment}/{webhook_id}")
+    async def delete_webhook(environment: str, webhook_id: str,
+                             uid: str = Depends(recent_browser_owner)):
+        env = check_env(environment)
+        result = await db.integration_webhooks.delete_many({
+            "id": webhook_id, "user_id": uid, "environment": env,
+        })
+        if not result.deleted_count:
+            raise HTTPException(404, "Webhook configuration not found")
+        return {"environment": env, "webhook_id": webhook_id, "deleted": True}
+
     @router.put("/webhooks/{environment}")
     async def configure_webhook(environment: str, body: WebhookBody,
                                 uid: str = Depends(recent_browser_owner)):
         env = check_env(environment)
         url = await ctx["_validate_outbound_http_url"](body.url, "Webhook URL")
         old = await db.integration_webhooks.find_one(
-            {"user_id": uid, "environment": env}, {"_id": 0})
+            {"id": f"{uid}:{env}", "user_id": uid, "environment": env}, {"_id": 0})
         newly_generated = not bool(old and old.get("secret_encrypted"))
         secret = "whsec_" + secrets.token_urlsafe(32) if newly_generated else None
         doc = {
             "id": f"{uid}:{env}", "user_id": uid, "environment": env,
-            "url": url, "active": body.active,
+            "name": (old or {}).get("name") or "Site principal",
+            "is_default": True, "url": url, "active": body.active,
             "secret_encrypted": (ctx["_encrypt"](secret) if secret
                                  else old["secret_encrypted"]), "updated_at": now(),
-            "created_at": now(),
+            "created_at": (old or {}).get("created_at") or now(),
         }
         await db.integration_webhooks.replace_one(
-            {"user_id": uid, "environment": env}, doc, upsert=True)
+            {"id": f"{uid}:{env}", "user_id": uid, "environment": env},
+            doc, upsert=True)
         return {"environment": env, "url": url, "active": body.active,
                 "webhook_secret": secret, "secret_returned_once": newly_generated}
 
@@ -1121,23 +1369,44 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         env = check_env(environment)
         secret = "whsec_" + secrets.token_urlsafe(32)
         result = await db.integration_webhooks.update_one(
-            {"user_id": uid, "environment": env},
+            {"id": f"{uid}:{env}", "user_id": uid, "environment": env},
             {"$set": {"secret_encrypted": ctx["_encrypt"](secret), "updated_at": now()}})
         if not result.matched_count:
             raise HTTPException(404, "Webhook configuration not found")
         return {"environment": env, "webhook_secret": secret, "secret_returned_once": True}
 
+    @router.post("/webhooks/{environment}/{webhook_id}/regenerate-secret")
+    async def rotate_single_webhook_secret(
+            environment: str, webhook_id: str,
+            uid: str = Depends(recent_browser_owner)):
+        env = check_env(environment)
+        secret = "whsec_" + secrets.token_urlsafe(32)
+        result = await db.integration_webhooks.update_one(
+            {"id": webhook_id, "user_id": uid, "environment": env},
+            {"$set": {
+                "secret_encrypted": ctx["_encrypt"](secret),
+                "updated_at": now(),
+            }})
+        if not result.matched_count:
+            raise HTTPException(404, "Webhook configuration not found")
+        return {
+            "environment": env, "webhook_id": webhook_id,
+            "webhook_secret": secret, "secret_returned_once": True,
+        }
+
     @router.post("/webhooks/{environment}/test")
     async def test_webhook(environment: str, uid: str = Depends(browser_owner)):
         env = check_env(environment)
         wh = await db.integration_webhooks.find_one(
-            {"user_id": uid, "environment": env, "active": True}, {"_id": 0})
+            {"id": f"{uid}:{env}", "user_id": uid,
+             "environment": env, "active": True}, {"_id": 0})
         if not wh:
             raise HTTPException(409, "Active webhook configuration required")
         if not await ctx["_is_safe_outbound_http_url"](wh.get("url", "")):
             raise HTTPException(422, "Webhook URL is not a safe public destination")
         delivery = await deliver_event(
-            uid, env, "webhook.test", {"environment": env, "test": True})
+            uid, env, "webhook.test", {"environment": env, "test": True},
+            destination_id=wh.get("id"))
         if not delivery or delivery.get("status") == "unconfigured":
             raise HTTPException(503, "Webhook test delivery could not be started safely")
         if delivery["status"] != "delivered":
@@ -1147,12 +1416,41 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             })
         return {"sent": True, "event": "webhook.test", "delivery_id": delivery["id"]}
 
+    @router.post("/webhooks/{environment}/{webhook_id}/test")
+    async def test_single_webhook(environment: str, webhook_id: str,
+                                  uid: str = Depends(browser_owner)):
+        env = check_env(environment)
+        wh = await db.integration_webhooks.find_one({
+            "id": webhook_id, "user_id": uid,
+            "environment": env, "active": True,
+        }, {"_id": 0})
+        if not wh:
+            raise HTTPException(409, "Active webhook configuration required")
+        if not await ctx["_is_safe_outbound_http_url"](wh.get("url", "")):
+            raise HTTPException(422, "Webhook URL is not a safe public destination")
+        delivery = await deliver_event(
+            uid, env, "webhook.test", {"environment": env, "test": True},
+            destination_id=webhook_id)
+        if not delivery or delivery.get("status") == "unconfigured":
+            raise HTTPException(503, "Webhook test delivery could not be started safely")
+        if delivery["status"] != "delivered":
+            raise HTTPException(502, detail={
+                "message": "Webhook test delivery failed",
+                "delivery_id": delivery.get("id"),
+            })
+        return {"sent": True, "event": "webhook.test",
+                "webhook_id": webhook_id, "delivery_id": delivery["id"]}
+
     @router.get("/webhooks/{environment}/deliveries")
     async def webhook_deliveries(environment: str, limit: int = Query(50, ge=1, le=200),
+                                 webhook_id: Optional[str] = Query(None),
                                  uid: str = Depends(browser_owner)):
         env = check_env(environment)
+        query = {"user_id": uid, "environment": env}
+        if webhook_id:
+            query["destination_id"] = webhook_id
         return await db.integration_webhook_deliveries.find(
-            {"user_id": uid, "environment": env}, {"_id": 0, "payload": 0}
+            query, {"_id": 0, "payload": 0}
         ).sort("created_at", -1).to_list(limit)
 
     @v1.post("/deposits")
@@ -2444,8 +2742,8 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                      "js": "const response = await fetch(`${process.env.BIZ_BASE_URL}/api/integration/v1/deposits`, { method: 'POST', headers: { Authorization: `Bearer ${process.env.BIZ_SECRET_KEY}`, 'X-Public-Key': process.env.BIZ_PUBLIC_KEY, 'Idempotency-Key': 'order-125', 'Content-Type': 'application/json' }, body: JSON.stringify({ amount: 10000, currency: 'XOF', country: 'TG', operator: 'tmoney_tg', phone_number: '90000000', email: 'buyer@example.com', full_name: 'Buyer' }) });",
                      "python": "response = requests.post(os.environ['BIZ_BASE_URL'] + '/api/integration/v1/deposits', headers={'Authorization': 'Bearer ' + os.environ['BIZ_SECRET_KEY'], 'X-Public-Key': os.environ['BIZ_PUBLIC_KEY'], 'Idempotency-Key': 'order-125'}, json={'amount': 10000, 'currency': 'XOF', 'country': 'TG', 'operator': 'tmoney_tg', 'phone_number': '90000000', 'email': 'buyer@example.com', 'full_name': 'Buyer'})",
                  }},
-                {"id": "webhooks", "title": "Webhooks et vérification de signature", "description":
-                 "La charge utile du webhook correspond exactement au corps JSON brut reçu. Vérifiez que X-BizTransPay-Timestamp date de moins de 300 secondes, puis comparez X-BizTransPay-Signature en temps constant à sha256=HMAC-SHA256(secret, timestamp + '.' + raw_body). L’identifiant de l’événement figure dans X-BizTransPay-Event-Id et dans la propriété JSON id ; utilisez-le pour éviter les doublons.",
+                 {"id": "webhooks", "title": "Webhooks et vérification de signature", "description":
+                  "Un environnement peut avoir plusieurs destinations webhook, chacune avec son propre secret de signature ; les mêmes identifiants API restent partagés pour cet environnement. Chaque événement est envoyé à toutes les destinations actives. La charge utile correspond exactement au corps JSON brut reçu. Vérifiez que X-BizTransPay-Timestamp date de moins de 300 secondes, puis comparez X-BizTransPay-Signature en temps constant à sha256=HMAC-SHA256(secret, timestamp + '.' + raw_body). L’identifiant de l’événement figure dans X-BizTransPay-Event-Id et dans la propriété JSON id ; utilisez-le pour éviter les doublons.",
                  "examples": {
                      "php": "$rawBody = file_get_contents('php://input');\n$timestamp = $_SERVER['HTTP_X_BIZTRANSPAY_TIMESTAMP'] ?? '';\n$signature = $_SERVER['HTTP_X_BIZTRANSPAY_SIGNATURE'] ?? '';\nif (!ctype_digit($timestamp) || abs(time() - (int)$timestamp) > 300) { http_response_code(401); exit; }\n$expected = 'sha256=' . hash_hmac('sha256', $timestamp . '.' . $rawBody, $webhookSecret);\nif (!hash_equals($expected, $signature)) { http_response_code(401); exit; }\n$event = json_decode($rawBody, true);",
                      "js": "import crypto from 'node:crypto';\nconst chunks = []; for await (const chunk of req) chunks.push(chunk);\nconst rawBody = Buffer.concat(chunks);\nconst timestamp = req.headers['x-biztranspay-timestamp'] || '';\nconst signature = req.headers['x-biztranspay-signature'] || '';\nif (!/^\\d+$/.test(timestamp) || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) throw new Error('stale timestamp');\nconst expected = 'sha256=' + crypto.createHmac('sha256', webhookSecret).update(Buffer.concat([Buffer.from(timestamp + '.'), rawBody])).digest('hex');\nconst a = Buffer.from(expected); const b = Buffer.from(signature);\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new Error('invalid signature');\nconst event = JSON.parse(rawBody.toString('utf8'));",

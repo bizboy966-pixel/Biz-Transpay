@@ -1079,6 +1079,175 @@ def test_delete_credentials_revokes_one_environment_and_preserves_history():
                and "document->>'environment' = $2" in query for query in conn.queries)
 
 
+def test_webhook_destinations_share_api_credentials_and_fan_out_independently(monkeypatch):
+    credential = {
+        "id": "biz:live", "user_id": "biz", "environment": "live",
+        "public_key": "pk_live_shared", "secret_hash": "same-secret-hash",
+        "active": True,
+    }
+    db = DB(integration_credentials=Collection([credential]))
+
+    async def validate_url(url, _label):
+        return url
+
+    async def resolve_ips(_url):
+        return ["8.8.8.8"]
+
+    state = ctx(
+        db, _validate_outbound_http_url=validate_url,
+        _resolve_safe_outbound_http_ips=resolve_ips,
+    )
+    router = create_router(state)
+    create = route(router, "/webhooks/{environment}", "POST")
+    body_type = inspect.signature(create).parameters["body"].annotation
+    first = run(create(
+        "live", body_type(name="Boutique A", url="https://a.example/hooks"), "biz"))
+    second = run(create(
+        "live", body_type(name="Boutique B", url="https://b.example/hooks"), "biz"))
+
+    assert first["webhook"]["id"] != second["webhook"]["id"]
+    assert first["webhook_secret"] != second["webhook_secret"]
+    assert len(db.integration_credentials.docs) == 1
+    assert db.integration_credentials.docs[0] == credential
+
+    posted = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, content, headers):
+            posted.append((url, content, headers))
+            return SimpleNamespace(status_code=204)
+
+    monkeypatch.setattr(integration_api.httpx, "AsyncClient", FakeClient)
+    result = run(state["_integration_deliver_event"](
+        "biz", "live", "payment.success", {"id": "payment-1"}, "shared-event"))
+
+    assert result["status"] == "delivered"
+    assert len(result["deliveries"]) == 2
+    assert {entry[0] for entry in posted} == {
+        "https://a.example/hooks", "https://b.example/hooks",
+    }
+    assert {entry[2]["X-BizTransPay-Event-Id"] for entry in posted} == {"shared-event"}
+    assert {doc["destination_id"] for doc in db.integration_webhook_deliveries.docs} == {
+        first["webhook"]["id"], second["webhook"]["id"],
+    }
+    assert all(doc["status"] == "delivered"
+               for doc in db.integration_webhook_deliveries.docs)
+
+
+def test_webhook_update_and_delete_are_owner_scoped_and_keep_delivery_history():
+    db = DB(integration_webhooks=Collection([
+        {
+            "id": "wh_owned", "user_id": "biz", "environment": "live",
+            "name": "Owned", "url": "https://owned.example/hook",
+            "active": True, "secret_encrypted": server._encrypt("owned-secret"),
+        },
+        {
+            "id": "wh_foreign", "user_id": "other", "environment": "live",
+            "name": "Foreign", "url": "https://foreign.example/hook",
+            "active": True, "secret_encrypted": server._encrypt("foreign-secret"),
+        },
+    ]), integration_webhook_deliveries=Collection([{
+        "id": "delivery-owned", "user_id": "biz", "environment": "live",
+        "destination_id": "wh_owned", "status": "delivered",
+    }]))
+    router = create_router(ctx(db))
+    update = route(router, "/webhooks/{environment}/{webhook_id}", "PATCH")
+    update_body = inspect.signature(update).parameters["body"].annotation
+    with pytest.raises(HTTPException) as foreign_update:
+        run(update(
+            "live", "wh_foreign", update_body(active=False), "biz"))
+    assert foreign_update.value.status_code == 404
+
+    async def validate_url(url, _label):
+        return url
+
+    router = create_router(ctx(db, _validate_outbound_http_url=validate_url))
+    update = route(router, "/webhooks/{environment}/{webhook_id}", "PATCH")
+    update_body = inspect.signature(update).parameters["body"].annotation
+    changed = run(update(
+        "live", "wh_owned",
+        update_body(name="Updated site", url="https://new.example/hooks", active=False),
+        "biz"))
+    assert changed["webhook"]["name"] == "Updated site"
+    assert changed["webhook"]["active"] is False
+    assert db.integration_webhooks.docs[1]["url"] == "https://foreign.example/hook"
+
+    delete = route(router, "/webhooks/{environment}/{webhook_id}", "DELETE")
+    assert run(delete("live", "wh_owned", "biz"))["deleted"] is True
+    assert [doc["id"] for doc in db.integration_webhooks.docs] == ["wh_foreign"]
+    assert db.integration_webhook_deliveries.docs[0]["id"] == "delivery-owned"
+
+
+def test_payment_api_global_toggle_blocks_access_without_deleting_existing_keys():
+    db = DB(
+        users=Collection([{"id": "biz", "account_type": "merchant"}]),
+        integration_credentials=Collection([{
+            "id": "biz:live", "user_id": "biz", "environment": "live",
+            "active": True, "public_key": "pk_live_stored",
+        }]),
+        integration_webhook_events=Collection([{
+            "id": "queued-event", "user_id": "biz", "environment": "live",
+            "event_type": "payment.success", "data": {},
+            "status": "queued", "attempts": 0,
+        }]),
+    )
+    async def load_features():
+        return {"payment_api_enabled": False}
+
+    state = ctx(db, get_app_features=load_features)
+    router = create_router(state)
+    settings = route(router, "/settings", "GET")
+    browser_owner = inspect.signature(settings).parameters["uid"].default.dependency
+    with pytest.raises(HTTPException) as browser_error:
+        run(browser_owner("biz"))
+    assert browser_error.value.status_code == 403
+    assert browser_error.value.detail["code"] == "PAYMENT_API_DISABLED"
+
+    start_deposit = route(router, "/v1/deposits", "POST")
+    authenticate = inspect.signature(start_deposit).parameters["credential"].default.dependency
+    with pytest.raises(HTTPException) as api_error:
+        run(authenticate(req()))
+    assert api_error.value.status_code == 403
+    assert api_error.value.detail["code"] == "PAYMENT_API_DISABLED"
+
+    run(state["_integration_process_event"](db.integration_webhook_events.docs[0]))
+    assert db.integration_webhook_events.docs[0]["status"] == "disabled"
+    assert db.integration_credentials.docs[0]["public_key"] == "pk_live_stored"
+    assert db.integration_webhook_deliveries.docs == []
+
+
+def test_admin_payment_api_toggle_is_public_and_persistent(monkeypatch):
+    db = SimpleNamespace(settings=Collection())
+    monkeypatch.setattr(server, "db", db)
+    async def audit(*_args, **_kwargs):
+        return None
+    monkeypatch.setattr(server, "audit", audit)
+    admin = {"id": "admin", "username": "admin"}
+
+    public_get = server.public_get_features
+    assert run(public_get())["payment_api_enabled"] is True
+    result = run(server.admin_update_features(
+        server.AdminFeaturesReq(payment_api_enabled=False), admin))
+    assert result["payment_api_enabled"] is False
+    assert run(public_get())["payment_api_enabled"] is False
+
+
+def test_user_session_listing_and_remote_revocation_routes_are_absent():
+    paths = server.app.openapi()["paths"]
+    assert "/api/auth/sessions" not in paths
+    assert "/api/auth/sessions/{session_id}" not in paths
+    assert "/api/auth/sessions/revoke-all" not in paths
+
+
 def test_documentation_json_pdf_and_route_method_coverage():
     router = create_router(ctx(DB()))
     json_endpoint = route(router, "/documentation", "GET")

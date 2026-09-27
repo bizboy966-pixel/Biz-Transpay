@@ -1,9 +1,12 @@
 import { Link2, ArrowRight, ShieldCheck, Code2, Smartphone, Send } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import DashboardPageLogo from '@/components/DashboardPageLogo';
+import { useFeatures } from '@/hooks/useFeatures';
 
 export default function Services() {
   const navigate = useNavigate();
+  const features = useFeatures();
+  const paymentApiEnabled = features?.payment_api_enabled !== false;
 
   return (
     <div data-testid="page-services" className="space-y-5" aria-label="Services">
@@ -19,10 +22,10 @@ export default function Services() {
       />
 
       <div className="space-y-3">
-        <button
+        {paymentApiEnabled && <button
           type="button"
           data-testid="service-api"
-           onClick={() => navigate('/dashboard/integration')}
+          onClick={() => navigate('/dashboard/integration')}
           className="group flex w-full items-center gap-4 text-left bg-slate-950 text-white border border-slate-800 rounded-2xl p-5 shadow-[0_12px_30px_rgba(15,23,42,0.16)] hover:-translate-y-0.5 hover:shadow-[0_18px_36px_rgba(15,23,42,0.22)] transition-all"
         >
           <div className="w-12 h-12 shrink-0 rounded-xl bg-blue-500/15 text-blue-300 flex items-center justify-center">
@@ -41,7 +44,7 @@ export default function Services() {
             </div>
           </div>
           <ArrowRight className="w-4 h-4 shrink-0 text-slate-500 group-hover:text-blue-300 group-hover:translate-x-0.5 transition-all" />
-        </button>
+        </button>}
         <button
           type="button"
           data-testid="service-payment-link"
