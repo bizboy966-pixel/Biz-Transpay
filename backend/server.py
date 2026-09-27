@@ -11836,8 +11836,11 @@ async def _crypto_usdt_rate(coin: str) -> float:
 
 async def _active_exchange_crypto_assets() -> dict[str, dict]:
     """Return live, locally enabled crypto wallets usable by Exchange."""
-    transfer_cfg = await get_transfer_config()
-    crypto_cfg = transfer_cfg.get("crypto") or {}
+    # Exchange uses the same active asset/network catalog as crypto deposits.
+    # Withdrawal settings remain independent and must not hide funded wallets
+    # from the dashboard selector or internal conversions.
+    deposit_cfg = await get_deposit_config()
+    crypto_cfg = deposit_cfg.get("crypto") or {}
     await _load_izipay_credentials()
     if not crypto_cfg.get("enabled", True) or not izipay.is_configured():
         return {}

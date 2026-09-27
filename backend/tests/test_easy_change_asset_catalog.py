@@ -187,6 +187,131 @@ def test_exchange_catalog_returns_only_active_network_wallets(monkeypatch):
     assert all(wallet["id"] != "USDT" for wallet in catalog)
 
 
+def test_exchange_assets_follow_active_deposit_catalog_not_payout_config(monkeypatch):
+    enabled_ids = ["BTC.BTC", "USDT.BEP20", "USDT.ERC20", "USDT.TRC20"]
+    provider_assets = [
+        _provider_asset(server._EASY_CHANGE_ASSET_BY_ID[asset_id])
+        for asset_id in enabled_ids
+    ]
+
+    async def deposit_config():
+        return {
+            "crypto": {
+                "enabled": True,
+                "disabled_assets": ["USDT.ERC20"],
+            },
+        }
+
+    async def unexpected_transfer_config():
+        raise AssertionError("Exchange must not use payout activation settings")
+
+    async def load_credentials():
+        return None
+
+    async def list_assets():
+        return provider_assets
+
+    async def platform_config():
+        return {"crypto_usdt_rates": {"USDT": 1.0, "BTC": 50000.0}}
+
+    monkeypatch.setattr(server, "get_deposit_config", deposit_config)
+    monkeypatch.setattr(server, "get_transfer_config", unexpected_transfer_config)
+    monkeypatch.setattr(server, "_load_izipay_credentials", load_credentials)
+    monkeypatch.setattr(server.izipay, "is_configured", lambda: True)
+    monkeypatch.setattr(server.izipay, "list_assets", list_assets)
+    monkeypatch.setattr(server, "get_platform_config", platform_config)
+
+    assets = asyncio.run(server._active_exchange_crypto_assets())
+
+    assert set(assets) == {"BTC.BTC", "USDT.BEP20", "USDT.TRC20"}
+    assert assets["USDT.BEP20"]["wallet_field"] == server._crypto_wallet_field(
+        "USDT.BEP20")
+    assert assets["USDT.TRC20"]["wallet_field"] == server._crypto_wallet_field(
+        "USDT.TRC20")
+    assert assets["USDT.BEP20"]["wallet_field"] != assets["USDT.TRC20"]["wallet_field"]
+
+
+def test_crypto_exchange_applies_configured_fee_to_actual_conversion(monkeypatch):
+    crypto_wallet_field = server._crypto_wallet_field("BTC.BTC")
+    crypto_assets = {
+        "BTC.BTC": {
+            "code": "BTC.BTC",
+            "coin": "BTC",
+            "network": "BTC",
+            "wallet_field": crypto_wallet_field,
+            "usdt_rate": 50000.0,
+        },
+    }
+    cfg = {
+        "crypto_usdt_rates": {"BTC": 50000.0},
+        "conversion_rates": {"USDT_XOF": 600.0},
+        "conversion_pairs_enabled": {"USDT_XOF": True},
+        "conversion_limits": {"USDT_XOF": {"min": 0.001, "max": 1}},
+        "conversion_fee": {
+            "enabled": True,
+            "type": "percent",
+            "value": 2.0,
+            "min_fee": 0,
+            "max_fee": None,
+        },
+    }
+    updates = {}
+
+    async def platform_config():
+        return cfg
+
+    async def active_assets():
+        return crypto_assets
+
+    async def app_features():
+        return {"wallet_crypto_enabled": True, "wallet_xof_enabled": True}
+
+    class UpdateResult:
+        modified_count = 1
+
+    class Users:
+        async def update_one(self, query, update):
+            updates["query"] = query
+            updates["update"] = update
+            return UpdateResult()
+
+    class Transaction:
+        id = "exchange-tx"
+
+        def model_dump(self):
+            return {"id": self.id}
+
+    async def record_tx(*args, **kwargs):
+        return Transaction()
+
+    async def notify(*args, **kwargs):
+        return None
+
+    class Database:
+        users = Users()
+
+    monkeypatch.setattr(server, "get_platform_config", platform_config)
+    monkeypatch.setattr(server, "_active_exchange_crypto_assets", active_assets)
+    monkeypatch.setattr(server, "get_app_features", app_features)
+    monkeypatch.setattr(server, "db", Database())
+    monkeypatch.setattr(server, "record_tx", record_tx)
+    monkeypatch.setattr(server, "notify", notify)
+
+    result = asyncio.run(server.do_exchange(
+        server.ExchangeRequest(
+            from_currency="BTC.BTC",
+            to_currency="XOF",
+            amount=0.01,
+        ),
+        uid="user-1",
+    ))
+
+    assert result["fee"] == pytest.approx(0.0002)
+    assert result["received"] == pytest.approx(294000)
+    assert updates["update"]["$inc"][crypto_wallet_field] == -0.01
+    assert updates["update"]["$inc"]["balance_xof"] == pytest.approx(294000)
+
+
 def test_exchange_rejects_unassigned_legacy_usdt():
     with pytest.raises(server.HTTPException) as exc:
         asyncio.run(server._exchange_rate_context(
