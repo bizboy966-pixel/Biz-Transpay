@@ -455,6 +455,7 @@ def test_withdrawal_email_otp_gates_biz_to_biz_and_is_one_time(monkeypatch):
         "id": "user-otp",
         "email": "member@example.com",
         "username": "sender",
+        "kyc_status": "verified",
         "balance_xof": 5000,
     }))
     sent = []

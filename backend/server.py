@@ -759,6 +759,16 @@ async def get_user(uid: str) -> dict:
     return await _ensure_platform_owner_role(u)
 
 
+OUTGOING_KYC_REQUIRED_DETAIL = (
+    "Une vérification KYC approuvée est obligatoire avant toute transaction sortante."
+)
+
+
+def _require_kyc_verified(user: Optional[dict]) -> None:
+    if not user or user.get("kyc_status") != "verified":
+        raise HTTPException(403, OUTGOING_KYC_REQUIRED_DETAIL)
+
+
 async def require_merchant_account(
     uid: str = Depends(get_current_user_id),
 ) -> str:
@@ -5535,13 +5545,14 @@ async def transfer(req: TransferRequest, request: Request,
     # Merchant API requests are authenticated by a scoped secret key and
     # already protected by API rate limits/idempotency. Browser transfers keep
     # the anti-bot challenge unchanged.
-    if not getattr(request.state, "merchant_api", False):
-        await _require_turnstile(req.turnstile_token, request, "withdrawal")
     u = await get_user(uid)
+    _require_kyc_verified(u)
     if u.get("is_banned") or u.get("is_blocked"):
         raise HTTPException(403, "Compte suspendu")
     if u.get("withdrawals_blocked") and req.transfer_type != "biz_to_biz":
         raise HTTPException(403, "Retraits bloqués pour votre compte")
+    if not getattr(request.state, "merchant_api", False):
+        await _require_turnstile(req.turnstile_token, request, "withdrawal")
 
     mobile_idempotency_key = ""
     mobile_request_fingerprint = ""
@@ -12092,6 +12103,7 @@ async def _recover_integration_exchange(intent: dict) -> Optional[dict]:
 async def do_exchange(req: ExchangeRequest,
                       uid: str = Depends(require_recent_auth)):
     """Exchange between local balances and the configured crypto asset catalog."""
+    _require_kyc_verified(await get_user(uid))
     fc = (req.from_currency or "").upper()
     tc = (req.to_currency or "").upper()
     if fc == tc:
@@ -15132,6 +15144,13 @@ async def admin_approve_transaction(
         raise HTTPException(404, "Transaction introuvable")
     if tx.get("status") != "pending":
         raise HTTPException(400, f"Transaction déjà '{tx.get('status')}' — action impossible.")
+    is_outgoing = (
+        tx.get("direction") == "out"
+        or str(tx.get("type") or "").lower()
+        in {"withdrawal", "transfer", "exchange", "payout", "crypto_payout"}
+    )
+    if is_outgoing:
+        _require_kyc_verified(await get_user(tx["user_id"]))
 
     await _record_mbiyo_submission_evidence(tx, "approve", body, admin)
     await _record_afribapay_submission_evidence(tx, "approve", body, admin)

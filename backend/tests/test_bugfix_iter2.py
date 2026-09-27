@@ -140,7 +140,7 @@ def test_platform_fee_enabled_persists():
                    json={"conversion_fee": {**new_fee, "enabled": orig_enabled}})
 
 
-def test_platform_auto_withdrawals_toggle_persists_and_impacts_transfer():
+def test_platform_auto_withdrawals_toggle_persists_and_kyc_blocks_unverified_transfer():
     h, _ = _admin_headers()
     # Turn ON auto_withdrawals_disabled
     r = requests.patch(f"{API}/admin/platform/config", headers=h,
@@ -174,10 +174,8 @@ def test_platform_auto_withdrawals_toggle_persists_and_impacts_transfer():
         "country": "TG",
         "operator": "flooz",
     })
-    assert tr.status_code == 200, tr.text
-    data = tr.json()
-    assert data.get("pending_manual") is True
-    assert "retraits automatiques" in data.get("message", "").lower()
+    assert tr.status_code == 403, tr.text
+    assert "KYC" in tr.json().get("detail", "")
 
     # RESTORE: turn back OFF
     restore = requests.patch(f"{API}/admin/platform/config", headers=h,

@@ -289,9 +289,14 @@ def test_crypto_exchange_applies_configured_fee_to_actual_conversion(monkeypatch
     async def notify(*args, **kwargs):
         return None
 
+    async def verified_user(user_id):
+        assert user_id == "user-1"
+        return {"id": user_id, "kyc_status": "verified"}
+
     class Database:
         users = Users()
 
+    monkeypatch.setattr(server, "get_user", verified_user)
     monkeypatch.setattr(server, "get_platform_config", platform_config)
     monkeypatch.setattr(server, "_active_exchange_crypto_assets", active_assets)
     monkeypatch.setattr(server, "get_app_features", app_features)
@@ -335,6 +340,7 @@ def test_biz_to_biz_crypto_transfer_uses_the_selected_network_wallet(monkeypatch
         return {
             "id": "sender-1",
             "username": "sender",
+            "kyc_status": "verified",
             wallet_field: 5.0,
         }
 

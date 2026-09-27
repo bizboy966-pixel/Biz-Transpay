@@ -211,6 +211,7 @@ def ctx(db, **overrides):
         "_validate_outbound_http_url": server._validate_outbound_http_url,
         "get_current_user_id": server.get_current_user_id,
         "require_recent_auth": server.require_recent_auth,
+        "_require_kyc_verified": server._require_kyc_verified,
         "MobileMoneyDepositRequest": server.MobileMoneyDepositRequest,
         "TransferRequest": server.TransferRequest,
         "ExchangeRequest": server.ExchangeRequest,
@@ -383,7 +384,8 @@ def test_integration_payout_adds_fees_to_merchant_debit(legacy_bearer):
         body_values["fee_bearer"] = legacy_bearer
     body = body_type(**body_values)
     credential = {"user_id": "biz", "environment": "live",
-                  "scopes": ["payouts:write"], "payout_opt_in": True}
+                  "scopes": ["payouts:write"], "payout_opt_in": True,
+                  "user": {"id": "biz", "kyc_status": "verified"}}
     request = req({"Idempotency-Key": f"payout-external-{legacy_bearer}"})
     result = run(endpoint(body, request, credential))
     assert calls[0][1] == "biz"
@@ -393,6 +395,65 @@ def test_integration_payout_adds_fees_to_merchant_debit(legacy_bearer):
     assert result["payout"]["recipient_gets"] == 2000
     assert run(endpoint(body, request, credential)) == result
     assert len(calls) == 1
+
+
+def test_integration_payout_rejects_unverified_kyc_before_idempotency_claim():
+    db = DB()
+    calls = []
+
+    async def transfer_handler(*args):
+        calls.append(args)
+        return {"transaction": {"id": "should-not-run", "status": "pending"}}
+
+    router = create_router(ctx(db, transfer=transfer_handler))
+    endpoint = route(router, "/v1/payouts", "POST")
+    body_type = inspect.signature(endpoint).parameters["body"].annotation
+    body = body_type(
+        amount=2000, currency="XOF", country="TG", operator="tmoney_tg",
+        recipient="90000000",
+    )
+    credential = {
+        "user_id": "biz", "environment": "live",
+        "scopes": ["payouts:write"], "payout_opt_in": True,
+        "user": {"id": "biz", "kyc_status": "pending"},
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        run(endpoint(body, req({"Idempotency-Key": "unverified-payout"}), credential))
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == server.OUTGOING_KYC_REQUIRED_DETAIL
+    assert not calls
+    assert not db.integration_operations.docs
+    assert not db.integration_idempotency.docs
+
+
+def test_integration_exchange_rejects_unverified_kyc_before_claim():
+    db = DB()
+    calls = []
+
+    async def exchange_handler(*args):
+        calls.append(args)
+        return {"transaction": {"id": "should-not-run", "status": "completed"}}
+
+    router = create_router(ctx(db, do_exchange=exchange_handler))
+    endpoint = route(router, "/v1/exchanges", "POST")
+    body_type = inspect.signature(endpoint).parameters["body"].annotation
+    body = body_type(from_currency="XOF", to_currency="XAF", amount=1000)
+    credential = {
+        "user_id": "biz", "environment": "live",
+        "scopes": ["exchanges:write"],
+        "user": {"id": "biz", "kyc_status": "rejected"},
+    }
+
+    with pytest.raises(HTTPException) as exc:
+        run(endpoint(body, req({"Idempotency-Key": "unverified-exchange"}), credential))
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == server.OUTGOING_KYC_REQUIRED_DETAIL
+    assert not calls
+    assert not db.integration_operations.docs
+    assert not db.integration_idempotency.docs
 
 
 def test_reads_are_user_and_environment_scoped():
@@ -552,7 +613,8 @@ def test_exchange_after_wallet_debit_recovers_ledger_without_redebit():
         "from_currency": "XOF", "to_currency": "XAF", "amount": 1000,
     }, from_currency="XOF", to_currency="XAF", amount=1000)
     credential = {"user_id": "biz", "environment": "live",
-                  "scopes": ["exchanges:write"]}
+                  "scopes": ["exchanges:write"],
+                  "user": {"id": "biz", "kyc_status": "verified"}}
     request = req({"Idempotency-Key": "exchange-debit-recovery"})
     with pytest.raises(RuntimeError):
         run(endpoint(body, request, credential))
@@ -1196,7 +1258,8 @@ def test_documentation_metadata_matches_openapi_and_real_response_shapes():
     )
     exchange_actual = run(route(exchange_router, "/v1/exchanges", "POST")(
         exchange_body, req({"Idempotency-Key": "docs-exchange-actual"}),
-        {"user_id": "biz", "environment": "live", "scopes": ["exchanges:write"]},
+        {"user_id": "biz", "environment": "live", "scopes": ["exchanges:write"],
+         "user": {"id": "biz", "kyc_status": "verified"}},
     ))
     assert exchange_actual["status"] == "completed"
     assert exchange_actual.keys() == exchange.keys()
@@ -1224,7 +1287,8 @@ def test_documentation_metadata_matches_openapi_and_real_response_shapes():
     payout_actual = run(route(payout_router, "/v1/payouts", "POST")(
         payout_body, req({"Idempotency-Key": "docs-payout-actual"}),
         {"user_id": "biz", "environment": "live",
-         "scopes": ["payouts:write"], "payout_opt_in": True},
+         "scopes": ["payouts:write"], "payout_opt_in": True,
+         "user": {"id": "biz", "kyc_status": "verified"}},
     ))
     assert payout_actual["status"] == "pending"
     assert payout_actual.keys() == documented[
@@ -1249,6 +1313,10 @@ def test_ambiguous_mbiyo_admin_action_requires_outcome_evidence(
     admin = {"id": "admin-1", "username": "operator.one"}
 
     if action == "approve":
+        async def verified_user(user_id):
+            return {"id": user_id, "kyc_status": "verified"}
+
+        monkeypatch.setattr(server, "get_user", verified_user)
         call = server.admin_approve_transaction(
             tx["id"], server.AdminConfirmationRequest(confirmation="CONFIRMER"),
             admin=admin, _recent_uid=admin["id"])
@@ -1293,6 +1361,10 @@ def test_ambiguous_mbiyo_admin_action_records_attested_evidence(
     }
 
     if action == "approve":
+        async def verified_user(user_id):
+            return {"id": user_id, "kyc_status": "verified"}
+
+        monkeypatch.setattr(server, "get_user", verified_user)
         body = server.AdminConfirmationRequest(**body_fields)
         response = run(server.admin_approve_transaction(
             tx["id"], body, admin=admin, _recent_uid=admin["id"]))
@@ -1365,3 +1437,31 @@ def test_ordinary_admin_transactions_need_no_mbiyo_evidence(
         assert not credits
     assert "mbiyo_submission_admin_review" not in response["tx"]["metadata"]
     assert any(event["action"] == f"tx_{action}" for event in audits)
+
+
+@pytest.mark.parametrize("legacy_missing_direction", [False, True])
+def test_admin_cannot_approve_pending_outgoing_transaction_without_kyc(
+        monkeypatch, legacy_missing_direction):
+    tx = _admin_transaction("outgoing-unverified", {}, tx_type="withdrawal")
+    if legacy_missing_direction:
+        tx.pop("direction")
+    db = DB(transactions=Collection([tx]))
+    audits, refunds, credits = _stub_admin_side_effects(monkeypatch, db)
+
+    async def unverified_user(user_id):
+        return {"id": user_id, "kyc_status": "pending"}
+
+    monkeypatch.setattr(server, "get_user", unverified_user)
+    with pytest.raises(HTTPException) as exc:
+        run(server.admin_approve_transaction(
+            tx["id"],
+            server.AdminConfirmationRequest(confirmation="CONFIRMER"),
+            admin={"id": "admin-1", "username": "operator.one"},
+            _recent_uid="admin-1",
+        ))
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == server.OUTGOING_KYC_REQUIRED_DETAIL
+    saved = run(db.transactions.find_one({"id": tx["id"]}))
+    assert saved["status"] == "pending"
+    assert not audits and not refunds and not credits

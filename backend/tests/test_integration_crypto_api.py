@@ -38,11 +38,12 @@ PAYOUT = {
 
 
 def _credential(user_id="merchant-1", environment="live", scopes=None,
-                payout_opt_in=True):
+                payout_opt_in=True, kyc_status="verified"):
     result = {
         "user_id": user_id,
         "environment": environment,
         "scopes": list(scopes or ["deposits:write", "payouts:write"]),
+        "user": {"id": user_id, "kyc_status": kyc_status},
     }
     if payout_opt_in is not None:
         result["payout_opt_in"] = payout_opt_in
@@ -307,6 +308,30 @@ def test_crypto_payout_requires_opt_in_as_well_as_scope():
         ))
     assert exc.value.status_code == 403
     assert calls == []
+    assert db.integration_idempotency.docs == []
+
+
+def test_crypto_payout_rejects_unverified_kyc_before_idempotency_claim():
+    db = DB()
+    calls = []
+
+    async def transfer(*args, **kwargs):
+        calls.append(args)
+        return {"transaction": {"id": "must-not-run", "status": "pending"}}
+
+    endpoint = route(_router(db, transfer=transfer),
+                     "/v1/crypto/payouts", "POST")
+    with pytest.raises(HTTPException) as exc:
+        run(endpoint(
+            _body(endpoint, PAYOUT),
+            req({"Idempotency-Key": "crypto-payout-unverified"}),
+            _credential(kyc_status="rejected"),
+        ))
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail == server.OUTGOING_KYC_REQUIRED_DETAIL
+    assert calls == []
+    assert db.integration_operations.docs == []
     assert db.integration_idempotency.docs == []
 
 

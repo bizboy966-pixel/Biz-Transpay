@@ -72,7 +72,7 @@ ENDPOINTS = [
      "purpose": "Lister les dépôts de ce propriétaire et de cet environnement."},
     {"method": "POST", "path": "/api/integration/v1/payouts",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
-     "purpose": "Lancer un retrait Mobile Money en production après autorisation explicite ; les frais s’ajoutent au débit marchand sans réduire le montant reçu."},
+     "purpose": "Lancer un retrait Mobile Money en production après validation KYC et autorisation explicite ; les frais s’ajoutent au débit marchand sans réduire le montant reçu."},
     {"method": "GET", "path": "/api/integration/v1/payouts/{payout_id}",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
      "purpose": "Consulter un retrait appartenant au propriétaire et à l’environnement des clés."},
@@ -84,7 +84,7 @@ ENDPOINTS = [
      "purpose": "Obtenir une estimation de change."},
     {"method": "POST", "path": "/api/integration/v1/exchanges",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
-     "purpose": "Effectuer une opération de change en production."},
+     "purpose": "Effectuer une opération de change en production après validation KYC."},
     {"method": "GET", "path": "/api/integration/v1/exchanges/{exchange_id}",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
      "purpose": "Consulter une opération de change appartenant au propriétaire et à l’environnement des clés."},
@@ -120,7 +120,7 @@ ENDPOINTS = [
      "purpose": "Lister les dépôts crypto créés par cette intégration."},
     {"method": "POST", "path": "/api/integration/v1/crypto/payouts",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
-     "purpose": "Envoyer une crypto sur le réseau choisi depuis le portefeuille réseau du marchand."},
+     "purpose": "Envoyer une crypto sur le réseau choisi depuis le portefeuille réseau du marchand après validation KYC et autorisation explicite."},
     {"method": "GET", "path": "/api/integration/v1/crypto/payouts/{payout_id}",
      "auth": "Clé secrète Bearer et X-Public-Key", "auth_type": "bearer",
      "purpose": "Consulter le statut d’un retrait crypto."},
@@ -237,6 +237,9 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 "message": f"The {scope} scope is required.",
                 "required_scope": scope,
             })
+
+    def require_verified_kyc(credential: dict) -> None:
+        ctx["_require_kyc_verified"](credential.get("user"))
 
     def public_crypto_deposit(doc: dict) -> dict:
         shown = {key: doc.get(key) for key in (
@@ -1197,6 +1200,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         require_scope(credential, "payouts:write")
         if not credential.get("payout_opt_in"):
             raise HTTPException(403, "Explicit live payout opt-in and payouts:write scope required")
+        require_verified_kyc(credential)
         key = require_idempotency(request)
         payload = body.model_dump()
         claim_doc, replay = await claim(credential, key, "payout", payload)
@@ -1321,6 +1325,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         require_live(credential)
         if not credential.get("payout_opt_in"):
             raise HTTPException(403, "Explicit live payout opt-in and payouts:write scope required")
+        require_verified_kyc(credential)
         await crypto_features("payout")
         require_crypto_precision(body.amount)
         key = require_idempotency(request)
@@ -1412,6 +1417,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                                credential: dict = Depends(authenticate)):
         require_scope(credential, "exchanges:write")
         require_live(credential)
+        require_verified_kyc(credential)
         key = require_idempotency(request)
         payload = body.model_dump()
         claim_doc, replay = await claim(credential, key, "exchange", payload)

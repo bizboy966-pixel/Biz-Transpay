@@ -63,6 +63,21 @@ export default function Transfer() {
         <p className="text-slate-500 text-xs sm:text-sm mt-1">Choisissez le type de transfert que vous souhaitez effectuer.</p>
       </div>
 
+      {user && user.kyc_status !== 'verified' && (
+        <div role="note" className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <p className="font-semibold">Vérification requise pour les sorties</p>
+            <p className="mt-1 text-xs leading-relaxed">
+              Votre KYC doit être approuvé avant un transfert. Les dépôts et encaissements restent disponibles.
+            </p>
+            <button type="button" onClick={() => nav('/dashboard/kyc')} className="mt-2 text-xs font-bold underline underline-offset-2">
+              Compléter la vérification
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center gap-1.5 sm:gap-2">
         {[1, 2, 3].map((s) => (
           <div key={s} className={`flex-1 h-1 rounded-full ${step >= s ? 'bg-[#2563EB]' : 'bg-slate-200'}`} />

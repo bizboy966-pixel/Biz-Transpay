@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ArrowDown, ArrowLeftRight, Loader2, CheckCircle2, ShieldCheck, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -212,6 +213,20 @@ export default function Exchange() {
             <p className="text-[11px] text-slate-500">Convertissez XOF, XAF et les portefeuilles crypto disponibles.</p>
           </div>
         </div>
+        {user && user.kyc_status !== 'verified' && (
+          <div role="note" className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+            <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-semibold">Vérification KYC requise</p>
+              <p className="mt-0.5 leading-relaxed">
+                Votre KYC doit être approuvé avant une conversion. Les dépôts et encaissements restent disponibles.
+              </p>
+              <Link to="/dashboard/kyc" className="mt-1 inline-block font-bold underline underline-offset-2">
+                Compléter la vérification
+              </Link>
+            </div>
+          </div>
+        )}
         {cryptoCatalogError ? (
           <div role="alert" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
             {cryptoCatalogError}
