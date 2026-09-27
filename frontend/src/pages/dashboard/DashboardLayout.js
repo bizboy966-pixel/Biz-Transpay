@@ -48,7 +48,7 @@ export default function DashboardLayout() {
       l: t('dashboard.services'),
       activePaths: ['/dashboard/links'],
     },
-    { to: '/dashboard/profile', i: UserRound, l: t('dashboard.profile') },
+    { to: '/dashboard/profile', i: UserRound, image: '/images/profile-dashboard-icon.webp', l: t('dashboard.profile') },
   ];
 
   return (
