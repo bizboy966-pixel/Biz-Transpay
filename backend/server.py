@@ -4341,6 +4341,65 @@ async def get_paydunya_config(decrypt: bool = False) -> dict:
     return doc
 
 
+async def get_izipay_config(decrypt: bool = False) -> dict:
+    """Load Easy Change Pay credentials, using encrypted settings before env."""
+    doc = await db.settings.find_one(
+        {"id": "payment_provider_izipay"}, {"_id": 0})
+    if not doc:
+        doc = {"id": "payment_provider_izipay"}
+    else:
+        doc = dict(doc)
+    if decrypt:
+        try:
+            api_key = (
+                paydunya.decrypt_secret(
+                    doc["api_key_encrypted"], os.environ.get("SESSION_SECRET", ""))
+                if doc.get("api_key_encrypted") else ""
+            )
+            webhook_secret = (
+                paydunya.decrypt_secret(
+                    doc["webhook_secret_encrypted"],
+                    os.environ.get("SESSION_SECRET", ""))
+                if doc.get("webhook_secret_encrypted") else ""
+            )
+        except paydunya.PayDunyaError as exc:
+            raise HTTPException(503, "Les identifiants Easy Change Pay ne peuvent pas être déchiffrés") from exc
+        api_key = api_key or os.environ.get("IZIPAY_API_KEY", "")
+        webhook_secret = webhook_secret or os.environ.get(
+            "IZIPAY_WEBHOOK_SECRET", "")
+        doc["_api_key"] = api_key
+        doc["_webhook_secret"] = webhook_secret
+        izipay.configure(
+            api_key=api_key,
+            webhook_secret=webhook_secret,
+            base_url=os.environ.get(
+                "IZIPAY_BASE_URL", "https://api.pay.izichange.com"),
+        )
+    return doc
+
+
+async def _load_izipay_credentials() -> dict:
+    """Refresh IziPay's runtime client from encrypted database settings."""
+    return await get_izipay_config(decrypt=True)
+
+
+def _izipay_public_config(cfg: dict, admin: bool = False) -> dict:
+    api_key_configured = bool(
+        cfg.get("api_key_encrypted") or os.environ.get("IZIPAY_API_KEY"))
+    webhook_secret_configured = bool(
+        cfg.get("webhook_secret_encrypted")
+        or os.environ.get("IZIPAY_WEBHOOK_SECRET"))
+    result = {
+        "configured": api_key_configured and webhook_secret_configured,
+    }
+    if admin:
+        result.update({
+            "api_key_configured": api_key_configured,
+            "webhook_secret_configured": webhook_secret_configured,
+        })
+    return result
+
+
 MBIYO_DEFAULT_CONFIG = mbiyo.default_config()
 
 
@@ -15131,6 +15190,52 @@ def _validate_paydunya_catalog(catalog: list[dict]) -> list[dict]:
             raise HTTPException(400, "La limite maximum doit dépasser la minimum")
         result.append(op)
     return result
+
+
+class IziPayProviderUpdate(BaseModel):
+    api_key: Optional[str] = Field(None, max_length=4096)
+    webhook_secret: Optional[str] = Field(None, max_length=4096)
+    clear_api_key: bool = False
+    clear_webhook_secret: bool = False
+
+
+@api.get("/admin/payment-providers/izipay")
+async def admin_get_izipay(admin=Depends(get_admin)):
+    return _izipay_public_config(await get_izipay_config(), admin=True)
+
+
+@api.put("/admin/payment-providers/izipay")
+async def admin_update_izipay(
+    req: IziPayProviderUpdate,
+    admin=Depends(get_admin),
+):
+    data = req.model_dump(exclude_none=True)
+    updates, unset = {}, {}
+    session_secret = os.environ.get("SESSION_SECRET", "")
+    for key in ("api_key", "webhook_secret"):
+        if data.get(f"clear_{key}"):
+            unset[f"{key}_encrypted"] = ""
+        elif data.get(key) and str(data[key]).strip():
+            try:
+                updates[f"{key}_encrypted"] = paydunya.encrypt_secret(
+                    str(data[key]).strip(), session_secret)
+            except paydunya.PayDunyaError as exc:
+                raise HTTPException(
+                    503, "SESSION_SECRET doit être configuré pour enregistrer les identifiants"
+                ) from exc
+    update_doc = {}
+    if updates:
+        update_doc["$set"] = updates
+    if unset:
+        update_doc["$unset"] = unset
+    if update_doc:
+        await db.settings.update_one(
+            {"id": "payment_provider_izipay"}, update_doc, upsert=True)
+        await audit(
+            admin["id"], admin["username"], "update_izipay_provider",
+            details=list(updates.keys()) + list(unset.keys()))
+        await _load_izipay_credentials()
+    return _izipay_public_config(await get_izipay_config(), admin=True)
 
 
 @api.get("/admin/payment-providers/paydunya")

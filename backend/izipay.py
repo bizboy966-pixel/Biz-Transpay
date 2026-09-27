@@ -24,6 +24,29 @@ _BASE_URL = os.environ.get("IZIPAY_BASE_URL", "https://api.pay.izichange.com").r
 _MAX_WEBHOOK_AGE = 5 * 60  # 5 minutes
 
 
+def configure(
+    *,
+    api_key: str,
+    webhook_secret: str,
+    base_url: Optional[str] = None,
+) -> None:
+    """Set decrypted runtime credentials without exposing them to API callers."""
+    global _API_KEY, _WEBHOOK_SECRET, _BASE_URL, _assets_cache
+    next_api_key = str(api_key or "").strip()
+    next_webhook_secret = str(webhook_secret or "").strip()
+    next_base_url = str(base_url or _BASE_URL).rstrip("/")
+    changed = (
+        next_api_key != _API_KEY
+        or next_webhook_secret != _WEBHOOK_SECRET
+        or next_base_url != _BASE_URL
+    )
+    _API_KEY = next_api_key
+    _WEBHOOK_SECRET = next_webhook_secret
+    _BASE_URL = next_base_url
+    if changed:
+        _assets_cache = {"at": 0, "data": None}
+
+
 class IziPayError(Exception):
     def __init__(self, status: int, code: str, message: str):
         self.status = status
