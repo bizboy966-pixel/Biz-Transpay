@@ -2,8 +2,9 @@ import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 're
 
 const SCRIPT_ID = 'cloudflare-turnstile-script';
 const SCRIPT_SRC = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+const SCRIPT_LOAD_TIMEOUT_MS = 15000;
 
-let scriptPromise;
+let scriptPromise = null;
 
 function safelyRunTurnstile(action) {
   try {
@@ -17,23 +18,57 @@ function safelyRunTurnstile(action) {
 function loadTurnstileScript() {
   if (window.turnstile) return Promise.resolve(window.turnstile);
   if (scriptPromise) return scriptPromise;
-  scriptPromise = new Promise((resolve, reject) => {
-    const existing = document.getElementById(SCRIPT_ID);
-    if (existing) {
-      existing.addEventListener('load', () => resolve(window.turnstile));
-      existing.addEventListener('error', reject);
+  // A failed/stalled script element may have already emitted its error event.
+  // Reusing it would leave every later attempt waiting on an event that cannot
+  // fire again.
+  document.getElementById(SCRIPT_ID)?.remove();
+
+  const script = document.createElement('script');
+  script.id = SCRIPT_ID;
+  script.src = SCRIPT_SRC;
+  script.async = true;
+  script.defer = true;
+  let resolveLoad;
+  let rejectLoad;
+  let timeoutId;
+  const pending = new Promise((resolve, reject) => {
+    resolveLoad = resolve;
+    rejectLoad = reject;
+  });
+  scriptPromise = pending;
+
+  const clearHandlers = () => {
+    window.clearTimeout(timeoutId);
+    script.onload = null;
+    script.onerror = null;
+  };
+  const fail = (error) => {
+    clearHandlers();
+    script.remove();
+    if (scriptPromise === pending) scriptPromise = null;
+    rejectLoad(error);
+  };
+
+  script.onload = () => {
+    clearHandlers();
+    if (!window.turnstile) {
+      fail(new Error('Turnstile loaded without exposing its API'));
       return;
     }
-    const script = document.createElement('script');
-    script.id = SCRIPT_ID;
-    script.src = SCRIPT_SRC;
-    script.async = true;
-    script.defer = true;
-    script.onload = () => resolve(window.turnstile);
-    script.onerror = reject;
+    if (scriptPromise === pending) scriptPromise = null;
+    resolveLoad(window.turnstile);
+  };
+  script.onerror = () => fail(new Error('Turnstile script failed to load'));
+  timeoutId = window.setTimeout(
+    () => fail(new Error('Turnstile script load timed out')),
+    SCRIPT_LOAD_TIMEOUT_MS,
+  );
+  try {
     document.head.appendChild(script);
-  });
-  return scriptPromise;
+  } catch (error) {
+    fail(error);
+  }
+  return pending;
 }
 
 export function useTurnstileConfig() {
@@ -72,6 +107,7 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
   const onTokenRef = useRef(onToken);
   const [loadError, setLoadError] = useState(false);
   const [errorCode, setErrorCode] = useState('');
+  const [retryCount, setRetryCount] = useState(0);
 
   useEffect(() => {
     onTokenRef.current = onToken;
@@ -154,7 +190,7 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
         }, 0);
       }
     };
-  }, [action, disabled, siteKey]);
+  }, [action, disabled, siteKey, retryCount]);
 
   if (!siteKey || disabled) {
     return (
@@ -170,11 +206,29 @@ const TurnstileWidget = forwardRef(function TurnstileWidget(
         <div ref={containerRef} aria-label="Vérification anti-bot" />
       </div>
       {loadError && (
-        <p className="turnstile-widget__error mt-1 text-xs leading-4 text-center text-red-600">
-          {errorCode === '110200'
-            ? 'Ce domaine n’est pas autorisé dans Cloudflare Turnstile. Ajoutez le domaine Preview/production dans Hostname Management.'
-            : 'Impossible de charger la vérification anti-bot. Réessayez.'}
-        </p>
+        <div
+          className="turnstile-widget__error mt-1 text-center text-xs leading-4 text-red-600"
+          role="alert"
+        >
+          <p>
+            {errorCode === '110200'
+              ? 'Ce domaine n’est pas autorisé dans Cloudflare Turnstile. Ajoutez le domaine Preview/production dans Hostname Management.'
+              : 'La vérification anti-bot ne répond pas. Réessayez.'}
+          </p>
+          <button
+            type="button"
+            data-testid="btn-turnstile-retry"
+            className="mt-1 font-semibold text-blue-700 underline hover:text-blue-800"
+            onClick={() => {
+              onTokenRef.current?.('');
+              setLoadError(false);
+              setErrorCode('');
+              setRetryCount((count) => count + 1);
+            }}
+          >
+            Réessayer
+          </button>
+        </div>
       )}
     </div>
   );

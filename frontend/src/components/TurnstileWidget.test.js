@@ -11,6 +11,7 @@ describe('TurnstileWidget', () => {
   afterEach(() => {
     jest.runOnlyPendingTimers();
     jest.useRealTimers();
+    document.getElementById('cloudflare-turnstile-script')?.remove();
     delete window.turnstile;
     delete global.IS_REACT_ACT_ENVIRONMENT;
   });
@@ -99,5 +100,75 @@ describe('TurnstileWidget', () => {
     expect(secondIsland.parentNode).not.toBeNull();
 
     act(() => root.unmount());
+  });
+
+  it('retries the script after a failed load instead of reusing the rejection', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <TurnstileWidget
+          siteKey="test-site-key"
+          action="login"
+          onToken={jest.fn()}
+        />,
+      );
+    });
+
+    const failedScript = document.getElementById('cloudflare-turnstile-script');
+    expect(failedScript).not.toBeNull();
+    await act(async () => {
+      failedScript.dispatchEvent(new Event('error'));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('La vérification anti-bot ne répond pas');
+
+    const retryButton = container.querySelector('[data-testid="btn-turnstile-retry"]');
+    expect(retryButton).not.toBeNull();
+    await act(async () => {
+      retryButton.click();
+    });
+
+    const retryScript = document.getElementById('cloudflare-turnstile-script');
+    expect(retryScript).not.toBeNull();
+    expect(retryScript).not.toBe(failedScript);
+    window.turnstile = {
+      render: jest.fn(() => 'retried-widget'),
+      remove: jest.fn(),
+    };
+    await act(async () => {
+      retryScript.dispatchEvent(new Event('load'));
+      await Promise.resolve();
+    });
+
+    expect(window.turnstile.render).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it('shows a retry if the script never finishes loading', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <TurnstileWidget
+          siteKey="test-site-key"
+          action="login"
+          onToken={jest.fn()}
+        />,
+      );
+    });
+
+    expect(document.getElementById('cloudflare-turnstile-script')).not.toBeNull();
+    await act(async () => {
+      jest.advanceTimersByTime(15000);
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('La vérification anti-bot ne répond pas');
+    expect(document.getElementById('cloudflare-turnstile-script')).toBeNull();
+    await act(async () => root.unmount());
   });
 });
