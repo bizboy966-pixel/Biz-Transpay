@@ -213,6 +213,18 @@ export default function Exchange() {
             <p className="text-[11px] text-slate-500">Convertissez XOF, XAF et les portefeuilles crypto disponibles.</p>
           </div>
         </div>
+        <figure
+          className="mb-4 w-full overflow-hidden rounded-xl border border-slate-100 bg-slate-950"
+          style={{ aspectRatio: '2.2 / 1' }}
+        >
+          <img
+            src="/images/exchange-illustration.webp"
+            alt="Échange de cryptomonnaies contre des francs XOF et XAF"
+            className="h-full w-full object-cover object-center"
+            loading="lazy"
+            decoding="async"
+          />
+        </figure>
         {user && user.kyc_status !== 'verified' && (
           <div role="note" className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
