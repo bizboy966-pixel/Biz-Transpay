@@ -16281,6 +16281,11 @@ app.mount(
     StaticFiles(directory=FRONTEND_BUILD_DIR / "static", check_dir=False),
     name="frontend-static",
 )
+app.mount(
+    "/images",
+    StaticFiles(directory=FRONTEND_BUILD_DIR / "images", check_dir=False),
+    name="frontend-images",
+)
 
 
 @app.get("/{path:path}", include_in_schema=False)
