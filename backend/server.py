@@ -27,7 +27,9 @@ from fastapi import (
     FastAPI, APIRouter, HTTPException, Depends, Query, Request, Body, Response,
     BackgroundTasks,
 )
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, FileResponse
+from fastapi.responses import (
+    FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -551,6 +553,7 @@ _GLOBAL_RATE_PROFILES = {
     "admin": (60, 60),
     "webhook": (120, 60),
 }
+IZIPAY_WEBHOOK_ALIAS_PATH = "/webhooks/izipay"
 _global_rate_buckets: dict[str, list[float]] = {}
 _global_rate_lock = asyncio.Lock()
 
@@ -573,7 +576,11 @@ def _global_rate_profile(path: str, method: str) -> str:
         return "password_reset"
     if p.startswith("/api/admin/"):
         return "admin"
-    if p.startswith("/api/webhook") or p.startswith("/api/webhooks/"):
+    if (
+        p.startswith("/api/webhook")
+        or p.startswith("/api/webhooks/")
+        or p == IZIPAY_WEBHOOK_ALIAS_PATH
+    ):
         return "webhook"
     if p in {"/api/transfers", "/api/exchange"}:
         return "withdrawal" if p == "/api/transfers" else "transaction"
@@ -10598,14 +10605,23 @@ async def _reconcile_intent(intent_id: str) -> None:
         merchant_ref, intent_id, tx_hash, source="reconcile")
 
 
-@api.post("/webhooks/izipay")
+@app.api_route(
+    IZIPAY_WEBHOOK_ALIAS_PATH,
+    methods=["GET", "HEAD", "POST"],
+    include_in_schema=False,
+)
+@api.api_route("/webhooks/izipay", methods=["GET", "HEAD", "POST"])
 async def izipay_webhook(request: Request):
     """Receive signed webhooks from IzichangePay.
+    GET and HEAD are connectivity checks only; signed POST requests carry events.
     - Verify HMAC-SHA256 signature (constant-time)
     - Anti-replay via timestamp in signed body
     - Deduplicate via unique event_id
     - Acknowledge fast (200) then dispatch by event type
     """
+    if request.method in {"GET", "HEAD"}:
+        return Response(status_code=200)
+
     raw = await request.body()
     sig = request.headers.get("X-IziPay-Signature") or request.headers.get("x-izipay-signature") or ""
     try:
@@ -15996,8 +16012,9 @@ app.add_middleware(
 @app.middleware("http")
 async def api_security_middleware(request: Request, call_next):
     p = request.url.path
+    is_izipay_webhook_alias = p == IZIPAY_WEBHOOK_ALIAS_PATH
     is_admin = p == "/api/admin" or p.startswith("/api/admin/")
-    if p.startswith("/api/") and _edge_ip_blocked(request):
+    if (p.startswith("/api/") or is_izipay_webhook_alias) and _edge_ip_blocked(request):
         await _queue_security_telegram_alert(
             "edge_ip_blocked",
             request,
@@ -16018,7 +16035,7 @@ async def api_security_middleware(request: Request, call_next):
         )
         _apply_edge_security_headers(response, request)
         return response
-    if p.startswith("/api/"):
+    if p.startswith("/api/") or is_izipay_webhook_alias:
         raw_length = request.headers.get("content-length")
         try:
             content_length = int(raw_length) if raw_length else 0
@@ -16026,7 +16043,11 @@ async def api_security_middleware(request: Request, call_next):
             content_length = 0
         max_bytes = (
             MAX_WEBHOOK_BYTES
-            if p.startswith("/api/webhook") or p.startswith("/api/webhooks/")
+            if (
+                p.startswith("/api/webhook")
+                or p.startswith("/api/webhooks/")
+                or is_izipay_webhook_alias
+            )
             else MAX_REQUEST_BYTES
         )
         if content_length > max_bytes:
@@ -16064,7 +16085,10 @@ async def api_security_middleware(request: Request, call_next):
         )
         _apply_edge_security_headers(csrf_failure, request)
         return csrf_failure
-    if p.startswith("/api/") and request.method.upper() != "OPTIONS":
+    if (
+        (p.startswith("/api/") or is_izipay_webhook_alias)
+        and request.method.upper() != "OPTIONS"
+    ):
         profile = _global_rate_profile(p, request.method)
         identity = await _global_rate_identity(request)
         blocked = await _global_rate_consume(profile, identity)
