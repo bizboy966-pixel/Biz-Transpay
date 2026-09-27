@@ -83,12 +83,24 @@ export default function Links() {
 
   return (
     <div className="space-y-5" data-testid="page-links">
-      <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="grid grid-cols-1 items-center gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_14rem_auto]">
         <div>
           <h1 className="font-cabinet text-2xl font-extrabold tracking-tighter text-slate-900">Liens de paiement</h1>
           <p className="text-slate-500 text-xs mt-1">Créez et gérez vos liens de paiement personnalisés.</p>
         </div>
-        <button onClick={beginLinkCreation} data-testid="btn-open-new-link" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2.5 rounded-full text-xs shadow-[0_8px_20px_-8px_rgba(37,99,235,0.5)]">
+        <figure
+          className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-100 bg-slate-950 sm:justify-self-end sm:w-52 xl:w-56"
+          style={{ aspectRatio: '1.8 / 1' }}
+        >
+          <img
+            src="/images/payment-link-illustration.webp"
+            alt="Téléphone affichant un lien de paiement à partager"
+            className="h-full w-full object-cover object-center"
+            loading="lazy"
+            decoding="async"
+          />
+        </figure>
+        <button onClick={beginLinkCreation} data-testid="btn-open-new-link" className="inline-flex items-center gap-2 bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold px-4 py-2.5 rounded-full text-xs shadow-[0_8px_20px_-8px_rgba(37,99,235,0.5)] sm:col-span-2 sm:justify-self-end xl:col-span-1">
           <Plus className="w-3.5 h-3.5" /> Créer un lien de paiement
         </button>
       </div>
