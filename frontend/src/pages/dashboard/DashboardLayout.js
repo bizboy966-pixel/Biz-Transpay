@@ -40,7 +40,7 @@ export default function DashboardLayout() {
   const bottomNav = [
     { to: '/dashboard', end: true, i: Home, l: t('dashboard.bottom_home') },
     { to: '/dashboard/transactions', i: Receipt, l: t('dashboard.transactions') },
-    { to: '/dashboard/deposit', i: ScanLine, l: t('dashboard.deposit'), prominent: true },
+    { to: '/dashboard/deposit', i: ScanLine, image: '/images/deposit-dashboard-icon.webp', l: t('dashboard.deposit'), prominent: true },
     {
       to: '/dashboard/services',
       i: LayoutGrid,
@@ -158,7 +158,11 @@ export default function DashboardLayout() {
             }`}
           >
             <span className="bt-bottom-nav__icon">
-              <n.i strokeWidth={n.prominent ? 2 : 1.8} />
+              {n.image ? (
+                <img src={n.image} alt="" aria-hidden="true" className="h-full w-full rounded-full object-cover" decoding="async" />
+              ) : (
+                <n.i strokeWidth={n.prominent ? 2 : 1.8} />
+              )}
             </span>
             <span>{n.l}</span>
           </NavLink>
