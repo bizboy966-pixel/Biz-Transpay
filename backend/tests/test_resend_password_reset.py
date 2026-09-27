@@ -360,6 +360,247 @@ def test_transaction_email_is_deduplicated_and_only_for_initiated_final_events(m
         {"type": "transfer", "direction": "out", "status": "pending"},
         "transaction",
     ) is False
+    assert server._transaction_email_record_is_final(
+        "exchange_success",
+        {"type": "exchange", "direction": "out", "status": "completed"},
+        "transaction",
+    ) is True
+    assert server._transaction_email_record_is_final(
+        "exchange_success",
+        {"type": "exchange", "direction": "in", "status": "completed"},
+        "transaction",
+    ) is False
+
+
+def test_exchange_email_is_queued_only_after_final_record(monkeypatch):
+    transactions = _Collection([
+        {
+            "id": "exchange-done",
+            "user_id": "user-1",
+            "type": "exchange",
+            "direction": "out",
+            "status": "completed",
+        },
+        {
+            "id": "exchange-pending",
+            "user_id": "user-1",
+            "type": "exchange",
+            "direction": "out",
+            "status": "pending",
+        },
+    ])
+    monkeypatch.setattr(server, "db", SimpleNamespace(transactions=transactions))
+    queued = []
+
+    async def capture_enqueue(*args):
+        queued.append(args)
+
+    monkeypatch.setattr(server, "_enqueue_transaction_email", capture_enqueue)
+
+    async def run():
+        await server._queue_email_for_transaction_record("user-1", "exchange-done")
+        await server._queue_email_for_transaction_record("user-1", "exchange-pending")
+
+    asyncio.run(run())
+    assert queued == [("user-1", "exchange_success", "exchange-done", "transaction")]
+
+
+def test_exchange_notification_selects_exchange_email_event(monkeypatch):
+    notifications = _Collection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(notifications=notifications))
+    scheduled = []
+    monkeypatch.setattr(
+        server,
+        "_schedule_transaction_email",
+        lambda *args: scheduled.append(args),
+    )
+
+    asyncio.run(server.notify(
+        "user-1",
+        "exchange_success",
+        "Échange confirmé",
+        "Votre conversion est confirmée.",
+        data={"transaction_id": "exchange-1", "status": "completed"},
+        send_telegram=False,
+    ))
+    assert scheduled == [
+        ("user-1", "exchange_success", "exchange-1", "transaction")
+    ]
+
+
+def test_branded_transaction_email_includes_amount_fees_and_only_active_links(monkeypatch):
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
+    monkeypatch.setenv("CORS_ORIGINS", "")
+    monkeypatch.setenv("OFFICIAL_DOMAIN", "")
+    support = {
+        "whatsapp_url": "https://wa.me/22811111111",
+        "social_channels": {
+            "whatsapp": {"url": "https://wa.me/22822222222", "active": True},
+            "facebook": {"url": "https://facebook.com/biztranspay", "active": True},
+            "tiktok": {"url": "https://tiktok.com/@biztranspay", "active": True},
+            "instagram": {"url": "javascript:alert(1)", "active": True},
+        },
+    }
+    text, html = server._transaction_email_content(
+        "deposit_confirmed",
+        {
+            "id": "deposit-1",
+            "reference": "BTP-ABC123",
+            "currency": "XOF",
+            "amount_gross": 1000,
+            "amount_net": 950,
+            "fee": 50,
+            "status": "approved",
+            "approved_at": "2026-09-27T12:30:00+00:00",
+        },
+        "deposit",
+        ["event_status", "amount_currency", "fee", "reference", "event_time"],
+        {"full_name": "Amina <K.", "username": "amina"},
+        support,
+    )
+
+    assert "Montant crédité : 950 XOF" in text
+    assert "Frais déduits : 50 XOF" in text
+    assert "Référence Biz-transPay : BTP-ABC123" in text
+    assert "Statut : Réussi" in text
+    assert "Dépôt effectué avec succès" in text
+    assert "https://wa.me/22811111111" in text
+    assert "https://facebook.com/biztranspay" in text
+    assert "tiktok.com" not in text
+    assert "javascript:" not in html
+    assert "https://pay.biz-transpay.com/logo-mark.png" in html
+    assert "Amina &lt;K." in html
+    assert "background:#07111f" in html
+    assert "Voir mes transactions" not in html
+
+
+def test_transaction_email_settings_upgrade_previous_defaults(monkeypatch):
+    settings = _Collection([{
+        "id": server.TRANSACTION_EMAIL_DEFAULTS["id"],
+        "event_types": [
+            "deposit_confirmed", "withdrawal_success", "payment_final",
+        ],
+        "content_fields": [
+            "event_status", "amount_currency", "reference", "event_time",
+        ],
+    }])
+    monkeypatch.setattr(server, "db", SimpleNamespace(settings=settings))
+
+    upgraded = asyncio.run(server._transaction_email_settings())
+    assert upgraded["event_types"] == server.TRANSACTION_EMAIL_DEFAULTS["event_types"]
+    assert upgraded["content_fields"] == server.TRANSACTION_EMAIL_DEFAULTS["content_fields"]
+
+
+def test_exchange_and_withdrawal_email_amounts_use_settled_values(monkeypatch):
+    monkeypatch.setenv("PUBLIC_APP_URL", "")
+    exchange_text, _ = server._transaction_email_content(
+        "exchange_success",
+        {
+            "id": "exchange-1",
+            "reference": "BTP-EX1",
+            "type": "exchange",
+            "direction": "out",
+            "status": "completed",
+            "amount": 1000,
+            "currency": "XOF",
+            "created_at": "2026-09-27T12:30:00+00:00",
+            "metadata": {
+                "from_currency": "XOF",
+                "to_currency": "USDT",
+                "fee": 25,
+                "received": 1.5,
+            },
+        },
+        "transaction",
+        ["event_status", "amount_currency", "fee", "reference", "event_time"],
+    )
+    withdrawal_text, _ = server._transaction_email_content(
+        "withdrawal_success",
+        {
+            "id": "withdrawal-1",
+            "reference": "BTP-WD1",
+            "type": "transfer",
+            "direction": "out",
+            "status": "completed",
+            "amount": 725,
+            "currency": "XOF",
+            "metadata": {"recipient_gets": 700, "fee": 25},
+        },
+        "transaction",
+        ["event_status", "amount_currency", "fee", "reference", "event_time"],
+    )
+    assert "Montant échangé : 1,000 XOF" in exchange_text
+    assert "Montant reçu : 1.5 USDT" in exchange_text
+    assert "Frais déduits : 25 XOF" in exchange_text
+    assert "Échange effectué avec succès" in exchange_text
+    assert "Montant du retrait : 700 XOF" in withdrawal_text
+    assert "Frais déduits : 25 XOF" in withdrawal_text
+
+
+def test_final_exchange_email_uses_branded_template_and_marks_outbox_sent(monkeypatch):
+    outbox = _Collection([{
+        "id": "exchange-email-1",
+        "user_id": "user-1",
+        "event_type": "exchange_success",
+        "entity_id": "exchange-1",
+        "entity_kind": "transaction",
+        "status": "queued",
+    }])
+    monkeypatch.setattr(server, "db", SimpleNamespace(email_outbox=outbox))
+    monkeypatch.setattr(server, "_transaction_email_settings", lambda: _resolved({
+        "enabled": True,
+        "event_types": ["exchange_success"],
+        "content_fields": [
+            "event_status", "amount_currency", "fee", "reference", "event_time",
+        ],
+        "sender_email": "notifications@example.com",
+    }))
+    monkeypatch.setattr(server, "get_support_config", lambda: _resolved({
+        "whatsapp_url": "https://wa.me/22812345678",
+        "social_channels": {
+            "facebook": {
+                "url": "https://facebook.com/biztranspay",
+                "active": True,
+            },
+        },
+    }))
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
+    monkeypatch.setenv("RESEND_API_KEY", "unit-test-key")
+    monkeypatch.setattr(server, "_load_transaction_email_context", lambda *_args: _resolved((
+        {
+            "id": "exchange-1",
+            "type": "exchange",
+            "direction": "out",
+            "status": "completed",
+            "amount": 1000,
+            "currency": "XOF",
+            "reference": "BTP-EXCHANGE1",
+            "created_at": "2026-09-27T12:30:00+00:00",
+            "metadata": {
+                "from_currency": "XOF",
+                "to_currency": "USDT",
+                "fee": 25,
+                "received": 1.5,
+            },
+        },
+        {"email": "member@example.com", "full_name": "Amina"},
+    )))
+    sent = []
+
+    async def capture_email(**kwargs):
+        sent.append(kwargs)
+
+    monkeypatch.setattr(server, "send_resend_email", capture_email)
+
+    asyncio.run(server._deliver_transaction_email("exchange-email-1"))
+    assert outbox.docs[0]["status"] == "sent"
+    assert sent[0]["subject"] == "Votre échange a été effectué avec succès"
+    assert sent[0]["idempotency_key"] == "exchange-email-1"
+    assert "Montant échangé : 1,000 XOF" in sent[0]["text"]
+    assert "Frais déduits : 25 XOF" in sent[0]["text"]
+    assert "BTP-EXCHANGE1" in sent[0]["text"]
+    assert "logo-mark.png" in sent[0]["html"]
+    assert "facebook.com/biztranspay" in sent[0]["html"]
 
 
 def _resolved(value):
@@ -384,6 +625,7 @@ def test_resend_failure_is_swallowed_and_marked_failed(monkeypatch):
         "content_fields": ["event_status"],
         "sender_email": "notifications@example.com",
     }))
+    monkeypatch.setattr(server, "get_support_config", lambda: _resolved({}))
     monkeypatch.setenv("RESEND_API_KEY", "unit-test-key")
     monkeypatch.setattr(server, "_load_transaction_email_context", lambda *_args: _resolved((
         {

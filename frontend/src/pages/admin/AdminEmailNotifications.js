@@ -7,13 +7,15 @@ import { useAuth } from '@/context/AuthContext';
 const EVENT_OPTIONS = [
   { id: 'deposit_confirmed', label: 'Dépôt confirmé' },
   { id: 'withdrawal_success', label: 'Retrait réussi uniquement' },
+  { id: 'exchange_success', label: 'Échange réussi' },
   { id: 'payment_final', label: 'Paiement ou transfert initié par ce compte et réussi' },
 ];
 
 const CONTENT_OPTIONS = [
   { id: 'event_status', label: 'Type et statut' },
   { id: 'amount_currency', label: 'Montant et devise' },
-  { id: 'reference', label: 'Référence interne' },
+  { id: 'fee', label: 'Frais déduits' },
+  { id: 'reference', label: 'Référence Biz-transPay' },
   { id: 'event_time', label: 'Date et heure' },
 ];
 

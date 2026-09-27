@@ -74,11 +74,12 @@ class TransactionEmailSettingsUpdate(BaseModel):
     withdrawal_otp_enabled: Optional[bool] = None
     sender_email: Optional[EmailStr] = None
     event_types: List[Literal[
-        "deposit_confirmed", "withdrawal_success", "payment_final"
-    ]] = Field(default_factory=list, max_length=3)
-    content_fields: List[Literal[
-        "event_status", "amount_currency", "reference", "event_time"
+        "deposit_confirmed", "withdrawal_success", "exchange_success",
+        "payment_final"
     ]] = Field(default_factory=list, max_length=4)
+    content_fields: List[Literal[
+        "event_status", "amount_currency", "fee", "reference", "event_time"
+    ]] = Field(default_factory=list, max_length=5)
 
 
 class TransferOtpCancelRequest(BaseModel):

@@ -858,10 +858,11 @@ TRANSACTION_EMAIL_DEFAULTS = {
     "sender_email": "",
     "recipient_type": "transaction_user",
     "event_types": [
-        "deposit_confirmed", "withdrawal_success", "payment_final",
+        "deposit_confirmed", "withdrawal_success", "exchange_success",
+        "payment_final",
     ],
     "content_fields": [
-        "event_status", "amount_currency", "reference", "event_time",
+        "event_status", "amount_currency", "fee", "reference", "event_time",
     ],
 }
 TELEGRAM_MAX_MESSAGE_LENGTH = 3900
@@ -2073,6 +2074,7 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
     email_event = {
         "deposit_success": "deposit_confirmed",
         "withdrawal_success": "withdrawal_success",
+        "exchange_success": "exchange_success",
         "transfer_success": "payment_final",
         "payment_success": "payment_final",
     }.get(ntype)
@@ -2137,6 +2139,12 @@ async def _queue_email_for_transaction_record(
             ):
                 return
             event_type = "payment_final"
+        elif tx.get("type") == "exchange" and tx.get("direction") == "out":
+            if not _transaction_email_record_is_final(
+                "exchange_success", tx, "transaction"
+            ):
+                return
+            event_type = "exchange_success"
         else:
             if not _transaction_email_record_is_final(
                 "withdrawal_success", tx, "transaction"
@@ -2165,7 +2173,21 @@ async def _transaction_email_settings() -> dict:
     saved = await db.settings.find_one(
         {"id": TRANSACTION_EMAIL_DEFAULTS["id"]}, {"_id": 0}
     )
-    return {**TRANSACTION_EMAIL_DEFAULTS, **(saved or {})}
+    settings = {**TRANSACTION_EMAIL_DEFAULTS, **(saved or {})}
+    # Existing installs may have the complete previous default lists saved.
+    # Upgrade only those exact defaults; preserve deliberate admin selections.
+    if saved:
+        if saved.get("event_types") == [
+            "deposit_confirmed", "withdrawal_success", "payment_final",
+        ]:
+            settings["event_types"] = list(TRANSACTION_EMAIL_DEFAULTS["event_types"])
+        if saved.get("content_fields") == [
+            "event_status", "amount_currency", "reference", "event_time",
+        ]:
+            settings["content_fields"] = list(
+                TRANSACTION_EMAIL_DEFAULTS["content_fields"]
+            )
+    return settings
 
 
 def _transaction_email_status(settings: dict) -> dict:
@@ -2416,7 +2438,9 @@ async def _consume_withdrawal_email_otp(
 
 def _configured_public_app_url() -> str:
     """Use an explicitly configured public origin, never a request Host header."""
-    configured = [os.environ.get("PUBLIC_APP_URL", "")]
+    configured = [
+        os.environ.get("PUBLIC_APP_URL", ""),
+    ]
     configured.extend(os.environ.get("CORS_ORIGINS", "").split(","))
     for candidate in configured:
         parsed = urlparse(str(candidate or "").strip().rstrip("/"))
@@ -2441,6 +2465,11 @@ def _transaction_email_record_is_final(
         return status in {"approved", "completed", "successful"}
     if status not in {"completed", "successful", "paid"}:
         return False
+    if event_type == "exchange_success":
+        return (
+            record.get("type") == "exchange"
+            and record.get("direction") == "out"
+        )
     if event_type == "withdrawal_success":
         metadata = record.get("metadata") or {}
         return (
@@ -2481,7 +2510,8 @@ async def _load_transaction_email_context(
     ):
         return None
     user = await db.users.find_one(
-        {"id": user_id}, {"_id": 0, "id": 1, "email": 1}
+        {"id": user_id},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "username": 1},
     )
     if not user or not user.get("email"):
         return None
@@ -2489,48 +2519,222 @@ async def _load_transaction_email_context(
 
 
 def _transaction_email_content(
-    event_type: str, record: dict, entity_kind: str, content_fields: list[str]
+    event_type: str,
+    record: dict,
+    entity_kind: str,
+    content_fields: list[str],
+    user: Optional[dict] = None,
+    support_config: Optional[dict] = None,
 ) -> tuple[str, str]:
     event_labels = {
-        "deposit_confirmed": "Dépôt confirmé",
-        "withdrawal_success": "Retrait réussi",
-        "payment_final": "Paiement ou transfert réussi",
+        "deposit_confirmed": "Dépôt effectué avec succès",
+        "withdrawal_success": "Retrait effectué avec succès",
+        "exchange_success": "Échange effectué avec succès",
+        "payment_final": "Paiement ou transfert effectué avec succès",
     }
     event_label = event_labels.get(event_type, "Transaction")
-    currency = str(record.get("currency") or "XOF").upper()[:12]
-    amount = record.get("amount_net", record.get("amount", 0))
-    try:
-        amount_text = f"{float(amount):,.2f} {currency}"
-    except (TypeError, ValueError):
-        amount_text = f"{currency}"
+    metadata = record.get("metadata") or {}
+    is_deposit = entity_kind == "deposit" or event_type == "deposit_confirmed"
+    is_exchange = event_type == "exchange_success"
+    currency = str(
+        (metadata.get("from_currency") if is_exchange else None)
+        or record.get("currency") or "XOF"
+    ).upper()[:12]
+
+    def display_amount(value, amount_currency):
+        try:
+            number = Decimal(str(value))
+            if not number.is_finite():
+                raise InvalidOperation
+            decimals = 0 if amount_currency in {"XOF", "XAF"} else 8
+            formatted = f"{number:,.{decimals}f}"
+            if decimals:
+                formatted = formatted.rstrip("0").rstrip(".")
+            return f"{formatted} {amount_currency}"
+        except (InvalidOperation, TypeError, ValueError):
+            return amount_currency
+
+    if is_deposit:
+        amount = record.get("amount_net")
+        amount = record.get("amount", 0) if amount is None else amount
+        amount_label = "Montant crédité"
+        fee = record.get("fee")
+        fee_currency = currency
+    elif is_exchange:
+        amount = record.get("amount", 0)
+        amount_label = "Montant échangé"
+        fee = metadata.get("fee")
+        fee_currency = str(metadata.get("from_currency") or currency).upper()[:12]
+    else:
+        amount = metadata.get("recipient_gets")
+        amount = record.get("amount", 0) if amount is None else amount
+        amount_label = (
+            "Montant du retrait"
+            if event_type == "withdrawal_success" else "Montant"
+        )
+        fee = metadata.get("fee")
+        fee_currency = str(metadata.get("fee_currency") or currency).upper()[:12]
+    fee = 0 if fee is None else fee
+    amount_text = display_amount(amount, currency)
+    fee_text = display_amount(fee, fee_currency)
+
+    received_text = ""
+    if is_exchange and metadata.get("received") is not None:
+        received_currency = str(metadata.get("to_currency") or "").upper()[:12]
+        if received_currency:
+            received_text = display_amount(metadata["received"], received_currency)
+
     reference = str(record.get("reference") or record.get("id") or "")[:80]
     event_time = (
         record.get("approved_at")
         or record.get("completed_at")
+        or metadata.get("completed_at")
         or record.get("paid_at")
         or record.get("updated_at")
         or record.get("created_at")
         or ""
     )
+    try:
+        display_time = _as_utc(event_time).strftime("%d/%m/%Y %H:%M UTC")
+    except (TypeError, ValueError, AttributeError):
+        display_time = str(event_time)[:80]
+
     lines = []
     for field, label, value in (
-        ("event_status", "Événement / statut", f"{event_label} — réussi"),
-        ("amount_currency", "Montant", amount_text),
-        ("reference", "Référence interne", reference),
-        ("event_time", "Date et heure", str(event_time)[:80]),
+        ("event_status", "Statut", "Réussi"),
+        ("amount_currency", amount_label, amount_text),
+        ("fee", "Frais déduits", fee_text),
+        ("reference", "Référence Biz-transPay", reference),
+        ("event_time", "Date et heure", display_time),
     ):
         if field in content_fields and value:
             lines.append(f"{label} : {value}")
-    text = "Biz-transPay\n\n" + "\n".join(lines)
-    html_lines = "".join(
-        f"<p><strong>{html_escape(line.split(' : ', 1)[0])} :</strong> "
-        f"{html_escape(line.split(' : ', 1)[1])}</p>"
-        for line in lines
+    if is_exchange and received_text and "amount_currency" in content_fields:
+        lines.insert(2, f"Montant reçu : {received_text}")
+
+    greeting_name = str(
+        (user or {}).get("full_name") or (user or {}).get("username") or ""
+    ).strip()[:120]
+    greeting = f"Bonjour {greeting_name}," if greeting_name else "Bonjour,"
+    introduction = "Nous vous confirmons que votre opération est terminée."
+    text_lines = [
+        "Biz-transPay", "", event_label, "", greeting, introduction, "", *lines,
+    ]
+
+    app_url = _configured_public_app_url()
+    logo_url = f"{app_url}/logo-mark.png" if app_url else ""
+    support = support_config or {}
+    whatsapp_url = _safe_transaction_email_url(support.get("whatsapp_url"))
+    active_socials = []
+    raw_socials = support.get("social_channels")
+    if isinstance(raw_socials, dict):
+        for key in ("whatsapp", "facebook"):
+            channel = raw_socials.get(key)
+            if not isinstance(channel, dict) or not channel.get("active"):
+                continue
+            url = _safe_transaction_email_url(channel.get("url"))
+            if url:
+                active_socials.append((key.title(), url))
+
+    detail_rows = []
+    for line in lines:
+        label, value = line.split(" : ", 1)
+        detail_rows.append(
+            "<tr><td style=\"padding:11px 0;border-bottom:1px solid #26364a;"
+            "color:#a8b7ca;font-size:13px\">"
+            f"{html_escape(label)}</td><td align=\"right\" style=\"padding:11px 0;"
+            "border-bottom:1px solid #26364a;color:#f8fafc;font-size:14px;"
+            f"font-weight:600\">{html_escape(value)}</td></tr>"
+        )
+    detail_markup = "".join(detail_rows)
+
+    if logo_url:
+        logo_markup = (
+            f"<img src=\"{html_escape(logo_url, quote=True)}\" width=\"48\" "
+            "height=\"48\" alt=\"Biz-transPay\" style=\"display:block;width:48px;"
+            "height:48px;border:0;border-radius:12px\">"
+        )
+    else:
+        logo_markup = (
+            "<span style=\"font-size:18px;font-weight:700;color:#fff\">"
+            "Biz-transPay</span>"
+        )
+
+    whatsapp_markup = ""
+    if whatsapp_url:
+        whatsapp_markup = (
+            "<p style=\"margin:20px 0 0\">"
+            f"<a href=\"{html_escape(whatsapp_url, quote=True)}\" "
+            "style=\"display:inline-block;padding:11px 16px;border-radius:8px;"
+            "background:#16a36a;color:#fff;text-decoration:none;font-size:13px;"
+            "font-weight:700\">Contacter l’assistance WhatsApp</a></p>"
+        )
+        text_lines.extend(["", f"Assistance WhatsApp : {whatsapp_url}"])
+
+    social_markup_items = []
+    for label, url in active_socials:
+        social_markup_items.append(
+            f"<a href=\"{html_escape(url, quote=True)}\" "
+            "style=\"color:#a8b7ca;text-decoration:underline\">"
+            f"{html_escape(label)}</a>"
+        )
+    social_markup = " · ".join(social_markup_items)
+    if active_socials:
+        text_lines.extend([
+            "",
+            "Réseaux : " + " · ".join(
+                f"{label}: {url}" for label, url in active_socials
+            ),
+        ])
+    text_lines.extend(["", "© 2026 Biz-transPay"])
+    text = "\n".join(text_lines)
+
+    html = (
+        "<!doctype html><html lang=\"fr\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "</head><body style=\"margin:0;padding:24px 12px;background:#07111f;"
+        "font-family:Arial,Helvetica,sans-serif;color:#f8fafc\">"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+        "cellpadding=\"0\" style=\"max-width:560px;margin:0 auto\"><tr><td>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+        "cellpadding=\"0\" style=\"background:#101d2e;border:1px solid #26364a;"
+        "border-radius:16px;overflow:hidden\"><tr><td style=\"padding:24px 26px\">"
+        f"<div style=\"margin-bottom:22px\">{logo_markup}</div>"
+        "<div style=\"display:inline-block;padding:5px 10px;border-radius:20px;"
+        "background:#123c31;color:#75e0b2;font-size:11px;font-weight:700;"
+        "letter-spacing:.04em;text-transform:uppercase\">Opération réussie</div>"
+        f"<h1 style=\"margin:14px 0 10px;color:#fff;font-size:22px;line-height:1.3\">"
+        f"{html_escape(event_label)}</h1>"
+        "<p style=\"margin:0 0 20px;color:#bdc9d8;font-size:14px;line-height:1.6\">"
+        f"{html_escape(greeting)}<br>{html_escape(introduction)}</p>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+        f"cellpadding=\"0\">{detail_markup}</table>"
+        f"{whatsapp_markup}</td></tr>"
+        "<tr><td style=\"padding:16px 26px;border-top:1px solid #26364a;"
+        "text-align:center;font-size:12px\">"
+        f"{social_markup or '<span style=\"color:#8292a7\">Biz-transPay</span>'}"
+        "</td></tr></table>"
+        "<p style=\"margin:16px 0 0;text-align:center;color:#8292a7;"
+        "font-size:11px\">© 2026 Biz-transPay</p>"
+        "</td></tr></table></body></html>"
     )
-    return text, (
-        "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
-        f"<h2>{html_escape(event_label)}</h2>{html_lines}</div>"
-    )
+    return text, html
+
+
+def _safe_transaction_email_url(value) -> str:
+    url = str(value or "").strip()
+    try:
+        parsed = urlparse(url)
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc
+            and not parsed.username
+            and not parsed.password
+        ):
+            return url[:1000]
+    except (TypeError, ValueError):
+        pass
+    return ""
 
 
 async def _enqueue_transaction_email(
@@ -2606,17 +2810,28 @@ async def _deliver_transaction_email(outbox_id: str) -> None:
             )
             return
         record, user = context
+        support_config = await get_support_config()
         text, html = _transaction_email_content(
             outbox["event_type"],
             record,
             outbox["entity_kind"],
             settings.get("content_fields") or [],
+            user,
+            support_config,
+        )
+        subject = {
+            "deposit_confirmed": "Votre dépôt a été effectué avec succès",
+            "withdrawal_success": "Votre retrait a été effectué avec succès",
+            "exchange_success": "Votre échange a été effectué avec succès",
+        }.get(
+            outbox["event_type"],
+            "Mise à jour de votre transaction Biz-transPay",
         )
         await send_resend_email(
             api_key=os.environ.get("RESEND_API_KEY", "").strip(),
             sender=status["sender_email"],
             recipient=user["email"],
-            subject="Mise à jour de votre transaction Biz-transPay",
+            subject=subject,
             text=text,
             html=html,
             idempotency_key=outbox_id,
