@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { ArrowUpRight, ArrowDownLeft, Link2, Repeat, Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
+import { Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
@@ -50,12 +50,12 @@ export default function DashboardHome() {
   };
 
   const actions = [
-    { to: '/dashboard/transfer', I: ArrowUpRight, bg: 'bg-emerald-50', color: 'text-emerald-600', ring: 'group-hover:bg-emerald-500', label: t('dashboard.transfer'), key: 'transfer' },
-    { to: '/dashboard/deposit', I: ArrowDownLeft, bg: 'bg-blue-50', color: 'text-[#2563EB]', ring: 'group-hover:bg-[#2563EB]', label: t('dashboard.deposit'), key: 'deposit' },
+    { to: '/dashboard/transfer', image: '/images/transfer-dashboard-icon.webp', label: t('dashboard.transfer'), key: 'transfer' },
+    { to: '/dashboard/deposit', image: '/images/deposit-dashboard-icon.webp', label: t('dashboard.deposit'), key: 'deposit' },
     ...(features?.links_enabled !== false
-      ? [{ to: '/dashboard/links', I: Link2, bg: 'bg-violet-50', color: 'text-violet-600', ring: 'group-hover:bg-violet-500', label: t('dashboard.link'), key: 'link' }]
+      ? [{ to: '/dashboard/links', image: '/images/link-dashboard-icon.webp', label: t('dashboard.link'), key: 'link' }]
       : []),
-    { to: '/dashboard/exchange', I: Repeat, bg: 'bg-orange-50', color: 'text-orange-600', ring: 'group-hover:bg-orange-500', label: t('dashboard.exchange'), key: 'exchange' },
+    { to: '/dashboard/exchange', image: '/images/exchange-dashboard-icon.webp', label: t('dashboard.exchange'), key: 'exchange' },
   ];
 
   const needsKyc = user?.kyc_status !== 'verified' && showKycBanner;
@@ -211,8 +211,8 @@ export default function DashboardHome() {
               data-testid={`quick-action-${a.key}`}
               className="group flex flex-col items-center gap-1.5 sm:gap-2 py-2.5 sm:py-3 rounded-xl hover:bg-slate-50 transition-colors active:scale-95"
             >
-              <div className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full ${a.bg} ${a.color} flex items-center justify-center transition-colors ${a.ring} group-hover:text-white`}>
-                <a.I className="w-4 h-4 sm:w-5 sm:h-5" strokeWidth={1.75} />
+              <div className="w-10 h-10 sm:w-12 sm:h-12 overflow-hidden rounded-full ring-1 ring-slate-200/70 transition-transform group-hover:scale-105">
+                <img src={a.image} alt="" aria-hidden="true" className="h-full w-full object-cover" decoding="async" />
               </div>
               <div className="font-cabinet font-bold text-slate-900 text-[10px] sm:text-xs">{a.label}</div>
             </button>
