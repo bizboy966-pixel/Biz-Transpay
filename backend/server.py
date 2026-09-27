@@ -862,6 +862,7 @@ TELEGRAM_FINAL_NOTIFICATION_TYPES = {
     "withdrawal_manual_review",
     "transfer_success",
     "exchange_success",
+    "payment_success",
     "security_alert",
 }
 TELEGRAM_ADMIN_NOTIFICATION_TYPES = {
@@ -918,6 +919,15 @@ def _telegram_mask_phone(value: Optional[str]) -> str:
     if len(text) <= 4:
         return text
     return f"{text[:3]}••••{text[-3:]}"
+
+
+def _telegram_mask_crypto_address(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 12:
+        return f"{text[:4]}…{text[-3:]}" if len(text) > 7 else "••••"
+    return f"{text[:8]}…{text[-6:]}"
 
 
 def _telegram_display_amount(value: Any, currency: str) -> str:
@@ -1147,6 +1157,7 @@ async def _telegram_notification_text(
     meta = (transaction or {}).get("metadata") or {}
     title_by_type = {
         "deposit_success": "✅ PAIEMENT REÇU / DÉPÔT CONFIRMÉ",
+        "payment_success": "✅ PAIEMENT CRYPTO REÇU",
         "withdrawal_success": "✅ RETRAIT VALIDÉ AUTOMATIQUEMENT",
         "withdrawal_failed": "❌ RETRAIT ÉCHOUÉ / REMBOURSÉ",
         "withdrawal_manual_review": "⚠️ RETRAIT EN ATTENTE — FONDS PRESTATAIRE",
@@ -1157,25 +1168,67 @@ async def _telegram_notification_text(
         record.get("provider") or meta.get("provider")
         or ("fedapay" if meta.get("fedapay_payout_id") else None)
         or ("paydunya" if meta.get("paydunya_disbursement_token") else None)
-        or ("izichangepay" if meta.get("izipay_payout_id") else None)
+        or (
+            "izichangepay"
+            if meta.get("izipay_intent_id") or meta.get("izipay_payout_id")
+            else None
+        )
         or ("mbiyo" if meta.get("mbiyo_transaction_id") else None)
         or "Biz-transPay"
     )
     provider_labels = {
         "paydunya": "PayDunya", "fedapay": "FedaPay", "mbiyo": "Mbiyo",
-        "izipay": "IzichangePay", "izichangepay": "IzichangePay",
+        "izipay": "EasyChangePay", "izichangepay": "EasyChangePay",
     }
     provider_label = provider_labels.get(str(provider).lower(), str(provider))
     currency = str(
         record.get("currency") or (data or {}).get("currency") or "—"
     ).upper()
+    crypto_code = (
+        meta.get("coin") or meta.get("crypto") or record.get("coin")
+        or record.get("crypto") or meta.get("asset_code")
+    )
+    network = meta.get("network") or record.get("network")
+    is_crypto = bool(
+        crypto_code or network or meta.get("izipay_intent_id")
+        or meta.get("izipay_payout_id")
+        or meta.get("transfer_type") == "biz_to_crypto"
+    )
+    crypto_lines = []
+    if is_crypto:
+        asset_label = crypto_code or meta.get("asset_code") or currency
+        if asset_label or network:
+            crypto_description = " · ".join(
+                str(value) for value in (asset_label, network) if value
+            )
+            crypto_lines.append(
+                f"🪙 Crypto / réseau : <b>{html_escape(crypto_description)}</b>"
+            )
+        crypto_address = (
+            meta.get("deposit_address") or meta.get("wallet_address")
+            or record.get("deposit_address") or record.get("wallet_address")
+        )
+        masked_address = _telegram_mask_crypto_address(crypto_address)
+        if masked_address:
+            crypto_lines.append(
+                f"📍 Adresse crypto : <code>{html_escape(masked_address)}</code>"
+            )
+        tx_hash = meta.get("tx_hash") or meta.get("txid") or meta.get("tx_id")
+        if tx_hash:
+            crypto_lines.append(
+                f"🔎 TXID : <code>{html_escape(str(tx_hash)[:180])}</code>"
+            )
     if deposit:
         gross = deposit.get("amount_gross", deposit.get("amount"))
         net = deposit.get("amount_net", (data or {}).get("amount"))
-        operator = deposit.get("operator_name") or deposit.get("operator") or "—"
+        operator = (
+            deposit.get("operator_name") or deposit.get("operator")
+            or deposit.get("network") or "—"
+        )
         provider_reference = (
             deposit.get("provider_reference") or deposit.get("paydunya_reference")
             or deposit.get("fedapay_reference") or deposit.get("mbiyo_transaction_id")
+            or deposit.get("izipay_intent_id") or deposit.get("izipay_payout_id")
         )
         internal_reference = deposit.get("reference") or deposit.get("id")
         event_time = deposit.get("approved_at") or deposit.get("updated_at") or deposit.get("created_at")
@@ -1183,6 +1236,7 @@ async def _telegram_notification_text(
             "link_payment": "Lien de paiement",
             "merchant_api": "API marchand",
             "dashboard": "Dépôt Mobile Money",
+            "crypto_deposit": "Dépôt crypto",
         }
         lines = [
             f"<b>{title_by_type.get(ntype, title)}</b>",
@@ -1198,13 +1252,20 @@ async def _telegram_notification_text(
             f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>",
         ]
     else:
-        gross = meta.get("total_debit", record.get("amount"))
-        net = meta.get("recipient_gets", record.get("amount"))
+        incoming = (transaction or {}).get("direction") == "in"
+        gross = (
+            meta.get("amount_gross") or meta.get("amount_crypto")
+            or record.get("amount")
+        ) if incoming else meta.get("total_debit", record.get("amount"))
+        net = (
+            meta.get("amount_net", record.get("amount"))
+            if incoming else meta.get("recipient_gets", record.get("amount"))
+        )
         operator = meta.get("operator_name") or meta.get("operator") or meta.get("network") or "—"
         provider_reference = (
             meta.get("provider_reference") or meta.get("mbiyo_transaction_id")
             or meta.get("fedapay_payout_id") or meta.get("paydunya_disbursement_id")
-            or meta.get("izipay_payout_id")
+            or meta.get("izipay_intent_id") or meta.get("izipay_payout_id")
         )
         internal_reference = record.get("reference") or record.get("id")
         event_time = meta.get("completed_at") or record.get("updated_at") or record.get("created_at")
@@ -1213,11 +1274,12 @@ async def _telegram_notification_text(
             "━━━━━━━━━━━━━━━━━━━━",
             f"💰 Montant brut : <b>{html_escape(_telegram_display_amount(gross, currency))}</b>",
             f"💳 Montant net : <b>{html_escape(_telegram_display_amount(net, currency))}</b>",
-            f"💼 Wallet débité : <b>{html_escape(currency)}</b>",
+            f"💼 Wallet {'crédité' if incoming else 'débité'} : <b>{html_escape(currency)}</b>",
             f"🔌 Passerelle : <b>{html_escape(provider_label)}</b>",
             f"📱 Opérateur / réseau : <b>{html_escape(str(operator))}</b>",
             f"📌 Réf. Biz-transPay : <code>{html_escape(str(internal_reference or '—'))}</code>",
             f"🔗 Réf. fournisseur : <code>{html_escape(str(provider_reference or '—'))}</code>",
+            *crypto_lines,
             f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>",
         ]
     lines.extend(await _telegram_party_lines(transaction, deposit))
@@ -2006,11 +2068,13 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
     }.get(ntype)
     if email_event:
         event_data = data or {}
+        deposit_id = str(event_data.get("deposit_id") or "")
+        transaction_id = str(event_data.get("transaction_id") or "")
         _schedule_transaction_email(
             user_id,
             email_event,
-            str(event_data.get("deposit_id") or event_data.get("transaction_id") or ""),
-            "deposit" if email_event == "deposit_confirmed" else "transaction",
+            deposit_id or transaction_id,
+            "deposit" if deposit_id else "transaction",
         )
     return doc
 
@@ -6483,7 +6547,30 @@ async def transfer(req: TransferRequest, request: Request,
                 uid, wallet_field, total_debit,
                 f"crypto-transfer:{transfer_operation_id}")
             tx_update["status"] = "failed"
-        await db.transactions.update_one({"id": tx_out.id}, {"$set": tx_update})
+        if tx_update.get("status") == "completed":
+            payout_update = await db.transactions.update_one(
+                {"id": tx_out.id,
+                 "status": {"$nin": ["completed", "failed", "canceled"]}},
+                {"$set": tx_update},
+            )
+            if payout_update.modified_count:
+                await notify(
+                    uid, "withdrawal_success", "Retrait crypto confirmé",
+                    f"Votre retrait de {recipient_gets:.6f} {coin_upper} "
+                    f"sur {net_upper} a été confirmé.",
+                    data={
+                        "transaction_id": tx_out.id,
+                        "reference": tx_out.reference,
+                        "amount": total_debit,
+                        "currency": asset_code,
+                        "transfer_type": "biz_to_crypto",
+                        "coin": coin_upper, "network": net_upper,
+                        "tx_hash": tx_update.get("metadata.tx_hash"),
+                    },
+                )
+        else:
+            await db.transactions.update_one(
+                {"id": tx_out.id}, {"$set": tx_update})
         body = {"transaction": tx_out.model_dump(), "fee": fee, "total_debit": total_debit,
                 "recipient_gets": recipient_gets, "crypto": req.crypto.upper(),
                 "network": req.network.upper(), "payout_id": payout_id,
@@ -10333,7 +10420,7 @@ async def _settle_izipay_payment(
         operation_id = f"izipay:deposit:{merchant_ref}"
         await _credit_wallet_once(
             d["user_id"], wallet_field, net, operation_id)
-        await db.crypto_deposits.update_one(
+        deposit_settlement = await db.crypto_deposits.update_one(
             {"id": merchant_ref, "status": "settling"},
             {"$set": {
                 "status": "confirmed", "updated_at": now_iso(),
@@ -10352,13 +10439,16 @@ async def _settle_izipay_payment(
                 "credit_operation_id": operation_id,
             }},
         )
-        await record_tx(
+        tx = await record_tx(
             d["user_id"], "deposit", "in", net, wallet_spec["id"],
             status="completed",
             description=f"Dépôt crypto {coin} · {d.get('network', '')}",
             metadata={
+                "provider": "izichangepay",
+                "provider_reference": intent_id,
                 "izipay_intent_id": intent_id, "coin": coin,
                 "network": d.get("network"), "asset_code": d.get("asset_code"),
+                "customer_email": d.get("customer_email"),
                 "catalog_asset_id": wallet_spec["id"],
                 "wallet_field": wallet_field,
                 "tx_hash": tx_hash, "deposit_address": d.get("deposit_address"),
@@ -10373,6 +10463,16 @@ async def _settle_izipay_payment(
             },
             operation_id=operation_id,
         )
+        if deposit_settlement.modified_count and getattr(tx, "id", None):
+            await notify(
+                d["user_id"], "deposit_success", "Dépôt crypto confirmé",
+                f"Votre dépôt de {gross_asset:.8f} {coin} sur "
+                f"{d.get('network', '')} a été crédité.",
+                data={
+                    "transaction_id": tx.id, "currency": wallet_spec["id"],
+                    "amount": net, "crypto": coin, "network": d.get("network"),
+                },
+            )
         return True
 
     lp = await db.link_payments.find_one({"id": merchant_ref}, {"_id": 0})
@@ -10440,7 +10540,7 @@ async def _settle_izipay_payment(
                  "single_use_claim_id": lp["single_use_claim_id"]},
                 {"$set": {"active": False}},
             )
-        await record_tx(
+        tx = await record_tx(
             link["user_id"], "link_payment", "in", net, "USDT",
             status="completed",
             description=f"Paiement lien: {link.get('title', '')} · {coin} {lp.get('network', '')}",
@@ -10457,6 +10557,17 @@ async def _settle_izipay_payment(
             },
             operation_id=operation_id,
         )
+        if paid.modified_count and getattr(tx, "id", None):
+            await notify(
+                link["user_id"], "payment_success",
+                "Paiement crypto par lien confirmé",
+                f"Un paiement de {gross_usdt:.6f} {coin} sur "
+                f"{lp.get('network', '')} a été reçu.",
+                data={
+                    "transaction_id": tx.id, "currency": "USDT",
+                    "amount": net, "crypto": coin, "network": lp.get("network"),
+                },
+            )
         return True
 
     mp = await db.merchant_payments.find_one(
@@ -10500,7 +10611,7 @@ async def _settle_izipay_payment(
         operation_id = f"izipay:merchant-payment:{merchant_ref}"
         await _credit_wallet_once(
             mp["merchant_id"], "balance_usdt", net, operation_id)
-        await db.merchant_payments.update_one(
+        merchant_settlement = await db.merchant_payments.update_one(
             {"id": merchant_ref, "status": "settling"},
             {"$set": {
                 "status": "paid", "paid_at": now_iso(),
@@ -10512,7 +10623,7 @@ async def _settle_izipay_payment(
                 "credit_operation_id": operation_id,
             }},
         )
-        await record_tx(
+        tx = await record_tx(
             mp["merchant_id"], "payment", "in", net, "USDT",
             status="completed", description="Paiement API marchand",
             metadata={
@@ -10529,6 +10640,16 @@ async def _settle_izipay_payment(
             },
             operation_id=operation_id,
         )
+        if merchant_settlement.modified_count and getattr(tx, "id", None):
+            await notify(
+                mp["merchant_id"], "payment_success",
+                "Paiement crypto marchand confirmé",
+                f"Un paiement API de {gross_usdt:.6f} {coin} a été reçu.",
+                data={
+                    "transaction_id": tx.id, "currency": "USDT",
+                    "amount": net, "crypto": coin,
+                },
+            )
         return True
     return False
 
@@ -11548,7 +11669,7 @@ async def _apply_merchant_payout_status(
         else "failed" if new_status in ("failed", "canceled")
         else "pending"
     )
-    await db.transactions.update_one(
+    tx_change = await db.transactions.update_one(
         {"metadata.merchant_payout_id": payout_id,
          "status": {"$nin": ["completed", "failed", "canceled"]}},
         {"$set": {
@@ -11557,6 +11678,26 @@ async def _apply_merchant_payout_status(
             "metadata.tx_hash": event_data.get("txHash") or event_data.get("txhash"),
         }},
     )
+    if new_status == "completed" and tx_change.modified_count:
+        tx = await db.transactions.find_one(
+            {"metadata.merchant_payout_id": payout_id}, {"_id": 0})
+        if tx:
+            meta = tx.get("metadata") or {}
+            await notify(
+                tx["user_id"], "withdrawal_success",
+                "Retrait crypto marchand confirmé",
+                "Le retrait crypto marchand a été confirmé par EasyChangePay.",
+                data={
+                    "transaction_id": tx["id"],
+                    "reference": tx.get("reference"),
+                    "amount": tx.get("amount"),
+                    "currency": tx.get("currency"),
+                    "transfer_type": "biz_to_crypto",
+                    "coin": meta.get("crypto") or meta.get("coin"),
+                    "network": meta.get("network"),
+                    "tx_hash": event_data.get("txHash") or event_data.get("txhash"),
+                },
+            )
 # ==================== EXCHANGE / CONVERSION ====================
 
 # All conversion rates and fees are admin-configurable — nothing hardcoded.
@@ -12415,13 +12556,25 @@ async def list_transactions(
             {"id": rx}, {"reference": rx}, {"provider_reference": rx},
             {"external_reference": rx}, {"counterparty": rx},
             {"description": rx}, {"currency": rx}, {"type": rx},
+            {"customer_email": rx}, {"payer_email": rx},
+            {"izipay_intent_id": rx}, {"izipay_payout_id": rx},
+            {"tx_hash": rx}, {"txid": rx}, {"tx_id": rx},
+            {"wallet_address": rx}, {"deposit_address": rx},
+            {"destination_address": rx}, {"crypto_address": rx},
             {"metadata.tx_hash": rx}, {"metadata.txid": rx}, {"metadata.tx_id": rx},
             {"metadata.wallet_address": rx}, {"metadata.deposit_address": rx},
-            {"metadata.customer_email": rx}, {"metadata.customer_name": rx},
+            {"metadata.destination_address": rx}, {"metadata.crypto_address": rx},
+            {"metadata.recipient_address": rx},
+            {"metadata.customer_email": rx}, {"metadata.payer_email": rx},
+            {"metadata.customer_name": rx},
             {"metadata.email": rx}, {"metadata.phone_number": rx},
             {"metadata.customer_phone": rx}, {"metadata.external_id": rx},
             {"metadata.external_reference": rx}, {"metadata.provider_reference": rx},
             {"metadata.provider_id": rx}, {"metadata.transaction_id": rx},
+            {"metadata.provider_transaction_id": rx},
+            {"metadata.merchant_reference": rx},
+            {"metadata.transaction_reference": rx},
+            {"metadata.reference": rx}, {"metadata.biztranspay_reference": rx},
             {"metadata.paydunya_reference": rx}, {"metadata.paydunya_token": rx},
             {"metadata.izipay_intent_id": rx}, {"metadata.izipay_payout_id": rx},
             {"metadata.mbiyo_transaction_id": rx},
@@ -14510,23 +14663,42 @@ async def admin_transactions(admin=Depends(get_admin), q: Optional[str] = None,
             {"id": rx}, {"reference": rx}, {"provider_reference": rx},
             {"external_reference": rx}, {"counterparty": rx},
             {"description": rx}, {"currency": rx}, {"type": rx},
-            {"metadata.tx_hash": rx},
+            {"customer_email": rx}, {"payer_email": rx},
+            {"izipay_intent_id": rx}, {"izipay_payout_id": rx},
+            {"tx_hash": rx}, {"txid": rx}, {"tx_id": rx},
+            {"wallet_address": rx}, {"deposit_address": rx},
+            {"destination_address": rx}, {"crypto_address": rx},
+            {"metadata.tx_hash": rx}, {"metadata.txid": rx},
+            {"metadata.tx_id": rx},
             {"metadata.wallet_address": rx},
             {"metadata.deposit_address": rx},
-            {"metadata.customer_email": rx},
+            {"metadata.destination_address": rx},
+            {"metadata.crypto_address": rx},
+            {"metadata.recipient_address": rx},
+            {"metadata.customer_email": rx}, {"metadata.payer_email": rx},
             {"metadata.email": rx}, {"metadata.phone_number": rx},
             {"metadata.customer_phone": rx},
             {"metadata.provider_reference": rx},
+            {"metadata.provider_id": rx},
+            {"metadata.transaction_id": rx},
+            {"metadata.provider_transaction_id": rx},
+            {"metadata.merchant_reference": rx},
+            {"metadata.transaction_reference": rx},
+            {"metadata.biztranspay_reference": rx},
+            {"metadata.reference": rx},
             {"metadata.paydunya_reference": rx},
             {"metadata.paydunya_token": rx},
             {"metadata.mbiyo_transaction_id": rx},
             {"metadata.afribapay_transaction_id": rx},
-            {"metadata.provider_id": rx},
             {"metadata.izipay_intent_id": rx},
+            {"metadata.izipay_payout_id": rx},
             {"metadata.merchant_payment_id": rx},
             {"metadata.external_reference": rx},
             {"metadata.link_id": rx},
             {"metadata.coin": rx},
+            {"metadata.crypto": rx},
+            {"metadata.network": rx},
+            {"metadata.asset_code": rx},
             {"metadata.recipient": rx},
             {"metadata.recipient_name": rx},
         ]
@@ -14633,7 +14805,27 @@ async def admin_refresh_transaction(tx_id: str, admin=Depends(get_admin)):
         await audit(admin["id"], admin["username"], "tx_refresh_failed",
                     target_user_id=tx["user_id"],
                     details={"tx_id": tx_id, "payout_id": payout_id, "upstream": upstream_status})
-    await db.transactions.update_one({"id": tx_id}, {"$set": updates})
+    changed = await db.transactions.update_one(
+        {"id": tx_id, "status": "pending"}, {"$set": updates})
+    if mapped == "completed" and changed.modified_count:
+        amount = float(
+            meta.get("recipient_gets", tx.get("amount", 0)) or 0)
+        await notify(
+            tx["user_id"], "withdrawal_success", "Retrait crypto confirmé",
+            f"Votre retrait de {amount:.6f} "
+            f"{meta.get('crypto') or tx.get('currency', '')} sur "
+            f"{meta.get('network') or ''} a été confirmé.",
+            data={
+                "transaction_id": tx["id"],
+                "reference": tx.get("reference"),
+                "amount": tx.get("amount"),
+                "currency": tx.get("currency"),
+                "transfer_type": "biz_to_crypto",
+                "coin": meta.get("crypto") or meta.get("coin"),
+                "network": meta.get("network"),
+                "tx_hash": updates.get("metadata.tx_hash"),
+            },
+        )
     tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     return {"ok": True, "tx": tx, "upstream_status": upstream_status, "mapped_status": mapped}
 

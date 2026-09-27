@@ -2,6 +2,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from starlette.requests import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -139,6 +140,51 @@ def test_withdrawal_template_shows_gross_net_and_provider(monkeypatch):
     assert "MTN Mobile Money" in text
 
 
+def test_crypto_deposit_receipt_includes_safe_easychange_references(monkeypatch):
+    transaction = {
+        "id": "crypto-tx-1",
+        "reference": "BTP-CRYPTO-1",
+        "type": "deposit",
+        "direction": "in",
+        "amount": 12.5,
+        "currency": "USDT",
+        "metadata": {
+            "provider": "izichangepay",
+            "provider_reference": "ECP-INTENT-123",
+            "izipay_intent_id": "ECP-INTENT-123",
+            "coin": "USDT",
+            "network": "TRC20",
+            "deposit_address": "T123456789ABCDEFGHJKLMNPQRSTUVWXYZ",
+            "tx_hash": "0xCryptoDepositTransactionHash",
+            "amount_gross": 12.5,
+            "amount_net": 12.25,
+        },
+    }
+
+    async def context(_data):
+        return transaction, None
+
+    async def parties(_transaction, _deposit):
+        return []
+
+    monkeypatch.setattr(server, "_telegram_transaction_context", context)
+    monkeypatch.setattr(server, "_telegram_party_lines", parties)
+    text = asyncio.run(server._telegram_notification_text(
+        "user-1", "deposit_success", "Dépôt crypto confirmé", "body",
+        {"transaction_id": "crypto-tx-1"},
+    ))
+
+    assert "DÉPÔT CONFIRMÉ" in text
+    assert "EasyChangePay" in text
+    assert "BTP-CRYPTO-1" in text
+    assert "ECP-INTENT-123" in text
+    assert "Crypto / réseau" in text and "TRC20" in text
+    assert "Wallet crédité" in text
+    assert "0xCryptoDepositTransactionHash" in text
+    assert "T123456789ABCDEFGHJKLMNPQRSTUVWXYZ" not in text
+    assert "T1234567…UVWXYZ" in text
+
+
 def test_withdrawal_manual_review_template_is_operational(monkeypatch):
     transaction = {
         "id": "TX-MANUAL-1",
@@ -182,6 +228,75 @@ def test_withdrawal_manual_review_template_is_operational(monkeypatch):
     assert "Montant net : <b>50\u202f000 XOF</b>" in text
     assert "PayDunya" in text
     assert "+22890123456" not in text
+
+
+def test_crypto_deposit_settlement_queues_one_final_notification(monkeypatch):
+    deposit = {
+        "id": "crypto-deposit-1",
+        "user_id": "user-1",
+        "amount": 12.5,
+        "coin": "USDT",
+        "network": "TRC20",
+        "asset_code": "USDT.TRC20",
+        "catalog_asset_id": "USDT.TRC20",
+        "usdt_rate": 1.0,
+        "gateway_fee_pct": 1.0,
+        "platform_fee_pct": 0.0,
+        "gateway_fee_fixed": 0.0,
+        "platform_fee_fixed": 0.0,
+        "fee_pct": 1.0,
+        "deposit_address": "T123456789ABCDEFGHJKLMNPQRSTUVWXYZ",
+        "customer_email": "crypto-payer@example.test",
+    }
+    notification_calls = []
+    settlement_updates = []
+
+    class CryptoDeposits:
+        async def find_one(self, _query, _projection=None):
+            return dict(deposit)
+
+        async def update_one(self, query, update):
+            settlement_updates.append((query, update))
+            return SimpleNamespace(modified_count=1)
+
+    async def claim(_collection, _payment_id, _intent_id):
+        return dict(deposit)
+
+    async def credit_once(*_args, **_kwargs):
+        return True
+
+    async def record(*_args, **_kwargs):
+        return SimpleNamespace(id="crypto-ledger-1", reference="BTP-CRYPTO-1")
+
+    async def notify(*args, **kwargs):
+        notification_calls.append((args, kwargs))
+
+    monkeypatch.setattr(server, "db", SimpleNamespace(crypto_deposits=CryptoDeposits()))
+    monkeypatch.setattr(server, "_claim_izipay_payment_settlement", claim)
+    monkeypatch.setattr(server, "_crypto_usdt_rate", lambda _coin: 1.0)
+    monkeypatch.setattr(
+        server, "_crypto_wallet_spec",
+        lambda **_kwargs: {"id": "USDT.TRC20"},
+    )
+    monkeypatch.setattr(server, "_crypto_wallet_field", lambda _spec: "balance_usdt")
+    monkeypatch.setattr(server, "_credit_wallet_once", credit_once)
+    monkeypatch.setattr(server, "record_tx", record)
+    monkeypatch.setattr(server, "notify", notify)
+
+    settled = asyncio.run(server._settle_izipay_payment(
+        "crypto-deposit-1", "ECP-INTENT-123", "0xCryptoHash", "webhook",
+    ))
+
+    assert settled is True
+    assert len(settlement_updates) == 1
+    assert len(notification_calls) == 1
+    args, kwargs = notification_calls[0]
+    assert args[:2] == ("user-1", "deposit_success")
+    assert kwargs["data"]["transaction_id"] == "crypto-ledger-1"
+
+
+def test_crypto_payment_success_is_an_allowed_telegram_final_event():
+    assert "payment_success" in server.TELEGRAM_FINAL_NOTIFICATION_TYPES
 
 
 def test_security_alert_reports_blocked_outcome_and_solution():

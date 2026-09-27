@@ -86,7 +86,7 @@ export default function Transactions() {
               value={q}
               onChange={(event) => setQ(event.target.value)}
               data-testid="tx-search"
-              placeholder="Réf. Biz-transPay, réf. prestataire, téléphone, e-mail, montant, ID externe, TXID…"
+              placeholder="Réf. Biz-transPay, ID EasyChangePay, adresse crypto / TXID, e-mail, téléphone…"
               className="min-w-0 flex-1 bg-transparent py-2.5 text-sm outline-none"
               aria-label="Rechercher une transaction"
             />
@@ -101,7 +101,7 @@ export default function Transactions() {
             </select>
           </div>
         </div>
-        <p className="mt-2 truncate text-[11px] text-slate-400">Recherche par référence Biz-transPay ou prestataire, téléphone, e-mail, montant, ID externe, ID de transaction ou TXID crypto.</p>
+        <p className="mt-2 truncate text-[11px] text-slate-400">Recherche par référence/ID Biz-transPay, ID EasyChangePay, adresse crypto, TXID, téléphone, e-mail ou montant.</p>
       </div>
 
       <div className="min-w-0 overflow-hidden rounded-[20px] border border-slate-100 bg-white">

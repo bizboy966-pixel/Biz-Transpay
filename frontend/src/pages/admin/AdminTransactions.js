@@ -97,7 +97,7 @@ export default function AdminTransactions({ filterType }) {
         <div className="flex-1 min-w-[240px] flex items-center gap-2 px-3 border border-slate-200 rounded-xl">
           <Search className="w-4 h-4 text-slate-400" />
           <input value={q} onChange={(e) => setQ(e.target.value)} data-testid="admin-tx-search"
-                  placeholder="ID, réf. Biz-transPay ou prestataire, e-mail, téléphone, wallet, hash, TXID…"
+                  placeholder="ID Biz-transPay, ID EasyChangePay, adresse crypto, TXID, e-mail, téléphone…"
                  className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
         </div>
         {!filterType && (

@@ -138,6 +138,43 @@ class _Database:
         }])
 
 
+def _install_crypto_transactions(monkeypatch):
+    database = _Database()
+    database.transactions.documents.extend([
+        {
+            "id": "crypto-deposit-1", "user_id": "owner-1",
+            "type": "deposit", "direction": "in", "status": "completed",
+            "amount": 12.5, "currency": "USDT",
+            "reference": "BTP-CRYPTO-DEP-1",
+            "created_at": "2026-09-26T12:00:00Z",
+            "metadata": {
+                "provider_reference": "easychange-intent-101",
+                "izipay_intent_id": "easychange-intent-101",
+                "deposit_address": "TDepositCryptoAddress987654321",
+                "tx_hash": "0xCryptoDepositHash123",
+                "coin": "USDT", "network": "TRC20",
+                "customer_email": "crypto-payer@example.test",
+            },
+        },
+        {
+            "id": "crypto-withdrawal-1", "user_id": "owner-1",
+            "type": "transfer", "direction": "out", "status": "completed",
+            "amount": 7.5, "currency": "USDT",
+            "reference": "BTP-CRYPTO-WD-1",
+            "created_at": "2026-09-26T13:00:00Z",
+            "metadata": {
+                "transfer_type": "biz_to_crypto",
+                "izipay_payout_id": "easychange-payout-202",
+                "wallet_address": "0xRecipientCryptoWallet7654321",
+                "tx_hash": "0xCryptoWithdrawalHash456",
+                "crypto": "USDT", "network": "ERC20",
+            },
+        },
+    ])
+    monkeypatch.setattr(server, "db", database)
+    return database
+
+
 def _list(monkeypatch, **params):
     monkeypatch.setattr(server, "db", _Database())
     defaults = {"uid": "owner-1", "type": None, "status": None, "q": None, "limit": 50}
@@ -178,6 +215,42 @@ def test_admin_history_searches_by_provider_reference(monkeypatch):
         type=None, status=None, limit=50,
     ))
     assert any(row["id"] == "valid-incoming" for row in rows)
+
+
+def test_crypto_history_search_matches_easychange_ids_addresses_and_txids(monkeypatch):
+    _install_crypto_transactions(monkeypatch)
+
+    def search(query):
+        return asyncio.run(server.list_transactions(
+            uid="owner-1", type=None, status=None, q=query, limit=50,
+        ))
+
+    for query, expected_id in (
+        ("easychange-intent-101", "crypto-deposit-1"),
+        ("TDepositCryptoAddress987654321", "crypto-deposit-1"),
+        ("0xCryptoDepositHash123", "crypto-deposit-1"),
+        ("easychange-payout-202", "crypto-withdrawal-1"),
+        ("0xRecipientCryptoWallet7654321", "crypto-withdrawal-1"),
+    ):
+        assert any(row["id"] == expected_id for row in search(query))
+
+
+def test_admin_crypto_search_matches_provider_id_address_and_customer_email(monkeypatch):
+    _install_crypto_transactions(monkeypatch)
+
+    def search(query):
+        return asyncio.run(server.admin_transactions(
+            admin={"id": "admin-1"}, q=query, type=None, status=None, limit=50,
+        ))
+
+    for query, expected_id in (
+        ("easychange-intent-101", "crypto-deposit-1"),
+        ("TDepositCryptoAddress987654321", "crypto-deposit-1"),
+        ("crypto-payer@example.test", "crypto-deposit-1"),
+        ("easychange-payout-202", "crypto-withdrawal-1"),
+        ("0xRecipientCryptoWallet7654321", "crypto-withdrawal-1"),
+    ):
+        assert any(row["id"] == expected_id for row in search(query))
 
 
 def test_searchable_failed_deposit_is_safe_transaction_shaped_row():
