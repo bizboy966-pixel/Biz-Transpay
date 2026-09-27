@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -58,3 +59,46 @@ def test_izipay_webhook_post_still_requires_a_valid_signature(
     )
 
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("path", [
+    "/api/webhooks/izipay",
+    "/webhooks/izipay",
+])
+def test_valid_izipay_event_is_acknowledged_on_both_paths(
+    monkeypatch, path,
+):
+    class WebhookEvents:
+        def __init__(self):
+            self.event = None
+
+        async def insert_one(self, event):
+            self.event = dict(event)
+
+        async def update_one(self, _query, update):
+            self.event.update(update.get("$set") or {})
+
+    events = WebhookEvents()
+    event = {
+        "id": "evt-payin-detected",
+        "event": "payin.detected",
+        "data": {"intentId": "intent-1"},
+    }
+
+    async def no_credentials_needed():
+        return None
+
+    monkeypatch.setattr(server, "_load_izipay_credentials", no_credentials_needed)
+    monkeypatch.setattr(server.izipay, "verify_webhook", lambda _raw, _sig: event)
+    monkeypatch.setattr(server.izipay, "event_id", lambda _event: event["id"])
+    monkeypatch.setattr(server, "db", SimpleNamespace(webhook_events=events))
+
+    response = _client(monkeypatch).post(
+        path,
+        content=b'{"event":"payin.detected"}',
+        headers={"X-IziPay-Signature": "valid-test-signature"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"received": True}
+    assert events.event["processed"] is True
