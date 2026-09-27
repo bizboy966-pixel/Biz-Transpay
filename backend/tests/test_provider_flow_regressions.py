@@ -103,6 +103,7 @@ class MemoryCollection:
 
 class MemoryDB:
     def __init__(self):
+        self.settings = MemoryCollection()
         self.webhook_events = MemoryCollection()
         self.crypto_deposits = MemoryCollection()
         self.link_payments = MemoryCollection()
@@ -625,13 +626,17 @@ async def test_non_usdt_provider_deposit_settlement_credits_once(monkeypatch):
 
     saved = fake.crypto_deposits.docs[0]
     assert len(credits) == 1
-    assert credits[0][1:3] == ("balance_usdt", 492.5)
+    btc_wallet_field = server._crypto_wallet_field("BTC.BTC")
+    assert credits[0][1:3] == (btc_wallet_field, 0.00985)
     assert saved["amount_gross_usdt"] == 500
     assert saved["amount_crypto"] == 0.01
-    assert saved["fee"] == 7.5
-    assert saved["amount_net"] == 492.5
+    assert saved["fee"] == 0.00015
+    assert saved["amount_net"] == 0.00985
+    assert saved["amount_net_usdt"] == 492.5
+    assert saved["amount_net_currency"] == "BTC.BTC"
     assert saved["status"] == "confirmed"
     assert len(transactions) == 1
+    assert transactions[0][0][3:5] == (0.00985, "BTC.BTC")
 
 
 @run_async

@@ -110,6 +110,8 @@ class UserPublic(BaseModel):
     balance_zar: float = 0.0
     balance_zmw: float = 0.0
     balance_egp: float = 0.0
+    crypto_wallets: List[dict] = Field(default_factory=list)
+    crypto_wallet_balances: dict[str, float] = Field(default_factory=dict)
     created_at: str
     two_fa_enabled: bool = False
     language: str = "fr"
@@ -261,8 +263,8 @@ class LinkPayRequest(BaseModel):
 
 # ---------- Exchange ----------
 class ExchangeRequest(BaseModel):
-    from_currency: Literal["USDT", "XOF", "XAF"]
-    to_currency: Literal["USDT", "XOF", "XAF"]
+    from_currency: str = Field(..., min_length=2, max_length=32)
+    to_currency: str = Field(..., min_length=2, max_length=32)
     amount: float
     idempotency_key: Optional[str] = Field(None, min_length=8, max_length=120)
 

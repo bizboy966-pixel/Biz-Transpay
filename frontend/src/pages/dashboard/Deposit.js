@@ -277,10 +277,10 @@ function CryptoDepositForm({ onSuccess }) {
   const feePct = Number(asset?.fee_pct || 0);
   const feeFixed = Number(asset?.fee_fixed || 0);
   const rate = Number(asset?.usdt_rate || 0);
-  const estimatedFeeUsdt = (amt * feePct / 100 + feeFixed) * rate;
-  const estimatedCreditUsdt = Math.max(0, amt * rate - estimatedFeeUsdt);
+  const estimatedFeeAsset = amt * feePct / 100 + feeFixed;
+  const estimatedCreditAsset = Math.max(0, amt - estimatedFeeAsset);
   const canSubmit = fullName && email && refundAddress && asset && rate > 0
-    && amt > 0 && amt >= min && amt <= max && estimatedCreditUsdt > 0 && !loading;
+    && amt > 0 && amt >= min && amt <= max && estimatedCreditAsset > 0 && !loading;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -383,11 +383,11 @@ function CryptoDepositForm({ onSuccess }) {
             </div>
             <div className="flex justify-between text-slate-600">
               <span>Frais estimés ({feePct}%)</span>
-              <span>{estimatedFeeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT</span>
+              <span>{estimatedFeeAsset.toLocaleString(undefined, { maximumFractionDigits: 8 })} {asset.coin}</span>
             </div>
             <div className="flex justify-between border-t border-slate-200 pt-1 font-bold text-emerald-700">
               <span>Crédit estimé</span>
-              <span>{estimatedCreditUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT</span>
+              <span>{estimatedCreditAsset.toLocaleString(undefined, { maximumFractionDigits: 8 })} {asset.coin} · {asset.network}</span>
             </div>
           </div>
         )}
@@ -456,8 +456,8 @@ function CryptoDepositTracker({ deposit: initial }) {
                 <div className="flex justify-between"><span className="text-slate-500">Taux appliqué</span><span>1 {deposit.coin} = {Number(deposit.usdt_rate).toLocaleString(undefined,{maximumFractionDigits:8})} USDT</span></div>
               )}
               <div className="flex justify-between"><span className="text-slate-500">Équivalent brut</span><span>{Number(deposit.amount_gross_usdt ?? deposit.amount_gross ?? deposit.amount).toLocaleString(undefined,{maximumFractionDigits:6})} USDT</span></div>
-              <div className="flex justify-between"><span className="text-slate-500">Frais ({deposit.fee_pct ?? '-'}%)</span><span className="font-semibold text-red-600">−{Number(deposit.fee || 0).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.fee_currency || 'USDT'}</span></div>
-              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-700 font-bold">Crédité (net)</span><span className="font-cabinet font-extrabold text-emerald-600">{Number(deposit.amount_net).toLocaleString(undefined,{maximumFractionDigits:6})} {deposit.credit_currency || 'USDT'}</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Frais ({deposit.fee_pct ?? '-'}%)</span><span className="font-semibold text-red-600">−{Number(deposit.fee || 0).toLocaleString(undefined,{maximumFractionDigits:8})} {(deposit.fee_currency || deposit.credit_currency || 'USDT').replace('.', ' · ')}</span></div>
+              <div className="flex justify-between border-t border-slate-200 pt-1 mt-1"><span className="text-slate-700 font-bold">Crédité (net)</span><span className="font-cabinet font-extrabold text-emerald-600">{Number(deposit.amount_net).toLocaleString(undefined,{maximumFractionDigits:8})} {(deposit.credit_currency || 'USDT').replace('.', ' · ')}</span></div>
             </div>
           ) : (
             <p className="mt-1 text-xs sm:text-sm text-slate-500">{deposit.amount} {deposit.coin} ont été crédités sur votre portefeuille.</p>

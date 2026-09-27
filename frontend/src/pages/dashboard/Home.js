@@ -22,6 +22,7 @@ export default function DashboardHome() {
   const [query, setQuery] = useState('');
   const [showKycBanner, setShowKycBanner] = useState(true);
   const [hidden, setHidden] = useState(() => localStorage.getItem('btp_balance_hidden') === '1');
+  const [selectedCryptoWallet, setSelectedCryptoWallet] = useState('USDT.TRC20');
 
   useEffect(() => {
     const loadDashboard = () => {
@@ -53,10 +54,31 @@ export default function DashboardHome() {
 
   const needsKyc = user?.kyc_status !== 'verified' && showKycBanner;
 
+  const cryptoWalletOptions = [
+    {
+      id: 'USDT',
+      coin: 'USDT',
+      network_name: 'Non attribué',
+      balance: user?.balance_usdt ?? 0,
+      legacy: true,
+    },
+    ...(user?.crypto_wallets || []),
+  ];
+  const selectedWallet = cryptoWalletOptions.find(
+    (wallet) => wallet.id === selectedCryptoWallet,
+  ) || cryptoWalletOptions[0];
+
   const wallets = [
     { key: 'xof', curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
     { key: 'xaf', curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
-    { key: 'crypto', curr: 'USDT', bal: user?.balance_usdt ?? 0, gradient: 'from-emerald-500 via-emerald-600 to-teal-700', shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]' },
+    {
+      key: 'crypto',
+      curr: selectedWallet?.coin || 'USDT',
+      network: selectedWallet?.network_name || 'Non attribué',
+      bal: selectedWallet?.balance ?? 0,
+      gradient: 'from-emerald-500 via-emerald-600 to-teal-700',
+      shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]',
+    },
     ...OFFICIAL_LOCAL_CURRENCIES
       .map((curr) => ({ key: curr.toLowerCase(), curr, bal: user?.[`balance_${curr.toLowerCase()}`] ?? 0 }))
       .filter((w) => Number.isFinite(Number(w.bal)) && Number(w.bal) !== 0),
@@ -110,7 +132,7 @@ export default function DashboardHome() {
         <div className="relative grid min-h-[6.2rem] grid-cols-3 gap-0 bg-gradient-to-b from-[#0759D2] to-[#0844B5] shadow-[inset_0_1px_0_rgba(255,255,255,.13)] sm:min-h-[8.2rem]">
           {wallets.map((b, index) => (
             <div
-              key={b.curr}
+              key={b.key}
               data-testid={`balance-card-${b.curr.toLowerCase()}`}
               className={`relative flex min-w-0 items-center justify-center px-1 py-4 sm:px-4 sm:py-5 ${
                 index > 0
@@ -138,6 +160,21 @@ export default function DashboardHome() {
               >
                 {mask(b.bal)} <span className="text-[.58em] font-semibold tracking-[-.02em] text-white/80">{b.curr}</span>
               </div>
+              {b.key === 'crypto' && (
+                <select
+                  aria-label="Choisir le portefeuille crypto"
+                  data-testid="select-dashboard-crypto-wallet"
+                  value={selectedWallet?.id || 'USDT'}
+                  onChange={(event) => setSelectedCryptoWallet(event.target.value)}
+                  className="absolute bottom-1.5 left-1/2 z-20 max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none sm:bottom-3 sm:px-2 sm:text-[10px]"
+                >
+                  {cryptoWalletOptions.map((wallet) => (
+                    <option key={wallet.id} value={wallet.id} className="text-slate-900">
+                      {wallet.coin} · {wallet.network_name || wallet.network}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           ))}
         </div>

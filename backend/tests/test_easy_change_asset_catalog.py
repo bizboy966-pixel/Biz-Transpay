@@ -87,6 +87,68 @@ def test_asset_fee_overrides_and_activation_are_scoped_by_catalog_id():
     assert server._crypto_fee_split_pct(section, "USDT") == (3.0, 1.0)
 
 
+def test_wallet_fields_are_network_scoped_and_leave_legacy_usdt_unassigned():
+    trc20 = server._crypto_wallet_field("USDT.TRC20")
+    bep20 = server._crypto_wallet_field("USDT.BEP20")
+    assert trc20 != bep20
+    assert "." not in trc20 and "." not in bep20
+
+    user = {
+        "balance_usdt": 91.5,
+        trc20: 2.25,
+        bep20: 7.0,
+    }
+    public_wallets = {
+        wallet["id"]: wallet for wallet in server._public_crypto_wallets(user)
+    }
+    balances = server._crypto_wallet_balances(user)
+
+    assert user["balance_usdt"] == 91.5
+    assert public_wallets["USDT.TRC20"]["balance"] == 2.25
+    assert public_wallets["USDT.BEP20"]["balance"] == 7.0
+    assert balances["USDT.TRC20"] == 2.25
+    assert balances["USDT.BEP20"] == 7.0
+    assert server._transaction_wallet_field("USDT", {}) == "balance_usdt"
+    assert server._transaction_wallet_field(
+        "USDT.TRC20", {"catalog_asset_id": "USDT.TRC20"}) == trc20
+    assert server._transaction_wallet_field(
+        "USDT.UNKNOWN", {"catalog_asset_id": "USDT.UNKNOWN"}) is None
+
+
+def test_exchange_cross_rates_resolve_crypto_network_wallets(monkeypatch):
+    assets = {
+        "BTC.BTC": {
+            "code": "BTC.BTC", "coin": "BTC", "network": "BTC",
+            "wallet_field": server._crypto_wallet_field("BTC.BTC"),
+            "usdt_rate": 50000.0,
+        },
+        "BNB.BNB": {
+            "code": "BNB.BNB", "coin": "BNB", "network": "BNB",
+            "wallet_field": server._crypto_wallet_field("BNB.BNB"),
+            "usdt_rate": 500.0,
+        },
+    }
+
+    async def active_assets():
+        return assets
+
+    monkeypatch.setattr(server, "_active_exchange_crypto_assets", active_assets)
+    cfg = {
+        "conversion_rates": {"USDT_XOF": 0.0015},
+        "conversion_pairs_enabled": {},
+    }
+
+    bnb_to_btc = asyncio.run(server._exchange_rate_context(
+        cfg, "BNB.BNB", "BTC.BTC"))
+    btc_to_xof = asyncio.run(server._exchange_rate_context(
+        cfg, "BTC.BTC", "XOF"))
+
+    assert bnb_to_btc["rate"] == 0.01
+    assert bnb_to_btc["from"]["wallet_field"] == assets["BNB.BNB"]["wallet_field"]
+    assert bnb_to_btc["to"]["wallet_field"] == assets["BTC.BTC"]["wallet_field"]
+    assert btc_to_xof["rate"] == 75.0
+
+
 def test_payout_sends_destination_memo_fee_bearer_and_idempotency(monkeypatch):
     captured = {}
 

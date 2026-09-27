@@ -103,7 +103,9 @@ class TestCryptoAssets:
 class TestCryptoDeposit:
     def test_deposit_direct_intent_end_to_end(self, auth_headers):
         me_before = _me(auth_headers)
-        bal_before = float(me_before.get("balance_usdt") or 0)
+        bal_before = float(
+            (me_before.get("crypto_wallet_balances") or {}).get("USDT.TRC20") or 0)
+        legacy_usdt_before = float(me_before.get("balance_usdt") or 0)
 
         payload = {
             "amount": 3,
@@ -112,6 +114,7 @@ class TestCryptoDeposit:
             "email": "test@example.com",
             "refund_address": VALID_TRC20,
             "origin_url": "https://x.example.com",
+            "idempotency_key": f"test-direct-deposit-{time.time_ns()}",
         }
         r = requests.post(f"{API}/deposits/crypto", json=payload,
                           headers=auth_headers, timeout=45)
@@ -148,9 +151,11 @@ class TestCryptoDeposit:
 
         # Balance credited by exactly 3
         me_after = _me(auth_headers)
-        bal_after = float(me_after.get("balance_usdt") or 0)
+        bal_after = float(
+            (me_after.get("crypto_wallet_balances") or {}).get("USDT.TRC20") or 0)
         assert abs(bal_after - (bal_before + 3)) < 0.001, \
             f"balance not credited: {bal_before} -> {bal_after}"
+        assert float(me_after.get("balance_usdt") or 0) == legacy_usdt_before
 
         # Status transitioned
         g2 = requests.get(f"{API}/deposits/crypto/{deposit_id}",

@@ -7,8 +7,7 @@ import { useFeatures } from '@/hooks/useFeatures';
 import ComingSoon from '@/components/ComingSoon';
 
 /* Currency descriptor (also used to map to balance field on the user object). */
-const CUR = {
-  USDT: { code: 'USDT', label: 'USDT', balanceKey: 'balance_usdt', maxFrac: 2, walletFlag: 'wallet_crypto_enabled', tint: 'from-amber-400 to-orange-600' },
+const BASE_CUR = {
   XOF: { code: 'XOF', label: 'XOF', balanceKey: 'balance_xof', maxFrac: 0, walletFlag: 'wallet_xof_enabled', tint: 'from-blue-400 to-blue-700' },
   XAF: { code: 'XAF', label: 'XAF', balanceKey: 'balance_xaf', maxFrac: 0, walletFlag: 'wallet_xaf_enabled', tint: 'from-emerald-400 to-emerald-700' },
 };
@@ -17,6 +16,7 @@ export default function Exchange() {
   const { user, refresh } = useAuth();
   const features = useFeatures();
   const [cfg, setCfg] = useState(null);
+  const [cryptoCoins, setCryptoCoins] = useState([]);
   const [fromCur, setFromCur] = useState('USDT');
   const [toCur, setToCur] = useState('XOF');
   const [amount, setAmount] = useState('');
@@ -24,24 +24,60 @@ export default function Exchange() {
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
 
-  useEffect(() => { api.get('/conversion/config').then(({ data }) => setCfg(data)).catch(() => {}); }, []);
+  useEffect(() => {
+    api.get('/conversion/config').then(({ data }) => setCfg(data)).catch(() => {});
+    api.get('/crypto/coins').then(({ data }) => setCryptoCoins(data || [])).catch(() => setCryptoCoins([]));
+  }, []);
+
+  const CUR = useMemo(() => {
+    const cryptoWallets = cryptoCoins.flatMap((coin) => (coin.networks || []).map((network) => ({
+      code: network.wallet_id || network.catalog_asset_id,
+      label: `${coin.coin} · ${network.name || network.code}`,
+      coin: coin.coin,
+      network: network.code,
+      balance: Number(network.balance || 0),
+      maxFrac: 8,
+      walletFlag: 'wallet_crypto_enabled',
+      tint: 'from-amber-400 to-orange-600',
+      kind: 'crypto',
+    })));
+    return {
+      ...BASE_CUR,
+      USDT: {
+        code: 'USDT', label: 'USDT · non attribué',
+        balance: Number(user?.balance_usdt || 0), maxFrac: 8,
+        walletFlag: 'wallet_crypto_enabled', tint: 'from-amber-400 to-orange-600',
+        kind: 'crypto',
+      },
+      ...Object.fromEntries(cryptoWallets.map((wallet) => [wallet.code, wallet])),
+    };
+  }, [cryptoCoins, user?.balance_usdt]);
 
   // Available "from" currencies: wallet must be visible.
   const availableCurrencies = useMemo(() => {
     if (!features) return [];
-    return Object.values(CUR).filter((c) => features[c.walletFlag] !== false).map((c) => c.code);
-  }, [features]);
+    return Object.values(CUR)
+      .filter((c) => features[c.walletFlag] !== false)
+      .map((c) => c.code);
+  }, [features, CUR]);
 
-  // Only pairs enabled by the admin AND where both wallets are visible.
+  // Use existing USDT/fiat switches for crypto/fiat pairs; crypto crosses
+  // use the administrator's per-coin USDT rates.
   const availablePairs = useMemo(() => {
     if (!cfg) return {};
     const acc = {};
-    Object.entries(cfg.pairs_enabled || {}).forEach(([k, on]) => {
-      if (!on) return;
-      const [f, t] = k.split('_');
-      if (!availableCurrencies.includes(f) || !availableCurrencies.includes(t)) return;
-      acc[f] = acc[f] || new Set();
-      acc[f].add(t);
+    const isFiat = (code) => code === 'XOF' || code === 'XAF';
+    availableCurrencies.forEach((from) => {
+      availableCurrencies.forEach((to) => {
+        if (from === to) return;
+        let toggle = null;
+        if (isFiat(from) && isFiat(to)) toggle = `${from}_${to}`;
+        else if (isFiat(from)) toggle = `${from}_USDT`;
+        else if (isFiat(to)) toggle = `USDT_${to}`;
+        if (toggle && cfg.pairs_enabled?.[toggle] === false) return;
+        acc[from] = acc[from] || new Set();
+        acc[from].add(to);
+      });
     });
     return acc;
   }, [cfg, availableCurrencies]);
@@ -66,7 +102,9 @@ export default function Exchange() {
     return () => clearTimeout(id);
   }, [amount, fromCur, toCur]);
 
-  const balance = Number(user?.[CUR[fromCur].balanceKey] || 0);
+  const sourceCurrency = CUR[fromCur] || CUR.USDT;
+  const targetCurrency = CUR[toCur] || BASE_CUR.XOF;
+  const balance = Number(sourceCurrency.balance ?? user?.[sourceCurrency.balanceKey] ?? 0);
   const hasAnyPair = Object.keys(availablePairs).length > 0;
 
   if (!features || !cfg) return <div className="text-slate-500 text-sm">Chargement…</div>;
@@ -80,6 +118,10 @@ export default function Exchange() {
       const { data } = await api.post('/exchange', { from_currency: fromCur, to_currency: toCur, amount: parseFloat(amount) });
       setDone(data);
       await refresh?.();
+      try {
+        const { data: updatedCoins } = await api.get('/crypto/coins');
+        setCryptoCoins(updatedCoins || []);
+      } catch { /* The wallet summary has already been refreshed. */ }
       toast.success('Conversion effectuée');
     } catch (e) { toast.error(e.response?.data?.detail || 'Erreur'); }
     finally { setBusy(false); }
@@ -96,11 +138,11 @@ export default function Exchange() {
         <div className="mx-auto w-14 h-14 rounded-full bg-emerald-500 text-white flex items-center justify-center"><CheckCircle2 className="w-7 h-7" /></div>
         <h2 className="mt-4 font-cabinet font-extrabold text-emerald-900 text-xl">Conversion réussie</h2>
         <div className="mt-3 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 font-mono text-sm text-slate-700 break-words">
-          {parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}
+          {parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: sourceCurrency.maxFrac })} {sourceCurrency.label}
           <span className="text-slate-400">→</span>
-          <span className="font-bold text-emerald-700 break-words">+{Number(done.received).toLocaleString(undefined, { maximumFractionDigits: CUR[toCur].maxFrac })} {toCur}</span>
+          <span className="font-bold text-emerald-700 break-words">+{Number(done.received).toLocaleString(undefined, { maximumFractionDigits: targetCurrency.maxFrac })} {targetCurrency.label}</span>
         </div>
-        <div className="mt-1 text-[11px] text-slate-500 break-words">Taux : 1 {fromCur} = {done.rate} {toCur} · Frais : {Number(done.fee).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}</div>
+        <div className="mt-1 text-[11px] text-slate-500 break-words">Taux : 1 {sourceCurrency.label} = {done.rate} {targetCurrency.label} · Frais : {Number(done.fee).toLocaleString(undefined, { maximumFractionDigits: sourceCurrency.maxFrac })} {sourceCurrency.label}</div>
         <button onClick={() => { setDone(null); setAmount(''); setQuote(null); }} data-testid="btn-new-conversion" className="mt-4 px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-semibold">Nouvelle conversion</button>
       </div>
     );
@@ -116,7 +158,7 @@ export default function Exchange() {
           <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center"><ArrowLeftRight className="w-4 h-4" /></div>
           <div>
             <h1 className="font-cabinet font-extrabold text-slate-900">Conversion</h1>
-            <p className="text-[11px] text-slate-500">Convertissez librement entre USDT, XOF et XAF</p>
+            <p className="text-[11px] text-slate-500">Convertissez XOF, XAF et les portefeuilles crypto disponibles.</p>
           </div>
         </div>
 
@@ -124,7 +166,7 @@ export default function Exchange() {
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-100">
           <div className="flex items-center justify-between mb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">De</span>
-            <span className="text-[10px] text-slate-500">Solde : <b className="text-slate-800">{balance.toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} {fromCur}</b></span>
+            <span className="text-[10px] text-slate-500">Solde : <b className="text-slate-800">{balance.toLocaleString(undefined, { maximumFractionDigits: sourceCurrency.maxFrac })} {sourceCurrency.label}</b></span>
           </div>
           <div className="flex min-w-0 items-center gap-2">
             <input type="number" placeholder="0.00" value={amount} onChange={(e) => setAmount(e.target.value)}
@@ -132,7 +174,7 @@ export default function Exchange() {
               className="min-w-0 w-full flex-1 bg-transparent focus:outline-none text-2xl font-cabinet font-extrabold text-slate-900" />
             <select value={fromCur} onChange={(e) => setFromCur(e.target.value)} data-testid="select-from"
               className="shrink-0 max-w-[42%] bg-white px-2 sm:px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
-              {availableCurrencies.map((c) => <option key={c} value={c}>{c}</option>)}
+              {availableCurrencies.map((c) => <option key={c} value={c}>{CUR[c].label}</option>)}
             </select>
           </div>
           {amount && parseFloat(amount) > balance && <div className="mt-1 text-[11px] text-red-600">Solde insuffisant</div>}
@@ -153,11 +195,11 @@ export default function Exchange() {
           </div>
           <div className="flex min-w-0 items-center gap-2">
             <div className="min-w-0 w-full flex-1 break-words text-2xl font-cabinet font-extrabold text-emerald-700" data-testid="output-received">
-              {quote && !quote.error ? `+${Number(quote.received).toLocaleString(undefined, { maximumFractionDigits: CUR[toCur].maxFrac })}` : '0'}
+              {quote && !quote.error ? `+${Number(quote.received).toLocaleString(undefined, { maximumFractionDigits: targetCurrency.maxFrac })}` : '0'}
             </div>
             <select value={toCur} onChange={(e) => setToCur(e.target.value)} data-testid="select-to"
               className="shrink-0 max-w-[42%] bg-white px-2 sm:px-3 py-2 rounded-lg border border-slate-200 font-bold text-sm">
-              {destOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+              {destOptions.map((c) => <option key={c} value={c}>{CUR[c].label}</option>)}
             </select>
           </div>
         </div>
@@ -165,10 +207,10 @@ export default function Exchange() {
         {/* Recap */}
         {quote && !quote.error && (
           <div className="mt-4 p-3 rounded-xl bg-blue-50 border border-blue-200 space-y-1 text-[12px]" data-testid="quote-recap">
-            <Row label="Taux appliqué" value={`1 ${fromCur} = ${Number(quote.rate).toLocaleString(undefined, { maximumFractionDigits: 6 })} ${toCur}`} />
-            <Row label="Montant envoyé" value={`${parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} ${fromCur}`} />
-            <Row label="Frais appliqués" value={`${Number(quote.fee).toLocaleString(undefined, { maximumFractionDigits: CUR[fromCur].maxFrac })} ${fromCur}`} tone="red" />
-            <Row label="Vous recevez" value={`${Number(quote.received).toLocaleString(undefined, { maximumFractionDigits: CUR[toCur].maxFrac })} ${toCur}`} tone="green" bold />
+            <Row label="Taux appliqué" value={`1 ${sourceCurrency.label} = ${Number(quote.rate).toLocaleString(undefined, { maximumFractionDigits: 8 })} ${targetCurrency.label}`} />
+            <Row label="Montant envoyé" value={`${parseFloat(amount).toLocaleString(undefined, { maximumFractionDigits: sourceCurrency.maxFrac })} ${sourceCurrency.label}`} />
+            <Row label="Frais appliqués" value={`${Number(quote.fee).toLocaleString(undefined, { maximumFractionDigits: sourceCurrency.maxFrac })} ${sourceCurrency.label}`} tone="red" />
+            <Row label="Vous recevez" value={`${Number(quote.received).toLocaleString(undefined, { maximumFractionDigits: targetCurrency.maxFrac })} ${targetCurrency.label}`} tone="green" bold />
           </div>
         )}
         {quote?.error && <div className="mt-3 p-2 rounded-lg bg-red-50 border border-red-200 text-[11px] text-red-800 flex items-center gap-1.5"><Info className="w-3 h-3" />{quote.error}</div>}

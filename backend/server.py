@@ -725,6 +725,8 @@ def user_to_public(u: dict) -> UserPublic:
         balance_xof=u.get("balance_xof", 0.0),
         balance_xaf=u.get("balance_xaf", 0.0),
         balance_usdt=u.get("balance_usdt", 0.0),
+        crypto_wallets=_public_crypto_wallets(u),
+        crypto_wallet_balances=_crypto_wallet_balances(u),
         **{f"balance_{currency.lower()}": u.get(f"balance_{currency.lower()}", 0.0)
            for currency in ("CDF", "USD", "GMD", "GNF", "UGX", "TZS", "KES",
                             "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP")},
@@ -3788,6 +3790,8 @@ async def wallet_summary(uid: str = Depends(get_current_user_id)):
         "balance_cdf": u.get("balance_cdf", 0.0),
         "balance_gnf": u.get("balance_gnf", 0.0),
         "balance_usdt": u.get("balance_usdt", 0.0),
+        "crypto_wallets": _public_crypto_wallets(u),
+        "crypto_wallet_balances": _crypto_wallet_balances(u),
         "transactions_count": tx_count,
         "kyc_status": u.get("kyc_status", "not_started"),
     }
@@ -4103,6 +4107,64 @@ EASY_CHANGE_ASSET_SPECS = (
 _EASY_CHANGE_ASSET_BY_ID = {
     spec["id"]: spec for spec in EASY_CHANGE_ASSET_SPECS
 }
+
+
+def _crypto_wallet_field(spec_or_id: Any) -> Optional[str]:
+    """Map a fixed catalog asset to a safe Mongo wallet field."""
+    asset_id = (
+        spec_or_id.get("id") if isinstance(spec_or_id, dict) else spec_or_id
+    )
+    spec = _EASY_CHANGE_ASSET_BY_ID.get(str(asset_id or "").strip().upper())
+    if not spec:
+        return None
+    suffix = re.sub(
+        r"[^a-z0-9]+", "_",
+        f"{spec['coin']}_{spec['network_code']}".lower(),
+    ).strip("_")
+    return f"balance_crypto_{suffix}"
+
+
+def _crypto_wallet_spec(
+    *,
+    asset_id: Any = None,
+    asset_code: Any = None,
+    coin: Any = None,
+    network: Any = None,
+) -> Optional[dict]:
+    """Resolve only to one of the platform's fixed crypto/network definitions."""
+    code = str(asset_id or asset_code or "").strip().upper()
+    spec = _EASY_CHANGE_ASSET_BY_ID.get(code)
+    if spec:
+        if coin and str(coin).strip().upper() != spec["coin"]:
+            return None
+        if network and not _easypay_network_matches(spec, network):
+            return None
+        return spec
+    if not coin or not network:
+        return None
+    return next((
+        item for item in EASY_CHANGE_ASSET_SPECS
+        if item["coin"] == str(coin).strip().upper()
+        and _easypay_network_matches(item, network)
+    ), None)
+
+
+def _crypto_wallet_balances(user: dict) -> dict[str, float]:
+    return {
+        spec["id"]: float(user.get(_crypto_wallet_field(spec), 0.0) or 0.0)
+        for spec in EASY_CHANGE_ASSET_SPECS
+    }
+
+
+def _public_crypto_wallets(user: dict) -> list[dict]:
+    return [{
+        "id": spec["id"],
+        "coin": spec["coin"],
+        "name": spec["name"],
+        "network": spec["network_code"],
+        "network_name": spec["network_name"],
+        "balance": float(user.get(_crypto_wallet_field(spec), 0.0) or 0.0),
+    } for spec in EASY_CHANGE_ASSET_SPECS]
 
 
 def _easypay_normalize_network(value: Any) -> str:
@@ -5478,35 +5540,123 @@ async def transfer(req: TransferRequest, request: Request,
             if req.transfer_type == "biz_to_mobile":
                 raise HTTPException(
                     503, "Les retraits automatiques sont temporairement désactivés")
-            # keep the request as "pending" without debiting
-            pending_amount = req.amount
-            pending_currency = req.currency
-            conversion_metadata = {}
             if req.transfer_type == "biz_to_crypto":
                 coin = (req.crypto or "").strip().upper()
-                if not coin:
+                network = (req.network or "").strip().upper()
+                if not coin or not network or not req.wallet_address:
                     raise HTTPException(400, "Crypto, réseau et adresse de portefeuille requis")
+                if not math.isfinite(float(req.amount)) or req.amount <= 0:
+                    raise HTTPException(400, "Montant invalide")
+                await _load_izipay_credentials()
+                if not izipay.is_configured():
+                    raise HTTPException(503, "Passerelle crypto non configurée")
+                try:
+                    assets = await izipay.list_assets()
+                except Exception as exc:
+                    logger.warning("IziChangePay manual payout catalog unavailable: %s", exc)
+                    raise HTTPException(503, "Catalogue crypto temporairement indisponible")
+                spec, asset = _easypay_resolve_asset(
+                    assets, asset_code=req.asset_code, coin=coin, network=network)
+                transfer_cfg = await get_transfer_config()
+                crypto_cfg = transfer_cfg.get("crypto") or {}
+                if not crypto_cfg.get("enabled"):
+                    raise HTTPException(403, "Les retraits crypto sont désactivés")
+                if (not spec or not asset or not asset.get("isActive")
+                        or not _easypay_asset_enabled(crypto_cfg, spec)):
+                    raise HTTPException(400, "Crypto/réseau non disponible pour ce retrait")
+                if req.fee_bearer not in ("sender", "receiver"):
+                    raise HTTPException(400, "Bénéficiaire des frais invalide")
+                import re
+                regex = spec.get("address_regex") or _NETWORK_REGEX.get(network)
+                if regex and not re.match(regex, req.wallet_address.strip()):
+                    raise HTTPException(400, f"Adresse invalide pour le réseau {network}")
+                min_amt = float(asset.get("minimum") or 0)
+                max_amt = float(asset.get("maximum") or 10**12)
+                if req.amount < min_amt or req.amount > max_amt:
+                    raise HTTPException(
+                        400, f"Montant hors des limites autorisées ({min_amt} - {max_amt} {coin})")
+                if (asset.get("memoRequired") or spec.get("memo_required")) and not (
+                        req.destination_memo or "").strip():
+                    raise HTTPException(400, "Le mémo/tag de destination est requis pour ce réseau")
+                asset_code = str(asset.get("assetCode") or "").strip().upper()
+                wallet_field = _crypto_wallet_field(spec)
+                if not wallet_field:
+                    raise HTTPException(400, "Portefeuille crypto/réseau invalide")
                 rate = await _crypto_usdt_rate(coin)
-                pending_amount = round(req.amount * rate, 6)
-                pending_currency = "USDT"
-                conversion_metadata = {
-                    "crypto_amount": req.amount, "crypto": coin,
-                    "usdt_rate": rate, "crypto_amount_usdt": pending_amount,
+                fees = await _crypto_withdrawal_fee_components(
+                    coin, req.amount, asset_id=spec["id"])
+                fee_coin = float(fees["fee"])
+                if float(fees["fee_pct"]) >= 100 or fee_coin >= req.amount:
+                    raise HTTPException(503, "Configuration de frais invalide pour cet actif")
+                total_debit = round(
+                    req.amount + fee_coin if req.fee_bearer == "sender" else req.amount,
+                    8)
+                recipient_gets = (
+                    req.amount if req.fee_bearer == "sender"
+                    else round(req.amount - fee_coin, 8))
+                idem_key = (req.idempotency_key or "").strip()
+                if len(idem_key) < 8:
+                    raise HTTPException(400, "Une clé d'idempotence est requise pour les retraits crypto")
+                fingerprint = _withdrawal_transfer_fingerprint(req)
+                cached = await _idempotency_claim(
+                    uid, idem_key, "POST", "/transfers/crypto", fingerprint)
+                if cached and cached.get("body") is not None:
+                    return cached["body"]
+                transfer_operation_id = uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"crypto-transfer:{uid}:{idem_key}"
+                ).hex
+                if not await _debit_wallet_once(
+                        uid, wallet_field, total_debit,
+                        f"crypto-transfer:{transfer_operation_id}"):
+                    await _idempotency_release(uid, idem_key, fingerprint)
+                    raise HTTPException(
+                        400, f"Solde {spec['id']} insuffisant (frais inclus)")
+                fee = round(fee_coin, 8)
+                pending_tx = await record_tx(
+                    uid, "transfer", "out", total_debit, spec["id"],
+                    status="pending", counterparty=req.wallet_address,
+                    description=req.description or "En attente de traitement manuel",
+                    metadata={
+                        "transfer_type": "biz_to_crypto",
+                        "crypto": coin, "network": network,
+                        "asset_code": asset_code,
+                        "catalog_asset_id": spec["id"],
+                        "wallet_field": wallet_field,
+                        "wallet_address": req.wallet_address,
+                        "destination_memo": (req.destination_memo or "").strip() or None,
+                        "amount_gross": req.amount,
+                        "amount_currency": spec["id"],
+                        "usdt_rate": rate,
+                        "fee_asset": fee_coin,
+                        "fee": fee,
+                        "fee_currency": spec["id"],
+                        "fee_pct": fees["fee_pct"],
+                        "gateway_fee": fees["gateway_fee"],
+                        "platform_fee": fees["platform_fee"],
+                        "amount_net": recipient_gets,
+                        "fee_bearer": req.fee_bearer,
+                        "recipient_gets": recipient_gets,
+                        "total_debit": total_debit,
+                        "total_debit_usdt": round(total_debit * rate, 6),
+                        "idempotency_key": idem_key,
+                        "request_fingerprint": fingerprint,
+                        "recipient_name": req.recipient_name,
+                        "operation_id": transfer_operation_id,
+                        "auto_withdrawals_disabled": True,
+                    },
+                    operation_id=f"crypto-transfer:{transfer_operation_id}",
+                )
+                body = {
+                    "transaction": pending_tx.model_dump(), "fee": fee,
+                    "total_debit": total_debit,
+                    "recipient_gets": recipient_gets,
+                    "crypto": coin, "network": network,
+                    "currency": spec["id"], "pending_manual": True,
+                    "message": "Votre demande est en attente de traitement manuel. Le montant a été réservé dans le portefeuille sélectionné.",
                 }
-            pending_tx = await record_tx(uid, "transfer", "out", pending_amount, pending_currency,
-                                         status="pending", counterparty=req.recipient,
-                                         description=req.description or "En attente de traitement manuel",
-                                         metadata={"transfer_type": req.transfer_type,
-                                                   "country": req.country, "operator": req.operator,
-                                                   "bank": req.bank, "fee_bearer": req.fee_bearer,
-                                                   "recipient_name": req.recipient_name,
-                                                   "crypto": req.crypto, "network": req.network,
-                                                   "wallet_address": req.wallet_address,
-                                                    **conversion_metadata,
-                                                   "auto_withdrawals_disabled": True})
-            return {"transaction": pending_tx.model_dump(), "fee": 0,
-                    "pending_manual": True,
-                    "message": "Les retraits automatiques sont désactivés. Votre demande est en attente de traitement manuel."}
+                await _idempotency_store(
+                    uid, idem_key, "POST", "/transfers/crypto", 200, body)
+                return body
 
     cfg = await get_transfer_config()
 
@@ -6123,6 +6273,8 @@ async def transfer(req: TransferRequest, request: Request,
             raise HTTPException(403, "Bientôt disponible. Les transferts crypto seront disponibles prochainement.")
         if not req.crypto or not req.network or not req.wallet_address:
             raise HTTPException(400, "Crypto, réseau et adresse de portefeuille requis")
+        if not math.isfinite(float(req.amount)) or req.amount <= 0:
+            raise HTTPException(400, "Montant invalide")
         # ----- Validate crypto/network against IziPay assets (live) -----
         coin_upper = req.crypto.upper()
         net_upper = req.network.upper()
@@ -6163,14 +6315,22 @@ async def transfer(req: TransferRequest, request: Request,
         fee_coin = fee_components["fee"]
         if fee_pct >= 100 or fee_coin >= req.amount:
             raise HTTPException(503, "Configuration de frais invalide pour cet actif")
-        fee = round(fee_coin * rate, 6)
-        gateway_fee = round(fee_components["gateway_fee"] * rate, 6)
-        platform_fee = round(fee_components["platform_fee"] * rate, 6)
+        wallet_field = _crypto_wallet_field(spec)
+        if not wallet_field:
+            raise HTTPException(400, "Portefeuille crypto/réseau invalide")
+        fee = round(fee_coin, 8)
+        fee_usdt = round(fee_coin * rate, 6)
+        gateway_fee = round(fee_components["gateway_fee"], 8)
+        platform_fee = round(fee_components["platform_fee"], 8)
+        gateway_fee_usdt = round(gateway_fee * rate, 6)
+        platform_fee_usdt = round(platform_fee * rate, 6)
         gateway_fee_fixed = fee_components["gateway_fee_fixed"]
         platform_fee_fixed = fee_components["platform_fee_fixed"]
         total_debit = round(
-            (req.amount + fee_coin if req.fee_bearer == "sender" else req.amount)
-            * rate, 6)
+            req.amount + fee_coin if req.fee_bearer == "sender" else req.amount,
+            8,
+        )
+        total_debit_usdt = round(total_debit * rate, 6)
         recipient_gets = (
             req.amount if req.fee_bearer == "sender"
             else round(req.amount - fee_coin, 6)
@@ -6184,38 +6344,43 @@ async def transfer(req: TransferRequest, request: Request,
         if cached and cached.get("body") is not None:
             return cached["body"]
 
-        # Debit only the USDT wallet, using the locked conversion and fee values.
+        # Debit the wallet matching this exact catalog asset and network.
         transfer_operation_id = uuid.uuid5(
             uuid.NAMESPACE_URL, f"crypto-transfer:{uid}:{idem_key}"
         ).hex
         if not await _debit_wallet_once(
-                uid, "balance_usdt", total_debit,
+                uid, wallet_field, total_debit,
                 f"crypto-transfer:{transfer_operation_id}"):
             await _idempotency_release(uid, idem_key, request_fingerprint)
-            raise HTTPException(400, "Solde USDT insuffisant (conversion et frais inclus)")
-        tx_out = await record_tx(uid, "transfer", "out", total_debit, "USDT",
+            raise HTTPException(400, f"Solde {asset_code} insuffisant (frais inclus)")
+        tx_out = await record_tx(uid, "transfer", "out", total_debit, asset_code,
                                  status="pending",
                                  counterparty=req.wallet_address, description=req.description,
                                  metadata={"transfer_type": "biz_to_crypto",
                                            "crypto": coin_upper, "network": net_upper,
                                            "asset_code": asset_code,
                                             "catalog_asset_id": spec["id"],
+                                            "wallet_field": wallet_field,
                                            "wallet_address": req.wallet_address,
                                             "destination_memo": (req.destination_memo or "").strip() or None,
                                             "amount_gross": req.amount,
-                                            "amount_currency": coin_upper,
+                                             "amount_currency": asset_code,
                                             "usdt_rate": rate,
                                             "fee_asset": fee_coin,
-                                            "fee_currency": "USDT",
+                                             "fee_currency": asset_code,
+                                             "fee_usdt": fee_usdt,
                                             "gateway_fee_fixed": gateway_fee_fixed,
                                             "platform_fee_fixed": platform_fee_fixed,
                                             "fee": fee, "fee_pct": fee_pct,
                                            "gateway_fee": gateway_fee,
                                            "platform_fee": platform_fee,
+                                            "gateway_fee_usdt": gateway_fee_usdt,
+                                            "platform_fee_usdt": platform_fee_usdt,
                                            "amount_net": recipient_gets,
                                            "fee_bearer": req.fee_bearer,
                                             "recipient_gets": recipient_gets,
                                             "total_debit": total_debit,
+                                             "total_debit_usdt": total_debit_usdt,
                                             "idempotency_key": idem_key,
                                             "request_fingerprint": request_fingerprint,
                                             "recipient_name": req.recipient_name,
@@ -6225,7 +6390,7 @@ async def transfer(req: TransferRequest, request: Request,
         # Call IzichangePay to actually send the crypto on-chain
         if not izipay.is_configured():
             # Refund and fail
-            await _refund_wallet_once(uid, "balance_usdt", total_debit,
+            await _refund_wallet_once(uid, wallet_field, total_debit,
                                       f"crypto-transfer:{transfer_operation_id}")
             await db.transactions.update_one({"id": tx_out.id}, {"$set": {"status": "failed"}})
             await _idempotency_release(uid, idem_key, request_fingerprint)
@@ -6249,7 +6414,7 @@ async def transfer(req: TransferRequest, request: Request,
             # Only a definite provider rejection releases the reserved funds.
             if e.status < 500:
                 await _refund_wallet_once(
-                    uid, "balance_usdt", total_debit,
+                    uid, wallet_field, total_debit,
                     f"crypto-transfer:{transfer_operation_id}")
                 await db.transactions.update_one({"id": tx_out.id}, {"$set": {
                     "status": "failed", "metadata.error_code": e.code,
@@ -6308,7 +6473,7 @@ async def transfer(req: TransferRequest, request: Request,
         elif upstream_status in ("failed", "rejected", "error"):
             # Refund immediately on sync failure.
             await _refund_wallet_once(
-                uid, "balance_usdt", total_debit,
+                uid, wallet_field, total_debit,
                 f"crypto-transfer:{transfer_operation_id}")
             tx_update["status"] = "failed"
         await db.transactions.update_one({"id": tx_out.id}, {"$set": tx_update})
@@ -6499,7 +6664,8 @@ async def crypto_assets():
             "memo_required": bool(a.get("memoRequired") or spec.get("memo_required")),
             "memo_type": a.get("memoType"),
             "usdt_rate": rate,
-            "credit_currency": "USDT",
+            "credit_currency": spec["id"],
+            "wallet_field": _crypto_wallet_field(spec),
             "fee_pct": fee_gateway_pct + fee_platform_pct,
             "gateway_fee_pct": fee_gateway_pct,
             "platform_fee_pct": fee_platform_pct,
@@ -6604,7 +6770,8 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
             "network": network,
             "customer_email": req.email,
             "customer_name": req.full_name,
-            "credit_currency": "USDT",
+            "credit_currency": spec["id"],
+            "wallet_field": _crypto_wallet_field(spec),
             "usdt_rate": rate,
             "fee_pct": fee_pct,
             "fee_fixed": fee_fixed,
@@ -6701,7 +6868,8 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
         "network": network,
         "customer_email": req.email,
         "customer_name": req.full_name,
-        "credit_currency": "USDT",
+        "credit_currency": spec["id"],
+        "wallet_field": _crypto_wallet_field(spec),
         "usdt_rate": rate,
         "fee_pct": fee_pct,
         "fee_fixed": fee_fixed,
@@ -10111,7 +10279,7 @@ async def _settle_izipay_payment(
     merchant_ref: str, intent_id: Optional[str], tx_hash: Optional[str],
     source: str,
 ) -> bool:
-    """Convert a successful IziChangePay payment into a single USDT credit."""
+    """Credit a successful direct crypto deposit to its selected asset wallet."""
     d = await db.crypto_deposits.find_one({"id": merchant_ref}, {"_id": 0})
     if d:
         d = await _claim_izipay_payment_settlement(
@@ -10121,6 +10289,16 @@ async def _settle_izipay_payment(
         coin = str(d.get("coin") or "USDT").upper()
         rate = float(d.get("usdt_rate") or await _crypto_usdt_rate(coin))
         gross_asset = float(d.get("amount") or 0)
+        wallet_spec = _crypto_wallet_spec(
+            asset_id=d.get("catalog_asset_id"),
+            asset_code=d.get("asset_code"),
+            coin=coin,
+            network=d.get("network"),
+        )
+        wallet_field = _crypto_wallet_field(wallet_spec) if wallet_spec else None
+        if not wallet_field:
+            raise HTTPException(
+                503, "Dépôt en revue: portefeuille crypto/réseau introuvable")
         if "gateway_fee_pct" in d or "platform_fee_pct" in d:
             gateway_pct = float(d.get("gateway_fee_pct") or 0)
             platform_pct = float(d.get("platform_fee_pct") or 0)
@@ -10137,45 +10315,53 @@ async def _settle_izipay_payment(
             gateway_fixed = components["gateway_fee_fixed"]
             platform_fixed = components["platform_fee_fixed"]
         gateway_fee = round(
-            (gross_asset * gateway_pct / 100.0 + gateway_fixed) * rate, 6)
+            gross_asset * gateway_pct / 100.0 + gateway_fixed, 8)
         platform_fee = round(
-            (gross_asset * platform_pct / 100.0 + platform_fixed) * rate, 6)
-        fee = round(gateway_fee + platform_fee, 6)
+            gross_asset * platform_pct / 100.0 + platform_fixed, 8)
+        fee = round(gateway_fee + platform_fee, 8)
         gross_usdt = round(gross_asset * rate, 6)
-        net = round(gross_usdt - fee, 6)
+        net = round(gross_asset - fee, 8)
         if net <= 0:
-            raise HTTPException(503, "Dépôt en revue: frais ou taux de conversion invalides")
+            raise HTTPException(503, "Dépôt en revue: frais ou montant net invalides")
         operation_id = f"izipay:deposit:{merchant_ref}"
         await _credit_wallet_once(
-            d["user_id"], "balance_usdt", net, operation_id)
+            d["user_id"], wallet_field, net, operation_id)
         await db.crypto_deposits.update_one(
             {"id": merchant_ref, "status": "settling"},
             {"$set": {
                 "status": "confirmed", "updated_at": now_iso(),
                 "izipay_intent_id": intent_id, "tx_hash": tx_hash,
-                "amount_gross": gross_usdt, "amount_currency": "USDT",
+                "amount_gross": gross_asset,
+                "amount_currency": wallet_spec["id"],
                 "amount_gross_usdt": gross_usdt,
                 "amount_crypto": gross_asset,
                 "amount_crypto_currency": coin, "usdt_rate": rate,
-                "fee": fee, "fee_currency": "USDT",
+                "fee": fee, "fee_currency": wallet_spec["id"],
                 "fee_pct": float(d.get("fee_pct") or gateway_pct + platform_pct),
-                "amount_net": net, "amount_net_currency": "USDT",
+                "amount_net": net, "amount_net_currency": wallet_spec["id"],
+                "amount_net_usdt": round(net * rate, 6),
                 "gateway_fee": gateway_fee, "platform_fee": platform_fee,
+                "wallet_field": wallet_field,
                 "credit_operation_id": operation_id,
             }},
         )
         await record_tx(
-            d["user_id"], "deposit", "in", net, "USDT",
+            d["user_id"], "deposit", "in", net, wallet_spec["id"],
             status="completed",
             description=f"Dépôt crypto {coin} · {d.get('network', '')}",
             metadata={
                 "izipay_intent_id": intent_id, "coin": coin,
                 "network": d.get("network"), "asset_code": d.get("asset_code"),
+                "catalog_asset_id": wallet_spec["id"],
+                "wallet_field": wallet_field,
                 "tx_hash": tx_hash, "deposit_address": d.get("deposit_address"),
-                "amount_gross": gross_usdt, "amount_crypto": gross_asset,
-                "usdt_rate": rate, "fee": fee, "fee_currency": "USDT",
+                "amount_gross": gross_asset, "amount_gross_usdt": gross_usdt,
+                "amount_crypto": gross_asset, "amount_currency": wallet_spec["id"],
+                "usdt_rate": rate, "fee": fee, "fee_currency": wallet_spec["id"],
                 "fee_pct": d.get("fee_pct"), "gateway_fee": gateway_fee,
                 "platform_fee": platform_fee, "amount_net": net,
+                "amount_net_currency": wallet_spec["id"],
+                "amount_net_usdt": round(net * rate, 6),
                 "source": source,
             },
             operation_id=operation_id,
@@ -10561,8 +10747,13 @@ async def izipay_webhook(request: Request):
                                 and not meta.get("refunded_at")):
                             total_debit = float(
                                 meta.get("total_debit", tx.get("amount", 0)))
+                            wallet_field = _transaction_wallet_field(
+                                tx.get("currency"), meta)
+                            if not wallet_field:
+                                raise HTTPException(
+                                    503, "Portefeuille du retrait introuvable")
                             await _refund_wallet_once(
-                                tx["user_id"], "balance_usdt", total_debit,
+                                tx["user_id"], wallet_field, total_debit,
                                 f"crypto-transfer:{meta.get('operation_id') or tx['id']}")
                             await db.transactions.update_one(
                                 {"id": tx["id"], "metadata.refunded_at": {"$exists": False}},
@@ -10572,11 +10763,11 @@ async def izipay_webhook(request: Request):
                                     tx["user_id"], "withdrawal_failed",
                                     "Retrait crypto échoué",
                                     f"Votre retrait de {meta.get('recipient_gets', tx['amount']):.6f} "
-                                    f"{meta.get('crypto', '')} a échoué. Votre solde USDT a été remboursé.",
+                                     f"{meta.get('crypto', '')} a échoué. Le portefeuille de cette crypto a été remboursé.",
                                     data={"transaction_id": tx["id"],
                                           "reference": tx.get("reference"),
                                           "amount": tx["amount"],
-                                          "currency": "USDT",
+                                          "currency": tx.get("currency", "USDT"),
                                           "reason": data.get("reason", "")},
                                 )
         # settlement.completed etc. — no local action for now (already credited on completion)
@@ -11402,12 +11593,18 @@ SUPPORTED_CONVERSION_PAIRS = [
 
 def _balance_field(currency: str) -> str:
     c = (currency or "").upper()
-    return {"USDT": "balance_usdt", "XOF": "balance_xof", "XAF": "balance_xaf"}.get(c)
-
-
-def _transaction_wallet_field(currency: Any) -> Optional[str]:
-    """Map a transaction currency to its own wallet without cross-currency fallback."""
     return {
+        "USDT": "balance_usdt",
+        "XOF": "balance_xof",
+        "XAF": "balance_xaf",
+    }.get(c) or _crypto_wallet_field(c)
+
+
+def _transaction_wallet_field(
+    currency: Any, metadata: Optional[dict] = None
+) -> Optional[str]:
+    """Map a transaction currency to its own wallet without cross-currency fallback."""
+    mapped = {
         "XOF": "balance_xof",
         "XAF": "balance_xaf",
         "CDF": "balance_cdf",
@@ -11425,6 +11622,16 @@ def _transaction_wallet_field(currency: Any) -> Optional[str]:
         "EGP": "balance_egp",
         "USDT": "balance_usdt",
     }.get(str(currency or "").upper())
+    if mapped:
+        return mapped
+    meta = metadata or {}
+    spec = _crypto_wallet_spec(
+        asset_id=meta.get("catalog_asset_id"),
+        asset_code=meta.get("asset_code") or currency,
+        coin=meta.get("crypto") or meta.get("coin"),
+        network=meta.get("network"),
+    )
+    return _crypto_wallet_field(spec) if spec else None
 
 
 async def get_platform_config() -> dict:
@@ -11468,6 +11675,106 @@ async def _crypto_usdt_rate(coin: str) -> float:
         raise HTTPException(
             503, f"Taux {coin.upper()}→USDT non configuré. Contactez l'administrateur.")
     return rate
+
+
+async def _active_exchange_crypto_assets() -> dict[str, dict]:
+    """Return live, locally enabled crypto wallets usable by Exchange."""
+    transfer_cfg = await get_transfer_config()
+    crypto_cfg = transfer_cfg.get("crypto") or {}
+    await _load_izipay_credentials()
+    if not crypto_cfg.get("enabled", True) or not izipay.is_configured():
+        return {}
+    try:
+        provider_assets = await izipay.list_assets()
+    except Exception as exc:
+        logger.warning("Exchange crypto catalog unavailable: %s", exc)
+        raise HTTPException(503, "Catalogue crypto temporairement indisponible")
+    provider_catalog = _easypay_catalog_map(provider_assets)
+    rate_cfg = await get_platform_config()
+    result = {}
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        asset = provider_catalog.get(spec["id"])
+        if (not asset or not asset.get("isActive")
+                or not _easypay_asset_enabled(crypto_cfg, spec)):
+            continue
+        rate = _configured_crypto_usdt_rate(rate_cfg, spec["coin"])
+        if rate is None:
+            continue
+        result[spec["id"]] = {
+            "code": spec["id"],
+            "coin": spec["coin"],
+            "network": spec["network_code"],
+            "network_name": spec["network_name"],
+            "name": spec["name"],
+            "wallet_field": _crypto_wallet_field(spec),
+            "usdt_rate": rate,
+        }
+    return result
+
+
+async def _exchange_currency_info(
+    currency: str, crypto_assets: Optional[dict[str, dict]] = None
+) -> dict:
+    code = str(currency or "").strip().upper()
+    fiat = {
+        "XOF": {"code": "XOF", "wallet_field": "balance_xof", "kind": "fiat"},
+        "XAF": {"code": "XAF", "wallet_field": "balance_xaf", "kind": "fiat"},
+    }
+    if code in fiat:
+        return fiat[code]
+    if code == "USDT":
+        return {
+            "code": code, "wallet_field": "balance_usdt", "kind": "crypto",
+            "coin": "USDT", "usdt_rate": 1.0, "legacy_unassigned": True,
+        }
+    if crypto_assets is None:
+        crypto_assets = await _active_exchange_crypto_assets()
+    info = crypto_assets.get(code)
+    if not info:
+        raise HTTPException(400, f"Portefeuille crypto non disponible : {code}")
+    return {**info, "kind": "crypto"}
+
+
+async def _exchange_rate_context(
+    cfg: dict, from_currency: str, to_currency: str
+) -> dict:
+    """Resolve safe wallet fields and configured cross-rates for a pair."""
+    fc, tc = from_currency.upper(), to_currency.upper()
+    requested_crypto = [
+        code for code in (fc, tc)
+        if code not in {"XOF", "XAF", "USDT"}
+    ]
+    crypto_assets = (
+        await _active_exchange_crypto_assets() if requested_crypto else {}
+    )
+    source = await _exchange_currency_info(fc, crypto_assets)
+    destination = await _exchange_currency_info(tc, crypto_assets)
+    rates = cfg.get("conversion_rates") or {}
+    pairs = cfg.get("conversion_pairs_enabled") or {}
+    if source["kind"] == "fiat" and destination["kind"] == "fiat":
+        pair_key = f"{fc}_{tc}"
+        rate = float(rates.get(pair_key, 0) or 0)
+    elif source["kind"] == "crypto" and destination["kind"] == "crypto":
+        pair_key = None
+        rate = float(source["usdt_rate"]) / float(destination["usdt_rate"])
+    elif source["kind"] == "crypto":
+        pair_key = f"USDT_{tc}"
+        rate = float(source["usdt_rate"]) * float(rates.get(pair_key, 0) or 0)
+    else:
+        pair_key = f"{fc}_USDT"
+        rate = float(rates.get(pair_key, 0) or 0) / float(destination["usdt_rate"])
+    if pair_key and not pairs.get(pair_key, True):
+        raise HTTPException(400, "Cette paire de conversion est désactivée")
+    if not math.isfinite(rate) or rate <= 0:
+        raise HTTPException(503, "Taux de conversion indisponible")
+    limits_key = pair_key or f"{fc}_{tc}"
+    return {
+        "from": source,
+        "to": destination,
+        "rate": rate,
+        "pair": f"{fc}_{tc}",
+        "limits": (cfg.get("conversion_limits") or {}).get(limits_key) or {},
+    }
 
 
 def _compute_fee(fcfg: dict, amount: float) -> float:
@@ -11520,19 +11827,19 @@ async def conversion_quote(from_currency: str, to_currency: str, amount: float):
     fc, tc = from_currency.upper(), to_currency.upper()
     if fc == tc:
         raise HTTPException(400, "Devises identiques")
-    if (fc, tc) not in SUPPORTED_CONVERSION_PAIRS:
-        raise HTTPException(400, f"Paire {fc}→{tc} non supportée")
+    if not math.isfinite(amount) or amount <= 0:
+        raise HTTPException(400, "Montant invalide")
     cfg = await get_platform_config()
-    key = f"{fc}_{tc}"
-    if not (cfg.get("conversion_pairs_enabled") or {}).get(key, True):
-        raise HTTPException(400, "Cette paire de conversion est désactivée")
-    rate = float((cfg.get("conversion_rates") or {}).get(key, 1.0))
-    limits = ((cfg.get("conversion_limits") or {}).get(key) or {})
+    context = await _exchange_rate_context(cfg, fc, tc)
+    rate = context["rate"]
+    limits = context["limits"]
     if amount < float(limits.get("min", 0) or 0):
         raise HTTPException(400, f"Montant inférieur au minimum ({limits.get('min')} {fc})")
     if limits.get("max") and amount > float(limits["max"]):
         raise HTTPException(400, f"Montant supérieur au maximum ({limits['max']} {fc})")
     fee = _compute_fee(cfg.get("conversion_fee") or {}, amount)
+    if fee >= amount:
+        raise HTTPException(400, "Les frais dépassent le montant à convertir")
     received = round((amount - fee) * rate, 6)
     return {
         "from_currency": fc, "to_currency": tc,
@@ -11578,39 +11885,41 @@ async def _recover_integration_exchange(intent: dict) -> Optional[dict]:
 @api.post("/exchange")
 async def do_exchange(req: ExchangeRequest,
                       uid: str = Depends(require_recent_auth)):
-    """Currency-agnostic conversion. Supports the 6 pairs across
-    USDT / XOF / XAF, rate-driven by admin config, fee-driven by admin config."""
+    """Exchange between local balances and the configured crypto asset catalog."""
     fc = (req.from_currency or "").upper()
     tc = (req.to_currency or "").upper()
     if fc == tc:
         raise HTTPException(400, "Devises identiques")
-    if (fc, tc) not in SUPPORTED_CONVERSION_PAIRS:
-        raise HTTPException(400, f"Paire {fc}→{tc} non supportée")
-
-    from_field, to_field = _balance_field(fc), _balance_field(tc)
-    if not from_field or not to_field:
-        raise HTTPException(400, "Devise invalide")
+    if not math.isfinite(float(req.amount)) or req.amount <= 0:
+        raise HTTPException(400, "Montant invalide")
 
     cfg = await get_platform_config()
-    key = f"{fc}_{tc}"
-    if not (cfg.get("conversion_pairs_enabled") or {}).get(key, True):
-        raise HTTPException(400, "Cette paire de conversion est désactivée")
+    context = await _exchange_rate_context(cfg, fc, tc)
+    source = context["from"]
+    destination = context["to"]
+    from_field = source["wallet_field"]
+    to_field = destination["wallet_field"]
+    key = context["pair"]
 
     # Cross-check with the app_features flags so a disabled wallet also blocks conversion.
     feats = await get_app_features()
-    if not feats.get(f"wallet_{('crypto' if fc == 'USDT' else fc.lower())}_enabled", True):
+    from_flag = "wallet_crypto_enabled" if source["kind"] == "crypto" else f"wallet_{fc.lower()}_enabled"
+    to_flag = "wallet_crypto_enabled" if destination["kind"] == "crypto" else f"wallet_{tc.lower()}_enabled"
+    if not feats.get(from_flag, True):
         raise HTTPException(400, f"Le portefeuille {fc} est désactivé")
-    if not feats.get(f"wallet_{('crypto' if tc == 'USDT' else tc.lower())}_enabled", True):
+    if not feats.get(to_flag, True):
         raise HTTPException(400, f"Le portefeuille {tc} est désactivé")
 
-    limits = ((cfg.get("conversion_limits") or {}).get(key) or {})
+    limits = context["limits"]
     if req.amount < float(limits.get("min", 0) or 0):
         raise HTTPException(400, f"Montant inférieur au minimum ({limits.get('min')} {fc})")
     if limits.get("max") and req.amount > float(limits["max"]):
         raise HTTPException(400, f"Montant supérieur au maximum ({limits['max']} {fc})")
 
-    rate = float((cfg.get("conversion_rates") or {}).get(key, 1.0))
+    rate = float(context["rate"])
     fee = _compute_fee(cfg.get("conversion_fee") or {}, req.amount)
+    if fee >= req.amount:
+        raise HTTPException(400, "Les frais dépassent le montant à convertir")
 
     received = round((req.amount - fee) * rate, 6)
     exchange_key = (req.idempotency_key or "").strip()
@@ -11629,6 +11938,8 @@ async def do_exchange(req: ExchangeRequest,
             "amount": float(req.amount), "fee": float(fee),
             "rate": float(rate), "received": float(received),
             "from_currency": fc, "to_currency": tc, "pair": key,
+            "from_wallet_field": from_field,
+            "to_wallet_field": to_field,
             "status": "prepared", "created_at": now_iso(),
         }
         try:
@@ -11664,6 +11975,10 @@ async def do_exchange(req: ExchangeRequest,
             "rate": rate, "fee": fee, "received": received,
             "from_currency": fc, "to_currency": tc,
             "pair": key,
+            "wallet_field": from_field,
+            "to_wallet_field": to_field,
+            "catalog_asset_id": source.get("code") if source["kind"] == "crypto" else None,
+            "to_catalog_asset_id": destination.get("code") if destination["kind"] == "crypto" else None,
             # Conversion fees are pure platform revenue (no external gateway).
             "gateway_fee": 0.0,
             "platform_fee": float(fee),
@@ -13072,6 +13387,7 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
         return []
     provider_catalog = _easypay_catalog_map(assets)
     rate_cfg = await get_platform_config()
+    user = await get_user(uid)
     coins: dict[str, dict] = {}
     for spec in EASY_CHANGE_ASSET_SPECS:
         asset = provider_catalog.get(spec["id"])
@@ -13097,6 +13413,9 @@ async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
         entry["networks"].append({
             "code": spec["network_code"],
             "name": spec["network_name"],
+            "wallet_id": spec["id"],
+            "balance": float(
+                user.get(_crypto_wallet_field(spec), 0.0) or 0.0),
             "asset_code": str(asset.get("assetCode") or "").strip().upper(),
             "catalog_asset_id": spec["id"],
             "address_regex": spec["address_regex"],
@@ -14229,6 +14548,8 @@ def _tx_is_crypto(tx: dict) -> bool:
         cur == "USDT"
         or (meta.get("transfer_type") in ("biz_to_crypto",))
         or bool(meta.get("crypto") or meta.get("coin") or meta.get("izipay_intent_id"))
+        or bool(_crypto_wallet_spec(
+            asset_id=meta.get("catalog_asset_id"), asset_code=cur))
     )
 
 
@@ -14501,7 +14822,7 @@ async def admin_approve_transaction(
     balance_applied = False
     if typ == "deposit":
         # Credit user's balance now.
-        field = _transaction_wallet_field(tx.get("currency"))
+        field = _transaction_wallet_field(tx.get("currency"), meta)
         if not field:
             raise HTTPException(400, "Devise de portefeuille non prise en charge")
         balance_applied = await _credit_wallet_once(
@@ -14585,7 +14906,7 @@ async def admin_reject_transaction(tx_id: str, body: AdminRejectRequest,
             or (amt + float(meta.get("fee", 0) or 0))
             or amt
         )
-        field = _transaction_wallet_field(tx.get("currency"))
+        field = _transaction_wallet_field(tx.get("currency"), meta)
         if not field:
             raise HTTPException(400, "Devise de portefeuille non prise en charge")
         refund_applied = await _refund_wallet_once(

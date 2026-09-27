@@ -690,7 +690,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   const feeFixed = Number(network?.fee_fixed ?? crypto?.fee_fixed ?? 0);
   const fee = amt * feePct / 100 + feeFixed;
   const feeUsdt = fee * rate;
-  const totalDebit = (feeBearer === 'sender' ? amt + fee : amt) * rate;
+  const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
   const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
 
   // Human-readable fee label. Hides internal gateway/platform split; only
@@ -699,9 +699,9 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
     ? `${feeFixed} ${cryptoCode} + ${feePct}%`
     : `${feePct}%`;
 
-  // For crypto, currency = crypto code (e.g. USDT). Balance is looked up on user object.
+  // The selected catalog asset/network owns the balance used for this payout.
   const currency = 'USDT';
-  const bal = Number(balance?.balance_usdt || 0);
+  const bal = Number(network?.balance || 0);
   const min = network?.min || 0, max = network?.max || 10 ** 12;
   // Address is valid when either (a) a regex matched OR (b) no regex is
   // configured for this network → we cannot validate client-side, so accept
@@ -866,7 +866,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
 
       <Field label={`Montant (${cryptoCode})`}>
         <input data-testid="crypto-amount" type="number" step="0.0001" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
-        <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min} · Max {max.toLocaleString()} {cryptoCode} · Solde : {bal.toLocaleString()} USDT</div>
+        <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min} · Max {max.toLocaleString()} {cryptoCode} · Solde {networkCode} : {bal.toLocaleString()} {cryptoCode}</div>
       </Field>
 
       <FeeBearerSwitch value={feeBearer} onChange={setFeeBearer} />
@@ -877,8 +877,8 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
           <Row l="Montant envoyé" v={`${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} />
           {network?.memo_required && <Row l="Mémo / tag" v={destinationMemo} />}
           <Row l="Taux appliqué" v={`1 ${cryptoCode} = ${rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT`} />
-          <Row l="Frais appliqués" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feeLabel}) · ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} />
-          <Row l="Total débité de votre solde" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} strong />
+          <Row l="Frais appliqués" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${cryptoCode} (${feeLabel}) · équiv. ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} />
+          <Row l={`Total débité du portefeuille ${networkCode}`} v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${cryptoCode}`} strong />
           <Row l="Montant final reçu par le bénéficiaire" v={`${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} green />
         </div>
       )}
@@ -903,9 +903,9 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
           ...(network?.memo_required ? [['Mémo / tag', destinationMemo, 'mono']] : []),
           ['Montant envoyé', `${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'strong'],
           ['Taux', `1 ${cryptoCode} = ${rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT`],
-          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} · ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`],
+          ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${cryptoCode} · équiv. ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`],
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
-          ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`, 'strong'],
+          [`Total débité · ${networkCode}`, `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${cryptoCode}`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'green'],
         ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-crypto-confirm" />
       )}
