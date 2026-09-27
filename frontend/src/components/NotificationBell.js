@@ -4,12 +4,36 @@ import { toast } from 'sonner';
 import api from '@/api';
 
 const ICONS = {
+  deposit_success: { I: Bell, cls: 'bg-emerald-50 text-emerald-600' },
   withdrawal_success: { I: ArrowUpFromLine, cls: 'bg-emerald-50 text-emerald-600' },
   withdrawal_failed: { I: ArrowUpFromLine, cls: 'bg-red-50 text-red-600' },
+  withdrawal_pending: { I: ArrowUpFromLine, cls: 'bg-amber-50 text-amber-600' },
   kyc_verified: { I: ShieldCheck, cls: 'bg-emerald-50 text-emerald-600' },
   kyc_rejected: { I: ShieldX, cls: 'bg-red-50 text-red-600' },
   kyc_resubmit_requested: { I: ShieldAlert, cls: 'bg-amber-50 text-amber-600' },
 };
+
+const BRANDED_TITLES = {
+  deposit_success: 'Dépôt Biz-transPay confirmé',
+  withdrawal_pending: 'Retrait Biz-transPay en cours',
+  withdrawal_success: 'Retrait Biz-transPay confirmé',
+  withdrawal_failed: 'Retrait Biz-transPay échoué',
+  withdrawal_manual_review: 'Retrait Biz-transPay en attente',
+  exchange_success: 'Échange Biz-transPay confirmé',
+  transfer_success: 'Transfert Biz-transPay confirmé',
+  payment_success: 'Paiement Biz-transPay confirmé',
+  kyc_verified: 'Vérification Biz-transPay confirmée',
+  kyc_rejected: 'Vérification Biz-transPay refusée',
+  kyc_resubmit_requested: 'Documents Biz-transPay à compléter',
+};
+
+function notificationTitle(notification) {
+  if (BRANDED_TITLES[notification?.type]) return BRANDED_TITLES[notification.type];
+  const title = String(notification?.title || '').trim();
+  return !title || ['notification', 'biztranspay notification'].includes(title.toLowerCase())
+    ? 'Biz-transPay'
+    : title;
+}
 
 function formatRelative(iso) {
   const d = new Date(iso);
@@ -46,7 +70,7 @@ export default function NotificationBell({ compact = false }) {
         setItems((prev) => [doc, ...prev].slice(0, 20));
         setUnread((n) => n + 1);
         // Toast pop-up for immediate feedback.
-        toast(doc.title, { description: doc.body, duration: 6000 });
+        toast(notificationTitle(doc), { description: doc.body, duration: 6000 });
       } catch (e) { /* ignore parse errors */ }
     });
     es.onerror = () => {
@@ -179,7 +203,13 @@ export default function NotificationBell({ compact = false }) {
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <div className="text-xs font-semibold text-slate-900 truncate">{n.title}</div>
+                      <img
+                        src="/logo-mark.png"
+                        alt=""
+                        aria-hidden="true"
+                        className="h-4 w-4 shrink-0 rounded object-contain"
+                      />
+                      <div className="text-xs font-semibold text-slate-900 truncate">{notificationTitle(n)}</div>
                       {!n.read && <span className="w-1.5 h-1.5 rounded-full bg-[#2563EB] shrink-0" />}
                     </div>
                     <div className="mt-0.5 break-words text-[11px] leading-snug text-slate-600 [overflow-wrap:anywhere] whitespace-pre-line">{n.body}</div>

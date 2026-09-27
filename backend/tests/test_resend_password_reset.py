@@ -426,6 +426,7 @@ def test_exchange_notification_selects_exchange_email_event(monkeypatch):
     assert scheduled == [
         ("user-1", "exchange_success", "exchange-1", "transaction")
     ]
+    assert notifications.docs[0]["title"] == "Échange Biz-transPay confirmé"
 
 
 def test_branded_transaction_email_includes_amount_fees_and_only_active_links(monkeypatch):
@@ -460,7 +461,7 @@ def test_branded_transaction_email_includes_amount_fees_and_only_active_links(mo
     )
 
     assert "Montant crédité : 950 XOF" in text
-    assert "Frais déduits : 50 XOF" in text
+    assert "Frais : 50 XOF" in text
     assert "Référence Biz-transPay : BTP-ABC123" in text
     assert "Statut : Réussi" in text
     assert "Dépôt effectué avec succès" in text
@@ -469,6 +470,8 @@ def test_branded_transaction_email_includes_amount_fees_and_only_active_links(mo
     assert "tiktok.com" not in text
     assert "javascript:" not in html
     assert "https://pay.biz-transpay.com/logo-mark.png" in html
+    assert "https://pay.biz-transpay.com/social-icons/whatsapp.svg" in html
+    assert "https://pay.biz-transpay.com/social-icons/facebook.svg" in html
     assert "Amina &lt;K." in html
     assert "background:#07111f" in html
     assert "Voir mes transactions" not in html
@@ -531,10 +534,10 @@ def test_exchange_and_withdrawal_email_amounts_use_settled_values(monkeypatch):
     )
     assert "Montant échangé : 1,000 XOF" in exchange_text
     assert "Montant reçu : 1.5 USDT" in exchange_text
-    assert "Frais déduits : 25 XOF" in exchange_text
+    assert "Frais : 25 XOF" in exchange_text
     assert "Échange effectué avec succès" in exchange_text
-    assert "Montant du retrait : 700 XOF" in withdrawal_text
-    assert "Frais déduits : 25 XOF" in withdrawal_text
+    assert "Montant net à recevoir : 700 XOF" in withdrawal_text
+    assert "Frais : 25 XOF" in withdrawal_text
 
 
 def test_final_exchange_email_uses_branded_template_and_marks_outbox_sent(monkeypatch):
@@ -594,10 +597,11 @@ def test_final_exchange_email_uses_branded_template_and_marks_outbox_sent(monkey
 
     asyncio.run(server._deliver_transaction_email("exchange-email-1"))
     assert outbox.docs[0]["status"] == "sent"
-    assert sent[0]["subject"] == "Votre échange a été effectué avec succès"
+    assert sent[0]["subject"] == "Échange Biz-transPay confirmé"
     assert sent[0]["idempotency_key"] == "exchange-email-1"
     assert "Montant échangé : 1,000 XOF" in sent[0]["text"]
-    assert "Frais déduits : 25 XOF" in sent[0]["text"]
+    assert "Frais : 25 XOF" in sent[0]["text"]
+    assert sent[0]["subject"] == "Échange Biz-transPay confirmé"
     assert "BTP-EXCHANGE1" in sent[0]["text"]
     assert "logo-mark.png" in sent[0]["html"]
     assert "facebook.com/biztranspay" in sent[0]["html"]
@@ -655,6 +659,7 @@ def test_resend_adapter_uses_mock_transport_and_idempotency_header(monkeypatch):
     async def handler(request):
         captured["key"] = request.headers.get("Idempotency-Key")
         captured["authorization"] = request.headers.get("Authorization")
+        captured["payload"] = json.loads(request.content)
         return httpx.Response(202, json={"id": "mock-message"})
 
     monkeypatch.delenv("REPLIT_CONNECTORS_HOSTNAME", raising=False)
@@ -677,6 +682,13 @@ def test_resend_adapter_uses_mock_transport_and_idempotency_header(monkeypatch):
     assert captured == {
         "key": "idempotent-test",
         "authorization": "Bearer offline-test-value",
+        "payload": {
+            "from": "Biz-transPay <notifications@example.com>",
+            "to": ["member@example.com"],
+            "subject": "Test",
+            "text": "Offline delivery test",
+            "html": "<p>Offline delivery test</p>",
+        },
     }
 
 
@@ -716,7 +728,7 @@ def test_resend_adapter_uses_replit_connector_without_api_key(monkeypatch):
         "proxy_token": "repl offline-connector-identity",
         "authorization": None,
         "payload": {
-            "from": "notifications@example.com",
+            "from": "Biz-transPay <notifications@example.com>",
             "to": ["member@example.com"],
             "subject": "Test",
             "text": "Offline connector test",

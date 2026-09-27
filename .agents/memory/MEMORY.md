@@ -35,3 +35,4 @@
 - [AfribaPAY verification gates](afribapay-verification-gates.md) — its sandbox can move real money; keep automated checks mocked and live endpoints unset until provider-confirmed.
 - [Referral invite codes](referral-invite-codes.md) — use immutable account IDs as invitation codes; usernames are not database-unique in the document adapter.
 - [Referral rounding](referral-rounding.md) — keep fractional XOF/XAF commissions to honor percentage rates on small qualifying operations.
+- [Crypto benefit accounting](crypto-benefit-accounting.md) — report crypto platform fees in USDT using the transaction's stored settlement rate, never a live rate.

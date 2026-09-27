@@ -223,7 +223,9 @@ export default function Login() {
           )}
 
           {(step === 'password' || step === 'mfa') && <button type="submit" disabled={loading || (step === 'mfa' && otp.length !== 6)} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
-            {loading ? 'Connexion…' : <><LogInIcon className="w-5 h-5" /> {t('login.submit')}</>}
+            {loading
+              ? <><span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />Connexion…</>
+              : <><LogInIcon className="w-5 h-5" /> {t('login.submit')}</>}
           </button>}
 
           <p className="mt-6 text-center text-sm text-slate-500">

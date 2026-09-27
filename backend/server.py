@@ -2042,6 +2042,21 @@ async def _queue_security_telegram_alert(
     )
 
 
+_BRANDED_NOTIFICATION_TITLES = {
+    "deposit_success": "Dépôt Biz-transPay confirmé",
+    "withdrawal_pending": "Retrait Biz-transPay en cours",
+    "withdrawal_success": "Retrait Biz-transPay confirmé",
+    "withdrawal_failed": "Retrait Biz-transPay échoué",
+    "withdrawal_manual_review": "Retrait Biz-transPay en attente",
+    "exchange_success": "Échange Biz-transPay confirmé",
+    "transfer_success": "Transfert Biz-transPay confirmé",
+    "payment_success": "Paiement Biz-transPay confirmé",
+    "kyc_verified": "Vérification Biz-transPay confirmée",
+    "kyc_rejected": "Vérification Biz-transPay refusée",
+    "kyc_resubmit_requested": "Documents Biz-transPay à compléter",
+}
+
+
 async def notify(user_id: str, ntype: str, title: str, body: str,
                  data: Optional[dict] = None,
                  send_telegram: bool = True) -> dict:
@@ -2049,11 +2064,16 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
     ntype examples: 'withdrawal_success', 'withdrawal_failed', 'kyc_verified',
     'kyc_rejected', 'kyc_resubmit_requested'.
     """
+    notification_title = _BRANDED_NOTIFICATION_TITLES.get(ntype, title)
+    if str(notification_title or "").strip().casefold() in {
+        "", "notification", "biztranspay notification",
+    }:
+        notification_title = "Biz-transPay"
     doc = {
         "id": new_id(),
         "user_id": user_id,
         "type": ntype,
-        "title": title,
+        "title": notification_title,
         "body": body,
         "data": data or {},
         "read": False,
@@ -2569,7 +2589,7 @@ def _transaction_email_content(
         amount = metadata.get("recipient_gets")
         amount = record.get("amount", 0) if amount is None else amount
         amount_label = (
-            "Montant du retrait"
+            "Montant net à recevoir"
             if event_type == "withdrawal_success" else "Montant"
         )
         fee = metadata.get("fee")
@@ -2603,7 +2623,7 @@ def _transaction_email_content(
     for field, label, value in (
         ("event_status", "Statut", "Réussi"),
         ("amount_currency", amount_label, amount_text),
-        ("fee", "Frais déduits", fee_text),
+        ("fee", "Frais", fee_text),
         ("reference", "Référence Biz-transPay", reference),
         ("event_time", "Date et heure", display_time),
     ):
@@ -2650,9 +2670,13 @@ def _transaction_email_content(
 
     if logo_url:
         logo_markup = (
-            f"<img src=\"{html_escape(logo_url, quote=True)}\" width=\"48\" "
-            "height=\"48\" alt=\"Biz-transPay\" style=\"display:block;width:48px;"
-            "height:48px;border:0;border-radius:12px\">"
+            "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
+            "<td style=\"padding-right:10px\">"
+            f"<img src=\"{html_escape(logo_url, quote=True)}\" width=\"40\" "
+            "height=\"40\" alt=\"\" style=\"display:block;width:40px;height:40px;"
+            "border:0;border-radius:10px\"></td>"
+            "<td style=\"color:#fff;font-size:18px;font-weight:700\">Biz-transPay</td>"
+            "</tr></table>"
         )
     else:
         logo_markup = (
@@ -2662,20 +2686,36 @@ def _transaction_email_content(
 
     whatsapp_markup = ""
     if whatsapp_url:
+        whatsapp_icon = (
+            f"<img src=\"{html_escape(app_url + '/social-icons/whatsapp.svg', quote=True)}\" "
+            "width=\"18\" height=\"18\" alt=\"\" "
+            "style=\"vertical-align:middle;margin-right:7px;border:0\">"
+            if app_url else ""
+        )
         whatsapp_markup = (
             "<p style=\"margin:20px 0 0\">"
             f"<a href=\"{html_escape(whatsapp_url, quote=True)}\" "
             "style=\"display:inline-block;padding:11px 16px;border-radius:8px;"
             "background:#16a36a;color:#fff;text-decoration:none;font-size:13px;"
-            "font-weight:700\">Contacter l’assistance WhatsApp</a></p>"
+            f"font-weight:700\">{whatsapp_icon}Contacter l’assistance WhatsApp</a></p>"
         )
         text_lines.extend(["", f"Assistance WhatsApp : {whatsapp_url}"])
 
     social_markup_items = []
     for label, url in active_socials:
+        icon_markup = ""
+        icon_key = label.lower()
+        if app_url and icon_key in {"whatsapp", "facebook"}:
+            icon_url = f"{app_url}/social-icons/{icon_key}.svg"
+            icon_markup = (
+                f"<img src=\"{html_escape(icon_url, quote=True)}\" width=\"18\" "
+                "height=\"18\" alt=\"\" "
+                "style=\"vertical-align:middle;margin-right:6px;border:0\">"
+            )
         social_markup_items.append(
             f"<a href=\"{html_escape(url, quote=True)}\" "
-            "style=\"color:#a8b7ca;text-decoration:underline\">"
+            "style=\"display:inline-block;color:#a8b7ca;text-decoration:underline\">"
+            f"{icon_markup}"
             f"{html_escape(label)}</a>"
         )
     social_markup = " · ".join(social_markup_items)
@@ -2820,13 +2860,19 @@ async def _deliver_transaction_email(outbox_id: str) -> None:
             support_config,
         )
         subject = {
-            "deposit_confirmed": "Votre dépôt a été effectué avec succès",
-            "withdrawal_success": "Votre retrait a été effectué avec succès",
-            "exchange_success": "Votre échange a été effectué avec succès",
-        }.get(
-            outbox["event_type"],
-            "Mise à jour de votre transaction Biz-transPay",
-        )
+            "deposit_confirmed": "Dépôt Biz-transPay confirmé",
+            "withdrawal_success": "Retrait Biz-transPay confirmé",
+            "exchange_success": "Échange Biz-transPay confirmé",
+        }.get(outbox["event_type"])
+        if outbox["event_type"] == "payment_final":
+            operation_label = (
+                "Paiement"
+                if record.get("type") in {"payment", "link_payment"}
+                else "Transfert"
+            )
+            subject = f"{operation_label} Biz-transPay confirmé"
+        if not subject:
+            subject = "Transaction Biz-transPay mise à jour"
         await send_resend_email(
             api_key=os.environ.get("RESEND_API_KEY", "").strip(),
             sender=status["sender_email"],
@@ -3218,10 +3264,10 @@ async def _check_login_security(identifier: str, request: Request,
                                 challenge_id: Optional[str],
                                 challenge_solution: Optional[str]) -> None:
     ip = _auth_ip(request)
-    states = [
-        await _auth_state("account", identifier),
-        await _auth_state("ip", ip),
-    ]
+    states = await asyncio.gather(
+        _auth_state("account", identifier),
+        _auth_state("ip", ip),
+    )
     now = datetime.now(timezone.utc)
     for index, state in enumerate(states):
         lock_until = state.get("lock_until")
@@ -3431,16 +3477,18 @@ async def _complete_login(user: dict, request: Request) -> None:
         or user.get("last_login_user_agent")
         and user.get("last_login_user_agent") != user_agent
     )
-    await db.users.update_one(
-        {"id": user["id"]},
-        {"$set": {"last_login_ip": ip, "last_login_user_agent": user_agent,
-                  "last_login_at": now_iso()}},
+    await asyncio.gather(
+        db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"last_login_ip": ip, "last_login_user_agent": user_agent,
+                      "last_login_at": now_iso()}},
+        ),
+        db.auth_events.insert_one({
+            "id": new_id(), "user_id": user["id"], "type": "login",
+            "ip": ip, "user_agent": user_agent, "unusual": unusual,
+            "created_at": now_iso(),
+        }),
     )
-    await db.auth_events.insert_one({
-        "id": new_id(), "user_id": user["id"], "type": "login",
-        "ip": ip, "user_agent": user_agent, "unusual": unusual,
-        "created_at": now_iso(),
-    })
     if _is_admin_account(user):
         await _queue_telegram_notification(
             user["id"],
@@ -3711,7 +3759,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
     await _check_login_security(
         ident, request, req.challenge_id, req.challenge_solution)
     u = await db.users.find_one({"$or": [{"email": ident}, {"username": ident}]}, {"_id": 0})
-    if not u or not verify_password(req.password, u["password_hash"]):
+    if not u or not await asyncio.to_thread(
+            verify_password, req.password, u["password_hash"]):
         await _record_login_failure(ident, request)
         raise HTTPException(401, "Identifiants invalides")
     u = await _ensure_platform_owner_role(u)
@@ -3737,8 +3786,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 "Code 2FA invalide ou expiré. Utilisez le code à 6 chiffres "
                 "actuellement affiché dans votre application d’authentification.",
             )
-    await _clear_login_account_failures(ident)
-    await _complete_login(u, request)
+    await asyncio.gather(
+        _clear_login_account_failures(ident),
+        _complete_login(u, request),
+    )
     await _issue_session(u["id"], request, response)
     return {"token": None, "user": user_to_public(u)}
 
@@ -10656,7 +10707,9 @@ async def _settle_izipay_payment(
                 "amount_crypto": gross_asset, "amount_currency": wallet_spec["id"],
                 "usdt_rate": rate, "fee": fee, "fee_currency": wallet_spec["id"],
                 "fee_pct": d.get("fee_pct"), "gateway_fee": gateway_fee,
-                "platform_fee": platform_fee, "amount_net": net,
+                "platform_fee": platform_fee,
+                "platform_fee_usdt": round(platform_fee * rate, 6),
+                "amount_net": net,
                 "amount_net_currency": wallet_spec["id"],
                 "amount_net_usdt": round(net * rate, 6),
                 "source": source,
@@ -11437,18 +11490,21 @@ async def finalize_link_payment(
         raise HTTPException(400, "Le code de validation n’a pas été accepté.")
     data = response.get("data") if isinstance(response.get("data"), dict) else response
     new_ref = _provider_reference(response)
-    await db.momo_deposits.update_one(
-        {"id": d["id"], "status": "pending"},
-        {"$set": {"auth_mode": None, "challenge_status": "submitted",
-                  "instructions": _plain_payment_instructions(data.get("instructions")),
-                  **({"provider_reference": new_ref} if new_ref else {})}},
-    )
-    await db.link_payments.update_one(
-        {"id": payment_id, "status": "pending"},
-        {"$set": {"auth_mode": None, "challenge_status": "submitted",
-                  "instructions": _plain_payment_instructions(data.get("instructions")),
-                  "finalize_capability_hash": None,
-                  "finalize_capability_expires_at": None}},
+    instructions = _plain_payment_instructions(data.get("instructions"))
+    await asyncio.gather(
+        db.momo_deposits.update_one(
+            {"id": d["id"], "status": "pending"},
+            {"$set": {"auth_mode": None, "challenge_status": "submitted",
+                      "instructions": instructions,
+                      **({"provider_reference": new_ref} if new_ref else {})}},
+        ),
+        db.link_payments.update_one(
+            {"id": payment_id, "status": "pending"},
+            {"$set": {"auth_mode": None, "challenge_status": "submitted",
+                      "instructions": instructions,
+                      "finalize_capability_hash": None,
+                      "finalize_capability_expires_at": None}},
+        ),
     )
     fresh = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
     return _public_link_payment_status(fresh or lp)
@@ -14076,7 +14132,7 @@ async def admin_benefits_details(period: str = "all",
     - currency : XOF | XAF | USDT (single filter)
     - type   : deposit | withdrawal | transfer | link_payment | payment | exchange
     - limit/offset : pagination
-    Returns : { total, items: [{tx_id, date, type, reference, user, currency, amount, platform_fee, gateway_fee, description}] }
+    Returns : { total, items: [{tx_id, date, type, reference, user, currency, amount, platform_fee, benefit_currency, gateway_fee, description}] }
     """
     match: dict = {"metadata.platform_fee": {"$exists": True, "$ne": None},
                    "status": {"$in": ["completed", "paid"]}}
@@ -14085,7 +14141,31 @@ async def admin_benefits_details(period: str = "all",
         since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         match["created_at"] = {"$gte": since_iso}
     if currency:
-        match["currency"] = currency.upper()
+        if currency.upper() == "USDT":
+            match["$and"] = [{
+                "$or": [
+                    {"currency": "USDT"},
+                    {
+                        "currency": {"$nin": ["XOF", "XAF", "USDT"]},
+                        "$and": [
+                            {"$or": [
+                                {"metadata.catalog_asset_id": {"$exists": True}},
+                                {"metadata.asset_code": {"$exists": True}},
+                                {"metadata.coin": {"$exists": True}},
+                                {"metadata.crypto": {"$exists": True}},
+                            ]},
+                            {"$or": [
+                                {"metadata.platform_fee_usdt": {
+                                    "$exists": True, "$ne": None}},
+                                {"metadata.usdt_rate": {
+                                    "$exists": True, "$ne": None}},
+                            ]},
+                        ],
+                    },
+                ],
+            }]
+        else:
+            match["currency"] = currency.upper()
     if type:
         match["type"] = type
 
@@ -14138,6 +14218,28 @@ async def admin_benefits_details(period: str = "all",
     for d in docs:
         meta = d.get("metadata") or {}
         u = users.get(d.get("user_id")) or {}
+        transaction_currency = str(d.get("currency") or "").upper()
+        has_crypto_asset = any(
+            meta.get(key)
+            for key in ("catalog_asset_id", "asset_code", "coin", "crypto")
+        )
+        benefit_currency = transaction_currency
+        platform_fee = float(meta.get("platform_fee") or 0)
+        if (transaction_currency not in {"XOF", "XAF", "USDT"}
+                and has_crypto_asset):
+            try:
+                converted_fee = meta.get("platform_fee_usdt")
+                if converted_fee is None:
+                    converted_fee = (
+                        float(meta.get("platform_fee") or 0)
+                        * float(meta.get("usdt_rate") or 0)
+                    )
+                converted_fee = float(converted_fee)
+                if math.isfinite(converted_fee):
+                    platform_fee = converted_fee
+                    benefit_currency = "USDT"
+            except (TypeError, ValueError):
+                pass
         items.append({
             "tx_id": d.get("id"),
             "date": d.get("created_at"),
@@ -14147,7 +14249,8 @@ async def admin_benefits_details(period: str = "all",
             "user": {"id": d.get("user_id"), **u},
             "currency": d.get("currency"),
             "amount": float(d.get("amount") or 0),
-            "platform_fee": float(meta.get("platform_fee") or 0),
+            "platform_fee": platform_fee,
+            "benefit_currency": benefit_currency,
             "gateway_fee": float(meta.get("gateway_fee") or 0),
             "fee_total": float(meta.get("fee") or 0),
             "description": d.get("description"),
@@ -14159,7 +14262,8 @@ async def admin_benefits_details(period: str = "all",
 async def admin_benefits(period: str = "all", admin=Depends(get_admin)):
     """Return the accumulated PLATFORM fees (i.e. Biz-transPay's own margin,
     excluding the gateway share) grouped by currency (XOF, XAF, USDT).
-    Reads `metadata.platform_fee` on completed transactions.
+    XOF/XAF/USDT fees use `metadata.platform_fee`. Crypto fees are converted
+    to USDT from the stored settlement equivalent or stored settlement rate.
     period = "7d" | "30d" | "all"
     """
     match: dict = {"metadata.platform_fee": {"$exists": True, "$ne": None},
@@ -14184,6 +14288,60 @@ async def admin_benefits(period: str = "all", admin=Depends(get_admin)):
         if cur in buckets:
             buckets[cur] = {"total": float(row.get("total") or 0),
                             "count": int(row.get("count") or 0)}
+
+    crypto_asset_match = {
+        "$or": [
+            {"metadata.catalog_asset_id": {"$exists": True}},
+            {"metadata.asset_code": {"$exists": True}},
+            {"metadata.coin": {"$exists": True}},
+            {"metadata.crypto": {"$exists": True}},
+        ],
+    }
+    crypto_base_match = {
+        **match,
+        "currency": {"$nin": ["XOF", "XAF", "USDT"]},
+        "$and": [crypto_asset_match],
+    }
+    direct_crypto_pipeline = [
+        {"$match": {
+            **crypto_base_match,
+            "metadata.platform_fee_usdt": {"$exists": True, "$ne": None},
+        }},
+        {"$group": {
+            "_id": "$currency",
+            "total": {"$sum": "$metadata.platform_fee_usdt"},
+            "count": {"$sum": 1},
+        }},
+    ]
+    async for row in db.transactions.aggregate(direct_crypto_pipeline):
+        buckets["USDT"]["total"] += float(row.get("total") or 0)
+        buckets["USDT"]["count"] += int(row.get("count") or 0)
+
+    # Older crypto records kept their native platform fee and the exchange
+    # rate captured at settlement, but not the precomputed USDT equivalent.
+    # Group by that stored rate so historical totals remain accurate without
+    # consulting a live exchange rate.
+    legacy_crypto_pipeline = [
+        {"$match": {
+            **crypto_base_match,
+            "metadata.platform_fee_usdt": {"$exists": False},
+            "metadata.usdt_rate": {"$exists": True, "$ne": None},
+        }},
+        {"$group": {
+            "_id": "$metadata.usdt_rate",
+            "native_fee_total": {"$sum": "$metadata.platform_fee"},
+            "count": {"$sum": 1},
+        }},
+    ]
+    async for row in db.transactions.aggregate(legacy_crypto_pipeline):
+        try:
+            rate = float(row.get("_id") or 0)
+            native_total = float(row.get("native_fee_total") or 0)
+            if math.isfinite(rate) and math.isfinite(native_total):
+                buckets["USDT"]["total"] += native_total * rate
+                buckets["USDT"]["count"] += int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            continue
     return {
         "period": period,
         "xof": buckets["XOF"],

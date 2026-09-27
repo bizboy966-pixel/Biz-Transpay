@@ -252,7 +252,7 @@ function BenefitsDetailsDrawer({ onClose, period }) {
                   </td>
                   <td className="px-3 py-2 text-right">
                     <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-mono font-bold">
-                      +{fmtAmt(it.platform_fee, it.currency)} {it.currency}
+                      +{fmtAmt(it.platform_fee, it.benefit_currency || it.currency)} {it.benefit_currency || it.currency}
                     </span>
                   </td>
                 </tr>

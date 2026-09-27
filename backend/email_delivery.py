@@ -74,7 +74,7 @@ async def send_resend_email(
             request_url,
             headers=headers,
             json={
-                "from": sender,
+                "from": f"Biz-transPay <{sender}>",
                 "to": [recipient],
                 "subject": subject,
                 "text": text,

@@ -829,10 +829,17 @@ function MoMoLinkTracker({ payment }) {
               className="min-w-0 flex-1 rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-mono tracking-widest outline-none focus:border-blue-500"
             />
             <button type="button" onClick={finalize} disabled={finalizing || !otp.trim()} data-testid="pay-finalize"
-              className="shrink-0 rounded-lg bg-[#2563EB] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
-              {finalizing ? 'Validation…' : 'Valider'}
+              className="shrink-0 inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">
+              {finalizing
+                ? <><span aria-hidden="true" className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />Vérification…</>
+                : 'Valider'}
             </button>
           </div>
+          {finalizing && (
+            <p role="status" className="text-[10px] text-blue-700">
+              Vérification sécurisée auprès du prestataire…
+            </p>
+          )}
           {finalizeError && <p className="text-[11px] font-semibold text-red-700">{finalizeError}</p>}
         </div>
       )}
