@@ -9,6 +9,7 @@ import { useFeatures } from '@/hooks/useFeatures';
 import ComingSoon from '@/components/ComingSoon';
 import { OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
+import DashboardPageLogo from '@/components/DashboardPageLogo';
 import { COUNTRIES } from '@/constants/countries';
 import { ACTIVE_MOMO_DEPOSIT_KEY, MOMO_PENDING_SECONDS } from '@/constants/payment';
 import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
@@ -161,18 +162,11 @@ export default function Deposit() {
       </div>
 
       {step === 1 && (
-        <figure
-          className="w-full overflow-hidden rounded-xl border border-slate-100 bg-slate-950"
-          style={{ aspectRatio: '2.2 / 1' }}
-        >
-          <img
-            src="/images/deposit-illustration.webp"
-            alt="Flèche verte indiquant un dépôt d’argent dans un portefeuille"
-            className="h-full w-full object-cover object-center"
-            loading="lazy"
-            decoding="async"
-          />
-        </figure>
+        <DashboardPageLogo
+          src="/images/deposit-dashboard-icon.webp"
+          alt="Dépôt"
+          className="py-1"
+        />
       )}
 
       <div className="flex items-center gap-1.5 sm:gap-2">

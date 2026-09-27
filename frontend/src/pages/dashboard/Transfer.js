@@ -10,6 +10,7 @@ import { COUNTRIES } from '@/constants/countries';
 import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
+import DashboardPageLogo from '@/components/DashboardPageLogo';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -79,18 +80,11 @@ export default function Transfer() {
       )}
 
       {step === 1 && (
-        <figure
-          className="w-full overflow-hidden rounded-xl border border-slate-100 bg-slate-950"
-          style={{ aspectRatio: '2.2 / 1' }}
-        >
-          <img
-            src="/images/transfer-illustration.webp"
-            alt="Globe entouré de flèches illustrant un transfert d’argent"
-            className="h-full w-full object-cover object-center"
-            loading="lazy"
-            decoding="async"
-          />
-        </figure>
+        <DashboardPageLogo
+          src="/images/transfer-dashboard-icon.webp"
+          alt="Transfert"
+          className="py-1"
+        />
       )}
 
       <div className="flex items-center gap-1.5 sm:gap-2">

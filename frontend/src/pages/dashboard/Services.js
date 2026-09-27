@@ -1,5 +1,6 @@
 import { Link2, ArrowRight, ShieldCheck, Code2, Smartphone, Send } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import DashboardPageLogo from '@/components/DashboardPageLogo';
 
 export default function Services() {
   const navigate = useNavigate();
@@ -10,6 +11,12 @@ export default function Services() {
         <h1 className="font-cabinet text-2xl font-extrabold tracking-tighter text-slate-900">Services</h1>
         <p className="text-slate-500 text-xs mt-1">Choisissez un service pour développer votre activité numérique.</p>
       </div>
+
+      <DashboardPageLogo
+        src="/images/services-dashboard-icon.webp"
+        alt="Services"
+        className="py-1"
+      />
 
       <div className="space-y-3">
         <button
