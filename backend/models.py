@@ -224,6 +224,8 @@ class TransferRequest(BaseModel):
     crypto: Optional[str] = None       # e.g. "USDT", "BTC", "ETH"
     network: Optional[str] = None      # e.g. "TRC20", "BEP20", "ERC20", "SOLANA"
     wallet_address: Optional[str] = None
+    asset_code: Optional[str] = Field(None, min_length=1, max_length=32)
+    destination_memo: Optional[str] = Field(None, max_length=120)
 
 
 # ---------- Deposit (Stripe) ----------

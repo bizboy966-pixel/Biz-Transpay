@@ -172,6 +172,8 @@ async def create_payout(
     amount: str,             # decimal string
     destination_address: str,
     merchant_reference: str,
+    destination_memo: Optional[str] = None,
+    fee_bearer: str = "merchant",
     metadata: Optional[dict] = None,
     idempotency_key: Optional[str] = None,
 ) -> dict:
@@ -183,7 +185,10 @@ async def create_payout(
         "amount": str(amount),
         "destinationAddress": destination_address,
         "merchantReference": merchant_reference,
+        "feeBearer": fee_bearer,
     }
+    if destination_memo:
+        body["destinationMemo"] = destination_memo
     # IzichangePay /v1/payouts rejects any extra fields (strict schema).
     # Metadata is kept in our own DB only.
     _ = metadata

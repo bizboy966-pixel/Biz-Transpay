@@ -4026,6 +4026,212 @@ async def user_send_message(msg: ChatMessage, uid: str = Depends(get_current_use
 # deposits. Editable end-to-end from the Admin Panel. Applied uniformly on:
 #   - direct deposits (/api/deposits/mobile-money)
 #   - link payments (public checkout)
+# Easy Change Pay exposes provider-specific asset codes. Keep the product
+# catalogue fixed to the 16 requested assets, then resolve each entry against
+# the provider's live /v1/assets response before exposing or using it.
+EASY_CHANGE_ASSET_SPECS = (
+    {"id": "USDC.POLYGON", "coin": "USDC", "name": "USD Coin",
+     "network_code": "POLYGON", "network_name": "Polygon",
+     "network_aliases": ("POLYGON", "MATIC"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$"},
+    {"id": "USDC.SOL", "coin": "USDC", "name": "USD Coin",
+     "network_code": "SOL", "network_name": "Solana",
+     "network_aliases": ("SOL", "SOLANA"),
+     "address_regex": r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"},
+    {"id": "USDC.BEP20", "coin": "USDC", "name": "USD Coin",
+     "network_code": "BEP20", "network_name": "BNB Smart Chain (BEP20)",
+     "network_aliases": ("BEP20", "BSC", "BNBSMARTCHAIN"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$"},
+    {"id": "USDC.ERC20", "coin": "USDC", "name": "USD Coin",
+     "network_code": "ERC20", "network_name": "Ethereum (ERC20)",
+     "network_aliases": ("ERC20", "ETH", "ETHEREUM"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$"},
+    {"id": "USDT.POLYGON", "coin": "USDT", "name": "Tether",
+     "network_code": "POLYGON", "network_name": "Polygon",
+     "network_aliases": ("POLYGON", "MATIC"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$"},
+    {"id": "USDT.BEP20", "coin": "USDT", "name": "Tether",
+     "network_code": "BEP20", "network_name": "BNB Smart Chain (BEP20)",
+     "network_aliases": ("BEP20", "BSC", "BNBSMARTCHAIN"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$"},
+    {"id": "USDT.SOL", "coin": "USDT", "name": "Tether",
+     "network_code": "SOL", "network_name": "Solana",
+     "network_aliases": ("SOL", "SOLANA"),
+     "address_regex": r"^[1-9A-HJ-NP-Za-km-z]{32,44}$"},
+    {"id": "USDT.TRC20", "coin": "USDT", "name": "Tether",
+     "network_code": "TRC20", "network_name": "Tron (TRC20)",
+     "network_aliases": ("TRC20", "TRX", "TRON"),
+     "address_regex": r"^T[A-Za-z1-9]{33}$"},
+    {"id": "USDT.TON", "coin": "USDT", "name": "Tether",
+     "network_code": "TON", "network_name": "TON",
+     "network_aliases": ("TON", "TONCOIN"),
+     "address_regex": r"^[A-Za-z0-9_-]{48}$", "memo_required": True},
+    {"id": "USDT.ERC20", "coin": "USDT", "name": "Tether",
+     "network_code": "ERC20", "network_name": "Ethereum (ERC20)",
+     "network_aliases": ("ERC20", "ETH", "ETHEREUM"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$"},
+    {"id": "BNB.BNB", "coin": "BNB", "name": "BNB",
+     "network_code": "BNB", "network_name": "BNB (natif)",
+     "network_aliases": ("BNB", "BSC", "BEP2", "BEP20", "BNBCHAIN",
+                         "BNBSMARTCHAIN"),
+     "address_regex": r"^(0x[a-fA-F0-9]{40}|bnb1[0-9a-z]{38})$",
+     "native": True},
+    {"id": "BTC.BTC", "coin": "BTC", "name": "Bitcoin",
+     "network_code": "BTC", "network_name": "Bitcoin (natif)",
+     "network_aliases": ("BTC", "BITCOIN", "BITCOINMAINNET"),
+     "address_regex": r"^(bc1|[13])[a-zA-HJ-NP-Z0-9]{25,62}$",
+     "native": True},
+    {"id": "SOL.SOL", "coin": "SOL", "name": "Solana",
+     "network_code": "SOL", "network_name": "Solana (natif)",
+     "network_aliases": ("SOL", "SOLANA"),
+     "address_regex": r"^[1-9A-HJ-NP-Za-km-z]{32,44}$",
+     "native": True},
+    {"id": "TON.TON", "coin": "TON", "name": "Toncoin",
+     "network_code": "TON", "network_name": "TON (natif)",
+     "network_aliases": ("TON", "TONCOIN"),
+     "address_regex": r"^[A-Za-z0-9_-]{48}$", "memo_required": True,
+     "native": True},
+    {"id": "TRX.TRX", "coin": "TRX", "name": "TRON",
+     "network_code": "TRX", "network_name": "TRON (natif)",
+     "network_aliases": ("TRX", "TRON"),
+     "address_regex": r"^T[A-Za-z1-9]{33}$", "native": True},
+    {"id": "ETH.ETH", "coin": "ETH", "name": "Ethereum",
+     "network_code": "ETH", "network_name": "Ethereum (natif)",
+     "network_aliases": ("ETH", "ETHEREUM"),
+     "address_regex": r"^0x[a-fA-F0-9]{40}$", "native": True},
+)
+_EASY_CHANGE_ASSET_BY_ID = {
+    spec["id"]: spec for spec in EASY_CHANGE_ASSET_SPECS
+}
+
+
+def _easypay_normalize_network(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _easypay_network_matches(spec: dict, value: Any) -> bool:
+    candidate = _easypay_normalize_network(value)
+    if not candidate:
+        return False
+    aliases = {
+        _easypay_normalize_network(alias)
+        for alias in (*spec.get("network_aliases", ()), spec["network_code"])
+    }
+    return any(candidate == alias or candidate.startswith(alias)
+               for alias in aliases if alias)
+
+
+def _easypay_provider_asset_spec(asset: dict) -> Optional[dict]:
+    """Map one provider asset to a requested product asset, never by ticker alone."""
+    if not isinstance(asset, dict):
+        return None
+    asset_code = str(asset.get("assetCode") or "").strip().upper()
+    code_coin, separator, code_network = asset_code.partition(".")
+    coin = str(asset.get("coinCode") or code_coin).strip().upper()
+    if not coin:
+        return None
+    network_values = [
+        code_network if separator else "",
+        asset.get("network"),
+        asset.get("networkName"),
+        asset.get("blockchainCode"),
+        asset.get("blockchainName"),
+    ]
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        if coin != spec["coin"]:
+            continue
+        if not separator and spec.get("native") and asset_code == spec["coin"]:
+            return spec
+        if any(_easypay_network_matches(spec, value) for value in network_values):
+            return spec
+    return None
+
+
+def _easypay_catalog_map(assets: list[dict]) -> dict[str, dict]:
+    """Return one deterministic provider row per requested catalog asset."""
+    matched: dict[str, tuple[tuple[int, int], dict]] = {}
+    for asset in assets or []:
+        spec = _easypay_provider_asset_spec(asset)
+        if not spec:
+            continue
+        provider_code = str(asset.get("assetCode") or "").strip().upper()
+        score = (
+            int(bool(asset.get("isActive"))),
+            int(provider_code == spec["id"]),
+        )
+        previous = matched.get(spec["id"])
+        if previous is None or score > previous[0]:
+            matched[spec["id"]] = (score, asset)
+    return {asset_id: row for asset_id, (_score, row) in matched.items()}
+
+
+def _easypay_resolve_asset(
+    assets: list[dict],
+    *,
+    asset_code: Optional[str] = None,
+    coin: Optional[str] = None,
+    network: Optional[str] = None,
+) -> tuple[Optional[dict], Optional[dict]]:
+    """Resolve a provider code or legacy coin/network pair to the fixed catalog."""
+    requested_code = str(asset_code or "").strip().upper()
+    if requested_code:
+        provider_asset = next((
+            item for item in assets or []
+            if str(item.get("assetCode") or "").strip().upper() == requested_code
+        ), None)
+        spec = _easypay_provider_asset_spec(provider_asset) if provider_asset else None
+        if not spec:
+            return None, None
+        if coin and str(coin).strip().upper() != spec["coin"]:
+            return None, None
+        if network and not _easypay_network_matches(spec, network):
+            return None, None
+        return spec, provider_asset
+    requested_coin = str(coin or "").strip().upper()
+    requested_network = str(network or "").strip().upper()
+    spec = next((
+        item for item in EASY_CHANGE_ASSET_SPECS
+        if item["coin"] == requested_coin
+        and _easypay_network_matches(item, requested_network)
+    ), None)
+    if not spec:
+        return None, None
+    return spec, _easypay_catalog_map(assets).get(spec["id"])
+
+
+def _easypay_asset_enabled(section: dict, spec: dict) -> bool:
+    disabled = {
+        str(asset_id).strip().upper()
+        for asset_id in (section.get("disabled_assets") or [])
+    }
+    hidden_coins = {
+        str(coin).strip().upper()
+        for coin in (section.get("hidden_coins") or [])
+    }
+    return spec["id"] not in disabled and spec["coin"] not in hidden_coins
+
+
+def _easypay_disabled_asset_ids(section: dict) -> set[str]:
+    disabled = {
+        str(asset_id).strip().upper()
+        for asset_id in (section.get("disabled_assets") or [])
+    }
+    hidden_coins = {
+        str(coin).strip().upper()
+        for coin in (section.get("hidden_coins") or [])
+    }
+    disabled.update(
+        spec["id"] for spec in EASY_CHANGE_ASSET_SPECS
+        if spec["coin"] in hidden_coins
+    )
+    return disabled
+
+
+def _easypay_fixed_fee(section: dict, field: str, spec: dict) -> float:
+    values = section.get(field) or {}
+    return float(values.get(spec["id"], values.get(spec["coin"], 0)) or 0)
+
+
 DEFAULT_DEPOSIT_CONFIG = {
     "id": "deposit_config",
     "mobile_money": {
@@ -4067,6 +4273,9 @@ DEFAULT_DEPOSIT_CONFIG = {
         "fees": {},
         "fees_gateway": {},
         "fees_platform": {},
+        "fees_gateway_fixed": {},
+        "fees_platform_fixed": {},
+        "disabled_assets": [],
         # Coins hidden from the deposit surface (Deposit form, /crypto/assets,
         # merchant API create-payment path). Managed via the trash icon in
         # /admin/deposit-config.
@@ -4741,6 +4950,7 @@ DEFAULT_TRANSFER_CONFIG = {
         ],
         # USDT-specific enabled network codes shown to users when they choose USDT
         "usdt_networks": ["TRC20", "BEP20", "ERC20"],
+        "disabled_assets": [],
     },
 }
 
@@ -4982,23 +5192,20 @@ async def transfer_config(uid: str = Depends(get_current_user_id)):
 
 def _public_fee_crypto(crypto: dict) -> dict:
     crypto = crypto or {}
-    hidden = {str(code).upper() for code in (crypto.get("hidden_coins") or [])}
-    fees = crypto.get("fees") or {}
-    gateway = crypto.get("fees_gateway") or {}
-    platform = crypto.get("fees_platform") or {}
-    gateway_fixed = crypto.get("fees_gateway_fixed") or {}
-    platform_fixed = crypto.get("fees_platform_fixed") or {}
-    codes = {
-        str(code).upper()
-        for code in set(fees) | set(gateway) | set(platform)
-        if str(code).upper() not in hidden
-    }
     assets = []
-    for code in sorted(codes):
-        gateway_pct, platform_pct = _crypto_fee_split_pct(crypto, code)
-        fixed = float(gateway_fixed.get(code, 0) or 0) + float(platform_fixed.get(code, 0) or 0)
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        if not _easypay_asset_enabled(crypto, spec):
+            continue
+        gateway_pct, platform_pct = _crypto_fee_split_pct(
+            crypto, spec["coin"], spec["id"])
+        fixed = (
+            _easypay_fixed_fee(crypto, "fees_gateway_fixed", spec)
+            + _easypay_fixed_fee(crypto, "fees_platform_fixed", spec)
+        )
         assets.append({
-            "code": code,
+            "code": spec["coin"],
+            "asset_id": spec["id"],
+            "network": spec["network_code"],
             "fee_pct": gateway_pct + platform_pct,
             "fee_fixed": fixed,
         })
@@ -5860,29 +6067,29 @@ async def transfer(req: TransferRequest, request: Request,
         # ----- Validate crypto/network against IziPay assets (live) -----
         coin_upper = req.crypto.upper()
         net_upper = req.network.upper()
-        asset_code = f"{coin_upper}.{net_upper}"
+        if not izipay.is_configured():
+            raise HTTPException(503, "Passerelle crypto non configurée")
         try:
-            assets = await izipay.list_assets() if izipay.is_configured() else []
-        except Exception:
-            assets = []
-        asset = next((a for a in assets
-                      if (a.get("assetCode") or "").upper() == asset_code
-                      and a.get("isActive")), None)
-        if not asset:
-            # Fallback: allow if configured in static config (backwards compat)
-            crypto = next((c for c in ccfg.get("cryptos", [])
-                           if c.get("code", "").upper() == coin_upper and c.get("active", True)), None)
-            if not crypto or net_upper not in [n.upper() for n in crypto.get("networks", [])]:
-                raise HTTPException(400, f"Le couple {req.crypto}/{req.network} n'est pas disponible")
-            min_amt = float(crypto.get("min", 0))
-            max_amt = float(crypto.get("max", 10**12))
-        else:
-            min_amt = float(asset.get("minimum") or 0)
-            max_amt = float(asset.get("maximum") or 10**12)
-        # Validate address against known network regex
-        regex = _NETWORK_REGEX.get(net_upper) or next(
-            (n.get("address_regex") for n in ccfg.get("networks", [])
-             if n.get("code", "").upper() == net_upper), None)
+            assets = await izipay.list_assets()
+        except Exception as e:
+            logger.warning("IziChangePay payout asset validation failed: %s", e)
+            raise HTTPException(503, "Catalogue crypto temporairement indisponible")
+        spec, asset = _easypay_resolve_asset(
+            assets, asset_code=req.asset_code, coin=coin_upper, network=net_upper)
+        if not spec or not asset:
+            raise HTTPException(400, f"Le couple {req.crypto}/{req.network} n'est pas disponible")
+        asset_code = str(asset.get("assetCode") or "").strip().upper()
+        if not asset.get("isActive"):
+            raise HTTPException(400, "Cet actif n'est pas activé chez Easy Change Pay")
+        if not _easypay_asset_enabled(ccfg, spec):
+            raise HTTPException(400, "Cet actif est désactivé par l'administrateur")
+        min_amt = float(asset.get("minimum") or 0)
+        max_amt = float(asset.get("maximum") or 10**12)
+        memo_required = bool(asset.get("memoRequired") or spec.get("memo_required"))
+        if memo_required and not (req.destination_memo or "").strip():
+            raise HTTPException(400, "Le mémo/tag de destination est requis pour ce réseau")
+        # Validate address against the fixed network definition.
+        regex = spec.get("address_regex") or _NETWORK_REGEX.get(net_upper)
         if regex and not re.match(regex, req.wallet_address.strip()):
             raise HTTPException(400, f"Adresse invalide pour le réseau {req.network}")
         if req.amount < min_amt or req.amount > max_amt:
@@ -5891,7 +6098,7 @@ async def transfer(req: TransferRequest, request: Request,
             raise HTTPException(400, "Bénéficiaire des frais invalide")
         rate = await _crypto_usdt_rate(coin_upper)
         fee_components = await _crypto_withdrawal_fee_components(
-            coin_upper, req.amount)
+            coin_upper, req.amount, asset_id=spec["id"])
         fee_pct = fee_components["fee_pct"]
         fee_coin = fee_components["fee"]
         if fee_pct >= 100 or fee_coin >= req.amount:
@@ -5932,7 +6139,9 @@ async def transfer(req: TransferRequest, request: Request,
                                  metadata={"transfer_type": "biz_to_crypto",
                                            "crypto": coin_upper, "network": net_upper,
                                            "asset_code": asset_code,
+                                            "catalog_asset_id": spec["id"],
                                            "wallet_address": req.wallet_address,
+                                            "destination_memo": (req.destination_memo or "").strip() or None,
                                             "amount_gross": req.amount,
                                             "amount_currency": coin_upper,
                                             "usdt_rate": rate,
@@ -5968,6 +6177,8 @@ async def transfer(req: TransferRequest, request: Request,
                 amount=f"{recipient_gets:.6f}",
                 destination_address=req.wallet_address.strip(),
                 merchant_reference=tx_out.id,
+                destination_memo=(req.destination_memo or "").strip() or None,
+                fee_bearer="merchant",
                 metadata={"user_id": uid, "tx_id": tx_out.id},
                 idempotency_key=f"crypto-transfer-{transfer_operation_id}",
             )
@@ -6180,11 +6391,7 @@ async def stripe_webhook(request: Request):
 # ==================== CRYPTO ASSETS (public catalog) ====================
 @api.get("/crypto/assets")
 async def crypto_assets():
-    """Public list of active crypto assets available on IzichangePay.
-    Used by /dashboard/deposit and public payment link pages to show a list of
-    supported cryptocurrencies. Filters out coins hidden by the admin in the
-    deposit-side hidden_coins list.
-    """
+    """Public list of active, locally enabled assets in the fixed catalog."""
     if not izipay.is_configured():
         return []
     try:
@@ -6195,40 +6402,49 @@ async def crypto_assets():
     dep_crypto = dep_cfg.get("crypto") or {}
     if not dep_crypto.get("enabled", True):
         return []
-    hidden = {str(c).upper() for c in (dep_crypto.get("hidden_coins") or [])}
     deposit_fixed_gateway = dep_crypto.get("fees_gateway_fixed") or {}
     deposit_fixed_platform = dep_crypto.get("fees_platform_fixed") or {}
     rate_cfg = await get_platform_config()
     result = []
-    for a in assets:
-        if not a.get("isActive"):
+    provider_catalog = _easypay_catalog_map(assets)
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        a = provider_catalog.get(spec["id"])
+        if not a or not a.get("isActive"):
             continue
-        asset_code = str(a.get("assetCode") or "")
-        code = asset_code.split(".")[0].upper()
-        if code in hidden:
+        if not _easypay_asset_enabled(dep_crypto, spec):
             continue
+        asset_code = str(a.get("assetCode") or "").strip().upper()
+        code = spec["coin"]
         rate = _configured_crypto_usdt_rate(rate_cfg, code)
         if rate is None:
             continue
-        fee_gateway_pct, fee_platform_pct = _crypto_fee_split_pct(dep_crypto, code)
+        fee_gateway_pct, fee_platform_pct = _crypto_fee_split_pct(
+            dep_crypto, code, spec["id"])
+        gateway_fixed = float(
+            deposit_fixed_gateway.get(
+                spec["id"], deposit_fixed_gateway.get(code, 0)) or 0)
+        platform_fixed = float(
+            deposit_fixed_platform.get(
+                spec["id"], deposit_fixed_platform.get(code, 0)) or 0)
         result.append({
             "asset_code": asset_code,
+            "catalog_asset_id": spec["id"],
             "coin": code,
-            "network": a.get("network"),
-            "blockchain_name": a.get("blockchainName"),
+            "network": spec["network_code"],
+            "network_name": spec["network_name"],
+            "blockchain_name": a.get("blockchainName") or spec["network_name"],
             "minimum": float(a.get("minimum") or 0),
             "maximum": float(a.get("maximum") or 10**12),
-            "memo_required": a.get("memoRequired", False),
+            "memo_required": bool(a.get("memoRequired") or spec.get("memo_required")),
             "memo_type": a.get("memoType"),
             "usdt_rate": rate,
             "credit_currency": "USDT",
             "fee_pct": fee_gateway_pct + fee_platform_pct,
             "gateway_fee_pct": fee_gateway_pct,
             "platform_fee_pct": fee_platform_pct,
-            "gateway_fee_fixed": float(deposit_fixed_gateway.get(code, 0) or 0),
-            "platform_fee_fixed": float(deposit_fixed_platform.get(code, 0) or 0),
-            "fee_fixed": float(deposit_fixed_gateway.get(code, 0) or 0)
-                         + float(deposit_fixed_platform.get(code, 0) or 0),
+            "gateway_fee_fixed": gateway_fixed,
+            "platform_fee_fixed": platform_fixed,
+            "fee_fixed": gateway_fixed + platform_fixed,
         })
     return result
 
@@ -6246,27 +6462,23 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
         raise HTTPException(400, "Montant crypto invalide")
 
     asset_code = req.asset_code.strip().upper()
-    if "." not in asset_code:
-        raise HTTPException(400, "Actif crypto invalide")
-    coin, network = asset_code.split(".", 1)
     dep_cfg = await get_deposit_config()
     dep_crypto = dep_cfg.get("crypto") or {}
     if not dep_crypto.get("enabled", True):
         raise HTTPException(403, "Les dépôts crypto sont désactivés")
-    if coin in {str(c).upper() for c in (dep_crypto.get("hidden_coins") or [])}:
-        raise HTTPException(400, "Cette cryptomonnaie n'est pas disponible")
     try:
         assets = await izipay.list_assets()
     except Exception as e:
         logger.warning("izipay asset validation failed: %s", e)
         raise HTTPException(503, "Catalogue crypto temporairement indisponible")
-    asset = next((
-        item for item in assets
-        if str(item.get("assetCode") or "").upper() == asset_code
-        and item.get("isActive")
-    ), None)
-    if not asset:
+    spec, asset = _easypay_resolve_asset(assets, asset_code=asset_code)
+    if not spec or not asset:
         raise HTTPException(400, "Cryptomonnaie ou réseau non pris en charge")
+    coin, network = spec["coin"], spec["network_code"]
+    if not asset.get("isActive"):
+        raise HTTPException(400, "Cet actif n'est pas activé chez Easy Change Pay")
+    if not _easypay_asset_enabled(dep_crypto, spec):
+        raise HTTPException(400, "Cet actif est désactivé par l'administrateur")
     minimum = float(asset.get("minimum") or 0)
     maximum = float(asset.get("maximum") or 10**12)
     if req.amount < minimum or req.amount > maximum:
@@ -6295,9 +6507,11 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
         intent_id_local = existing["id"]
     else:
         rate = await _crypto_usdt_rate(coin)
-        fee_components = await _crypto_fee_components(coin, "deposit", req.amount)
+        fee_components = await _crypto_fee_components(
+            coin, "deposit", req.amount, asset_id=spec["id"])
         fee_pct = fee_components["fee_pct"]
-        gateway_fee_pct, platform_fee_pct = _crypto_fee_split_pct(dep_crypto, coin)
+        gateway_fee_pct, platform_fee_pct = _crypto_fee_split_pct(
+            dep_crypto, coin, spec["id"])
         gateway_fee_fixed = fee_components["gateway_fee_fixed"]
         platform_fee_fixed = fee_components["platform_fee_fixed"]
         fee_fixed = (
@@ -6323,6 +6537,7 @@ async def create_crypto_deposit(req: CryptoDepositRequest,
             "request_fingerprint": request_fingerprint,
             "amount": req.amount,
             "asset_code": asset_code,
+            "catalog_asset_id": spec["id"],
             "coin": coin,
             "network": network,
             "customer_email": req.email,
@@ -8943,7 +9158,7 @@ async def fedapay_webhook(request: Request):
 
 
 # ==================== IZICHANGEPAY WEBHOOK ====================
-async def _crypto_fee_pct(coin: str) -> float:
+async def _crypto_fee_pct(coin: str, asset_id: Optional[str] = None) -> float:
     """Return the DEPOSIT fee percentage (as a float, e.g. 4.0) configured
     in the Admin Panel for a given coin. Falls back to transfer_config
     (retro-compat for pre-split installs) then to 4.0.
@@ -8954,13 +9169,14 @@ async def _crypto_fee_pct(coin: str) -> float:
     coin_up = (coin or "").upper()
     dep_cfg = await get_deposit_config()
     dep_fees = (((dep_cfg.get("crypto") or {}).get("fees")) or {})
-    if coin_up in dep_fees:
+    asset_key = str(asset_id or "").upper()
+    if asset_key in dep_fees or coin_up in dep_fees:
         gw_pct, pf_pct = _crypto_fee_split_pct(
-            (dep_cfg.get("crypto") or {}), coin_up)
+            (dep_cfg.get("crypto") or {}), coin_up, asset_key)
         return gw_pct + pf_pct
     cfg = await get_transfer_config()
     gw_pct, pf_pct = _crypto_fee_split_pct(
-        (cfg.get("crypto") or {}), coin_up)
+        (cfg.get("crypto") or {}), coin_up, asset_key)
     return gw_pct + pf_pct
 
 
@@ -8973,7 +9189,10 @@ def _apply_fee(amount: float, fee_pct: float) -> tuple[float, float]:
     return fee, net
 
 
-async def _crypto_platform_fee(coin: str, direction: str, gross: float) -> tuple[float, float]:
+async def _crypto_platform_fee(
+    coin: str, direction: str, gross: float,
+    asset_id: Optional[str] = None,
+) -> tuple[float, float]:
     """Return (gateway_fee, platform_fee) in amount for a crypto tx.
     direction = "deposit" reads deposit_config.crypto, "withdrawal" reads
     transfer_config.crypto. Falls back to 0 platform if not configured.
@@ -8984,29 +9203,37 @@ async def _crypto_platform_fee(coin: str, direction: str, gross: float) -> tuple
     else:
         cfg = await get_transfer_config()
     section = (cfg.get("crypto") or {})
-    gw_pct, pf_pct = _crypto_fee_split_pct(section, coin_up)
+    gw_pct, pf_pct = _crypto_fee_split_pct(section, coin_up, asset_id)
     gateway_fee = round(float(gross) * (gw_pct / 100.0), 6)
     platform_fee = round(float(gross) * (pf_pct / 100.0), 6)
     return gateway_fee, platform_fee
 
 
-def _crypto_fee_split_pct(section: dict, coin: str) -> tuple[float, float]:
+def _crypto_fee_split_pct(
+    section: dict, coin: str, asset_id: Optional[str] = None,
+) -> tuple[float, float]:
     """Return gateway/platform percentages while preserving legacy total fees."""
     coin_up = (coin or "").upper()
+    asset_key = str(asset_id or "").upper()
+    lookup_keys = [asset_key, coin_up] if asset_key else [coin_up]
     fees = section.get("fees") or {}
     fees_g = section.get("fees_gateway") or {}
     fees_p = section.get("fees_platform") or {}
-    total_pct = float(fees.get(coin_up, 4.0) or 0)
-    platform_pct = float(fees_p.get(coin_up, 0) or 0)
-    gateway_pct = (
-        float(fees_g[coin_up] or 0)
-        if coin_up in fees_g
-        else max(0.0, total_pct - platform_pct)
+    total_pct = next(
+        (float(fees[key] or 0) for key in lookup_keys if key in fees), 4.0)
+    platform_pct = next(
+        (float(fees_p[key] or 0) for key in lookup_keys if key in fees_p), 0.0)
+    gateway_pct = next(
+        (float(fees_g[key] or 0) for key in lookup_keys if key in fees_g),
+        max(0.0, total_pct - platform_pct),
     )
     return gateway_pct, platform_pct
 
 
-async def _crypto_fee_components(coin: str, direction: str, gross: float) -> dict:
+async def _crypto_fee_components(
+    coin: str, direction: str, gross: float,
+    asset_id: Optional[str] = None,
+) -> dict:
     """Compute fee components in the selected crypto's native units."""
     cfg = (
         await get_deposit_config()
@@ -9015,9 +9242,17 @@ async def _crypto_fee_components(coin: str, direction: str, gross: float) -> dic
     )
     section = cfg.get("crypto") or {}
     coin_up = (coin or "").upper()
-    gw_pct, pf_pct = _crypto_fee_split_pct(section, coin_up)
-    gw_fixed = float((section.get("fees_gateway_fixed") or {}).get(coin_up, 0) or 0)
-    pf_fixed = float((section.get("fees_platform_fixed") or {}).get(coin_up, 0) or 0)
+    asset_key = str(asset_id or "").upper()
+    lookup_keys = [asset_key, coin_up] if asset_key else [coin_up]
+    gw_pct, pf_pct = _crypto_fee_split_pct(section, coin_up, asset_key)
+    gateway_fixed = section.get("fees_gateway_fixed") or {}
+    platform_fixed = section.get("fees_platform_fixed") or {}
+    gw_fixed = next(
+        (float(gateway_fixed[key] or 0) for key in lookup_keys
+         if key in gateway_fixed), 0.0)
+    pf_fixed = next(
+        (float(platform_fixed[key] or 0) for key in lookup_keys
+         if key in platform_fixed), 0.0)
     gateway_fee = round(float(gross) * gw_pct / 100.0 + gw_fixed, 6)
     platform_fee = round(float(gross) * pf_pct / 100.0 + pf_fixed, 6)
     return {
@@ -9030,9 +9265,12 @@ async def _crypto_fee_components(coin: str, direction: str, gross: float) -> dic
     }
 
 
-async def _crypto_withdrawal_fee_components(coin: str, gross: float) -> dict:
+async def _crypto_withdrawal_fee_components(
+    coin: str, gross: float, asset_id: Optional[str] = None,
+) -> dict:
     """Compatibility wrapper for existing withdrawal callers."""
-    return await _crypto_fee_components(coin, "withdrawal", gross)
+    return await _crypto_fee_components(
+        coin, "withdrawal", gross, asset_id=asset_id)
 
 
 def _momo_platform_fee(op_cfg: dict, gross: float) -> tuple[float, float]:
@@ -9828,10 +10066,12 @@ async def _settle_izipay_payment(
             platform_fixed = float(d.get("platform_fee_fixed") or 0)
         else:
             components = await _crypto_fee_components(
-                coin, "deposit", gross_asset)
+                coin, "deposit", gross_asset,
+                asset_id=d.get("catalog_asset_id"))
             dep_cfg = await get_deposit_config()
             gateway_pct, platform_pct = _crypto_fee_split_pct(
-                dep_cfg.get("crypto") or {}, coin)
+                dep_cfg.get("crypto") or {}, coin,
+                d.get("catalog_asset_id"))
             gateway_fixed = components["gateway_fee_fixed"]
             platform_fixed = components["platform_fee_fixed"]
         gateway_fee = round(
@@ -10305,9 +10545,7 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
     if not link:
         raise HTTPException(404, "Lien introuvable ou inactif")
     asset_code = req.asset_code.strip().upper()
-    coin, separator, network = asset_code.partition(".")
-    if not separator:
-        raise HTTPException(400, "Actif crypto invalide")
+    coin, _separator, network = asset_code.partition(".")
     lp_id = uuid.uuid5(
         uuid.NAMESPACE_URL,
         f"izipay-link:{link['id']}:{req.idempotency_key}",
@@ -10354,13 +10592,18 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
         except Exception as e:
             logger.warning("IziChangePay link asset validation failed: %s", e)
             raise HTTPException(503, "Catalogue crypto temporairement indisponible")
-        asset = next((
-            item for item in assets
-            if str(item.get("assetCode") or "").upper() == asset_code
-            and item.get("isActive")
-        ), None)
-        if not asset:
+        spec, asset = _easypay_resolve_asset(assets, asset_code=asset_code)
+        if not spec or not asset:
             raise HTTPException(400, "Cryptomonnaie ou réseau non pris en charge")
+        if not asset.get("isActive"):
+            raise HTTPException(400, "Cet actif n'est pas activé chez Easy Change Pay")
+        dep_cfg = await get_deposit_config()
+        dep_crypto = dep_cfg.get("crypto") or {}
+        if not dep_crypto.get("enabled", True):
+            raise HTTPException(403, "Les dépôts crypto sont désactivés")
+        if not _easypay_asset_enabled(dep_crypto, spec):
+            raise HTTPException(400, "Cet actif est désactivé par l'administrateur")
+        coin, network = spec["coin"], spec["network_code"]
         rate = await _crypto_usdt_rate(coin)
         amount_coin = round(amount / rate, 6)
         if amount_coin < float(asset.get("minimum") or 0) or amount_coin > float(
@@ -10368,7 +10611,7 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
             raise HTTPException(
                 400, "Le montant du lien est hors des limites de cet actif crypto")
         fee_components = await _crypto_fee_components(
-            coin, "deposit", amount_coin)
+            coin, "deposit", amount_coin, asset_id=spec["id"])
         fee_pct = fee_components["fee_pct"]
         fee_fixed = (
             fee_components["gateway_fee_fixed"]
@@ -10398,6 +10641,7 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
             "gateway_fee": gateway_fee, "platform_fee": platform_fee,
             "fee_bearer": "client" if customer_pays_fee else "merchant",
             "asset_code": asset_code, "coin": coin, "network": network,
+            "catalog_asset_id": spec["id"],
             "usdt_rate": rate, "credit_currency": "USDT",
             "customer_email": req.email, "customer_name": req.full_name,
             "refund_address": req.refund_address.strip(),
@@ -12749,63 +12993,69 @@ async def admin_list_conversions(admin=Depends(get_admin),
 
 @api.get("/crypto/coins")
 async def public_crypto_coins(uid: str = Depends(get_current_user_id)):
-    """Authenticated user endpoint: full list of coins available on IziPay
-    grouped by ticker, each with the list of supported networks and the fee %
-    configured in the Admin Panel (default 4%).
-    Used by the Transfer → Crypto form and any user-facing crypto selector.
-    Returns: [{coin, name, fee_pct, networks: [{code, name, address_regex, asset_code}]}]
-    """
-    coins: dict[str, dict] = {}
-    if izipay.is_configured():
-        try:
-            assets = await izipay.list_assets()
-            for a in assets:
-                if not a.get("isActive"):
-                    continue
-                asset_code = a.get("assetCode") or ""
-                if "." not in asset_code:
-                    continue
-                coin, network = asset_code.split(".", 1)
-                entry = coins.setdefault(coin, {
-                    "coin": coin,
-                    "name": a.get("coin") or coin,
-                    "networks": [],
-                })
-                entry["networks"].append({
-                    "code": network,
-                    "name": a.get("networkName") or network,
-                    "asset_code": asset_code,
-                    "address_regex": _NETWORK_REGEX.get(network),
-                    "min": float(a.get("minimum") or 0),
-                    "max": float(a.get("maximum") or 10**12),
-                })
-        except Exception:
-            pass
+    """Return only locally enabled and provider-active requested assets."""
     cfg = await get_transfer_config()
     crypto_section = (cfg.get("crypto") or {})
-    fees_gw_fixed = (crypto_section.get("fees_gateway_fixed") or {})
-    fees_pf_fixed = (crypto_section.get("fees_platform_fixed") or {})
-    hidden = {str(c).upper() for c in (crypto_section.get("hidden_coins") or [])}
+    if not crypto_section.get("enabled", True) or not izipay.is_configured():
+        return []
+    try:
+        assets = await izipay.list_assets()
+    except Exception:
+        return []
+    provider_catalog = _easypay_catalog_map(assets)
     rate_cfg = await get_platform_config()
-    result = []
-    for c in sorted(coins.keys()):
-        c = c.upper()
-        if c in hidden:
+    coins: dict[str, dict] = {}
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        asset = provider_catalog.get(spec["id"])
+        if not asset or not asset.get("isActive"):
             continue
-        usdt_rate = _configured_crypto_usdt_rate(rate_cfg, c)
+        if not _easypay_asset_enabled(crypto_section, spec):
+            continue
+        coin = spec["coin"]
+        usdt_rate = _configured_crypto_usdt_rate(rate_cfg, coin)
         if usdt_rate is None:
             continue
-        entry = coins[c]
-        gw_pct, pf_pct = _crypto_fee_split_pct(crypto_section, c)
-        entry["fee_pct"] = gw_pct + pf_pct
-        entry["gateway_fee_pct"] = gw_pct
-        entry["platform_fee_pct"] = pf_pct
-        entry["gateway_fee_fixed"] = float(fees_gw_fixed.get(c, 0) or 0)
-        entry["platform_fee_fixed"] = float(fees_pf_fixed.get(c, 0) or 0)
-        entry["fee_fixed"] = entry["gateway_fee_fixed"] + entry["platform_fee_fixed"]
+        gw_pct, pf_pct = _crypto_fee_split_pct(
+            crypto_section, coin, spec["id"])
+        gateway_fixed = _easypay_fixed_fee(
+            crypto_section, "fees_gateway_fixed", spec)
+        platform_fixed = _easypay_fixed_fee(
+            crypto_section, "fees_platform_fixed", spec)
+        entry = coins.setdefault(coin, {
+            "coin": coin,
+            "name": spec["name"],
+            "networks": [],
+        })
+        entry["networks"].append({
+            "code": spec["network_code"],
+            "name": spec["network_name"],
+            "asset_code": str(asset.get("assetCode") or "").strip().upper(),
+            "catalog_asset_id": spec["id"],
+            "address_regex": spec["address_regex"],
+            "min": float(asset.get("minimum") or 0),
+            "max": float(asset.get("maximum") or 10**12),
+            "memo_required": bool(
+                asset.get("memoRequired") or spec.get("memo_required")),
+            "memo_type": asset.get("memoType"),
+            "fee_pct": gw_pct + pf_pct,
+            "gateway_fee_pct": gw_pct,
+            "platform_fee_pct": pf_pct,
+            "gateway_fee_fixed": gateway_fixed,
+            "platform_fee_fixed": platform_fixed,
+            "fee_fixed": gateway_fixed + platform_fixed,
+            "usdt_rate": usdt_rate,
+        })
+        entry_gw, entry_pf = _crypto_fee_split_pct(crypto_section, coin)
+        entry_fixed = (
+            _easypay_fixed_fee(crypto_section, "fees_gateway_fixed",
+                               {"id": coin, "coin": coin})
+            + _easypay_fixed_fee(crypto_section, "fees_platform_fixed",
+                                 {"id": coin, "coin": coin})
+        )
+        entry["fee_pct"] = entry_gw + entry_pf
+        entry["fee_fixed"] = entry_fixed
         entry["usdt_rate"] = usdt_rate
-        result.append(entry)
-    return result
+    return [coins[coin] for coin in sorted(coins)]
 
 
 # Common on-chain address regex per network — used by user & admin sides.
@@ -12830,65 +13080,48 @@ _NETWORK_REGEX: dict[str, str] = {
 async def admin_crypto_coins(direction: str = "withdrawal",
                              refresh: bool = False,
                              admin=Depends(get_admin)):
-    """List all coins available on IziChange, grouped by ticker, with the
-    per-coin fee split (gateway/platform) and hidden flag for the requested
-    direction. `direction` = "withdrawal" (default, reads transfer_config)
-    or "deposit" (reads deposit_config).
-    Returns: [{coin, name, fee_pct, gateway_fee_pct, platform_fee_pct, hidden}]
-    """
-    coins: dict[str, str] = {}
+    """Admin view of the fixed asset catalog and provider availability."""
+    if direction not in {"deposit", "withdrawal"}:
+        raise HTTPException(400, "Direction crypto invalide")
+    assets: list[dict] = []
     if izipay.is_configured():
         try:
             assets = await izipay.list_assets(force=refresh)
-            for a in assets:
-                if not a.get("isActive"):
-                    continue
-                # Use assetCode prefix as the canonical ticker (USDT.TRC20 → USDT).
-                # This is consistent across all coins, unlike the "coin" field.
-                code = (a.get("assetCode") or "").split(".")[0]
-                if code and code not in coins:
-                    coins[code] = a.get("coin") or code
         except Exception:
-            pass
+            logger.warning("Easy Change Pay admin catalog refresh failed")
     if direction == "deposit":
         cfg = await get_deposit_config()
         section = cfg.get("crypto") or {}
     else:
         cfg = await get_transfer_config()
         section = cfg.get("crypto") or {}
-    fees_g_fixed = section.get("fees_gateway_fixed") or {}
-    fees_p_fixed = section.get("fees_platform_fixed") or {}
-    hidden = {str(c).upper() for c in (section.get("hidden_coins") or [])}
+    provider_catalog = _easypay_catalog_map(assets)
     rate_cfg = await get_platform_config()
-    # Always include configured coins even if not returned by API (e.g. temporarily disabled)
-    configured_coins = set()
-    for field in (
-        "fees", "fees_gateway", "fees_platform",
-        "fees_gateway_fixed", "fees_platform_fixed",
-    ):
-        coin_fees = section.get(field) or {}
-        if isinstance(coin_fees, dict):
-            configured_coins.update(str(c).upper() for c in coin_fees)
-    for c in configured_coins:
-        coins.setdefault(c, c)
-    for c in hidden:
-        coins.setdefault(c, c)
     result = []
-    for c in sorted(coins.keys()):
-        c = c.upper()
-        gw, pf = _crypto_fee_split_pct(section, c)
-        gw_fixed = float(fees_g_fixed[c]) if c in fees_g_fixed else 0.0
-        pf_fixed = float(fees_p_fixed[c]) if c in fees_p_fixed else 0.0
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        asset = provider_catalog.get(spec["id"])
+        gw, pf = _crypto_fee_split_pct(
+            section, spec["coin"], spec["id"])
+        gw_fixed = _easypay_fixed_fee(section, "fees_gateway_fixed", spec)
+        pf_fixed = _easypay_fixed_fee(section, "fees_platform_fixed", spec)
         result.append({
-            "coin": c,
-            "name": coins[c],
+            "asset_id": spec["id"],
+            "coin": spec["coin"],
+            "name": spec["name"],
+            "network": spec["network_name"],
+            "network_code": spec["network_code"],
+            "provider_asset_code": (
+                str(asset.get("assetCode") or "").strip().upper()
+                if asset else None),
+            "provider_active": bool(asset and asset.get("isActive")),
+            "provider_available": bool(asset),
+            "enabled": _easypay_asset_enabled(section, spec),
             "fee_pct": gw + pf,
             "gateway_fee_pct": gw,
             "platform_fee_pct": pf,
             "gateway_fee_fixed": gw_fixed,
             "platform_fee_fixed": pf_fixed,
-            "usdt_rate": _configured_crypto_usdt_rate(rate_cfg, c),
-            "hidden": c in hidden,
+            "usdt_rate": _configured_crypto_usdt_rate(rate_cfg, spec["coin"]),
         })
     return result
 

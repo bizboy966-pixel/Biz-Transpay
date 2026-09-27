@@ -660,6 +660,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   const [fullName, setFullName] = useState(balance?.full_name || '');
   const [email, setEmail] = useState(balance?.email || '');
   const [walletAddress, setWalletAddress] = useState('');
+  const [destinationMemo, setDestinationMemo] = useState('');
   const [amount, setAmount] = useState('');
   const [feeBearer, setFeeBearer] = useState('sender');
   const [description, setDescription] = useState('');
@@ -667,6 +668,10 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   const [pending, setPending] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
   const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_crypto');
+  useEffect(() => {
+    setWalletAddress('');
+    setDestinationMemo('');
+  }, [cryptoCode, networkCode]);
 
   // Live address validation
   const addressValidation = useMemo(() => {
@@ -681,8 +686,8 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
 
   const amt = parseFloat(amount) || 0;
   const rate = Number(crypto?.usdt_rate || 0);
-  const feePct = Number(crypto?.fee_pct ?? 4);
-  const feeFixed = Number(crypto?.fee_fixed ?? 0);
+  const feePct = Number(network?.fee_pct ?? crypto?.fee_pct ?? 4);
+  const feeFixed = Number(network?.fee_fixed ?? crypto?.fee_fixed ?? 0);
   const fee = amt * feePct / 100 + feeFixed;
   const feeUsdt = fee * rate;
   const totalDebit = (feeBearer === 'sender' ? amt + fee : amt) * rate;
@@ -703,6 +708,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   // any non-empty value (backend does the definitive check).
   const addressOk = !!walletAddress && (addressValidation.ok !== false);
   const canSubmit = crypto && network && rate > 0 && addressOk
+    && (!network.memo_required || !!destinationMemo.trim())
     && amt >= min && amt <= max && fee < amt
     && totalDebit <= bal && fullName && email && turnstileToken;
 
@@ -712,6 +718,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
   if (!network) missing.push('réseau');
   if (!walletAddress) missing.push('adresse du portefeuille');
   else if (addressValidation.ok === false) missing.push('adresse valide');
+  if (network?.memo_required && !destinationMemo.trim()) missing.push('mémo/tag de destination');
   if (!(amt >= min)) missing.push(`montant ≥ ${min}`);
   if (amt > max) missing.push(`montant ≤ ${max}`);
   if (amt > 0 && totalDebit > bal) missing.push('solde suffisant');
@@ -724,7 +731,8 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
       return;
     }
     const fingerprint = JSON.stringify([
-      cryptoCode, networkCode, walletAddress.trim(), amt, feeBearer,
+      cryptoCode, networkCode, network?.asset_code, walletAddress.trim(),
+      destinationMemo.trim(), amt, feeBearer,
       fullName.trim(), email.trim().toLowerCase(),
     ]);
     if (!idempotencyRef.current.key
@@ -740,7 +748,9 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_crypto', recipient: walletAddress,
         recipient_name: fullName,
-        crypto: cryptoCode, network: networkCode, wallet_address: walletAddress,
+        crypto: cryptoCode, network: networkCode, asset_code: network?.asset_code,
+        wallet_address: walletAddress,
+        destination_memo: destinationMemo.trim() || undefined,
         fee_bearer: feeBearer, amount: amt, currency, description,
         idempotency_key: idempotencyRef.current.key,
         turnstile_token: turnstileToken,
@@ -802,11 +812,9 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
           className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm bg-white"
         >
           {coins.map((c) => {
-            const fx = parseFloat(c.fee_fixed) || 0;
-            const feeStr = fx > 0 ? `${fx} ${c.coin} + ${c.fee_pct}%` : `${c.fee_pct}%`;
             return (
               <option key={c.coin} value={c.coin} data-testid={`crypto-opt-${c.coin}`}>
-                {c.coin} — {c.name} · frais {feeStr}
+                {c.coin} — {c.name}
               </option>
             );
           })}
@@ -823,6 +831,12 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
                 className={`p-2 sm:p-3 rounded-xl border text-left transition-colors ${networkCode === n.code ? 'border-[#2563EB] bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}>
                 <div className="font-cabinet font-bold text-[11px] sm:text-xs text-slate-900">{n.code}</div>
                 <div className="text-[9px] sm:text-[10px] text-slate-500 truncate">{n.name}</div>
+                <div className="text-[9px] sm:text-[10px] text-slate-500">
+                  Frais {Number(n.fee_pct || 0).toFixed(2)}%
+                  {Number(n.fee_fixed || 0) > 0
+                    ? ` + ${n.fee_fixed} ${cryptoCode}`
+                    : ''}
+                </div>
               </button>
             ))}
           </div>
@@ -836,6 +850,20 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         )}
       </Field>
 
+      {network?.memo_required && (
+        <Field label={`Mémo / tag de destination${network.memo_type ? ` (${network.memo_type})` : ''}`}>
+          <input
+            data-testid="crypto-destination-memo"
+            value={destinationMemo}
+            onChange={(e) => setDestinationMemo(e.target.value)}
+            maxLength={120}
+            required
+            placeholder="Mémo fourni par le portefeuille bénéficiaire"
+            className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm font-mono"
+          />
+        </Field>
+      )}
+
       <Field label={`Montant (${cryptoCode})`}>
         <input data-testid="crypto-amount" type="number" step="0.0001" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
         <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min} · Max {max.toLocaleString()} {cryptoCode} · Solde : {bal.toLocaleString()} USDT</div>
@@ -847,6 +875,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         <div className="p-3 sm:p-4 bg-slate-50 rounded-xl space-y-1 sm:space-y-1.5 text-xs sm:text-sm" data-testid="crypto-summary">
           <Row l="Réseau" v={network?.name || networkCode} />
           <Row l="Montant envoyé" v={`${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`} />
+          {network?.memo_required && <Row l="Mémo / tag" v={destinationMemo} />}
           <Row l="Taux appliqué" v={`1 ${cryptoCode} = ${rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT`} />
           <Row l="Frais appliqués" v={`${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} (${feeLabel}) · ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} />
           <Row l="Total débité de votre solde" v={`${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`} strong />
@@ -871,6 +900,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="crypto-confirm-modal" rows={[
           ['Cryptomonnaie', `${cryptoCode} · ${network?.name || networkCode}`],
           ['Adresse', walletAddress, 'mono'],
+          ...(network?.memo_required ? [['Mémo / tag', destinationMemo, 'mono']] : []),
           ['Montant envoyé', `${amt.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'strong'],
           ['Taux', `1 ${cryptoCode} = ${rate.toLocaleString(undefined, { maximumFractionDigits: 8 })} USDT`],
           ['Frais', `${fee.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode} · ${feeUsdt.toLocaleString(undefined, { maximumFractionDigits: 6 })} USDT`],
