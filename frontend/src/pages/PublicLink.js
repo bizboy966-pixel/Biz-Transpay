@@ -13,6 +13,25 @@ import { OperatorLogo } from '@/components/PaymentBrand';
 import { COUNTRIES } from '@/constants/countries';
 import { MOMO_PENDING_SECONDS } from '@/constants/payment';
 
+function formatPrice(value, maximumFractionDigits = 0) {
+  return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits });
+}
+
+function linkPrice(link, crypto = false) {
+  const amount = crypto ? (link.crypto_amount ?? link.amount) : link.amount;
+  const minimum = crypto
+    ? (link.crypto_min_amount ?? link.min_amount)
+    : link.min_amount;
+  const maximum = crypto
+    ? (link.crypto_max_amount ?? link.max_amount)
+    : link.max_amount;
+  const currency = crypto ? 'USDT' : 'FCFA';
+  if (link.amount_type === 'free') {
+    return `${formatPrice(minimum, crypto ? 6 : 0)} – ${formatPrice(maximum, crypto ? 6 : 0)} ${currency}`;
+  }
+  return `${formatPrice(amount, crypto ? 6 : 0)} ${currency}`;
+}
+
 export default function PublicLink() {
   const { slug } = useParams();
   const [link, setLink] = useState(null);
@@ -41,6 +60,9 @@ export default function PublicLink() {
       </div>
     </div>
   );
+  const activePrice = method === 'crypto'
+    ? linkPrice(link, true)
+    : method === 'mm' ? linkPrice(link) : null;
 
   return (
     <div className="bt-page min-h-screen flex flex-col" data-testid="public-link-page">
@@ -51,7 +73,14 @@ export default function PublicLink() {
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6">
         <div className="max-w-md w-full">
           <div className="mb-3 flex items-center justify-between">
-            <button onClick={() => step > 1 && setStep(step - 1)} disabled={step === 1} className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-slate-600 disabled:opacity-40" data-testid="btn-back-pay">
+            <button onClick={() => {
+              if (step === 2) {
+                setMethod(null);
+                setStep(1);
+              } else if (step > 1) {
+                setStep(step - 1);
+              }
+            }} disabled={step === 1} className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-slate-600 disabled:opacity-40" data-testid="btn-back-pay">
               <ArrowLeft className="w-3.5 h-3.5" /> Retour
             </button>
             <div className="flex items-center gap-1">
@@ -68,13 +97,23 @@ export default function PublicLink() {
               <LinkLogo src={link.logo} alt={link.title} size="lg" className="mx-auto" />
               <h1 className="font-cabinet font-extrabold text-base sm:text-lg text-slate-900 mt-3">{link.title}</h1>
               {link.description && <p className="text-[11px] sm:text-xs text-slate-500 mt-1 leading-relaxed">{link.description}</p>}
-              <div className="mt-3 inline-flex items-center justify-center px-3 py-1.5 rounded-full bg-blue-50 text-[#2563EB] text-xs font-bold">
-                {link.amount_type === 'free'
-                  ? `${Number(link.min_amount || 0).toLocaleString()} – ${Number(link.max_amount || 0).toLocaleString()}`
-                  : Number(link.amount || 0).toLocaleString()}
-                <span className="ml-1.5 text-[10px] font-semibold">
-                  {link.currency === 'UNIVERSAL' ? 'Devise au choix' : link.currency}
-                </span>
+              <div className="mt-3 rounded-xl bg-blue-50 px-3 py-2 text-[#2563EB] text-xs font-bold" data-testid="public-link-price">
+                {activePrice ? (
+                  <div data-testid={method === 'crypto' ? 'public-price-crypto' : 'public-price-mm'}>
+                    {method === 'crypto' ? 'Crypto · ' : 'Mobile Money · '}{activePrice}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div data-testid="public-price-mm">
+                      <div className="text-[9px] uppercase tracking-wide text-slate-500">Mobile Money</div>
+                      <div className="mt-0.5">{linkPrice(link)}</div>
+                    </div>
+                    <div data-testid="public-price-crypto">
+                      <div className="text-[9px] uppercase tracking-wide text-slate-500">Crypto</div>
+                      <div className="mt-0.5">{linkPrice(link, true)}</div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -148,15 +187,17 @@ function MethodBtn({ I, c, title, sub, onClick, testId, disabled }) {
 
 function CryptoLinkForm({ link, turnstile, onSuccess }) {
   const isFree = link.amount_type === 'free';
-  // Universal links let the customer pay in USDT via crypto — always show USDT here.
-  const displayCurrency = link.currency === 'UNIVERSAL' ? 'USDT' : link.currency;
+  const displayCurrency = 'USDT';
+  const cryptoAmount = link.crypto_amount ?? link.amount;
+  const cryptoMin = link.crypto_min_amount ?? link.min_amount;
+  const cryptoMax = link.crypto_max_amount ?? link.max_amount;
   const [assets, setAssets] = useState([]);
   const [assetsError, setAssetsError] = useState('');
   const [assetCode, setAssetCode] = useState('USDT.TRC20');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [refundAddress, setRefundAddress] = useState('');
-  const [amount, setAmount] = useState(isFree ? String(link.min_amount || '') : String(link.amount));
+  const [amount, setAmount] = useState(isFree ? String(cryptoMin || '') : String(cryptoAmount || ''));
   const [loading, setLoading] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
   const turnstileRef = useRef(null);
@@ -181,8 +222,8 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
   const feeUsdt = feeCoin * rate;
   const customerPaysFee = feeBearer !== 'owner';
   const chargedCoin = rate > 0 ? (amt + (customerPaysFee ? feeUsdt : 0)) / rate : 0;
-  const belowMin = isFree && amt < (link.min_amount || 0);
-  const aboveMax = isFree && amt > (link.max_amount || 0);
+  const belowMin = isFree && amt < (cryptoMin || 0);
+  const aboveMax = isFree && amt > (cryptoMax || 0);
   const canSubmit = fullName && email && refundAddress && amt > 0 && !belowMin
     && !aboveMax && rate > 0 && chargedCoin >= Number(asset?.minimum ?? 0)
     && chargedCoin <= Number(asset?.maximum ?? 10 ** 12)
@@ -197,7 +238,7 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
       return;
     }
     const fingerprint = JSON.stringify([
-      link.id, isFree ? amt : Number(link.amount), assetCode,
+      link.id, isFree ? amt : Number(cryptoAmount), assetCode,
       fullName.trim(), email.trim().toLowerCase(), refundAddress.trim(),
     ]);
     if (!idempotencyRef.current.key
@@ -244,11 +285,11 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
         <div className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-80">{link.title}</div>
         {isFree ? (
           <>
-            <input data-testid="pay-amount" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} min={link.min_amount} max={link.max_amount} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold outline-none placeholder:text-white/50" />
-            <div className="mt-1 text-[9px] sm:text-[10px] opacity-80">{link.min_amount} – {link.max_amount} {displayCurrency}</div>
+            <input data-testid="pay-amount" type="number" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} min={cryptoMin} max={cryptoMax} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold outline-none placeholder:text-white/50" />
+            <div className="mt-1 text-[9px] sm:text-[10px] opacity-80">{formatPrice(cryptoMin, 6)} – {formatPrice(cryptoMax, 6)} {displayCurrency}</div>
           </>
         ) : (
-          <div className="font-cabinet text-xl sm:text-2xl font-extrabold mt-1">{Number(link.amount).toLocaleString(undefined, { maximumFractionDigits: displayCurrency === 'USDT' ? 6 : 0 })} <span className="text-xs sm:text-sm opacity-80">{displayCurrency}</span></div>
+          <div className="font-cabinet text-xl sm:text-2xl font-extrabold mt-1">{formatPrice(cryptoAmount, 6)} <span className="text-xs sm:text-sm opacity-80">{displayCurrency}</span></div>
         )}
         {link.description && <div className="mt-1 text-[10px] sm:text-[11px] opacity-80">{link.description}</div>}
       </div>
@@ -591,7 +632,11 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
       {isFree && (
         <Field label={`Montant (${selectedOp?.currency || 'XOF'})`}>
           <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required
-            min={selectedOp?.min || 100} max={selectedOp?.max || undefined}
+            min={Math.max(Number(link.min_amount || 0), Number(selectedOp?.min || 100))}
+            max={Math.min(
+              Number(link.max_amount || Number.MAX_SAFE_INTEGER),
+              Number(selectedOp?.max || Number.MAX_SAFE_INTEGER),
+            )}
             className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
         </Field>
       )}

@@ -98,12 +98,19 @@ export default function Links() {
                 <LinkLogo src={l.logo} alt={l.title} size="sm" />
                 <div className="min-w-0 flex-1">
                   <div className="font-cabinet font-bold text-sm text-slate-900 truncate">{l.title}</div>
-                  <div className="mt-0.5 font-cabinet font-extrabold text-lg text-[#2563EB]">
-                    {l.amount_type === 'free' ? (
-                      <>{(l.min_amount || 0).toLocaleString()} – {(l.max_amount || 0).toLocaleString()} <span className="text-xs text-slate-500">{l.currency === 'UNIVERSAL' ? '(devise au choix)' : l.currency}</span></>
-                    ) : (
-                      <>{l.amount.toLocaleString()} <span className="text-xs text-slate-500">{l.currency === 'UNIVERSAL' ? '(devise au choix)' : l.currency}</span></>
-                    )}
+                  <div className="mt-0.5 space-y-0.5 font-cabinet font-extrabold text-[#2563EB]" data-testid={`link-prices-${l.id}`}>
+                    <div className="text-base">
+                      {l.amount_type === 'free'
+                        ? `${Number(l.min_amount || 0).toLocaleString()} – ${Number(l.max_amount || 0).toLocaleString()}`
+                        : Number(l.amount || 0).toLocaleString()}
+                      <span className="ml-1 text-xs text-slate-500">FCFA</span>
+                    </div>
+                    <div className="text-sm">
+                      {l.amount_type === 'free'
+                        ? `${Number(l.crypto_min_amount ?? l.min_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })} – ${Number(l.crypto_max_amount ?? l.max_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}`
+                        : Number(l.crypto_amount ?? l.amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                      <span className="ml-1 text-xs text-slate-500">USDT</span>
+                    </div>
                   </div>
                 </div>
                 <div className="shrink-0"><StatusBadge s={st} /></div>
@@ -154,8 +161,11 @@ function LinkForm({ initial, onClose, onSaved }) {
     logo: initial?.logo || '',
     amount_type: initial?.amount_type || 'fixed',
     amount: initial?.amount || '',
+    crypto_amount: initial?.crypto_amount ?? initial?.amount ?? '',
     min_amount: initial?.min_amount || '',
     max_amount: initial?.max_amount || '',
+    crypto_min_amount: initial?.crypto_min_amount ?? initial?.min_amount ?? '',
+    crypto_max_amount: initial?.crypto_max_amount ?? initial?.max_amount ?? '',
     currency: initial?.currency || 'UNIVERSAL',
     fee_bearer: initial?.fee_bearer || 'customer',
   });
@@ -174,8 +184,11 @@ function LinkForm({ initial, onClose, onSaved }) {
         logo: form.logo || null,
         amount_type: form.amount_type,
         amount: form.amount_type === 'fixed' ? parseFloat(form.amount) : 0,
+        crypto_amount: form.amount_type === 'fixed' ? parseFloat(form.crypto_amount) : null,
         min_amount: form.amount_type === 'free' ? parseFloat(form.min_amount) : null,
         max_amount: form.amount_type === 'free' ? parseFloat(form.max_amount) : null,
+        crypto_min_amount: form.amount_type === 'free' ? parseFloat(form.crypto_min_amount) : null,
+        crypto_max_amount: form.amount_type === 'free' ? parseFloat(form.crypto_max_amount) : null,
         fee_bearer: form.fee_bearer,
       };
       if (isEdit) {
@@ -233,25 +246,49 @@ function LinkForm({ initial, onClose, onSaved }) {
           </div>
 
           {form.amount_type === 'fixed' ? (
-            <div>
-              <FormLabel>{LINK_COPY.amount}</FormLabel>
-              <input data-testid="link-amount" type="number" required min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="5000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid sm:grid-cols-2 gap-3">
               <div>
-                  <FormLabel>{LINK_COPY.minimum}</FormLabel>
-                <input data-testid="link-min" type="number" required min="0.01" step="0.01" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder="500" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                <FormLabel>Montant fixe (FCFA)</FormLabel>
+                <input data-testid="link-amount" type="number" required min="0.01" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="5000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
               </div>
               <div>
-                  <FormLabel>{LINK_COPY.maximum}</FormLabel>
-                <input data-testid="link-max" type="number" required min="0.01" step="0.01" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder="50000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                <FormLabel>Montant fixe (USDT)</FormLabel>
+                <input data-testid="link-crypto-amount" type="number" required min="0.000001" step="0.000001" value={form.crypto_amount} onChange={(e) => setForm({ ...form, crypto_amount: e.target.value })} placeholder="8.50" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+              </div>
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-2 gap-3">
+              <div className="rounded-xl border border-slate-200 p-3">
+                <div className="mb-2 text-xs font-bold text-slate-700">Franc CFA</div>
+                <div className="space-y-2">
+                  <div>
+                    <FormLabel>{LINK_COPY.minimum}</FormLabel>
+                    <input data-testid="link-min" type="number" required min="0.01" step="0.01" value={form.min_amount} onChange={(e) => setForm({ ...form, min_amount: e.target.value })} placeholder="500" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                  </div>
+                  <div>
+                    <FormLabel>{LINK_COPY.maximum}</FormLabel>
+                    <input data-testid="link-max" type="number" required min="0.01" step="0.01" value={form.max_amount} onChange={(e) => setForm({ ...form, max_amount: e.target.value })} placeholder="50000" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                  </div>
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-3">
+                <div className="mb-2 text-xs font-bold text-slate-700">USDT</div>
+                <div className="space-y-2">
+                  <div>
+                    <FormLabel>Montant minimum</FormLabel>
+                    <input data-testid="link-crypto-min" type="number" required min="0.000001" step="0.000001" value={form.crypto_min_amount} onChange={(e) => setForm({ ...form, crypto_min_amount: e.target.value })} placeholder="1" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                  </div>
+                  <div>
+                    <FormLabel>Montant maximum</FormLabel>
+                    <input data-testid="link-crypto-max" type="number" required min="0.000001" step="0.000001" value={form.crypto_max_amount} onChange={(e) => setForm({ ...form, crypto_max_amount: e.target.value })} placeholder="100" className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+                  </div>
+                </div>
               </div>
             </div>
           )}
           <div className="mt-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg text-[10px] sm:text-[11px] text-blue-800 flex items-start gap-1.5">
             <Info className="w-3 h-3 mt-0.5 shrink-0" />
-            <span>Le lien est <b>universel</b> : votre client choisira lui-même sa devise (XOF, XAF ou USDT) et son moyen de paiement (Mobile Money ou Crypto) au moment de payer.</span>
+            <span>Définissez séparément le prix en <b>FCFA</b> et en <b>USDT</b>. Le client verra le montant correspondant au moyen de paiement choisi.</span>
           </div>
         </Section>
 
@@ -358,10 +395,13 @@ function Section({ title, children, testId }) {
 }
 
 function DetailsModal({ link, url, onClose }) {
-  const amount = link.amount_type === 'free'
-    ? `${(link.min_amount || 0).toLocaleString()} – ${(link.max_amount || 0).toLocaleString()}`
-    : (link.amount || 0).toLocaleString();
   const currency = link.currency === 'UNIVERSAL' ? 'Devise au choix' : link.currency;
+  const cfaAmount = link.amount_type === 'free'
+    ? `${Number(link.min_amount || 0).toLocaleString()} – ${Number(link.max_amount || 0).toLocaleString()}`
+    : Number(link.amount || 0).toLocaleString();
+  const usdtAmount = link.amount_type === 'free'
+    ? `${Number(link.crypto_min_amount ?? link.min_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })} – ${Number(link.crypto_max_amount ?? link.max_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}`
+    : Number(link.crypto_amount ?? link.amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 });
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
@@ -375,7 +415,8 @@ function DetailsModal({ link, url, onClose }) {
           <button type="button" onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4" /></button>
         </div>
         <div className="mt-5 grid grid-cols-2 gap-2 text-xs">
-          <Detail label="Montant" value={`${amount} ${currency}`} />
+          <Detail label="Montant Mobile Money" value={`${cfaAmount} FCFA`} />
+          <Detail label="Montant crypto" value={`${usdtAmount} USDT`} />
           <Detail label="Frais" value={link.fee_bearer === 'owner' ? 'Pris en charge par vous' : 'Payés par le client'} />
           <Detail label="Paiements reçus" value={`${link.payments_received || 0}`} />
           <Detail label="Total reçu" value={`${(link.total_received || 0).toLocaleString()} ${currency}`} />

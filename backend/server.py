@@ -11001,7 +11001,8 @@ async def start_link_payment(req: LinkPayRequest, request: Request):
             raise HTTPException(
                 400, "Ce lien n'accepte pas les paiements crypto (devise différente de USDT/UNIVERSAL)")
         amount = await _ensure_link_can_be_paid(
-            link, req.amount if link.get("amount_type") == "free" else None
+            link, req.amount if link.get("amount_type") == "free" else None,
+            crypto=True,
         )
         try:
             assets = await izipay.list_assets()
@@ -12236,6 +12237,21 @@ def _payment_link_amount(link: dict, requested: Optional[float] = None) -> float
     return float(requested)
 
 
+def _payment_link_crypto_amount(
+        link: dict, requested: Optional[float] = None) -> float:
+    """Validate the configured USDT price, with legacy amount fallback."""
+    crypto_link = {
+        **link,
+        "amount": link.get("crypto_amount")
+        if link.get("crypto_amount") is not None else link.get("amount"),
+        "min_amount": link.get("crypto_min_amount")
+        if link.get("crypto_min_amount") is not None else link.get("min_amount"),
+        "max_amount": link.get("crypto_max_amount")
+        if link.get("crypto_max_amount") is not None else link.get("max_amount"),
+    }
+    return _payment_link_amount(crypto_link, requested)
+
+
 def _payment_link_is_expired(link: dict) -> bool:
     expires_at = link.get("expires_at")
     if not expires_at:
@@ -12249,14 +12265,17 @@ def _payment_link_is_expired(link: dict) -> bool:
         return False
 
 
-async def _ensure_link_can_be_paid(link: dict, requested: Optional[float] = None) -> float:
+async def _ensure_link_can_be_paid(
+        link: dict, requested: Optional[float] = None,
+        crypto: bool = False) -> float:
     if _payment_link_is_expired(link):
         raise HTTPException(410, "Ce lien de paiement a expiré")
     if link.get("single_use"):
         paid = await db.link_payments.find_one({"link_id": link["id"], "status": "paid"}, {"_id": 1})
         if paid:
             raise HTTPException(409, "Ce lien à usage unique a déjà été utilisé")
-    return _payment_link_amount(link, requested)
+    return (_payment_link_crypto_amount(link, requested) if crypto
+            else _payment_link_amount(link, requested))
 
 
 async def _claim_single_use_link(link: dict) -> Optional[str]:
@@ -12357,12 +12376,30 @@ async def _create_payment_link(
             raise HTTPException(400, "Montants minimum et maximum requis pour un montant libre")
         if req.min_amount <= 0 or req.max_amount <= req.min_amount:
             raise HTTPException(400, "Montant maximum doit être supérieur au minimum")
+    crypto_amount = req.crypto_amount
+    crypto_min_amount = req.crypto_min_amount
+    crypto_max_amount = req.crypto_max_amount
+    if req.amount_type == "fixed":
+        crypto_amount = req.amount if crypto_amount is None else crypto_amount
+        if crypto_amount <= 0:
+            raise HTTPException(400, "Le montant crypto fixe doit être supérieur à zéro")
+        crypto_min_amount = None
+        crypto_max_amount = None
+    else:
+        crypto_min_amount = req.min_amount if crypto_min_amount is None else crypto_min_amount
+        crypto_max_amount = req.max_amount if crypto_max_amount is None else crypto_max_amount
+        if (crypto_min_amount <= 0
+                or crypto_max_amount <= crypto_min_amount):
+            raise HTTPException(
+                400, "La plage de montant USDT doit être positive et le maximum supérieur au minimum")
+        crypto_amount = None
     link = PaymentLink(
         id=deterministic_id or new_id(),
         user_id=uid,
         slug=secrets.token_urlsafe(8),
         title=req.title.strip(),
         amount=req.amount if req.amount_type == "fixed" else 0,
+        crypto_amount=crypto_amount,
         currency=req.currency,
         description=req.description or "",
         expires_at=req.expires_at,
@@ -12372,6 +12409,8 @@ async def _create_payment_link(
         amount_type=req.amount_type,
         min_amount=req.min_amount,
         max_amount=req.max_amount,
+        crypto_min_amount=crypto_min_amount,
+        crypto_max_amount=crypto_max_amount,
         fee_bearer=req.fee_bearer,
         logo=safe_logo,
     )
@@ -12395,6 +12434,9 @@ async def get_public_link(slug: str):
         "slug": doc.get("slug"),
         "title": doc.get("title"),
         "amount": doc.get("amount"),
+        "crypto_amount": (
+            doc.get("crypto_amount")
+            if doc.get("crypto_amount") is not None else doc.get("amount")),
         "currency": doc.get("currency"),
         "description": doc.get("description") or "",
         "expires_at": doc.get("expires_at"),
@@ -12403,6 +12445,12 @@ async def get_public_link(slug: str):
         "amount_type": doc.get("amount_type", "fixed"),
         "min_amount": doc.get("min_amount"),
         "max_amount": doc.get("max_amount"),
+        "crypto_min_amount": (
+            doc.get("crypto_min_amount")
+            if doc.get("crypto_min_amount") is not None else doc.get("min_amount")),
+        "crypto_max_amount": (
+            doc.get("crypto_max_amount")
+            if doc.get("crypto_max_amount") is not None else doc.get("max_amount")),
         "fee_bearer": doc.get("fee_bearer", "customer"),
         "logo": doc.get("logo"),
     }
@@ -12425,20 +12473,43 @@ async def update_link(link_id: str, req: PaymentLinkUpdate, uid: str = Depends(g
         if float(candidate.get("amount") or 0) <= 0:
             raise HTTPException(400, "Le montant fixe doit être supérieur à zéro")
         candidate["amount"] = float(candidate["amount"])
+        crypto_amount = candidate.get("crypto_amount")
+        if crypto_amount is None:
+            crypto_amount = candidate["amount"]
+        if float(crypto_amount) <= 0:
+            raise HTTPException(400, "Le montant crypto fixe doit être supérieur à zéro")
+        candidate["crypto_amount"] = float(crypto_amount)
         candidate["min_amount"] = None
         candidate["max_amount"] = None
+        candidate["crypto_min_amount"] = None
+        candidate["crypto_max_amount"] = None
     else:
         minimum = candidate.get("min_amount")
         maximum = candidate.get("max_amount")
         if minimum is None or maximum is None or float(minimum) <= 0 or float(maximum) <= float(minimum):
             raise HTTPException(400, "Montant maximum doit être supérieur au minimum")
+        crypto_minimum = candidate.get("crypto_min_amount")
+        crypto_maximum = candidate.get("crypto_max_amount")
+        if crypto_minimum is None:
+            crypto_minimum = minimum
+        if crypto_maximum is None:
+            crypto_maximum = maximum
+        if (float(crypto_minimum) <= 0
+                or float(crypto_maximum) <= float(crypto_minimum)):
+            raise HTTPException(
+                400, "Le maximum USDT doit être supérieur au minimum USDT")
         candidate["amount"] = 0
+        candidate["crypto_amount"] = None
         candidate["min_amount"] = float(minimum)
         candidate["max_amount"] = float(maximum)
+        candidate["crypto_min_amount"] = float(crypto_minimum)
+        candidate["crypto_max_amount"] = float(crypto_maximum)
     candidate["title"] = str(candidate["title"]).strip()
-    for key in ("amount", "min_amount", "max_amount"):
-        if key in update or key in ("amount", "min_amount", "max_amount"):
-            update[key] = candidate.get(key)
+    for key in (
+        "amount", "min_amount", "max_amount", "crypto_amount",
+        "crypto_min_amount", "crypto_max_amount",
+    ):
+        update[key] = candidate.get(key)
     r = await db.payment_links.update_one({"id": link_id, "user_id": uid}, {"$set": update})
     if r.matched_count == 0:
         raise HTTPException(404, "Lien introuvable")

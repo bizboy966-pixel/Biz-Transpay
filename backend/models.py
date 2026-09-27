@@ -135,6 +135,10 @@ class AuthResponse(BaseModel):
 class PaymentLinkCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=120)
     amount: float = 0  # kept for backward compat; used when amount_type = fixed
+    # Crypto links have an explicit USDT price alongside the CFA price.
+    # Optional for legacy callers; server-side creation falls back to the
+    # original amount fields when these are omitted.
+    crypto_amount: Optional[float] = None
     # Universal links no longer force a currency at creation time — the customer
     # picks it (XOF/XAF/USDT) on the checkout page. Field kept optional for
     # legacy inbound payloads and defaults to "UNIVERSAL".
@@ -145,6 +149,8 @@ class PaymentLinkCreate(BaseModel):
     amount_type: Literal["fixed", "free"] = "fixed"
     min_amount: Optional[float] = None
     max_amount: Optional[float] = None
+    crypto_min_amount: Optional[float] = None
+    crypto_max_amount: Optional[float] = None
     fee_bearer: Literal["customer", "owner"] = "customer"
     logo: Optional[str] = Field(None, max_length=3_000_000)  # raster data URL or hosted URL
 
@@ -152,6 +158,7 @@ class PaymentLinkCreate(BaseModel):
 class PaymentLinkUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=120)
     amount: Optional[float] = None
+    crypto_amount: Optional[float] = None
     currency: Optional[Literal["XOF", "XAF", "USDT", "UNIVERSAL"]] = None
     description: Optional[str] = Field(None, max_length=2000)
     expires_at: Optional[str] = None
@@ -160,6 +167,8 @@ class PaymentLinkUpdate(BaseModel):
     amount_type: Optional[Literal["fixed", "free"]] = None
     min_amount: Optional[float] = None
     max_amount: Optional[float] = None
+    crypto_min_amount: Optional[float] = None
+    crypto_max_amount: Optional[float] = None
     fee_bearer: Optional[Literal["customer", "owner"]] = None
     logo: Optional[str] = Field(None, max_length=3_000_000)
 
@@ -170,6 +179,7 @@ class PaymentLink(BaseModel):
     slug: str
     title: str
     amount: float
+    crypto_amount: Optional[float] = None
     currency: str
     description: str = ""
     expires_at: Optional[str] = None
@@ -181,6 +191,8 @@ class PaymentLink(BaseModel):
     amount_type: str = "fixed"
     min_amount: Optional[float] = None
     max_amount: Optional[float] = None
+    crypto_min_amount: Optional[float] = None
+    crypto_max_amount: Optional[float] = None
     fee_bearer: str = "customer"
     logo: Optional[str] = None
 
