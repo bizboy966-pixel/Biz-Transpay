@@ -44,6 +44,7 @@ export default function DashboardLayout() {
     {
       to: '/dashboard/services',
       i: LayoutGrid,
+      image: '/images/services-dashboard-icon.webp',
       l: t('dashboard.services'),
       activePaths: ['/dashboard/links'],
     },
