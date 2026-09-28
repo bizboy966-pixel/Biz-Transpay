@@ -285,7 +285,7 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
         <div className="text-[9px] sm:text-[10px] uppercase tracking-widest opacity-80">{link.title}</div>
         {isFree ? (
           <>
-            <input data-testid="pay-amount" type="number" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} min={cryptoMin} max={cryptoMax} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold text-white outline-none placeholder:text-white/50" />
+            <input data-testid="pay-amount" type="number" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} min={cryptoMin} max={cryptoMax} className="w-full bg-white/15 rounded-lg px-3 py-2 mt-1 text-lg sm:text-xl font-cabinet font-extrabold text-blue-900 outline-none placeholder:text-white/50" />
             <div className="mt-1 text-[9px] sm:text-[10px] opacity-80">{formatPrice(cryptoMin, 6)} – {formatPrice(cryptoMax, 6)} {displayCurrency}</div>
           </>
         ) : (
