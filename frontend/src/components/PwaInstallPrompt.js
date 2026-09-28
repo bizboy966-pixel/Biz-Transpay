@@ -6,7 +6,7 @@ import {
   markPwaInstalled,
   requestPwaInstall,
   subscribePwaInstall,
-} from '@/lib/pwaInstall';
+} from '../lib/pwaInstall';
 
 export default function PwaInstallPrompt() {
   const location = useLocation();
