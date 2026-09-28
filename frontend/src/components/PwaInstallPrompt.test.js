@@ -64,6 +64,33 @@ describe('PwaInstallPrompt', () => {
     expect(requestPwaInstall).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['dismissed', 'unavailable'])(
+    'shows the install failure message when the browser returns %s',
+    async (outcome) => {
+      requestPwaInstall.mockResolvedValue(outcome);
+      await renderPrompt();
+
+      await act(async () => {
+        container.querySelector('[data-testid="btn-install-pwa"]').click();
+      });
+
+      expect(container.querySelector('[role="alert"]')?.textContent)
+        .toBe("Impossible d'installer l'application Web");
+    }
+  );
+
+  it('shows the install failure message when the native prompt throws', async () => {
+    requestPwaInstall.mockRejectedValue(new Error('prompt failed'));
+    await renderPrompt();
+
+    await act(async () => {
+      container.querySelector('[data-testid="btn-install-pwa"]').click();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent)
+      .toBe("Impossible d'installer l'application Web");
+  });
+
   it('shows platform instructions when native installation is unavailable', async () => {
     getPwaInstallState.mockReturnValue({ installed: false, canPrompt: false });
     requestPwaInstall.mockResolvedValue('unavailable');

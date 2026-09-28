@@ -53,8 +53,10 @@ export async function requestPwaInstall() {
 
   deferredInstallPrompt = null;
   emitInstallState();
-  await promptEvent.prompt();
-  const choice = await promptEvent.userChoice;
+  const promptResult = await promptEvent.prompt();
+  const choice = promptResult?.outcome
+    ? promptResult
+    : await promptEvent.userChoice;
   if (choice?.outcome === 'accepted') markPwaInstalled();
   else emitInstallState();
   return choice?.outcome || 'dismissed';

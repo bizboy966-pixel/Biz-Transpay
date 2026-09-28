@@ -34,10 +34,11 @@ export default function PwaInstallPrompt() {
       } else {
         setInstallState(getPwaInstallState());
         setInstallHelpOpen(true);
+        setInstallError("Impossible d'installer l'application Web");
       }
     } catch {
       setInstallHelpOpen(true);
-      setInstallError('L’installation n’a pas pu être lancée. Suivez les étapes ci-dessous.');
+      setInstallError("Impossible d'installer l'application Web");
     }
   };
   const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;

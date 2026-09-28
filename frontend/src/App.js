@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster, toast } from 'sonner';
 import { useEffect } from 'react';
-import { initializePwaInstall } from '@/lib/pwaInstall';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
@@ -91,8 +90,6 @@ function AdminHomeEntry() {
 }
 
 function App() {
-  useEffect(() => initializePwaInstall(), []);
-
   return (
     <AuthProvider>
       <BrowserRouter>
