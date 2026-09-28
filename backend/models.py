@@ -341,3 +341,58 @@ class Ticket(BaseModel):
     status: Literal["open", "in_progress", "closed"] = "open"
     created_at: str
     replies: List[dict] = Field(default_factory=list)
+
+
+# ---------- Browser push notifications ----------
+class PushDeviceRequest(BaseModel):
+    token: str = Field(..., min_length=20, max_length=4096)
+
+
+class PushAudienceSelection(BaseModel):
+    audience: Literal["all", "user", "group"]
+    user_id: Optional[str] = Field(None, max_length=120)
+    account_type: Optional[Literal["personal", "merchant"]] = None
+    country: Optional[str] = Field(None, min_length=2, max_length=3)
+    kyc_status: Optional[str] = Field(None, min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_audience_selection(self):
+        if self.user_id is not None:
+            self.user_id = self.user_id.strip()
+        if self.kyc_status is not None:
+            self.kyc_status = self.kyc_status.strip()
+        has_filters = any(
+            value is not None
+            for value in (self.account_type, self.country, self.kyc_status)
+        )
+        if self.country is not None:
+            normalized_country = self.country.strip().upper()
+            if not normalized_country.isascii() or not normalized_country.isalnum():
+                raise ValueError("Code pays invalide")
+            self.country = normalized_country
+        if self.kyc_status == "":
+            self.kyc_status = None
+            has_filters = any(
+                value is not None
+                for value in (self.account_type, self.country, self.kyc_status)
+            )
+        if self.audience == "all" and (self.user_id or has_filters):
+            raise ValueError("Le ciblage « tous » ne prend pas de filtre")
+        if self.audience == "user" and (not self.user_id or has_filters):
+            raise ValueError("Un utilisateur unique doit être sélectionné")
+        if self.audience == "group" and (self.user_id or not has_filters):
+            raise ValueError("Un groupe doit contenir au moins un filtre")
+        return self
+
+
+class PushCampaignSendRequest(PushAudienceSelection):
+    title: str = Field(..., min_length=1, max_length=100)
+    body: str = Field(..., min_length=1, max_length=500)
+    url: Optional[str] = Field(None, max_length=500)
+    confirmation: str = Field(..., min_length=1, max_length=40)
+    request_id: str = Field(
+        default_factory=new_id,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )

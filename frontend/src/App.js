@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { Toaster } from 'sonner';
+import { Toaster, toast } from 'sonner';
+import { useEffect } from 'react';
+import { startBrowserPush } from '@/lib/pushNotifications';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import Landing from '@/pages/Landing';
 import Login from '@/pages/Login';
@@ -44,6 +46,7 @@ import AdminBenefits from '@/pages/admin/AdminBenefits';
 import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
 import AdminFunds from '@/pages/admin/AdminFunds';
 import AdminEmailNotifications from '@/pages/admin/AdminEmailNotifications';
+import AdminNotifications from '@/pages/admin/AdminNotifications';
 import AdminLegacyCleanup from '@/pages/admin/AdminLegacyCleanup';
 import ReauthGate from '@/components/ReauthGate';
 import '@/App.css';
@@ -63,6 +66,17 @@ function AdminOnly({ children }) {
   return children;
 }
 
+function ForegroundPushToasts() {
+  useEffect(() => {
+    const handler = (event) => {
+      if (event.detail?.title) toast(event.detail.title, { description: event.detail.body, action: event.detail.url ? { label: 'Ouvrir', onClick: () => { window.location.href = event.detail.url; } } : undefined });
+    };
+    window.addEventListener('btp-foreground-push', handler);
+    return () => window.removeEventListener('btp-foreground-push', handler);
+  }, []);
+  return null;
+}
+
 function AdminHomeEntry() {
   const { user } = useAuth();
   const landingByRole = {
@@ -80,6 +94,7 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <Toaster position="top-right" richColors closeButton offset={72} />
+        <ForegroundPushToasts />
         <ReauthGate />
         <Routes>
           <Route path="/" element={<Landing />} />
@@ -122,6 +137,7 @@ function App() {
             <Route path="deposit-config" element={<AdminDepositConfig />} />
             <Route path="support" element={<AdminSupport />} />
             <Route path="email-notifications" element={<AdminEmailNotifications />} />
+            <Route path="notifications" element={<AdminNotifications />} />
             <Route path="features" element={<AdminFeatures />} />
             <Route path="rates" element={<AdminRates />} />
             <Route path="fees" element={<AdminFees />} />

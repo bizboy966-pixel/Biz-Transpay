@@ -1,3 +1,13 @@
+.input {
+  width: 100%;
+  border: 1px solid rgb(226 232 240);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  outline: none;
+  background: white;
+}
+.input:focus { border-color: rgb(37 99 235); box-shadow: 0 0 0 3px rgb(219 234 254); }
+.label { display: block; font-size: 0.875rem; font-weight: 600; color: rgb(51 65 85); }
 /* Biz-transPay - App styles (kept minimal - main styles in index.css) */
 .App {
   min-height: 100vh;

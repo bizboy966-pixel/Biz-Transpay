@@ -19,6 +19,7 @@ const NAV = [
   { section: 'Réglages' },
   { to: '/admin/features', i: Wallet, l: 'Fonctionnalités', permission: 'settings:read' },
   { to: '/admin/email-notifications', i: Mail, l: 'E-mails transactionnels', permission: 'settings:read' },
+  { to: '/admin/notifications', i: Send, l: 'Notifications push', permission: 'notifications:send' },
   { to: '/admin/fees', i: SettingsIcon, l: 'Frais', permission: 'fees:read' },
   { to: '/admin/benefits', i: TrendingUp, l: 'Bénéfice', sub: 'Marge plateforme', permission: 'finance:read' },
   { to: '/admin/payment-providers', i: Smartphone, l: 'Prestataire de paiement', permission: 'providers:read' },
@@ -99,9 +100,9 @@ export default function AdminLayout() {
         {/* Quick shortcuts */}
         <div className="absolute bottom-0 left-0 right-0 p-3 border-t border-white/10">
           <div className="space-y-1">
-            <Link to="/admin/notifications" className="flex items-center gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/5 rounded-lg" data-testid="qs-notify">
+            {canAccess({ permission: 'notifications:send' }) && <Link to="/admin/notifications" className="flex items-center gap-2 px-2 py-1.5 text-[11px] font-semibold text-slate-300 hover:bg-white/5 rounded-lg" data-testid="qs-notify">
               <Send className="w-3.5 h-3.5 text-blue-400" /> Notifications
-            </Link>
+            </Link>}
           </div>
           <div className="mt-3 pt-3 border-t border-white/10 flex items-center gap-2">
             <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-xs font-bold text-white">{initials}</div>

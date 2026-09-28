@@ -1,4 +1,5 @@
 - [Replit runtime setup](replit-runtime-setup.md) — Imported apps may need local compatibility layers, workflow-backed storage, or proxy access when connector SDKs are private.
+- [Nested JavaScript installs](nested-javascript-installs.md) — Replit package installation may write workspace-root npm files while the runnable CRA app uses a nested frontend manifest.
 - [Imported Emergent dependencies](imported-emergent-dependencies.md) — imported apps may reference private packages unavailable in Replit's package registry.
 - [Biz-transPay visual system](biz-transpay-visual-system.md) — Kripa Regular is the official local font and all future UI work reuses the shared Biz-transPay visual system.
 - [PayDunya fee catalog](paydunya-fee-catalog.md) — PayDunya pay-in uses an admin-managed country/operator catalog and lets the payer choose who bears the fees.

@@ -1,12 +1,18 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import api from '../api';
 import { ACTIVE_MOMO_DEPOSIT_KEY } from '../constants/payment';
+import {
+  currentPushToken,
+  disableBrowserPush,
+  startBrowserPush,
+} from '@/lib/pushNotifications';
 
 const AuthCtx = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const userId = user?.id;
 
   const loadMe = async () => {
     try {
@@ -17,6 +23,11 @@ export function AuthProvider({ children }) {
   };
 
   useEffect(() => { loadMe(); }, []);
+  useEffect(() => {
+    // A saved token means this browser explicitly opted in before. Browser
+    // permission alone is not enough: disabling push leaves it granted.
+    if (userId && currentPushToken()) startBrowserPush().catch(() => {});
+  }, [userId]);
 
   const login = async (email, password, security = {}) => {
     const { data } = await api.post('/auth/login', {
@@ -34,8 +45,10 @@ export function AuthProvider({ children }) {
     return data;
   };
 
-  const logout = () => {
-    api.post('/auth/logout').catch(() => {});
+  const logout = async () => {
+    // Best effort: remove only this browser's token, never other devices.
+    await disableBrowserPush().catch(() => {});
+    await api.post('/auth/logout').catch(() => {});
     sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
     setUser(null);
     window.location.href = '/';

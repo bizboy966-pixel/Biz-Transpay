@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Save, Lock, Globe, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import i18n from '@/i18n';
+import { enableBrowserPush, disableBrowserPush, currentPushToken } from '@/lib/pushNotifications';
 
 export default function Settings({ embedded = false }) {
   const { t } = useTranslation();
@@ -18,6 +19,28 @@ export default function Settings({ embedded = false }) {
   const [mfaCode, setMfaCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState([]);
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const [pushEnabled, setPushEnabled] = useState(Boolean(currentPushToken()));
+  const [pushConfigured, setPushConfigured] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api.get('/push/config')
+      .then(({ data }) => { if (active) setPushConfigured(Boolean(data.configured)); })
+      .catch(() => { if (active) setPushConfigured(false); });
+    return () => { active = false; };
+  }, []);
+
+  const togglePush = async () => {
+    setPushBusy(true);
+    try {
+      if (pushEnabled) await disableBrowserPush();
+      else await enableBrowserPush();
+      setPushEnabled(!pushEnabled);
+      toast.success(!pushEnabled ? 'Notifications push activées' : 'Notifications push désactivées');
+    } catch (err) { toast.error(err.message || 'Impossible de modifier les notifications push'); }
+    finally { setPushBusy(false); }
+  };
 
   const saveProfile = async () => {
     await api.patch('/settings/profile', {
@@ -102,6 +125,22 @@ export default function Settings({ embedded = false }) {
           </div>
         </div>
         <button onClick={saveProfile} data-testid="btn-save-prefs" className="inline-flex items-center gap-2 bg-[#2563EB] text-white font-bold px-6 py-3 rounded-full"><Save className="w-4 h-4" /> {t('settings.save')}</button>
+      </Section>
+      <Section icon={Shield} title="Notifications navigateur">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
+          <div>
+            <p className="font-semibold text-slate-800">Recevoir les notifications push</p>
+            <p className="text-sm text-slate-500 mt-1">
+              {pushConfigured
+                ? 'Seuls les navigateurs ayant activé les notifications push reçoivent les messages.'
+                : 'Le service sera disponible après la configuration Firebase.'}
+            </p>
+          </div>
+          <button type="button" onClick={togglePush} disabled={pushBusy || (!pushEnabled && !pushConfigured)} aria-pressed={pushEnabled} data-testid="toggle-push"
+            className={`px-5 py-2.5 rounded-full font-bold text-sm ${pushEnabled ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'} disabled:opacity-50`}>
+            {pushBusy ? 'Patientez…' : pushEnabled ? 'Activées' : 'Activer'}
+          </button>
+        </div>
       </Section>
     </div>
   );

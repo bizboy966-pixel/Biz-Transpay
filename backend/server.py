@@ -51,6 +51,7 @@ from models import (  # noqa: E402
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
     ReauthenticationRequest, PasswordResetRequest, PasswordResetConfirm,
     TransactionEmailSettingsUpdate, TransferOtpCancelRequest,
+    PushDeviceRequest, PushAudienceSelection, PushCampaignSendRequest,
 )
 import auth as auth_security  # noqa: E402
 from auth import hash_password, verify_password, create_token  # noqa: E402
@@ -380,6 +381,7 @@ async def _require_turnstile(
 _paydunya_reconcile_task = None
 _integration_outbox_task = None
 _referral_reconcile_task = None
+_push_campaign_tasks: set[asyncio.Task] = set()
 MOMO_PENDING_TIMEOUT_MINUTES = 10
 
 class BizAPIError(HTTPException):
@@ -551,6 +553,7 @@ _GLOBAL_RATE_PROFILES = {
     "link": (20, 60),
     "search": (60, 60),
     "admin": (60, 60),
+    "admin_push_send": (5, 3600),
     "webhook": (120, 60),
 }
 IZIPAY_WEBHOOK_ALIAS_PATH = "/webhooks/izipay"
@@ -574,6 +577,8 @@ def _global_rate_profile(path: str, method: str) -> str:
         "/api/settings/password",
     }:
         return "password_reset"
+    if p == "/api/admin/push/send":
+        return "admin_push_send"
     if p.startswith("/api/admin/"):
         return "admin"
     if (
@@ -13350,6 +13355,126 @@ async def create_ticket(req: TicketCreate, uid: str = Depends(get_current_user_i
 
 
 # ==================== NOTIFICATIONS API ====================
+FIREBASE_MESSAGING_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
+PUSH_MAX_AUDIENCE_USERS = 50000
+PUSH_MAX_CAMPAIGN_DEVICES = 50000
+
+
+def _firebase_service_account_info() -> Optional[dict]:
+    raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not raw:
+        return None
+    try:
+        info = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(info, dict):
+        return None
+    if not all(info.get(key) for key in ("project_id", "client_email", "private_key")):
+        return None
+    return info
+
+
+def _firebase_client_config() -> dict:
+    service_account_info = _firebase_service_account_info()
+    project_id = (
+        os.environ.get("FIREBASE_PROJECT_ID", "").strip()
+        or (service_account_info or {}).get("project_id", "")
+    )
+    config = {
+        "apiKey": os.environ.get("FIREBASE_WEB_API_KEY", "").strip(),
+        "authDomain": os.environ.get("FIREBASE_AUTH_DOMAIN", "").strip()
+        or (f"{project_id}.firebaseapp.com" if project_id else ""),
+        "projectId": project_id,
+        "messagingSenderId": os.environ.get(
+            "FIREBASE_MESSAGING_SENDER_ID", ""
+        ).strip(),
+        "appId": os.environ.get("FIREBASE_APP_ID", "").strip(),
+        "vapidKey": os.environ.get("FIREBASE_VAPID_KEY", "").strip(),
+    }
+    return config if all(config.values()) else {}
+
+
+def _firebase_access_token_sync() -> tuple[str, str]:
+    """Create a short-lived FCM bearer token without persisting credentials."""
+    info = _firebase_service_account_info()
+    if not info:
+        raise RuntimeError("Firebase service account is not configured")
+    configured_project = os.environ.get("FIREBASE_PROJECT_ID", "").strip()
+    if configured_project and configured_project != info["project_id"]:
+        raise RuntimeError("Firebase project configuration does not match")
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    from google.oauth2 import service_account
+
+    credentials = service_account.Credentials.from_service_account_info(
+        info, scopes=[FIREBASE_MESSAGING_SCOPE]
+    )
+    credentials.refresh(GoogleAuthRequest())
+    if not credentials.token:
+        raise RuntimeError("Firebase access token was not returned")
+    return info["project_id"], credentials.token
+
+
+@api.get("/push/config")
+async def push_client_config(uid: str = Depends(get_current_user_id)):
+    config = _firebase_client_config()
+    missing = []
+    if not config:
+        for key, env_key in (
+            ("apiKey", "FIREBASE_WEB_API_KEY"),
+            ("projectId", "FIREBASE_PROJECT_ID or service-account project_id"),
+            ("messagingSenderId", "FIREBASE_MESSAGING_SENDER_ID"),
+            ("appId", "FIREBASE_APP_ID"),
+            ("vapidKey", "FIREBASE_VAPID_KEY"),
+        ):
+            if key == "projectId":
+                if not os.environ.get("FIREBASE_PROJECT_ID", "").strip() \
+                        and not (_firebase_service_account_info() or {}).get("project_id"):
+                    missing.append(env_key)
+            elif not os.environ.get(env_key, "").strip():
+                missing.append(env_key)
+    return {
+        "configured": bool(config),
+        "config": config or None,
+        "server_configured": bool(_firebase_service_account_info()),
+        "missing": missing,
+    }
+
+
+@api.post("/push/devices")
+async def register_push_device(
+    req: PushDeviceRequest,
+    uid: str = Depends(get_current_user_id),
+):
+    if not _firebase_client_config():
+        raise HTTPException(503, "Les notifications push ne sont pas configurées.")
+    token_id = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
+    now = now_iso()
+    await db.push_devices.update_one(
+        {"id": token_id},
+        {"$set": {
+            "id": token_id,
+            "user_id": uid,
+            "token": req.token,
+            "active": True,
+            "created_at": now,
+            "updated_at": now,
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.delete("/push/devices")
+async def unregister_push_device(
+    req: PushDeviceRequest,
+    uid: str = Depends(get_current_user_id),
+):
+    token_id = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
+    result = await db.push_devices.delete_many({"id": token_id, "user_id": uid})
+    return {"ok": True, "deleted": result.deleted_count}
+
+
 @api.get("/notifications")
 async def list_notifications(uid: str = Depends(get_current_user_id),
                              limit: int = Query(50, le=200),
@@ -13457,6 +13582,7 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
     "ADMIN": {
         "users:read",
         "users:write",
+        "notifications:send",
         "finance:read",
         "transactions:read",
         "transactions:write",
@@ -13514,6 +13640,8 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         path = path[4:]
     method = request.method.upper()
 
+    if path.startswith("/admin/push"):
+        return "notifications:send"
     if path.startswith("/admin/support"):
         return "support:write" if method in {"PATCH", "POST", "DELETE"} else "support:read"
     if path.startswith("/admin/kyc"):
@@ -14737,6 +14865,447 @@ async def admin_stats(admin=Depends(get_admin), period: str = "month"):
         },
         "period": period,
     }
+
+
+def _push_active_customer_query() -> dict:
+    return {
+        "role": {"$nin": ["admin", "super_admin"]},
+        "is_blocked": {"$ne": True},
+        "is_banned": {"$ne": True},
+    }
+
+
+def _push_audience_query(selection: PushAudienceSelection) -> dict:
+    query = _push_active_customer_query()
+    if selection.audience == "user":
+        query["id"] = selection.user_id
+    elif selection.audience == "group":
+        if selection.account_type:
+            query["account_type"] = selection.account_type
+        if selection.country:
+            query["country"] = selection.country
+        if selection.kyc_status:
+            query["kyc_status"] = selection.kyc_status
+    return query
+
+
+async def _push_audience_counts(selection: PushAudienceSelection) -> tuple[int, int]:
+    query = _push_audience_query(selection)
+    user_count = await db.users.count_documents(query)
+    if user_count > PUSH_MAX_AUDIENCE_USERS:
+        raise HTTPException(
+            413,
+            f"Le ciblage dépasse la limite de {PUSH_MAX_AUDIENCE_USERS} utilisateurs.",
+        )
+    users = await db.users.find(query, {"_id": 0, "id": 1}) \
+        .limit(PUSH_MAX_AUDIENCE_USERS + 1).to_list(PUSH_MAX_AUDIENCE_USERS + 1)
+    user_ids = [user["id"] for user in users if user.get("id")]
+    device_count = 0
+    if user_ids:
+        device_count = await db.push_devices.count_documents({
+            "user_id": {"$in": user_ids},
+            "active": True,
+        })
+    return len(user_ids), device_count
+
+
+async def _push_campaign_device_records(
+    selection: PushAudienceSelection,
+) -> tuple[int, list[dict]]:
+    query = _push_audience_query(selection)
+    user_count = await db.users.count_documents(query)
+    if user_count > PUSH_MAX_AUDIENCE_USERS:
+        raise RuntimeError("Push audience exceeds the configured user limit")
+    users = await db.users.find(query, {"_id": 0, "id": 1}) \
+        .limit(PUSH_MAX_AUDIENCE_USERS + 1).to_list(PUSH_MAX_AUDIENCE_USERS + 1)
+    user_ids = [user["id"] for user in users if user.get("id")]
+    if not user_ids:
+        return user_count, []
+    devices = await db.push_devices.find(
+        {"user_id": {"$in": user_ids}, "active": True},
+        {"_id": 0, "id": 1, "token": 1},
+    ).limit(PUSH_MAX_CAMPAIGN_DEVICES + 1).to_list(
+        PUSH_MAX_CAMPAIGN_DEVICES + 1
+    )
+    if len(devices) > PUSH_MAX_CAMPAIGN_DEVICES:
+        raise RuntimeError("Push audience exceeds the configured device limit")
+    return user_count, devices
+
+
+def _push_click_path(raw_path: Optional[str]) -> str:
+    path = (raw_path or "/dashboard").strip()
+    parsed = urlparse(path)
+    if (
+        not path.startswith("/")
+        or path.startswith("//")
+        or "\\" in path
+        or parsed.scheme
+        or parsed.netloc
+        or any(ord(char) < 32 for char in path)
+    ):
+        raise HTTPException(422, "Le lien de notification doit être un chemin interne.")
+    return path
+
+
+async def _send_one_fcm_message(
+    client: httpx.AsyncClient,
+    project_id: str,
+    bearer_token: str,
+    registration_token: str,
+    title: str,
+    body: str,
+    click_path: str,
+    campaign_id: str,
+) -> str:
+    endpoint = (
+        f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+    )
+    message = {
+        "message": {
+            "token": registration_token,
+            "notification": {"title": title, "body": body},
+            "data": {"url": click_path, "campaign_id": campaign_id},
+        }
+    }
+    headers = {"Authorization": f"Bearer {bearer_token}"}
+    for attempt in range(3):
+        try:
+            response = await client.post(endpoint, json=message, headers=headers)
+        except httpx.RequestError:
+            if attempt < 2:
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            return "failed"
+        if response.status_code == 200:
+            return "sent"
+        try:
+            error = response.json().get("error", {})
+        except (ValueError, AttributeError):
+            error = {}
+        status = str(error.get("status", "")).upper()
+        if response.status_code in {401, 403}:
+            raise RuntimeError("Firebase rejected the server credentials")
+        if status == "UNREGISTERED":
+            return "invalid"
+        if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+            await asyncio.sleep(0.5 * (attempt + 1))
+            continue
+        return "failed"
+    return "failed"
+
+
+async def _deliver_push_campaign(campaign_id: str) -> None:
+    campaign = await db.push_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not campaign:
+        return
+    claim = await db.push_campaigns.update_one(
+        {"id": campaign_id, "status": "queued"},
+        {"$set": {"status": "sending", "started_at": now_iso()}},
+    )
+    if claim.modified_count != 1:
+        return
+
+    sent = failed = invalid = processed = 0
+    try:
+        selection = PushAudienceSelection(**campaign["audience"])
+        user_count, devices = await _push_campaign_device_records(selection)
+        project_id, bearer_token = await asyncio.to_thread(
+            _firebase_access_token_sync
+        )
+        if project_id != _firebase_client_config().get("projectId"):
+            raise RuntimeError("Firebase project configuration does not match")
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0),
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=20,
+            ),
+        ) as client:
+            for offset in range(0, len(devices), 500):
+                batch = devices[offset:offset + 500]
+                results = await asyncio.gather(*[
+                    _send_one_fcm_message(
+                        client,
+                        project_id,
+                        bearer_token,
+                        device.get("token", ""),
+                        campaign["title"],
+                        campaign["body"],
+                        campaign["url"],
+                        campaign_id,
+                    )
+                    for device in batch
+                ], return_exceptions=True)
+                invalid_ids = []
+                for device, result in zip(batch, results):
+                    processed += 1
+                    if isinstance(result, Exception):
+                        if isinstance(result, RuntimeError) and (
+                            "credentials" in str(result).lower()
+                            or "project configuration" in str(result).lower()
+                        ):
+                            raise result
+                        failed += 1
+                    elif result == "sent":
+                        sent += 1
+                    elif result == "invalid":
+                        invalid += 1
+                        failed += 1
+                        if device.get("id"):
+                            invalid_ids.append(device["id"])
+                    else:
+                        failed += 1
+                if invalid_ids:
+                    await db.push_devices.delete_many({"id": {"$in": invalid_ids}})
+                await db.push_campaigns.update_one(
+                    {"id": campaign_id},
+                    {"$set": {
+                        "users": user_count,
+                        "devices": len(devices),
+                        "sent": sent,
+                        "failed": failed,
+                        "invalid_tokens": invalid,
+                        "processed": processed,
+                        "updated_at": now_iso(),
+                    }},
+                )
+        final_status = "sent" if failed == 0 else ("partial" if sent else "failed")
+        await db.push_campaigns.update_one(
+            {"id": campaign_id},
+            {"$set": {
+                "status": final_status,
+                "users": user_count,
+                "devices": len(devices),
+                "sent": sent,
+                "failed": failed,
+                "invalid_tokens": invalid,
+                "processed": processed,
+                "finished_at": now_iso(),
+                "updated_at": now_iso(),
+                "error": None,
+            }},
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Push campaign delivery failed for %s (%s)",
+            campaign_id,
+            type(exc).__name__,
+        )
+        await db.push_campaigns.update_one(
+            {"id": campaign_id},
+            {"$set": {
+                "status": "failed",
+                "sent": sent,
+                "failed": max(failed, int(campaign.get("devices", 0)) - sent),
+                "invalid_tokens": invalid,
+                "processed": processed,
+                "finished_at": now_iso(),
+                "updated_at": now_iso(),
+                "error": "Échec de l’envoi. Vérifiez la configuration Firebase.",
+            }},
+        )
+
+
+def _schedule_push_campaign_delivery(campaign_id: str) -> None:
+    task = asyncio.create_task(_deliver_push_campaign(campaign_id))
+    _push_campaign_tasks.add(task)
+    task.add_done_callback(_push_campaign_tasks.discard)
+
+
+async def _resume_push_campaigns() -> None:
+    pending = await db.push_campaigns.find(
+        {"status": {"$in": ["queued", "sending"]}},
+        {"_id": 0, "id": 1, "status": 1},
+    ).limit(100).to_list(100)
+    for campaign in pending:
+        if campaign.get("status") == "sending":
+            await db.push_campaigns.update_one(
+                {"id": campaign["id"], "status": "sending"},
+                {"$set": {"status": "queued", "updated_at": now_iso()}},
+            )
+        _schedule_push_campaign_delivery(campaign["id"])
+
+
+@api.get("/admin/push/audience-options")
+async def admin_push_audience_options(admin=Depends(get_admin)):
+    users = await db.users.find(
+        _push_active_customer_query(),
+        {"_id": 0, "country": 1, "kyc_status": 1},
+    ).limit(PUSH_MAX_AUDIENCE_USERS).to_list(PUSH_MAX_AUDIENCE_USERS)
+    countries = sorted({
+        str(user["country"]).strip().upper()
+        for user in users
+        if user.get("country") and str(user["country"]).strip()
+    })
+    statuses = sorted({
+        str(user["kyc_status"]).strip()
+        for user in users
+        if user.get("kyc_status") and str(user["kyc_status"]).strip()
+    })
+    return {
+        "countries": countries,
+        "account_types": ["personal", "merchant"],
+        "kyc_statuses": statuses,
+    }
+
+
+@api.get("/admin/push/users")
+async def admin_push_user_search(
+    admin=Depends(get_admin),
+    q: Optional[str] = Query(None, max_length=80),
+):
+    query = _push_active_customer_query()
+    if q and q.strip():
+        safe_q = _literal_regex_term(q.strip(), field_name="Recherche")
+        query["$or"] = [
+            {"full_name": {"$regex": safe_q, "$options": "i"}},
+            {"username": {"$regex": safe_q, "$options": "i"}},
+        ]
+    users = await db.users.find(
+        query,
+        {
+            "_id": 0,
+            "id": 1,
+            "full_name": 1,
+            "username": 1,
+            "account_type": 1,
+            "country": 1,
+            "kyc_status": 1,
+        },
+    ).sort("created_at", -1).limit(40).to_list(40)
+    return {"users": users}
+
+
+@api.post("/admin/push/preview")
+async def admin_push_preview(
+    req: PushAudienceSelection,
+    admin=Depends(get_admin),
+):
+    users, devices = await _push_audience_counts(req)
+    return {"users": users, "devices": devices}
+
+
+@api.post("/admin/push/send")
+async def admin_send_push_campaign(
+    req: PushCampaignSendRequest,
+    admin=Depends(get_admin),
+    _recent_uid: str = Depends(require_admin_recent_auth),
+):
+    require_admin_confirmation(req.confirmation)
+    config = _firebase_client_config()
+    if not config or not _firebase_service_account_info():
+        raise HTTPException(
+            503,
+            "La configuration Firebase Web et le compte de service sont requis.",
+        )
+    title = req.title.strip()
+    body = req.body.strip()
+    if not title or not body:
+        raise HTTPException(422, "Le titre et le message sont obligatoires.")
+    click_path = _push_click_path(req.url)
+    users, devices = await _push_audience_counts(req)
+    if devices == 0:
+        raise HTTPException(
+            409,
+            "Aucun navigateur inscrit aux notifications ne correspond à ce ciblage.",
+        )
+    if devices > PUSH_MAX_CAMPAIGN_DEVICES:
+        raise HTTPException(
+            413,
+            f"Le ciblage dépasse la limite de {PUSH_MAX_CAMPAIGN_DEVICES} appareils.",
+        )
+
+    campaign_id = req.request_id
+    campaign = {
+        "id": campaign_id,
+        "admin_user_id": admin["id"],
+        "admin_username": admin.get("username"),
+        "title": title,
+        "body": body,
+        "url": click_path,
+        "audience": req.model_dump(
+            include={
+                "audience", "user_id", "account_type", "country", "kyc_status"
+            },
+            exclude_none=True,
+        ),
+        "status": "queued",
+        "users": users,
+        "devices": devices,
+        "sent": 0,
+        "failed": 0,
+        "invalid_tokens": 0,
+        "processed": 0,
+        "created_at": now_iso(),
+        "finished_at": None,
+        "error": None,
+    }
+    try:
+        await db.push_campaigns.insert_one(campaign)
+    except DuplicateKeyError:
+        existing = await db.push_campaigns.find_one(
+            {"id": campaign_id}, {"_id": 0}
+        )
+        if not existing:
+            raise
+        if existing.get("status") == "queued":
+            _schedule_push_campaign_delivery(campaign_id)
+        return {
+            "id": existing["id"],
+            "status": existing.get("status"),
+            "users": existing.get("users", 0),
+            "devices": existing.get("devices", 0),
+        }
+
+    await audit(
+        admin["id"],
+        admin["username"],
+        "push_campaign_queued",
+        details={
+            "campaign_id": campaign_id,
+            "audience": req.audience,
+            "users": users,
+            "devices": devices,
+        },
+    )
+    _schedule_push_campaign_delivery(campaign_id)
+    return {
+        "id": campaign_id,
+        "status": "queued",
+        "users": users,
+        "devices": devices,
+    }
+
+
+@api.get("/admin/push/campaigns")
+async def admin_list_push_campaigns(
+    admin=Depends(get_admin),
+    limit: int = Query(20, ge=1, le=100),
+):
+    campaigns = await db.push_campaigns.find(
+        {},
+        {
+            "_id": 0,
+            "id": 1,
+            "title": 1,
+            "body": 1,
+            "audience": 1,
+            "status": 1,
+            "users": 1,
+            "devices": 1,
+            "sent": 1,
+            "failed": 1,
+            "invalid_tokens": 1,
+            "processed": 1,
+            "created_at": 1,
+            "finished_at": 1,
+            "error": 1,
+        },
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    return {"campaigns": campaigns}
 
 
 @api.get("/admin/users")
@@ -17029,6 +17598,7 @@ async def startup_db_client():
             "metadata.operation_id": {"$type": "string"},
         })
     await _resume_transaction_email_outbox()
+    await _resume_push_campaigns()
     if not _referral_reconcile_task or _referral_reconcile_task.done():
         _referral_reconcile_task = asyncio.create_task(_referral_reconcile_loop())
     integration_worker = globals().get("_integration_outbox_worker")
@@ -17040,6 +17610,11 @@ async def startup_db_client():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     global _paydunya_reconcile_task, _integration_outbox_task, _referral_reconcile_task
+    for task in list(_push_campaign_tasks):
+        task.cancel()
+    if _push_campaign_tasks:
+        await asyncio.gather(*_push_campaign_tasks, return_exceptions=True)
+        _push_campaign_tasks.clear()
     if _paydunya_reconcile_task:
         _paydunya_reconcile_task.cancel()
         _paydunya_reconcile_task = None
