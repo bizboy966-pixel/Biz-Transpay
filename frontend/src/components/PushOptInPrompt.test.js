@@ -59,7 +59,9 @@ describe('PushOptInPrompt', () => {
     useAuth.mockReturnValue({ user: { id: 'merchant-1' }, loading: false });
     currentPushToken.mockReturnValue(null);
     enableBrowserPush.mockResolvedValue('push-token');
-    api.get.mockResolvedValue({ data: { configured: true } });
+    api.get.mockResolvedValue({
+      data: { configured: true, server_configured: true },
+    });
     Object.defineProperty(window, 'Notification', {
       configurable: true,
       value: { permission: 'default' },
@@ -137,5 +139,14 @@ describe('PushOptInPrompt', () => {
     await renderPrompt();
     expect(api.get).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="push-opt-in-modal"]')).toBeNull();
+  });
+
+  it('does not request browser permission unless Firebase can send pushes', async () => {
+    api.get.mockResolvedValue({
+      data: { configured: true, server_configured: false },
+    });
+    await renderPrompt();
+    expect(container.querySelector('[data-testid="push-opt-in-modal"]')).toBeNull();
+    expect(enableBrowserPush).not.toHaveBeenCalled();
   });
 });

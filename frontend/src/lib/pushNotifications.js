@@ -9,7 +9,7 @@ let unsubscribeForeground = null;
 export async function startBrowserPush({ requestPermission = false } = {}) {
   if (!('Notification' in window) || !('serviceWorker' in navigator)) return null;
   const { data } = await api.get('/push/config');
-  if (!data?.configured || !data.config) return null;
+  if (!data?.configured || !data?.server_configured || !data.config) return null;
   if (Notification.permission !== 'granted' && !requestPermission) return null;
   if (requestPermission && await Notification.requestPermission() !== 'granted') throw new Error('Autorisation de notifications refusée.');
   const app = getApps().length ? getApps()[0] : initializeApp(data.config);
@@ -40,7 +40,9 @@ export async function enableBrowserPush() {
     throw new Error('Ce navigateur ne prend pas en charge les notifications push.');
   }
   const { data } = await api.get('/push/config');
-  if (!data?.configured || !data.config) throw new Error('Les notifications push ne sont pas encore configurées.');
+  if (!data?.configured || !data?.server_configured || !data.config) {
+    throw new Error('Les notifications push ne sont pas encore configurées.');
+  }
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') throw new Error('Autorisation de notifications refusée.');
   const token = await startBrowserPush();

@@ -2078,15 +2078,50 @@ _AUTOMATIC_PUSH_MESSAGES = {
         "Votre retrait a été validé.",
         "/dashboard/transactions",
     ),
-    "kyc_verified": (
-        "KYC validé",
-        "Votre vérification d’identité a été validée.",
-        "/dashboard/kyc",
+    "withdrawal_pending": (
+        "Retrait en cours",
+        "Votre demande de retrait est en cours de traitement.",
+        "/dashboard/transactions",
+    ),
+    "withdrawal_failed": (
+        "Retrait non abouti",
+        "Votre demande de retrait n’a pas abouti. Consultez votre espace.",
+        "/dashboard/transactions",
+    ),
+    "withdrawal_manual_review": (
+        "Retrait en vérification",
+        "Votre demande de retrait est en cours de vérification.",
+        "/dashboard/transactions",
+    ),
+    "transfer_success": (
+        "Transfert effectué",
+        "Votre transfert a été effectué.",
+        "/dashboard/transactions",
+    ),
+    "payment_success": (
+        "Paiement reçu",
+        "Un paiement a été reçu sur votre compte.",
+        "/dashboard/transactions",
     ),
     "exchange_success": (
         "Échange validé",
         "Votre échange a été effectué.",
         "/dashboard/transactions",
+    ),
+    "kyc_verified": (
+        "KYC validé",
+        "Votre vérification d’identité a été validée.",
+        "/dashboard/kyc",
+    ),
+    "kyc_rejected": (
+        "KYC à revoir",
+        "Votre vérification nécessite votre attention.",
+        "/dashboard/kyc",
+    ),
+    "kyc_resubmit_requested": (
+        "Documents KYC à compléter",
+        "Votre dossier nécessite des documents complémentaires.",
+        "/dashboard/kyc",
     ),
 }
 
@@ -2520,6 +2555,7 @@ def _configured_public_app_url() -> str:
     """Use an explicitly configured public origin, never a request Host header."""
     configured = [
         os.environ.get("PUBLIC_APP_URL", ""),
+        os.environ.get("OFFICIAL_DOMAIN", ""),
     ]
     configured.extend(os.environ.get("CORS_ORIGINS", "").split(","))
     for candidate in configured:
@@ -13473,7 +13509,7 @@ async def register_push_device(
     req: PushDeviceRequest,
     uid: str = Depends(get_current_user_id),
 ):
-    if not _firebase_client_config():
+    if not _firebase_client_config() or not _firebase_service_account_info():
         raise HTTPException(503, "Les notifications push ne sont pas configurées.")
     token_id = hashlib.sha256(req.token.encode("utf-8")).hexdigest()
     now = now_iso()

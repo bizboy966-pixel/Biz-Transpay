@@ -26,7 +26,11 @@ export default function Settings({ embedded = false }) {
   useEffect(() => {
     let active = true;
     api.get('/push/config')
-      .then(({ data }) => { if (active) setPushConfigured(Boolean(data.configured)); })
+      .then(({ data }) => {
+        if (active) {
+          setPushConfigured(Boolean(data.configured && data.server_configured));
+        }
+      })
       .catch(() => { if (active) setPushConfigured(false); });
     return () => { active = false; };
   }, []);

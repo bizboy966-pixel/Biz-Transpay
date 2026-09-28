@@ -617,6 +617,19 @@ def test_branded_transaction_email_includes_amount_fees_and_only_active_links(mo
     assert "Voir mes transactions" not in html
 
 
+def test_email_logo_uses_official_domain_when_public_app_url_is_unset(monkeypatch):
+    monkeypatch.delenv("PUBLIC_APP_URL", raising=False)
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+    monkeypatch.setenv("OFFICIAL_DOMAIN", "https://biz-transppayy.com")
+
+    app_url = server._configured_public_app_url()
+    header = server._email_brand_header_markup(app_url)
+
+    assert app_url == "https://biz-transppayy.com"
+    assert 'src="https://biz-transppayy.com/logo-mark.png"' in header
+    assert 'alt="Logo Biz-transPay"' in header
+
+
 def test_password_reset_email_uses_shared_logo_header(monkeypatch):
     monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
     monkeypatch.setenv("RESEND_API_KEY", "unit-test-key")

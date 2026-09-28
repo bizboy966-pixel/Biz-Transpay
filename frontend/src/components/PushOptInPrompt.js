@@ -52,7 +52,7 @@ export default function PushOptInPrompt() {
 
     api.get('/push/config')
       .then(({ data }) => {
-        if (active && data?.configured) setOpen(true);
+        if (active && data?.configured && data?.server_configured) setOpen(true);
       })
       .catch(() => {});
 

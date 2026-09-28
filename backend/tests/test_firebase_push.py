@@ -43,21 +43,25 @@ def test_push_audience_requires_valid_target():
     assert server._push_audience_query(selected_user)["id"] == "user-1"
 
 
-def test_automatic_pushes_are_limited_to_requested_validation_events():
+def test_all_user_notification_events_have_automatic_push_messages():
     assert set(server._AUTOMATIC_PUSH_MESSAGES) == {
         "deposit_success",
         "withdrawal_success",
+        "withdrawal_pending",
+        "withdrawal_failed",
+        "withdrawal_manual_review",
+        "transfer_success",
+        "payment_success",
+        "kyc_rejected",
+        "kyc_resubmit_requested",
         "kyc_verified",
         "exchange_success",
     }
-    assert server._AUTOMATIC_PUSH_MESSAGES["deposit_success"] == (
-        "Dépôt validé",
-        "Votre dépôt a été validé.",
-        "/dashboard/transactions",
-    )
+    assert server._AUTOMATIC_PUSH_MESSAGES["kyc_rejected"][2] == "/dashboard/kyc"
+    assert server._AUTOMATIC_PUSH_MESSAGES["payment_success"][2] == "/dashboard/transactions"
 
 
-def test_notify_schedules_only_the_four_automatic_push_events(monkeypatch):
+def test_notify_schedules_pushes_for_all_user_notification_events(monkeypatch):
     class FakeNotifications:
         async def insert_one(self, _document):
             return None
@@ -76,13 +80,20 @@ def test_notify_schedules_only_the_four_automatic_push_events(monkeypatch):
     monkeypatch.setattr(server, "_schedule_transaction_email", lambda *_args: None)
 
     async def send_notifications():
-        for event_type in (
+        event_types = (
             "deposit_success",
             "withdrawal_success",
             "kyc_verified",
             "exchange_success",
             "transfer_success",
-        ):
+            "withdrawal_pending",
+            "withdrawal_failed",
+            "withdrawal_manual_review",
+            "payment_success",
+            "kyc_rejected",
+            "kyc_resubmit_requested",
+        )
+        for event_type in event_types:
             await server.notify(
                 "user-1",
                 event_type,
@@ -99,7 +110,15 @@ def test_notify_schedules_only_the_four_automatic_push_events(monkeypatch):
         "withdrawal_success",
         "kyc_verified",
         "exchange_success",
+        "transfer_success",
+        "withdrawal_pending",
+        "withdrawal_failed",
+        "withdrawal_manual_review",
+        "payment_success",
+        "kyc_rejected",
+        "kyc_resubmit_requested",
     ]
+    assert scheduled[0][0] == "user-1"
 
 
 def test_automatic_push_campaign_id_is_stable_per_business_event():
