@@ -1243,7 +1243,13 @@ async def _telegram_notification_text(
                 f"🔎 TXID : <code>{html_escape(str(tx_hash)[:180])}</code>"
             )
     if deposit:
-        gross = deposit.get("amount_gross", deposit.get("amount"))
+        gross = (
+            deposit.get("charged_amount")
+            if deposit.get("source") == "link_payment"
+            else None
+        )
+        if gross is None or gross == "":
+            gross = deposit.get("amount_gross", deposit.get("amount"))
         net = deposit.get("amount_net", (data or {}).get("amount"))
         operator = (
             deposit.get("operator_name") or deposit.get("operator")
@@ -2126,6 +2132,120 @@ _AUTOMATIC_PUSH_MESSAGES = {
         "/dashboard/kyc",
     ),
 }
+
+_AUTOMATIC_PUSH_NET_AMOUNT_LABELS = {
+    "deposit_success": "Montant net crédité",
+    "withdrawal_success": "Montant net reçu",
+    "transfer_success": "Montant net transféré",
+    "payment_success": "Montant net crédité",
+    "exchange_success": "Montant net reçu",
+}
+
+
+def _automatic_push_display_amount(amount: Decimal, currency: str) -> str:
+    display_currency = str(currency).upper()
+    precision_currency = display_currency.split(".", 1)[0]
+    rendered = _telegram_display_amount(
+        amount,
+        precision_currency if precision_currency in {"USDT", "BTC", "ETH"} else display_currency,
+    )
+    if precision_currency in {"USDT", "BTC", "ETH"} and precision_currency != display_currency:
+        rendered_amount = rendered.rsplit(" ", 1)[0]
+        return f"{rendered_amount} {display_currency}"
+    return rendered
+
+
+def _automatic_push_net_amount_text(
+    event_type: str,
+    event_data: Optional[dict],
+    transaction: Optional[dict] = None,
+) -> str:
+    label = _AUTOMATIC_PUSH_NET_AMOUNT_LABELS.get(event_type)
+    if not label:
+        return ""
+
+    data = event_data or {}
+    tx = transaction or {}
+    metadata = tx.get("metadata") or {}
+
+    def first_present(*values):
+        return next(
+            (value for value in values if value is not None and value != ""),
+            None,
+        )
+
+    if event_type == "withdrawal_success":
+        # Some payout callbacks put the total wallet debit in data.amount.
+        # Prefer the persisted recipient amount so the push never labels gross
+        # debit as the amount received.
+        amount = first_present(
+            data.get("amount_net"),
+            metadata.get("recipient_gets"),
+            metadata.get("amount_net"),
+            tx.get("amount"),
+            data.get("received"),
+        )
+        currency = first_present(
+            data.get("amount_net_currency"),
+            metadata.get("amount_net_currency"),
+            data.get("currency"),
+            metadata.get("amount_currency"),
+            tx.get("currency"),
+            data.get("asset_code"),
+        )
+    elif event_type == "exchange_success":
+        amount = first_present(
+            data.get("amount_net"),
+            data.get("received"),
+            metadata.get("amount_net"),
+            metadata.get("received"),
+        )
+        currency = first_present(
+            data.get("to_currency"),
+            metadata.get("to_currency"),
+        )
+    else:
+        amount = first_present(
+            data.get("amount_net"),
+            data.get("amount"),
+            data.get("received"),
+            metadata.get("amount_net"),
+            metadata.get("recipient_gets"),
+            tx.get("amount"),
+        )
+        currency = first_present(
+            data.get("amount_net_currency"),
+            data.get("currency"),
+            metadata.get("amount_net_currency"),
+            metadata.get("amount_currency"),
+            tx.get("currency"),
+        )
+
+    if amount is None or not currency:
+        return ""
+    try:
+        numeric_amount = Decimal(str(amount))
+        if not numeric_amount.is_finite() or numeric_amount < 0:
+            return ""
+    except (InvalidOperation, TypeError, ValueError):
+        return ""
+
+    return (
+        f"{label} : "
+        f"{_automatic_push_display_amount(numeric_amount, str(currency))}"
+    )
+
+
+def _automatic_push_body(
+    event_type: str,
+    body: str,
+    event_data: Optional[dict],
+    transaction: Optional[dict] = None,
+) -> str:
+    net_amount = _automatic_push_net_amount_text(
+        event_type, event_data, transaction
+    )
+    return f"{body} {net_amount}." if net_amount else body
 
 
 async def notify(user_id: str, ntype: str, title: str, body: str,
@@ -15212,7 +15332,7 @@ def _schedule_automatic_push_notification(
     try:
         task = asyncio.create_task(
             _queue_automatic_push_notification(
-                user_id, event_type, campaign_id, message
+                user_id, event_type, campaign_id, message, dict(event_data or {})
             )
         )
         _push_campaign_tasks.add(task)
@@ -15226,6 +15346,7 @@ async def _queue_automatic_push_notification(
     event_type: str,
     campaign_id: str,
     message: tuple[str, str, str],
+    event_data: Optional[dict] = None,
 ) -> None:
     try:
         if not _firebase_client_config() or not _firebase_service_account_info():
@@ -15235,6 +15356,19 @@ async def _queue_automatic_push_notification(
         if users != 1 or devices == 0 or devices > PUSH_MAX_CAMPAIGN_DEVICES:
             return
         title, body, click_path = message
+        transaction = None
+        if event_type == "withdrawal_success":
+            transaction_id = str((event_data or {}).get("transaction_id") or "")
+            if transaction_id:
+                try:
+                    transaction = await db.transactions.find_one(
+                        {"id": transaction_id}, {"_id": 0}
+                    )
+                except Exception:
+                    logger.warning("Automatic push net amount lookup failed")
+        body = _automatic_push_body(
+            event_type, body, event_data, transaction
+        )
         campaign = {
             "id": campaign_id,
             "source": "automatic",

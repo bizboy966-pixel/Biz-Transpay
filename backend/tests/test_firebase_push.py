@@ -61,6 +61,122 @@ def test_all_user_notification_events_have_automatic_push_messages():
     assert server._AUTOMATIC_PUSH_MESSAGES["payment_success"][2] == "/dashboard/transactions"
 
 
+def test_transaction_pushes_format_the_net_received_or_credited_amount():
+    cases = [
+        (
+            "deposit_success",
+            {"amount": 500, "currency": "XOF"},
+            None,
+            "Montant net crédité : 500 XOF",
+        ),
+        (
+            "withdrawal_success",
+            {"amount": 521, "currency": "XOF"},
+            {
+                "amount": 521,
+                "currency": "XOF",
+                "metadata": {"total_debit": 521, "recipient_gets": 500},
+            },
+            "Montant net reçu : 500 XOF",
+        ),
+        (
+            "transfer_success",
+            {"amount": 500, "currency": "XOF"},
+            None,
+            "Montant net transféré : 500 XOF",
+        ),
+        (
+            "payment_success",
+            {"amount": 500, "currency": "XOF"},
+            None,
+            "Montant net crédité : 500 XOF",
+        ),
+        (
+            "exchange_success",
+            {"amount": 500, "currency": "XOF", "received": 2.5, "to_currency": "USDT"},
+            None,
+            "Montant net reçu : 2,500000 USDT",
+        ),
+        (
+            "deposit_success",
+            {"amount": 0.0025, "currency": "BTC.BTC"},
+            None,
+            "Montant net crédité : 0,002500 BTC.BTC",
+        ),
+    ]
+
+    for event_type, event_data, transaction, expected in cases:
+        assert server._automatic_push_net_amount_text(
+            event_type, event_data, transaction
+        ) == expected
+
+
+def test_deposit_push_body_includes_the_net_credit():
+    body = server._automatic_push_body(
+        "deposit_success",
+        server._AUTOMATIC_PUSH_MESSAGES["deposit_success"][1],
+        {"amount": 500, "currency": "XOF"},
+    )
+
+    assert body == (
+        "Votre dépôt a été validé. Montant net crédité : 500 XOF."
+    )
+
+
+def test_automatic_withdrawal_push_uses_persisted_recipient_amount(monkeypatch):
+    campaigns = []
+    scheduled = []
+
+    class Transactions:
+        async def find_one(self, query, _projection=None):
+            assert query == {"id": "tx-1"}
+            return {
+                "id": "tx-1",
+                "amount": 521,
+                "currency": "XOF",
+                "metadata": {"total_debit": 521, "recipient_gets": 500},
+            }
+
+    class Campaigns:
+        async def insert_one(self, campaign):
+            campaigns.append(campaign)
+
+    async def audience(_selection):
+        return 1, 1
+
+    monkeypatch.setattr(server, "_firebase_client_config", lambda: {"projectId": "test"})
+    monkeypatch.setattr(server, "_firebase_service_account_info", lambda: {"project_id": "test"})
+    monkeypatch.setattr(server, "_push_audience_counts", audience)
+    monkeypatch.setattr(
+        server,
+        "db",
+        SimpleNamespace(transactions=Transactions(), push_campaigns=Campaigns()),
+    )
+    monkeypatch.setattr(
+        server, "_schedule_push_campaign_delivery", lambda campaign_id: scheduled.append(campaign_id)
+    )
+
+    asyncio.run(server._queue_automatic_push_notification(
+        "user-1",
+        "withdrawal_success",
+        "auto-1",
+        server._AUTOMATIC_PUSH_MESSAGES["withdrawal_success"],
+        {"transaction_id": "tx-1", "amount": 521, "currency": "XOF"},
+    ))
+
+    assert campaigns[0]["body"] == (
+        "Votre retrait a été validé. Montant net reçu : 500 XOF."
+    )
+    assert scheduled == ["auto-1"]
+
+
+def test_non_final_transaction_pushes_do_not_claim_a_net_amount():
+    assert server._automatic_push_net_amount_text(
+        "withdrawal_pending",
+        {"amount": 500, "currency": "XOF"},
+    ) == ""
+
+
 def test_security_policy_allows_firebase_messaging_requests():
     response = SimpleNamespace(headers={})
     request = SimpleNamespace(

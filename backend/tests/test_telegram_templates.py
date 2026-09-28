@@ -73,8 +73,10 @@ def test_deposit_template_matches_operational_reference(monkeypatch):
         "mbiyo_transaction_id": "MBIYO-1",
         "operator_name": "TMoney",
         "currency": "XOF",
-        "amount_gross": "7500",
-        "amount_net": "7125",
+        "amount": "500",
+        "amount_gross": "500",
+        "charged_amount": "521",
+        "amount_net": "500",
         "source": "link_payment",
         "approved_at": "2026-09-14T20:07:16+00:00",
     }
@@ -97,11 +99,39 @@ def test_deposit_template_matches_operational_reference(monkeypatch):
     ))
 
     assert "✅ PAIEMENT REÇU / DÉPÔT CONFIRMÉ" in text
-    assert "Montant brut : <b>7\u202f500 XOF</b>" in text
-    assert "Montant crédité : <b>7\u202f125 XOF</b>" in text
+    assert "Montant brut : <b>521 XOF</b>" in text
+    assert "Montant crédité : <b>500 XOF</b>" in text
     assert "Passerelle : <b>Mbiyo</b>" in text
     assert "Opérateur : <b>TMoney</b>" in text
     assert "Lien de paiement" in text
+
+
+def test_non_link_deposit_telegram_gross_keeps_the_requested_amount(monkeypatch):
+    deposit = {
+        "id": "DEP-2",
+        "currency": "XOF",
+        "amount": 500,
+        "amount_gross": 500,
+        "charged_amount": 521,
+        "amount_net": 479,
+        "source": "dashboard",
+    }
+
+    async def context(_data):
+        return None, deposit
+
+    async def parties(_transaction, _deposit):
+        return []
+
+    monkeypatch.setattr(server, "_telegram_transaction_context", context)
+    monkeypatch.setattr(server, "_telegram_party_lines", parties)
+    text = asyncio.run(server._telegram_notification_text(
+        "user-1", "deposit_success", "Dépôt confirmé", "body",
+        {"deposit_id": "DEP-2"},
+    ))
+
+    assert "Montant brut : <b>500 XOF</b>" in text
+    assert "Montant crédité : <b>479 XOF</b>" in text
 
 
 def test_withdrawal_template_shows_gross_net_and_provider(monkeypatch):
