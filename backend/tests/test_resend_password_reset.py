@@ -307,6 +307,142 @@ async def _async_noop(*_args, **_kwargs):
     return None
 
 
+def test_notify_schedules_kyc_email_with_persisted_decision(monkeypatch):
+    notifications = _Collection()
+    scheduled = []
+    monkeypatch.setattr(
+        server, "db", SimpleNamespace(notifications=notifications)
+    )
+    monkeypatch.setattr(
+        server,
+        "_schedule_transaction_email",
+        lambda *args: scheduled.append(args),
+    )
+
+    async def run():
+        for event_type, body, data in (
+            ("kyc_verified", "Vérification validée", {"status": "verified"}),
+            ("kyc_rejected", "Document illisible", {
+                "status": "rejected", "reason": "Document illisible",
+            }),
+            ("kyc_resubmit_requested", "Photo à renvoyer", {
+                "status": "resubmit_requested", "reason": "Photo à renvoyer",
+            }),
+        ):
+            await server.notify(
+                "user-1",
+                event_type,
+                "Décision KYC",
+                body,
+                data=data,
+                send_telegram=False,
+            )
+
+    asyncio.run(run())
+
+    assert len(notifications.docs) == 3
+    assert scheduled == [
+        ("user-1", "kyc_verified", notifications.docs[0]["id"], "notification"),
+        ("user-1", "kyc_rejected", notifications.docs[1]["id"], "notification"),
+        (
+            "user-1",
+            "kyc_resubmit_requested",
+            notifications.docs[2]["id"],
+            "notification",
+        ),
+    ]
+
+
+def test_kyc_email_content_covers_approval_rejection_and_resubmission(monkeypatch):
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
+    user = {"full_name": "Amina <K."}
+    verified_text, verified_html = server._kyc_notification_email_content(
+        "kyc_verified",
+        {"data": {"status": "verified"}},
+        user,
+    )
+    rejected_text, rejected_html = server._kyc_notification_email_content(
+        "kyc_rejected",
+        {
+            "body": "Document illisible <script>",
+            "data": {"reason": "Document illisible <script>"},
+        },
+        user,
+    )
+    resubmit_text, resubmit_html = server._kyc_notification_email_content(
+        "kyc_resubmit_requested",
+        {
+            "body": "Photo à renvoyer",
+            "data": {"reason": "Photo à renvoyer"},
+        },
+        user,
+    )
+
+    assert "Félicitations" in verified_text
+    assert "Merci de nous avoir choisis." in verified_text
+    assert "Merci de nous avoir choisis." in verified_html
+    assert "Amina &lt;K." in verified_html
+    assert "Motif du rejet : Document illisible <script>" in rejected_text
+    assert "Motif du rejet" in rejected_html
+    assert "Document illisible &lt;script&gt;" in rejected_html
+    assert "<script>" not in rejected_html
+    assert "Motif de la resoumission : Photo à renvoyer" in resubmit_text
+    assert "Motif de la resoumission" in resubmit_html
+
+
+def test_kyc_email_outbox_delivers_to_reviewed_account_and_deduplicates(monkeypatch):
+    notification = {
+        "id": "kyc-notification-1",
+        "user_id": "user-1",
+        "type": "kyc_rejected",
+        "title": "Vérification Biz-transPay refusée",
+        "body": "Document illisible",
+        "data": {"status": "rejected", "reason": "Document illisible"},
+    }
+    outbox = _Collection()
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        notifications=_Collection([notification]),
+        users=_Collection([{
+            "id": "user-1",
+            "email": "member@example.com",
+            "full_name": "Amina",
+        }]),
+        email_outbox=outbox,
+    ))
+    monkeypatch.setattr(server, "_transaction_email_settings", lambda: _resolved({
+        "enabled": True,
+        "event_types": ["kyc_rejected"],
+        "content_fields": [],
+        "sender_email": "notifications@example.com",
+    }))
+    monkeypatch.setenv("RESEND_API_KEY", "unit-test-key")
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
+    sent = []
+
+    async def capture_email(**kwargs):
+        sent.append(kwargs)
+
+    monkeypatch.setattr(server, "send_resend_email", capture_email)
+
+    async def run():
+        await server._enqueue_transaction_email(
+            "user-1", "kyc_rejected", "kyc-notification-1", "notification"
+        )
+        await server._enqueue_transaction_email(
+            "user-1", "kyc_rejected", "kyc-notification-1", "notification"
+        )
+
+    asyncio.run(run())
+
+    assert outbox.docs[0]["status"] == "sent"
+    assert len(sent) == 1
+    assert sent[0]["recipient"] == "member@example.com"
+    assert sent[0]["subject"] == "Vérification Biz-transPay refusée"
+    assert "Document illisible" in sent[0]["text"]
+    assert "Document illisible" in sent[0]["html"]
+    assert sent[0]["idempotency_key"] == outbox.docs[0]["id"]
+
+
 def test_transaction_email_is_deduplicated_and_only_for_initiated_final_events(monkeypatch):
     outbox = _Collection()
     monkeypatch.setattr(server, "db", SimpleNamespace(email_outbox=outbox))
@@ -506,12 +642,19 @@ def test_password_reset_email_uses_shared_logo_header(monkeypatch):
     assert "align=\"right\"" in sent[0]["html"]
 
 
-def test_transaction_email_settings_upgrade_previous_defaults(monkeypatch):
+@pytest.mark.parametrize("legacy_event_types", [
+    ["deposit_confirmed", "withdrawal_success", "payment_final"],
+    [
+        "deposit_confirmed", "withdrawal_success", "exchange_success",
+        "payment_final",
+    ],
+])
+def test_transaction_email_settings_upgrade_previous_defaults(
+    monkeypatch, legacy_event_types
+):
     settings = _Collection([{
         "id": server.TRANSACTION_EMAIL_DEFAULTS["id"],
-        "event_types": [
-            "deposit_confirmed", "withdrawal_success", "payment_final",
-        ],
+        "event_types": legacy_event_types,
         "content_fields": [
             "event_status", "amount_currency", "reference", "event_time",
         ],

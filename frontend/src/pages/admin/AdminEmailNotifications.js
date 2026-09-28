@@ -9,6 +9,9 @@ const EVENT_OPTIONS = [
   { id: 'withdrawal_success', label: 'Retrait réussi uniquement' },
   { id: 'exchange_success', label: 'Échange réussi' },
   { id: 'payment_final', label: 'Paiement ou transfert initié par ce compte et réussi' },
+  { id: 'kyc_verified', label: 'Vérification KYC validée' },
+  { id: 'kyc_rejected', label: 'Vérification KYC rejetée' },
+  { id: 'kyc_resubmit_requested', label: 'Nouveaux documents KYC demandés' },
 ];
 
 const CONTENT_OPTIONS = [
@@ -110,10 +113,10 @@ export default function AdminEmailNotifications() {
       <div>
         <div className="flex items-center gap-2">
           <Mail className="w-5 h-5 text-blue-600" />
-          <h1 className="font-cabinet font-extrabold text-slate-900 text-xl">E-mails transactionnels</h1>
+           <h1 className="font-cabinet font-extrabold text-slate-900 text-xl">Notifications par e-mail</h1>
         </div>
         <p className="mt-2 text-sm text-slate-500">
-          Sélectionnez les événements et les informations qui seront envoyés au compte à l’origine de l’opération.
+          Sélectionnez les événements et les informations envoyés par e-mail. Les décisions KYC sont notifiées dès leur enregistrement.
         </p>
       </div>
 
@@ -121,9 +124,9 @@ export default function AdminEmailNotifications() {
         <section className="bg-white border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4">
           <h2 className="font-bold text-slate-900">Destinataire</h2>
           <div className="rounded-xl bg-blue-50 border border-blue-100 p-4 text-sm text-blue-900">
-            <b>Adresse e-mail du compte initiateur</b>
+            <b>Adresse e-mail du compte concerné</b>
             <p className="mt-1 text-blue-800">
-              Le message va à la personne qui a effectué l’opération, pas au bénéficiaire ni au compte qui reçoit les fonds.
+              Les e-mails de transaction vont à la personne qui a lancé l’opération. Les décisions KYC vont à la personne dont le dossier a été examiné.
             </p>
           </div>
         </section>
@@ -143,7 +146,7 @@ export default function AdminEmailNotifications() {
             </label>
           ))}
           <p className="text-xs text-slate-500">
-            Les retraits échoués, refusés ou remboursés ne déclenchent aucun e-mail.
+            Les retraits échoués, refusés ou remboursés ne déclenchent aucun e-mail. Les décisions KYC sont envoyées au compte concerné.
           </p>
         </section>
 
@@ -162,7 +165,7 @@ export default function AdminEmailNotifications() {
             </label>
           ))}
           <p className="text-xs text-slate-500">
-            Aucun nom, e-mail, téléphone, motif ou détail fournisseur n’est ajouté au contenu.
+            Les motifs de rejet ou de resoumission sont inclus dans les e-mails KYC. Aucun document d’identité ni détail fournisseur n’est joint.
           </p>
         </section>
 

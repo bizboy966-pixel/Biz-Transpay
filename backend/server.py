@@ -859,13 +859,19 @@ TRANSACTION_EMAIL_DEFAULTS = {
     "recipient_type": "transaction_user",
     "event_types": [
         "deposit_confirmed", "withdrawal_success", "exchange_success",
-        "payment_final",
+        "payment_final", "kyc_verified", "kyc_rejected",
+        "kyc_resubmit_requested",
     ],
     "content_fields": [
         "event_status", "amount_currency", "fee", "reference", "event_time",
     ],
 }
 TELEGRAM_MAX_MESSAGE_LENGTH = 3900
+KYC_EMAIL_EVENT_TYPES = frozenset({
+    "kyc_verified",
+    "kyc_rejected",
+    "kyc_resubmit_requested",
+})
 TELEGRAM_FINAL_NOTIFICATION_TYPES = {
     "deposit_success",
     "withdrawal_success",
@@ -2097,17 +2103,25 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
         "exchange_success": "exchange_success",
         "transfer_success": "payment_final",
         "payment_success": "payment_final",
+        "kyc_verified": "kyc_verified",
+        "kyc_rejected": "kyc_rejected",
+        "kyc_resubmit_requested": "kyc_resubmit_requested",
     }.get(ntype)
     if email_event:
-        event_data = data or {}
-        deposit_id = str(event_data.get("deposit_id") or "")
-        transaction_id = str(event_data.get("transaction_id") or "")
-        _schedule_transaction_email(
-            user_id,
-            email_event,
-            deposit_id or transaction_id,
-            "deposit" if deposit_id else "transaction",
-        )
+        if ntype in KYC_EMAIL_EVENT_TYPES:
+            _schedule_transaction_email(
+                user_id, email_event, doc["id"], "notification"
+            )
+        else:
+            event_data = data or {}
+            deposit_id = str(event_data.get("deposit_id") or "")
+            transaction_id = str(event_data.get("transaction_id") or "")
+            _schedule_transaction_email(
+                user_id,
+                email_event,
+                deposit_id or transaction_id,
+                "deposit" if deposit_id else "transaction",
+            )
     return doc
 
 
@@ -2115,7 +2129,11 @@ def _schedule_transaction_email(
     user_id: str, event_type: str, entity_id: str, entity_kind: str
 ) -> None:
     """Schedule email work without making the caller wait on Resend or its DB."""
-    if not user_id or not entity_id or entity_kind not in {"deposit", "transaction"}:
+    if (
+        not user_id
+        or not entity_id
+        or entity_kind not in {"deposit", "transaction", "notification"}
+    ):
         return
     try:
         task = asyncio.create_task(_enqueue_transaction_email(
@@ -2197,9 +2215,13 @@ async def _transaction_email_settings() -> dict:
     # Existing installs may have the complete previous default lists saved.
     # Upgrade only those exact defaults; preserve deliberate admin selections.
     if saved:
-        if saved.get("event_types") == [
-            "deposit_confirmed", "withdrawal_success", "payment_final",
-        ]:
+        if saved.get("event_types") in (
+            ["deposit_confirmed", "withdrawal_success", "payment_final"],
+            [
+                "deposit_confirmed", "withdrawal_success", "exchange_success",
+                "payment_final",
+            ],
+        ):
             settings["event_types"] = list(TRANSACTION_EMAIL_DEFAULTS["event_types"])
         if saved.get("content_fields") == [
             "event_status", "amount_currency", "reference", "event_time",
@@ -2557,16 +2579,27 @@ def _transaction_email_record_is_final(
 async def _load_transaction_email_context(
     user_id: str, event_type: str, entity_id: str, entity_kind: str
 ) -> Optional[tuple[dict, dict]]:
-    if entity_kind == "deposit":
+    if entity_kind == "notification":
+        if event_type not in KYC_EMAIL_EVENT_TYPES:
+            return None
+        record = await db.notifications.find_one(
+            {"id": entity_id, "user_id": user_id}, {"_id": 0}
+        )
+        if not record or record.get("type") != event_type:
+            return None
+    elif entity_kind == "deposit":
         record = await db.momo_deposits.find_one(
             {"id": entity_id, "user_id": user_id}, {"_id": 0}
         )
-    else:
+    elif entity_kind == "transaction":
         record = await db.transactions.find_one(
             {"id": entity_id, "user_id": user_id}, {"_id": 0}
         )
-    if not record or not _transaction_email_record_is_final(
-        event_type, record, entity_kind
+    else:
+        return None
+    if entity_kind != "notification" and (
+        not record
+        or not _transaction_email_record_is_final(event_type, record, entity_kind)
     ):
         return None
     user = await db.users.find_one(
@@ -2791,6 +2824,119 @@ def _transaction_email_content(
     return text, html
 
 
+def _kyc_notification_email_content(
+    event_type: str, notification: dict, user: Optional[dict] = None
+) -> tuple[str, str]:
+    templates = {
+        "kyc_verified": {
+            "subject": "Vérification Biz-transPay confirmée",
+            "status": "Vérification validée",
+            "heading": "Votre vérification est validée",
+            "message": (
+                "Félicitations ! Votre vérification d’identité a été validée. "
+                "Merci de nous avoir choisis."
+            ),
+            "badge_background": "#123c31",
+            "badge_color": "#75e0b2",
+            "reason_label": "",
+        },
+        "kyc_rejected": {
+            "subject": "Vérification Biz-transPay refusée",
+            "status": "Vérification rejetée",
+            "heading": "Votre demande a été rejetée",
+            "message": "Votre demande de vérification d’identité a été rejetée.",
+            "badge_background": "#49272c",
+            "badge_color": "#ffb4b4",
+            "reason_label": "Motif du rejet",
+        },
+        "kyc_resubmit_requested": {
+            "subject": "Documents Biz-transPay à compléter",
+            "status": "Documents à compléter",
+            "heading": "De nouveaux documents sont nécessaires",
+            "message": (
+                "Merci de soumettre à nouveau les documents demandés pour "
+                "terminer votre vérification."
+            ),
+            "badge_background": "#43391f",
+            "badge_color": "#f6d88a",
+            "reason_label": "Motif de la resoumission",
+        },
+    }
+    template = templates.get(event_type)
+    if not template:
+        raise ValueError("Unsupported KYC email event")
+
+    name = str(
+        (user or {}).get("full_name") or (user or {}).get("username") or ""
+    ).strip()[:120]
+    greeting = f"Bonjour {name}," if name else "Bonjour,"
+    data = notification.get("data") or {}
+    reason = str(data.get("reason") or "").strip()[:1200]
+    if not reason and template["reason_label"]:
+        reason = str(notification.get("body") or "").strip()[:1200]
+    if not reason and event_type == "kyc_rejected":
+        reason = "Aucun motif détaillé n’a été communiqué. Contactez l’assistance."
+    elif not reason and event_type == "kyc_resubmit_requested":
+        reason = "Merci de renvoyer des documents lisibles et complets."
+
+    text_lines = [
+        "Biz-transPay",
+        "",
+        template["status"],
+        "",
+        greeting,
+        template["message"],
+    ]
+    if reason and template["reason_label"]:
+        text_lines.extend(["", f"{template['reason_label']} : {reason}"])
+    text_lines.extend(["", "© 2026 Biz-transPay"])
+    text = "\n".join(text_lines)
+
+    email_header = _email_brand_header_markup(
+        _configured_public_app_url(),
+        text_color="#fff",
+        background_color="#101d2e",
+    )
+    reason_markup = ""
+    if reason and template["reason_label"]:
+        reason_markup = (
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+            "cellpadding=\"0\" style=\"margin-top:18px;background:#17263a;"
+            "border:1px solid #26364a;border-radius:10px\"><tr><td "
+            "style=\"padding:14px 16px\">"
+            f"<p style=\"margin:0 0 6px;color:#a8b7ca;font-size:12px;"
+            f"font-weight:700\">{html_escape(template['reason_label'])}</p>"
+            f"<p style=\"margin:0;color:#f8fafc;font-size:14px;line-height:1.6\">"
+            f"{html_escape(reason)}</p></td></tr></table>"
+        )
+    html = (
+        "<!doctype html><html lang=\"fr\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "</head><body style=\"margin:0;padding:24px 12px;background:#07111f;"
+        "font-family:Arial,Helvetica,sans-serif;color:#f8fafc\">"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+        "cellpadding=\"0\" style=\"max-width:560px;margin:0 auto\"><tr><td>"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+        "cellpadding=\"0\" style=\"background:#101d2e;border:1px solid #26364a;"
+        "border-radius:16px\"><tr><td style=\"padding:24px 26px\">"
+        f"<div style=\"margin-bottom:22px\">{email_header}</div>"
+        "<div style=\"display:inline-block;padding:5px 10px;border-radius:20px;"
+        f"background:{template['badge_background']};color:{template['badge_color']};"
+        "font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase\">"
+        f"{html_escape(template['status'])}</div>"
+        f"<h1 style=\"margin:14px 0 10px;color:#fff;font-size:22px;line-height:1.3\">"
+        f"{html_escape(template['heading'])}</h1>"
+        "<p style=\"margin:0;color:#bdc9d8;font-size:14px;line-height:1.6\">"
+        f"{html_escape(greeting)}<br>{html_escape(template['message'])}</p>"
+        f"{reason_markup}"
+        "</td></tr></table>"
+        "<p style=\"margin:16px 0 0;text-align:center;color:#8292a7;"
+        "font-size:11px\">© 2026 Biz-transPay</p>"
+        "</td></tr></table></body></html>"
+    )
+    return text, html
+
+
 def _safe_transaction_email_url(value) -> str:
     url = str(value or "").strip()
     try:
@@ -2880,19 +3026,27 @@ async def _deliver_transaction_email(outbox_id: str) -> None:
             )
             return
         record, user = context
-        support_config = await get_support_config()
-        text, html = _transaction_email_content(
-            outbox["event_type"],
-            record,
-            outbox["entity_kind"],
-            settings.get("content_fields") or [],
-            user,
-            support_config,
-        )
+        if outbox.get("entity_kind") == "notification":
+            text, html = _kyc_notification_email_content(
+                outbox["event_type"], record, user
+            )
+        else:
+            support_config = await get_support_config()
+            text, html = _transaction_email_content(
+                outbox["event_type"],
+                record,
+                outbox["entity_kind"],
+                settings.get("content_fields") or [],
+                user,
+                support_config,
+            )
         subject = {
             "deposit_confirmed": "Dépôt Biz-transPay confirmé",
             "withdrawal_success": "Retrait Biz-transPay confirmé",
             "exchange_success": "Échange Biz-transPay confirmé",
+            "kyc_verified": "Vérification Biz-transPay confirmée",
+            "kyc_rejected": "Vérification Biz-transPay refusée",
+            "kyc_resubmit_requested": "Documents Biz-transPay à compléter",
         }.get(outbox["event_type"])
         if outbox["event_type"] == "payment_final":
             operation_label = (
