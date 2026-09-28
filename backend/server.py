@@ -15160,7 +15160,7 @@ async def _send_one_fcm_message(
             if attempt < 2:
                 await asyncio.sleep(0.5 * (attempt + 1))
                 continue
-            return "failed"
+            return "failed:NETWORK"
         if response.status_code == 200:
             return "sent"
         try:
@@ -15168,15 +15168,39 @@ async def _send_one_fcm_message(
         except (ValueError, AttributeError):
             error = {}
         status = str(error.get("status", "")).upper()
+        details = error.get("details", [])
+        fcm_error_code = ""
+        if isinstance(details, list):
+            for detail in details:
+                if (
+                    isinstance(detail, dict)
+                    and "FcmError" in str(detail.get("@type", ""))
+                    and detail.get("errorCode")
+                ):
+                    fcm_error_code = str(detail["errorCode"]).upper()
+                    break
+        error_code = fcm_error_code or status
+        safe_error_code = "".join(
+            char if char.isalnum() or char == "_" else "_"
+            for char in error_code
+        )[:48] or f"HTTP_{response.status_code}"
+
+        # These responses are specific to this registration token. Retire the
+        # token so later campaigns do not repeatedly target a dead subscription.
+        if error_code in {"UNREGISTERED", "SENDER_ID_MISMATCH", "INVALID_ARGUMENT"}:
+            return "invalid"
+        # APNs/web-push provider credentials can fail for one platform while
+        # other devices remain deliverable; report this instead of aborting the
+        # entire campaign as though the Firebase service account were invalid.
+        if error_code in {"THIRD_PARTY_AUTH_ERROR", "APNS_AUTH_ERROR"}:
+            return f"failed:{safe_error_code}"
         if response.status_code in {401, 403}:
             raise RuntimeError("Firebase rejected the server credentials")
-        if status == "UNREGISTERED":
-            return "invalid"
         if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
             await asyncio.sleep(0.5 * (attempt + 1))
             continue
-        return "failed"
-    return "failed"
+        return f"failed:{safe_error_code}"
+    return "failed:UNKNOWN"
 
 
 async def _deliver_push_campaign(campaign_id: str) -> None:
@@ -15191,6 +15215,7 @@ async def _deliver_push_campaign(campaign_id: str) -> None:
         return
 
     sent = failed = invalid = processed = 0
+    failure_codes: Counter = Counter()
     try:
         selection = PushAudienceSelection(**campaign["audience"])
         user_count, devices = await _push_campaign_device_records(selection)
@@ -15230,17 +15255,25 @@ async def _deliver_push_campaign(campaign_id: str) -> None:
                             "credentials" in str(result).lower()
                             or "project configuration" in str(result).lower()
                         ):
+                            failure_codes["SERVER_CONFIGURATION"] += 1
                             raise result
                         failed += 1
+                        failure_codes[type(result).__name__.upper()] += 1
                     elif result == "sent":
                         sent += 1
                     elif result == "invalid":
                         invalid += 1
                         failed += 1
+                        failure_codes["INVALID_TOKEN"] += 1
                         if device.get("id"):
                             invalid_ids.append(device["id"])
+                    elif isinstance(result, str) and result.startswith("failed:"):
+                        failed += 1
+                        code = result.partition(":")[2].upper() or "UNKNOWN"
+                        failure_codes[code] += 1
                     else:
                         failed += 1
+                        failure_codes["UNKNOWN"] += 1
                 if invalid_ids:
                     await db.push_devices.delete_many({"id": {"$in": invalid_ids}})
                 await db.push_campaigns.update_one(
@@ -15252,10 +15285,16 @@ async def _deliver_push_campaign(campaign_id: str) -> None:
                         "failed": failed,
                         "invalid_tokens": invalid,
                         "processed": processed,
+                        "failure_codes": dict(failure_codes),
                         "updated_at": now_iso(),
                     }},
                 )
         final_status = "sent" if failed == 0 else ("partial" if sent else "failed")
+        if failure_codes:
+            logger.warning(
+                "Push campaign delivery failures by FCM code: %s",
+                dict(failure_codes),
+            )
         await db.push_campaigns.update_one(
             {"id": campaign_id},
             {"$set": {
@@ -15266,6 +15305,7 @@ async def _deliver_push_campaign(campaign_id: str) -> None:
                 "failed": failed,
                 "invalid_tokens": invalid,
                 "processed": processed,
+                "failure_codes": dict(failure_codes),
                 "finished_at": now_iso(),
                 "updated_at": now_iso(),
                 "error": None,
@@ -15287,6 +15327,7 @@ async def _deliver_push_campaign(campaign_id: str) -> None:
                 "failed": max(failed, int(campaign.get("devices", 0)) - sent),
                 "invalid_tokens": invalid,
                 "processed": processed,
+                "failure_codes": dict(failure_codes),
                 "finished_at": now_iso(),
                 "updated_at": now_iso(),
                 "error": "Échec de l’envoi. Vérifiez la configuration Firebase.",

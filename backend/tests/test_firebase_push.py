@@ -418,6 +418,81 @@ def test_fcm_sender_classifies_unregistered_tokens():
     assert result == "invalid"
 
 
+@pytest.mark.parametrize(
+    "status_code,error_status,error_code",
+    [
+        (403, "PERMISSION_DENIED", "SENDER_ID_MISMATCH"),
+        (400, "INVALID_ARGUMENT", "INVALID_ARGUMENT"),
+    ],
+)
+def test_fcm_sender_classifies_project_mismatch_and_invalid_tokens(
+    status_code, error_status, error_code
+):
+    async def handler(_request):
+        return httpx.Response(
+            status_code,
+            json={
+                "error": {
+                    "status": error_status,
+                    "details": [{
+                        "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                        "errorCode": error_code,
+                    }],
+                }
+            },
+        )
+
+    async def send():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            return await server._send_one_fcm_message(
+                client,
+                "test-project",
+                "bearer",
+                "stale-token",
+                "Titre",
+                "Message",
+                "/dashboard",
+                "campaign-1",
+            )
+
+    assert asyncio.run(send()) == "invalid"
+
+
+def test_fcm_sender_preserves_platform_authentication_failure_code():
+    async def handler(_request):
+        return httpx.Response(
+            401,
+            json={
+                "error": {
+                    "status": "UNAUTHENTICATED",
+                    "details": [{
+                        "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+                        "errorCode": "THIRD_PARTY_AUTH_ERROR",
+                    }],
+                }
+            },
+        )
+
+    async def send():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as client:
+            return await server._send_one_fcm_message(
+                client,
+                "test-project",
+                "bearer",
+                "device-token",
+                "Titre",
+                "Message",
+                "/dashboard",
+                "campaign-1",
+            )
+
+    assert asyncio.run(send()) == "failed:THIRD_PARTY_AUTH_ERROR"
+
+
 def test_fcm_sender_does_not_delete_token_for_generic_not_found():
     async def handler(_request):
         return httpx.Response(404, json={"error": {"status": "NOT_FOUND"}})
@@ -437,4 +512,61 @@ def test_fcm_sender_does_not_delete_token_for_generic_not_found():
                 "campaign-1",
             )
 
-    assert asyncio.run(send()) == "failed"
+    assert asyncio.run(send()) == "failed:NOT_FOUND"
+
+
+def test_push_campaign_persists_permanent_failure_code_summary(monkeypatch):
+    campaign = {
+        "id": "campaign-1",
+        "audience": {"audience": "user", "user_id": "user-1"},
+        "title": "Titre",
+        "body": "Message",
+        "url": "/dashboard",
+        "devices": 2,
+    }
+    updates = []
+
+    class Campaigns:
+        async def find_one(self, _query, _projection=None):
+            return campaign
+
+        async def update_one(self, _query, update):
+            updates.append(update["$set"])
+            return SimpleNamespace(modified_count=1)
+
+    class Devices:
+        async def delete_many(self, _query):
+            return SimpleNamespace(deleted_count=0)
+
+    async def device_records(_selection):
+        return 1, [
+            {"id": "device-1", "token": "token-1"},
+            {"id": "device-2", "token": "token-2"},
+        ]
+
+    results = iter(["sent", "failed:THIRD_PARTY_AUTH_ERROR"])
+
+    async def send_one(*_args):
+        return next(results)
+
+    monkeypatch.setattr(
+        server,
+        "db",
+        SimpleNamespace(push_campaigns=Campaigns(), push_devices=Devices()),
+    )
+    monkeypatch.setattr(server, "_push_campaign_device_records", device_records)
+    monkeypatch.setattr(
+        server, "_firebase_access_token_sync", lambda: ("test-project", "bearer")
+    )
+    monkeypatch.setattr(
+        server, "_firebase_client_config", lambda: {"projectId": "test-project"}
+    )
+    monkeypatch.setattr(server, "_send_one_fcm_message", send_one)
+
+    asyncio.run(server._deliver_push_campaign("campaign-1"))
+
+    final_update = updates[-1]
+    assert final_update["status"] == "partial"
+    assert final_update["sent"] == 1
+    assert final_update["failed"] == 1
+    assert final_update["failure_codes"] == {"THIRD_PARTY_AUTH_ERROR": 1}
