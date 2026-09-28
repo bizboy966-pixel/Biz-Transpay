@@ -1,4 +1,4 @@
-import api from '@/api';
+import api from '../api';
 import { initializeApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
@@ -14,7 +14,9 @@ export async function startBrowserPush({ requestPermission = false } = {}) {
   if (requestPermission && await Notification.requestPermission() !== 'granted') throw new Error('Autorisation de notifications refusée.');
   const app = getApps().length ? getApps()[0] : initializeApp(data.config);
   const messaging = getMessaging(app);
-  const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+  await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+  const registration = await navigator.serviceWorker.ready;
+  if (!registration.active) throw new Error('Le service worker de notifications n’est pas actif.');
   const token = await getToken(messaging, { vapidKey: data.config.vapidKey, serviceWorkerRegistration: registration });
   if (!token) return null;
   if (unsubscribeForeground) unsubscribeForeground();
