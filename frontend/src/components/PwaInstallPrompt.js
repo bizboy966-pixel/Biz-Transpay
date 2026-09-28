@@ -13,6 +13,7 @@ export default function PwaInstallPrompt() {
   const [installState, setInstallState] = useState(getPwaInstallState);
   const [dismissed, setDismissed] = useState(false);
   const [installError, setInstallError] = useState('');
+  const [installHelpOpen, setInstallHelpOpen] = useState(false);
 
   useEffect(() => subscribePwaInstall(setInstallState), []);
 
@@ -30,13 +31,20 @@ export default function PwaInstallPrompt() {
       const outcome = await requestPwaInstall();
       if (outcome === 'accepted') {
         setInstallState(getPwaInstallState());
-      } else if (outcome === 'dismissed') {
-        setDismissed(true);
+      } else {
+        setInstallState(getPwaInstallState());
+        setInstallHelpOpen(true);
       }
     } catch {
-      setInstallError('L’installation n’a pas pu être lancée. Réessayez depuis le menu du navigateur.');
+      setInstallHelpOpen(true);
+      setInstallError('L’installation n’a pas pu être lancée. Suivez les étapes ci-dessous.');
     }
   };
+  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
+  const isAppleMobile = /iPhone|iPad|iPod/i.test(userAgent)
+    || (typeof navigator !== 'undefined'
+      && navigator.platform === 'MacIntel'
+      && navigator.maxTouchPoints > 1);
 
   return (
     <section
@@ -55,9 +63,16 @@ export default function PwaInstallPrompt() {
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
             Accédez plus rapidement à votre compte depuis l’écran d’accueil de votre appareil.
           </p>
-          {!installState.canPrompt && (
-            <p className="mt-2 text-xs leading-relaxed text-slate-500">
-              Dans le menu de votre navigateur, choisissez « Installer l’application » ou « Ajouter à l’écran d’accueil ».
+          {(!installState.canPrompt || installHelpOpen) && (
+            <p
+              className="mt-2 text-xs leading-relaxed text-slate-500"
+              data-testid="pwa-install-instructions"
+              aria-live="polite"
+            >
+              {isAppleMobile
+                ? 'Sur iPhone ou iPad : touchez Partager, puis « Sur l’écran d’accueil » et « Ajouter ».'
+                : 'Dans le menu de votre navigateur, choisissez « Installer l’application » ou « Ajouter à l’écran d’accueil ».'
+              }
             </p>
           )}
           {installError && (
@@ -69,26 +84,6 @@ export default function PwaInstallPrompt() {
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
-        {installState.canPrompt ? (
-          <button
-            type="button"
-            onClick={install}
-            data-testid="btn-install-pwa"
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[#2563EB] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#1D4ED8]"
-          >
-            <Download className="h-4 w-4" aria-hidden="true" />
-            Installer l’application
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={markPwaInstalled}
-            data-testid="btn-confirm-pwa-installed"
-            className="inline-flex min-h-10 items-center justify-center rounded-xl bg-[#2563EB] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#1D4ED8]"
-          >
-            J’ai installé l’application
-          </button>
-        )}
         <button
           type="button"
           onClick={() => setDismissed(true)}
@@ -97,6 +92,23 @@ export default function PwaInstallPrompt() {
         >
           <X className="h-4 w-4" aria-hidden="true" />
           Plus tard
+        </button>
+        <button
+          type="button"
+          onClick={markPwaInstalled}
+          data-testid="btn-confirm-pwa-installed"
+          className="inline-flex min-h-10 items-center justify-center rounded-xl border border-blue-200 bg-white px-4 py-2 text-sm font-semibold text-[#2563EB] transition hover:bg-blue-50"
+        >
+          J’ai installé l’application
+        </button>
+        <button
+          type="button"
+          onClick={install}
+          data-testid="btn-install-pwa"
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[#2563EB] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#1D4ED8]"
+        >
+          <Download className="h-4 w-4" aria-hidden="true" />
+          Installer l’application
         </button>
       </div>
     </section>
