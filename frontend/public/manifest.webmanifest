@@ -1,7 +1,7 @@
 {
   "name": "Biz-transPay",
   "short_name": "Biz-transPay",
-  "description": "Votre passerelle de paiement Biz-transPay.",
+  "description": "Votre plateforme de vente en ligne Biz-transPay.",
   "lang": "fr",
   "start_url": "/dashboard",
   "scope": "/",

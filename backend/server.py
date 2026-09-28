@@ -17494,10 +17494,23 @@ app.mount(
 )
 
 
-@app.get("/{path:path}", include_in_schema=False)
+@app.api_route(
+    "/{path:path}", methods=["GET", "HEAD"], include_in_schema=False
+)
 async def frontend_fallback(path: str):
     if path == "api" or path.startswith("api/"):
         raise HTTPException(404, "Route introuvable")
+
+    build_dir = FRONTEND_BUILD_DIR.resolve()
+    if path:
+        requested_file = (build_dir / path).resolve()
+        try:
+            requested_file.relative_to(build_dir)
+        except ValueError:
+            requested_file = None
+        if requested_file and requested_file.is_file():
+            return FileResponse(requested_file)
+
     index_file = FRONTEND_BUILD_DIR / "index.html"
     if not index_file.is_file():
         return JSONResponse(
