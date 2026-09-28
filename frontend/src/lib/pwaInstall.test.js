@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import {
   getPwaInstallState,
   initializePwaInstall,
@@ -27,6 +29,17 @@ describe('PWA installation', () => {
 
   it('returns unavailable when the browser has not offered an install prompt', async () => {
     await expect(requestPwaInstall()).resolves.toBe('unavailable');
+  });
+
+  it('provides a real navigation fetch handler for browser installability', () => {
+    const workerPath = path.resolve(__dirname, '../../public/firebase-messaging-sw.js');
+    const offlinePagePath = path.resolve(__dirname, '../../public/offline.html');
+    const worker = fs.readFileSync(workerPath, 'utf8');
+
+    expect(worker).toMatch(/addEventListener\(['"]fetch['"]/);
+    expect(worker).toContain('event.respondWith(');
+    expect(worker).toContain("request.mode !== 'navigate'");
+    expect(fs.existsSync(offlinePagePath)).toBe(true);
   });
 
   it('falls back to userChoice when prompt has no result', async () => {

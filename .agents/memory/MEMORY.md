@@ -38,3 +38,4 @@
 - [Referral invite codes](referral-invite-codes.md) — use immutable account IDs as invitation codes; usernames are not database-unique in the document adapter.
 - [Referral rounding](referral-rounding.md) — keep fractional XOF/XAF commissions to honor percentage rates on small qualifying operations.
 - [Crypto benefit accounting](crypto-benefit-accounting.md) — report crypto platform fees in USDT using the transaction's stored settlement rate, never a live rate.
+- [PWA installation eligibility](pwa-installability.md) — Chromium needs a meaningful navigation fetch handler for its in-app install prompt; preserve the offline fallback.
