@@ -5,6 +5,7 @@ import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, WalletCards, Me
 import { Logo } from '@/components/Logo';
 import { SafeImage } from '@/components/SafeImage';
 import NotificationBell from '@/components/NotificationBell';
+import PwaInstallPrompt from '@/components/PwaInstallPrompt';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
 import SocialChannelsBanner from '@/components/SocialChannelsBanner';
@@ -141,6 +142,7 @@ export default function DashboardLayout() {
         </header>
 
             <main className="bt-content p-5 sm:p-7 pb-32">
+          <PwaInstallPrompt />
           <Outlet />
         </main>
       </div>

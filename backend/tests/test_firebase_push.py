@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -40,6 +41,89 @@ def test_push_audience_requires_valid_target():
 
     selected_user = PushAudienceSelection(audience="user", user_id="user-1")
     assert server._push_audience_query(selected_user)["id"] == "user-1"
+
+
+def test_automatic_pushes_are_limited_to_requested_validation_events():
+    assert set(server._AUTOMATIC_PUSH_MESSAGES) == {
+        "deposit_success",
+        "withdrawal_success",
+        "kyc_verified",
+        "exchange_success",
+    }
+    assert server._AUTOMATIC_PUSH_MESSAGES["deposit_success"] == (
+        "Dépôt validé",
+        "Votre dépôt a été validé.",
+        "/dashboard/transactions",
+    )
+
+
+def test_notify_schedules_only_the_four_automatic_push_events(monkeypatch):
+    class FakeNotifications:
+        async def insert_one(self, _document):
+            return None
+
+    scheduled = []
+    monkeypatch.setattr(
+        server,
+        "db",
+        SimpleNamespace(notifications=FakeNotifications()),
+    )
+    monkeypatch.setattr(
+        server,
+        "_schedule_automatic_push_notification",
+        lambda *args: scheduled.append(args),
+    )
+    monkeypatch.setattr(server, "_schedule_transaction_email", lambda *_args: None)
+
+    async def send_notifications():
+        for event_type in (
+            "deposit_success",
+            "withdrawal_success",
+            "kyc_verified",
+            "exchange_success",
+            "transfer_success",
+        ):
+            await server.notify(
+                "user-1",
+                event_type,
+                "Titre",
+                "Message",
+                data={"transaction_id": f"{event_type}-1"},
+                send_telegram=False,
+            )
+
+    asyncio.run(send_notifications())
+
+    assert [call[1] for call in scheduled] == [
+        "deposit_success",
+        "withdrawal_success",
+        "kyc_verified",
+        "exchange_success",
+    ]
+
+
+def test_automatic_push_campaign_id_is_stable_per_business_event():
+    first = server._automatic_push_campaign_id(
+        "user-1",
+        "exchange_success",
+        {"transaction_id": "tx-123"},
+        "notification-1",
+    )
+    duplicate = server._automatic_push_campaign_id(
+        "user-1",
+        "exchange_success",
+        {"transaction_id": "tx-123"},
+        "notification-2",
+    )
+    different = server._automatic_push_campaign_id(
+        "user-1",
+        "exchange_success",
+        {"transaction_id": "tx-456"},
+        "notification-3",
+    )
+
+    assert first == duplicate
+    assert first != different
 
 
 def test_push_campaign_request_constrains_request_id_and_message():

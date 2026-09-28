@@ -2067,6 +2067,29 @@ _BRANDED_NOTIFICATION_TITLES = {
     "kyc_resubmit_requested": "Documents Biz-transPay à compléter",
 }
 
+_AUTOMATIC_PUSH_MESSAGES = {
+    "deposit_success": (
+        "Dépôt validé",
+        "Votre dépôt a été validé.",
+        "/dashboard/transactions",
+    ),
+    "withdrawal_success": (
+        "Retrait validé",
+        "Votre retrait a été validé.",
+        "/dashboard/transactions",
+    ),
+    "kyc_verified": (
+        "KYC validé",
+        "Votre vérification d’identité a été validée.",
+        "/dashboard/kyc",
+    ),
+    "exchange_success": (
+        "Échange validé",
+        "Votre échange a été effectué.",
+        "/dashboard/transactions",
+    ),
+}
+
 
 async def notify(user_id: str, ntype: str, title: str, body: str,
                  data: Optional[dict] = None,
@@ -2100,6 +2123,10 @@ async def notify(user_id: str, ntype: str, title: str, body: str,
             q.put_nowait(doc)
         except Exception:
             pass
+    if ntype in _AUTOMATIC_PUSH_MESSAGES:
+        _schedule_automatic_push_notification(
+            user_id, ntype, data or {}, doc["id"]
+        )
     if send_telegram:
         await _queue_telegram_notification(user_id, ntype, title, body, data)
     email_event = {
@@ -15115,6 +15142,98 @@ def _schedule_push_campaign_delivery(campaign_id: str) -> None:
     task.add_done_callback(_push_campaign_tasks.discard)
 
 
+def _automatic_push_campaign_id(
+    user_id: str, event_type: str, event_data: dict, notification_id: str
+) -> str:
+    event_reference = next(
+        (
+            str(event_data.get(field)).strip()
+            for field in (
+                "transaction_id", "deposit_id", "kyc_id", "operation_id",
+                "reviewed_at",
+            )
+            if event_data.get(field)
+        ),
+        notification_id,
+    )
+    digest = hashlib.sha256(
+        f"{user_id}|{event_type}|{event_reference}".encode()
+    ).hexdigest()
+    return f"auto-{digest}"
+
+
+def _schedule_automatic_push_notification(
+    user_id: str, event_type: str, event_data: dict, notification_id: str
+) -> None:
+    message = _AUTOMATIC_PUSH_MESSAGES.get(event_type)
+    if not message or not user_id:
+        return
+    campaign_id = _automatic_push_campaign_id(
+        user_id, event_type, event_data, notification_id
+    )
+    try:
+        task = asyncio.create_task(
+            _queue_automatic_push_notification(
+                user_id, event_type, campaign_id, message
+            )
+        )
+        _push_campaign_tasks.add(task)
+        task.add_done_callback(_push_campaign_tasks.discard)
+    except RuntimeError:
+        logger.warning("Automatic push could not be scheduled")
+
+
+async def _queue_automatic_push_notification(
+    user_id: str,
+    event_type: str,
+    campaign_id: str,
+    message: tuple[str, str, str],
+) -> None:
+    try:
+        if not _firebase_client_config() or not _firebase_service_account_info():
+            return
+        selection = PushAudienceSelection(audience="user", user_id=user_id)
+        users, devices = await _push_audience_counts(selection)
+        if users != 1 or devices == 0 or devices > PUSH_MAX_CAMPAIGN_DEVICES:
+            return
+        title, body, click_path = message
+        campaign = {
+            "id": campaign_id,
+            "source": "automatic",
+            "event_type": event_type,
+            "title": title,
+            "body": body,
+            "url": click_path,
+            "audience": selection.model_dump(exclude_none=True),
+            "status": "queued",
+            "users": users,
+            "devices": devices,
+            "sent": 0,
+            "failed": 0,
+            "invalid_tokens": 0,
+            "processed": 0,
+            "created_at": now_iso(),
+            "finished_at": None,
+            "error": None,
+        }
+        try:
+            await db.push_campaigns.insert_one(campaign)
+        except DuplicateKeyError:
+            existing = await db.push_campaigns.find_one(
+                {"id": campaign_id}, {"_id": 0, "status": 1}
+            )
+            if existing and existing.get("status") == "queued":
+                _schedule_push_campaign_delivery(campaign_id)
+            return
+        _schedule_push_campaign_delivery(campaign_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Automatic push enqueue failed for %s (%s)",
+            event_type,
+            type(exc).__name__,
+        )
+
+
 async def _resume_push_campaigns() -> None:
     pending = await db.push_campaigns.find(
         {"status": {"$in": ["queued", "sending"]}},
@@ -15286,7 +15405,7 @@ async def admin_list_push_campaigns(
     limit: int = Query(20, ge=1, le=100),
 ):
     campaigns = await db.push_campaigns.find(
-        {},
+        {"source": {"$ne": "automatic"}},
         {
             "_id": 0,
             "id": 1,
