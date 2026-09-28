@@ -3,6 +3,7 @@ import { initializeApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
 const TOKEN_KEY = 'btp_push_token';
+export const PUSH_OPT_IN_DISMISSED_KEY = 'btp_push_opt_in_dismissed';
 let unsubscribeForeground = null;
 
 export async function startBrowserPush({ requestPermission = false } = {}) {

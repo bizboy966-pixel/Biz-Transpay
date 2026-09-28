@@ -1,7 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster, toast } from 'sonner';
 import { useEffect } from 'react';
-import { startBrowserPush } from '@/lib/pushNotifications';
 import { initializePwaInstall } from '@/lib/pwaInstall';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import Landing from '@/pages/Landing';
@@ -50,6 +49,7 @@ import AdminEmailNotifications from '@/pages/admin/AdminEmailNotifications';
 import AdminNotifications from '@/pages/admin/AdminNotifications';
 import AdminLegacyCleanup from '@/pages/admin/AdminLegacyCleanup';
 import ReauthGate from '@/components/ReauthGate';
+import PushOptInPrompt from '@/components/PushOptInPrompt';
 import '@/App.css';
 
 function Protected({ children }) {
@@ -98,6 +98,7 @@ function App() {
       <BrowserRouter>
         <Toaster position="top-right" richColors closeButton offset={72} />
         <ForegroundPushToasts />
+        <PushOptInPrompt />
         <ReauthGate />
         <Routes>
           <Route path="/" element={<Landing />} />

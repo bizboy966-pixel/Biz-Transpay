@@ -4,6 +4,7 @@ import { ACTIVE_MOMO_DEPOSIT_KEY } from '../constants/payment';
 import {
   currentPushToken,
   disableBrowserPush,
+  PUSH_OPT_IN_DISMISSED_KEY,
   startBrowserPush,
 } from '@/lib/pushNotifications';
 
@@ -34,6 +35,7 @@ export function AuthProvider({ children }) {
       email, password, ...security,
     });
     if (data.user && data.token !== undefined) {
+      sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
       setUser(data.user);
     }
     return data;
@@ -41,7 +43,10 @@ export function AuthProvider({ children }) {
 
   const register = async (payload) => {
     const { data } = await api.post('/auth/register', payload);
-    if (data.user && data.token !== undefined) setUser(data.user);
+    if (data.user && data.token !== undefined) {
+      sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
+      setUser(data.user);
+    }
     return data;
   };
 
@@ -50,6 +55,7 @@ export function AuthProvider({ children }) {
     await disableBrowserPush().catch(() => {});
     await api.post('/auth/logout').catch(() => {});
     sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
+    sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
     setUser(null);
     window.location.href = '/';
   };
