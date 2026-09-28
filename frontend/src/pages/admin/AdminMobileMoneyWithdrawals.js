@@ -4,9 +4,65 @@ import {
   ToggleLeft, ToggleRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import api from '@/api';
+import api from '../../api';
 
-const EMPTY_MOBILE_MONEY = { enabled: true, operators: [] };
+const PROVIDERS = [
+  { value: 'paydunya', label: 'Pay Junior' },
+  { value: 'mbiyo', label: 'Biya Pay' },
+  { value: 'afribapay', label: 'Afrika Pay' },
+];
+const PAYDUNYA_WITHDRAWAL_NETWORKS = {
+  'orange-money-senegal': 'orange',
+  'free-money-senegal': 'free',
+  'wave-senegal': 'wave',
+  'mtn-benin': 'mtn',
+  'moov-benin': 'moov',
+  'celtiis-cash': 'celtiis',
+  'mtn-ci': 'mtn',
+  'orange-money-ci': 'orange',
+  'moov-ci': 'moov',
+  'wave-ci': 'wave',
+  't-money-togo': 'tmoney',
+  'moov-togo': 'moov',
+  'orange-money-mali': 'orange',
+  'moov-mali': 'moov',
+  'orange-money-burkina': 'orange',
+  'moov-burkina-faso': 'moov',
+  'mtn-cameroun': 'mtn',
+};
+
+function withdrawalRouteKey(operator) {
+  const country = String(operator.country || '').toUpperCase();
+  const provider = String(operator.provider || 'paydunya').toLowerCase();
+  let network;
+  if (provider === 'paydunya') {
+    const mode = String(operator.withdraw_mode || operator.code || '').toLowerCase();
+    network = PAYDUNYA_WITHDRAWAL_NETWORKS[mode] || mode;
+  } else if (provider === 'mbiyo') {
+    network = String(operator.network || operator.code || '')
+      .toLowerCase().replace(/^mbiyo_/, '');
+  } else {
+    network = String(operator.operator || operator.public_code || operator.code || '')
+      .toLowerCase().replace(/^afribapay_/, '');
+  }
+  network = ({
+    togocom: 'tmoney',
+    togocel: 'tmoney',
+    't-money': 'tmoney',
+    t_money: 'tmoney',
+    'celtiis-cash': 'celtiis',
+  })[network] || network;
+  return `${country}:${network}`;
+}
+
+function catalogKey(operator) {
+  return [
+    String(operator.provider || '').toLowerCase(),
+    String(operator.country || '').toUpperCase(),
+    String(operator.code || '').toLowerCase(),
+    String(operator.currency || '').toUpperCase(),
+  ].join(':');
+}
 
 function normalizeOperators(operators, provider) {
   return Array.isArray(operators)
@@ -40,23 +96,26 @@ function normalizeOperators(operators, provider) {
     : [];
 }
 
-function normalizeConfig(data, mbiyoData, afribapayData) {
-  const paydunyaOperators = normalizeOperators(data?.mobile_money?.operators, 'paydunya');
-  const mbiyoOperators = normalizeOperators(
-    mbiyoData?.catalog || data?.mbiyo?.operators,
-    'mbiyo',
-  );
-  const afribapayOperators = normalizeOperators(afribapayData?.catalog, 'afribapay');
+function normalizeConfig(data) {
+  const operators = normalizeOperators(data?.mobile_money?.operators, 'paydunya');
+  const existingKeys = new Set(operators.map(catalogKey));
+  normalizeOperators(data?.mbiyo?.operators, 'mbiyo').forEach((operator) => {
+    const key = catalogKey(operator);
+    if (!existingKeys.has(key)) {
+      operators.push(operator);
+      existingKeys.add(key);
+    }
+  });
   return {
     enabled: data?.mobile_money?.enabled !== false,
-    operators: [...paydunyaOperators, ...mbiyoOperators, ...afribapayOperators],
+    operators,
     mbiyo: {
-      enabled: mbiyoData?.enabled !== false,
-      mode: mbiyoData?.mode || 'test',
+      enabled: data?.mbiyo?.enabled !== false,
+      mode: data?.mbiyo?.mode || 'test',
     },
     afribapay: {
-      enabled: afribapayData?.enabled !== false,
-      mode: afribapayData?.mode || 'sandbox',
+      enabled: data?.afribapay?.enabled !== false,
+      mode: data?.afribapay?.mode || 'sandbox',
     },
   };
 }
@@ -69,7 +128,7 @@ function number(value) {
 export default function AdminMobileMoneyWithdrawals() {
   const [config, setConfig] = useState(null);
   const [countryFilter, setCountryFilter] = useState('all');
-  const [providerFilter, setProviderFilter] = useState('all');
+  const [providerFilter, setProviderFilter] = useState('paydunya');
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -77,12 +136,8 @@ export default function AdminMobileMoneyWithdrawals() {
   const load = async () => {
     setLoading(true);
     try {
-      const [{ data }, { data: mbiyoData }, { data: afribapayData }] = await Promise.all([
-        api.get('/admin/transfer/config'),
-        api.get('/admin/payment-providers/mbiyo'),
-        api.get('/admin/payment-providers/afribapay'),
-      ]);
-      setConfig(normalizeConfig(data, mbiyoData, afribapayData));
+      const { data } = await api.get('/admin/transfer/config');
+      setConfig(normalizeConfig(data));
       setDirty(false);
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Impossible de charger le catalogue Mobile Money');
@@ -93,19 +148,25 @@ export default function AdminMobileMoneyWithdrawals() {
 
   useEffect(() => { load(); }, []);
 
-  const countries = useMemo(() => Array.from(new Set(
-    (config?.operators || []).map((operator) => operator.country).filter(Boolean),
-  )).sort((a, b) => {
-    const labelA = config.operators.find((operator) => operator.country === a)?.country_label || a;
-    const labelB = config.operators.find((operator) => operator.country === b)?.country_label || b;
-    return labelA.localeCompare(labelB);
-  }), [config]);
+  const providerOperators = useMemo(
+    () => (config?.operators || []).filter(
+      (operator) => operator.provider === providerFilter,
+    ),
+    [config, providerFilter],
+  );
 
-  const visibleOperators = useMemo(() => (config?.operators || [])
+  const countries = useMemo(() => Array.from(new Set(
+    providerOperators.map((operator) => operator.country).filter(Boolean),
+  )).sort((a, b) => {
+    const labelA = providerOperators.find((operator) => operator.country === a)?.country_label || a;
+    const labelB = providerOperators.find((operator) => operator.country === b)?.country_label || b;
+    return labelA.localeCompare(labelB);
+  }), [providerOperators]);
+
+  const visibleOperators = useMemo(() => providerOperators
     .filter((operator) => countryFilter === 'all' || operator.country === countryFilter)
-    .filter((operator) => providerFilter === 'all' || operator.provider === providerFilter)
     .sort((a, b) => (a.country_label || a.country).localeCompare(b.country_label || b.country)),
-  [config, countryFilter, providerFilter]);
+  [providerOperators, countryFilter]);
 
   const update = (key, value) => {
     setConfig((current) => ({ ...current, [key]: value }));
@@ -124,19 +185,43 @@ export default function AdminMobileMoneyWithdrawals() {
               ? { fee_pct: number(field === 'gateway_fee_pct' ? value : operator.gateway_fee_pct) + number(field === 'platform_fee_pct' ? value : operator.platform_fee_pct) }
               : {}),
           }
-          : operator
+          : field === 'active' && value === true
+            && withdrawalRouteKey(operator) === withdrawalRouteKey(
+              current.operators.find((item) => item._key === key) || {},
+            )
+            ? { ...operator, active: false }
+            : operator
       )),
     }));
     setDirty(true);
   };
 
   const toggleArchive = (key) => {
-    setConfig((current) => ({
-      ...current,
-      operators: current.operators.map((operator) => operator._key === key
-        ? { ...operator, archived: !operator.archived, active: operator.archived }
-        : operator),
-    }));
+    setConfig((current) => {
+      const target = current.operators.find((operator) => operator._key === key);
+      const reactivating = Boolean(target?.archived);
+      const routeKey = target ? withdrawalRouteKey(target) : null;
+      return {
+        ...current,
+        operators: current.operators.map((operator) => {
+          if (operator._key === key) {
+            return {
+              ...operator,
+              archived: !operator.archived,
+              active: operator.archived,
+            };
+          }
+          if (
+            reactivating
+            && operator.active
+            && withdrawalRouteKey(operator) === routeKey
+          ) {
+            return { ...operator, active: false };
+          }
+          return operator;
+        }),
+      };
+    });
     setDirty(true);
   };
 
@@ -149,28 +234,10 @@ export default function AdminMobileMoneyWithdrawals() {
         ...operator,
         max: operator.max === '' ? null : operator.max,
       }));
-      const paydunyaOperators = cleanOperators
-        .filter((operator) => operator.provider === 'paydunya')
-        .map(({ provider, ...operator }) => operator);
-      const mbiyoOperators = cleanOperators.filter((operator) => operator.provider === 'mbiyo');
-      const afribapayOperators = cleanOperators.filter((operator) => operator.provider === 'afribapay');
-      const [{ data }, { data: mbiyoData }] = await Promise.all([
-        api.patch('/admin/transfer/config', {
-          mobile_money: { enabled: config.enabled, operators: paydunyaOperators },
-        }),
-        api.put('/admin/payment-providers/mbiyo', {
-          enabled: config.mbiyo.enabled,
-          mode: config.mbiyo.mode,
-          catalog: mbiyoOperators,
-        }),
-        api.put('/admin/payment-providers/afribapay', {
-          enabled: config.afribapay.enabled,
-          mode: config.afribapay.mode,
-          catalog: afribapayOperators,
-        }),
-      ]);
-      const { data: afribapayData } = await api.get('/admin/payment-providers/afribapay');
-      setConfig(normalizeConfig(data, mbiyoData, afribapayData));
+      const { data } = await api.patch('/admin/transfer/config', {
+        mobile_money: { enabled: config.enabled, operators: cleanOperators },
+      });
+      setConfig(normalizeConfig(data));
       setDirty(false);
       toast.success('Catalogue Mobile Money enregistré');
     } catch (err) {
@@ -195,7 +262,7 @@ export default function AdminMobileMoneyWithdrawals() {
             <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0"><Globe2 className="w-5 h-5" /></div>
             <div>
               <h1 className="font-cabinet font-extrabold text-slate-900 text-lg sm:text-xl">Retraits Mobile Money</h1>
-              <p className="text-xs text-slate-500 mt-0.5">Catalogue des opérateurs, frais et limites proposés aux clients.</p>
+            <p className="text-xs text-slate-500 mt-0.5">Les catalogues sont séparés par prestataire. À pays et opérateur identiques, un seul prestataire peut être actif pour le retrait.</p>
             </div>
           </div>
         </div>
@@ -223,27 +290,22 @@ export default function AdminMobileMoneyWithdrawals() {
           <div className="w-9 h-9 rounded-xl bg-blue-50 text-[#2563EB] flex items-center justify-center"><Globe2 className="w-4 h-4" /></div>
           <div>
             <h2 className="font-cabinet font-bold text-slate-900">Catalogue des opérateurs</h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">Configurez les frais de retrait PayDunya et Mbiyo, les limites et le statut.</p>
+            <p className="text-[11px] text-slate-500 mt-0.5">Choisissez un prestataire pour voir et gérer uniquement ses pays et opérateurs. Activer un itinéraire le désactive chez les autres prestataires.</p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1">
-          {[
-            ['all', 'Tous les prestataires'],
-            ['paydunya', 'PayDunya'],
-            ['mbiyo', 'Mbiyo'],
-            ['afribapay', 'AfribaPAY'],
-          ].map(([value, label]) => {
-            const count = config.operators.filter((operator) => value === 'all' || operator.provider === value).length;
-            return <button type="button" key={value} onClick={() => setProviderFilter(value)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${providerFilter === value ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'}`}>{label} ({count})</button>;
+          {PROVIDERS.map(({ value, label }) => {
+            const count = config.operators.filter((operator) => operator.provider === value).length;
+            return <button type="button" key={value} onClick={() => { setProviderFilter(value); setCountryFilter('all'); }} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${providerFilter === value ? 'bg-emerald-600 text-white' : 'bg-emerald-50 text-emerald-700'}`}>{label} ({count})</button>;
           })}
         </div>
 
         <div className="flex items-center gap-2 mb-3 overflow-x-auto pb-1">
           <button type="button" onClick={() => setCountryFilter('all')} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${countryFilter === 'all' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>Tous les pays</button>
           {countries.map((country) => {
-            const count = config.operators.filter((operator) => operator.country === country).length;
-            const label = config.operators.find((operator) => operator.country === country)?.country_label || country;
+            const count = providerOperators.filter((operator) => operator.country === country).length;
+            const label = providerOperators.find((operator) => operator.country === country)?.country_label || country;
             return <button type="button" key={country} onClick={() => setCountryFilter(country)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold whitespace-nowrap ${countryFilter === country ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{label} ({count})</button>;
           })}
         </div>
@@ -269,6 +331,13 @@ export default function AdminMobileMoneyWithdrawals() {
 
 function WithdrawalOperator({ operator, onChange, onArchive }) {
   const [expanded, setExpanded] = useState(false);
+  const providerLabel = PROVIDERS.find((provider) => provider.value === operator.provider)?.label
+    || operator.provider;
+  const providerColor = operator.provider === 'mbiyo'
+    ? 'bg-blue-50 text-blue-700'
+    : operator.provider === 'afribapay'
+      ? 'bg-violet-50 text-violet-700'
+      : 'bg-amber-50 text-amber-700';
   return (
     <div className={`rounded-xl border ${operator.archived ? 'border-slate-200 bg-slate-50' : 'border-slate-200 bg-white'}`} data-testid={`mobile-money-operator-${operator.code}`}>
       <div className="p-3 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -277,7 +346,7 @@ function WithdrawalOperator({ operator, onChange, onArchive }) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="font-bold text-sm text-slate-900">{operator.name || 'Sans nom'}</span>
-              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${operator.provider === 'mbiyo' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>{operator.provider === 'mbiyo' ? 'MBIYO' : 'PAYDUNYA'}</span>
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${providerColor}`}>{providerLabel}</span>
               {operator.archived && <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[9px] font-bold">ARCHIVÉ</span>}
             </div>
             <div className="text-[10px] text-slate-500">{operator.country_label || operator.country} · {operator.code} · {operator.currency}</div>

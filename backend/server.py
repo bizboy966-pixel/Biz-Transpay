@@ -5566,18 +5566,100 @@ def _find_deposit_operator(cfg: dict, country: str, code: str) -> Optional[dict]
     return None
 
 
-def _active_operator(catalog: list[dict], country: str, code: str) -> Optional[dict]:
+def _active_operator(
+    catalog: list[dict], country: str, code: str,
+    provider: Optional[str] = None,
+) -> Optional[dict]:
     country_up = str(country or "").upper()
     code_lo = _canonical_mobile_money_operator_code(country_up, code)
     return next((
         op for op in catalog
         if str(op.get("country") or "").upper() == country_up
+        and (
+            provider is None
+            or str(op.get("provider") or "paydunya").lower() == provider.lower()
+        )
         and _canonical_mobile_money_operator_code(
             country_up, op.get("code")) == code_lo
         and op.get("active", True)
         and not op.get("archived", False)
         and not op.get("hidden", False)
     ), None)
+
+
+_PAYDUNYA_WITHDRAWAL_NETWORKS = {
+    "orange-money-senegal": "orange",
+    "free-money-senegal": "free",
+    "wave-senegal": "wave",
+    "mtn-benin": "mtn",
+    "moov-benin": "moov",
+    "celtiis-cash": "celtiis",
+    "mtn-ci": "mtn",
+    "orange-money-ci": "orange",
+    "moov-ci": "moov",
+    "wave-ci": "wave",
+    "t-money-togo": "tmoney",
+    "moov-togo": "moov",
+    "orange-money-mali": "orange",
+    "moov-mali": "moov",
+    "orange-money-burkina": "orange",
+    "moov-burkina-faso": "moov",
+    "mtn-cameroun": "mtn",
+}
+
+
+def _withdrawal_route_identity(operator: dict) -> tuple[str, str]:
+    """Return the provider-neutral country/operator route identity."""
+    provider = str(operator.get("provider") or "paydunya").lower()
+    country = str(operator.get("country") or "").upper()
+    if provider == "paydunya":
+        mode = str(
+            operator.get("withdraw_mode") or operator.get("code") or ""
+        ).strip().lower()
+        network = _PAYDUNYA_WITHDRAWAL_NETWORKS.get(mode, mode)
+    elif provider == "mbiyo":
+        network = str(
+            operator.get("network") or operator.get("code") or ""
+        ).strip().lower().removeprefix("mbiyo_")
+    elif provider == "afribapay":
+        network = str(
+            operator.get("operator") or operator.get("public_code")
+            or operator.get("code") or ""
+        ).strip().lower().removeprefix("afribapay_")
+    else:
+        network = str(operator.get("code") or "").strip().lower()
+    network = {
+        "togocom": "tmoney",
+        "togocel": "tmoney",
+        "t-money": "tmoney",
+        "t_money": "tmoney",
+        "celtiis-cash": "celtiis",
+    }.get(network, network)
+    return country, network
+
+
+def _deactivate_duplicate_withdrawal_routes(catalog: list[dict]) -> list[dict]:
+    """Keep the established public priority as a safe legacy migration rule."""
+    priority = {"paydunya": 0, "mbiyo": 1, "afribapay": 2}
+    ordered = sorted(
+        catalog,
+        key=lambda op: priority.get(
+            str(op.get("provider") or "paydunya").lower(), 99),
+    )
+    seen = set()
+    for operator in ordered:
+        if (
+            not operator.get("active", True)
+            or operator.get("archived", False)
+            or operator.get("hidden", False)
+        ):
+            continue
+        identity = _withdrawal_route_identity(operator)
+        if identity in seen:
+            operator["active"] = False
+        else:
+            seen.add(identity)
+    return catalog
 
 
 def _active_mbiyo_operator(
@@ -5597,6 +5679,33 @@ def _active_mbiyo_operator(
         and not op.get("archived", False)
         and not op.get("hidden", False)
     ), None)
+
+
+def _active_withdrawal_operator(
+    catalog: list[dict], provider: str, country: str, code: str,
+    currency: Optional[str] = None,
+) -> Optional[dict]:
+    """Resolve one withdrawal route only from its provider's admin catalogue."""
+    provider_name = provider.lower()
+    provider_catalog = [
+        operator for operator in catalog
+        if str(operator.get("provider") or "paydunya").lower() == provider_name
+    ]
+    if provider_name == "paydunya":
+        operator = _active_operator(
+            provider_catalog, country, code, provider="paydunya")
+    elif provider_name == "mbiyo":
+        operator = _active_mbiyo_operator(provider_catalog, country, code)
+    elif provider_name == "afribapay":
+        operator = _active_afribapay_operator(
+            provider_catalog, country, code, currency)
+    else:
+        return None
+    if operator and currency and (
+        str(operator.get("currency") or "").upper() != currency.upper()
+    ):
+        return None
+    return operator
 
 
 def _active_afribapay_operator(
@@ -5754,6 +5863,7 @@ DEFAULT_TRANSFER_CONFIG = {
         "disabled_assets": [],
     },
 }
+WITHDRAWAL_CATALOG_MIGRATION_VERSION = 1
 
 
 _LEGACY_WITHDRAW_MODES = {
@@ -5779,9 +5889,9 @@ _LEGACY_WITHDRAW_MODES = {
 def _merged_mobile_money(defaults: dict, current: dict) -> dict:
     """Merge the payout catalogue without replacing administrator choices.
 
-    Existing entries are keyed by country+code and win over defaults.  Legacy
-    entries are enriched only with non-destructive display/provider fields so
-    old transfer configurations remain usable after the payout migration.
+    Existing entries remain provider-scoped and win over PayDunya defaults.
+    Legacy entries are enriched only with non-destructive display/provider
+    fields so old transfer configurations remain usable after migration.
     """
     out = copy.deepcopy(current or {})
     base = copy.deepcopy(defaults.get("mobile_money") or {})
@@ -5793,12 +5903,20 @@ def _merged_mobile_money(defaults: dict, current: dict) -> dict:
     for item in existing:
         country = str(item.get("country") or "").upper()
         code = str(item.get("code") or "").lower()
+        provider = str(item.get("provider") or "").strip().lower()
+        if not provider:
+            provider = (
+                "afribapay" if code.startswith("afribapay_")
+                else "mbiyo" if code.startswith("mbiyo_")
+                else "paydunya"
+            )
         item.setdefault("country", country)
         item.setdefault("country_label", paydunya.COUNTRY_LABELS.get(country, country))
         item.setdefault("currency", "XAF" if country == "CM" else "XOF")
+        item.setdefault("provider", provider)
         item.setdefault("archived", False)
         item.setdefault("hidden", False)
-        if not item.get("withdraw_mode"):
+        if provider == "paydunya" and not item.get("withdraw_mode"):
             mode = _LEGACY_WITHDRAW_MODES.get((country, code))
             if mode:
                 item["withdraw_mode"] = mode
@@ -5807,13 +5925,24 @@ def _merged_mobile_money(defaults: dict, current: dict) -> dict:
                 # remain selectable as an automatic withdrawal route.
                 item["active"] = False
                 item["archived"] = True
-        if item.get("currency") == "XAF":
+        elif provider not in {"paydunya", "mbiyo", "afribapay"}:
+            item["active"] = False
+            item["archived"] = True
+        if provider == "paydunya" and item.get("currency") == "XAF":
             # PUSH v2 currently documents amount as XOF only.
             item["active"] = False
-    by_key = {(str(item.get("country") or "").upper(),
-               str(item.get("code") or "").lower()) for item in existing}
-    by_mode = {str(item.get("withdraw_mode") or "").lower()
-               for item in existing if item.get("withdraw_mode")}
+    by_key = {
+        (str(item.get("country") or "").upper(),
+         str(item.get("code") or "").lower())
+        for item in existing
+        if str(item.get("provider") or "paydunya").lower() == "paydunya"
+    }
+    by_mode = {
+        str(item.get("withdraw_mode") or "").lower()
+        for item in existing
+        if str(item.get("provider") or "paydunya").lower() == "paydunya"
+        and item.get("withdraw_mode")
+    }
     # An explicitly empty catalogue is an administrator choice (for example
     # a temporary global shutdown), not an invitation to repopulate defaults.
     if not had_operators:
@@ -5832,8 +5961,12 @@ async def get_transfer_config() -> dict:
     if not doc:
         await db.settings.insert_one(copy.deepcopy(DEFAULT_TRANSFER_CONFIG))
         doc = await db.settings.find_one({"id": "transfer_config"}, {"_id": 0})
-    # This read-time migration is intentionally not a replacement write.  It
-    # preserves admin edits and makes adding a future default non-destructive.
+    needs_withdrawal_catalog_migration = (
+        doc.get("withdrawal_catalog_migration_version")
+        != WITHDRAWAL_CATALOG_MIGRATION_VERSION
+    )
+    # Defaults are merged without replacement writes. The sole exception is
+    # the one-time copy of the legacy Mbiyo catalogue into payout settings.
     merged = dict(doc)
     merged["mobile_money"] = _merged_mobile_money(
         DEFAULT_TRANSFER_CONFIG, doc.get("mobile_money") or {})
@@ -5877,16 +6010,56 @@ async def get_transfer_config() -> dict:
                         and _paydunya_credentials_configured(paydunya_cfg)),
     }
     mb_cfg = await get_mbiyo_config()
+    mbiyo_keys = {
+        (str(op.get("country") or "").upper(),
+         str(op.get("code") or "").lower(),
+         str(op.get("currency") or "").upper())
+        for op in payout_catalog
+        if str(op.get("provider") or "").lower() == "mbiyo"
+    }
+    if needs_withdrawal_catalog_migration:
+        for op in mb_cfg.get("catalog") or []:
+            candidate = copy.deepcopy(op)
+            candidate["provider"] = "mbiyo"
+            key = (
+                str(candidate.get("country") or "").upper(),
+                str(candidate.get("code") or "").lower(),
+                str(candidate.get("currency") or "").upper(),
+            )
+            if key not in mbiyo_keys:
+                payout_catalog.append(candidate)
+                mbiyo_keys.add(key)
+    _deactivate_duplicate_withdrawal_routes(payout_catalog)
     merged["mbiyo"] = {
         "enabled": bool(mb_cfg.get("enabled") and (
             mb_cfg.get("secret_key_encrypted") or mb_cfg.get("api_key_encrypted")
             or os.environ.get("MBIYO_SECRET_KEY") or os.environ.get("MBIYO_API_KEY"))),
-        "operators": copy.deepcopy(mb_cfg.get("catalog") or []),
+        "operators": copy.deepcopy([
+            op for op in payout_catalog
+            if str(op.get("provider") or "").lower() == "mbiyo"
+        ]),
     }
     afribapay_cfg = await get_afribapay_config()
     merged["afribapay"] = {
         "enabled": _afribapay_ready(afribapay_cfg, payout=True),
     }
+    merged["withdrawal_catalog_migration_version"] = (
+        WITHDRAWAL_CATALOG_MIGRATION_VERSION
+    )
+    if needs_withdrawal_catalog_migration:
+        await db.settings.update_one(
+            {
+                "id": "transfer_config",
+                "withdrawal_catalog_migration_version": {
+                    "$ne": WITHDRAWAL_CATALOG_MIGRATION_VERSION,
+                },
+            },
+            {"$set": {
+                "mobile_money.operators": copy.deepcopy(payout_catalog),
+                "withdrawal_catalog_migration_version":
+                    WITHDRAWAL_CATALOG_MIGRATION_VERSION,
+            }},
+        )
     return merged
 
 
@@ -5897,7 +6070,18 @@ def _public_transfer_config(cfg: dict) -> dict:
     global_enabled = bool(mm.get("enabled", False))
     paydunya_enabled = bool((result.get("paydunya") or {}).get("enabled"))
     afribapay_enabled = bool((result.get("afribapay") or {}).get("enabled"))
-    paydunya_ops = (mm.get("operators") or []) if (
+    mb_cfg = result.get("mbiyo") or {}
+    withdrawal_ops = copy.deepcopy(mm.get("operators") or [])
+    if not any(
+        str(op.get("provider") or "").lower() == "mbiyo"
+        for op in withdrawal_ops
+    ):
+        withdrawal_ops.extend(
+            {**op, "provider": "mbiyo"}
+            for op in mb_cfg.get("operators", [])
+        )
+    _deactivate_duplicate_withdrawal_routes(withdrawal_ops)
+    paydunya_ops = withdrawal_ops if (
         global_enabled and paydunya_enabled) else []
     for op in paydunya_ops:
         if str(op.get("provider") or "paydunya").lower() != "paydunya":
@@ -5925,11 +6109,14 @@ def _public_transfer_config(cfg: dict) -> dict:
         "operators": public_ops,
     }
     # Mbiyo payout routes use the same provider-neutral customer contract.
-    mb_cfg = cfg.get("mbiyo") or {}
+    mbiyo_ops = [
+        op for op in withdrawal_ops
+        if str(op.get("provider") or "").lower() == "mbiyo"
+    ]
     # get_transfer_config already reduces this flag to
     # enabled-and-configured without copying credentials publicly.
     if global_enabled and mb_cfg.get("enabled"):
-        for op in mb_cfg.get("operators", []):
+        for op in mbiyo_ops:
             if not op.get("active", True) or op.get("archived") or op.get("hidden"):
                 continue
             public_ops.append({
@@ -5943,7 +6130,7 @@ def _public_transfer_config(cfg: dict) -> dict:
                 "fee_fixed": _customer_fee_rates(op)[1], "active": True,
             })
     if global_enabled and afribapay_enabled:
-        for op in mm.get("operators") or []:
+        for op in withdrawal_ops:
             if str(op.get("provider") or "").lower() != "afribapay":
                 continue
             if (not op.get("active", True) or op.get("archived")
@@ -6417,22 +6604,24 @@ async def transfer(req: TransferRequest, request: Request,
         if not req.country or not req.operator:
             raise HTTPException(400, "Pays et opérateur requis")
         mb_cfg = await get_mbiyo_config(decrypt=True)
+        withdrawal_catalog = mm_cfg.get("operators") or []
         mb_op = (
-            _active_mbiyo_operator(
-                mb_cfg.get("catalog") or [], req.country, req.operator)
+            _active_withdrawal_operator(
+                withdrawal_catalog, "mbiyo", req.country, req.operator,
+                req.currency)
             if mb_cfg.get("enabled") and mb_cfg.get("_api_key") else None
         )
-        if mb_op and str(mb_op.get("currency") or "").upper() != req.currency.upper():
-            mb_op = None
         afri_cfg = await get_afribapay_config(decrypt=True)
         afri_op = (
-            _active_afribapay_operator(
-                afri_cfg.get("catalog") or [], req.country, req.operator,
+            _active_withdrawal_operator(
+                withdrawal_catalog, "afribapay", req.country, req.operator,
                 req.currency)
             if _afribapay_ready(afri_cfg, payout=True) else None
         )
         paydunya_op = (
-            _active_operator(mm_cfg.get("operators") or [], req.country, req.operator)
+            _active_withdrawal_operator(
+                withdrawal_catalog, "paydunya", req.country, req.operator,
+                req.currency)
             if (cfg.get("paydunya") or {}).get("enabled") else None
         )
         if paydunya_op and (
@@ -6442,13 +6631,13 @@ async def transfer(req: TransferRequest, request: Request,
         if not mm_cfg.get("enabled"):
             raise HTTPException(403, "Fonctionnalité non activée. Bientôt disponible.")
         if mb_op and paydunya_op:
-            # Match the public catalogue's deterministic first-provider
-            # priority for an identical country/code/currency tuple.
+            # Match the public catalogue's deterministic priority for an
+            # identical country/operator route.
             mb_op = None
         if afri_op and (mb_op or paydunya_op):
             # PayDunya and Mbiyo routes appear first in the public withdrawal
             # catalogue; AfribaPAY is only selected when no earlier provider
-            # owns the identical country/operator/currency route.
+            # owns the same country/operator route.
             afri_op = None
         if not mb_op and not paydunya_op and not afri_op:
             raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
@@ -16854,6 +17043,12 @@ def _validate_withdrawal_catalog(section: dict) -> None:
          str(op["currency"]).upper())
         for op in afribapay.default_payout_catalog()
     }
+    valid_mbiyo = {
+        (str(op["country"]).upper(), str(op["code"]).lower(),
+         str(op["currency"]).upper())
+        for op in mbiyo.default_catalog()
+    }
+    active_routes = set()
     for op in operators:
         if not isinstance(op, dict):
             raise HTTPException(422, "Chaque opérateur doit être un objet")
@@ -16869,6 +17064,9 @@ def _validate_withdrawal_catalog(section: dict) -> None:
         if provider == "afribapay":
             if (country, code.lower(), currency) not in valid_afribapay:
                 raise HTTPException(422, "Route AfribaPAY Mobile Money invalide")
+        elif provider == "mbiyo":
+            if (country, code.lower(), currency) not in valid_mbiyo:
+                raise HTTPException(422, "Route Biya Pay Mobile Money invalide")
         elif provider == "paydunya":
             if country not in valid_countries or currency not in currencies:
                 raise HTTPException(422, "Pays ou devise Mobile Money invalide")
@@ -16885,6 +17083,17 @@ def _validate_withdrawal_catalog(section: dict) -> None:
             or (country, code.lower()) == ("TG", "wave"))
         executable = op.get("active", True) and not op.get("archived", False) \
             and not op.get("hidden", False)
+        if executable:
+            route_identity = _withdrawal_route_identity({
+                **op, "provider": provider,
+            })
+            if route_identity in active_routes:
+                raise HTTPException(
+                    422,
+                    "Ce pays et cet opérateur ne peuvent être actifs que "
+                    "chez un seul prestataire de retrait.",
+                )
+            active_routes.add(route_identity)
         if (executable and provider == "paydunya"
                 and mode not in paydunya.WITHDRAWAL_MODES):
             raise HTTPException(422, "Mode de retrait PayDunya invalide")
@@ -17199,6 +17408,9 @@ async def admin_update_transfer_config(req: AdminTransferConfigReq, admin=Depend
                 dot_updates[f"{section}.{k}"] = v
         else:
             dot_updates[section] = patch
+    dot_updates["withdrawal_catalog_migration_version"] = (
+        WITHDRAWAL_CATALOG_MIGRATION_VERSION
+    )
     await db.settings.update_one({"id": "transfer_config"}, {"$set": dot_updates}, upsert=True)
     await audit(admin["id"], admin["username"], "update_transfer_config", details=updates)
     return await get_transfer_config()

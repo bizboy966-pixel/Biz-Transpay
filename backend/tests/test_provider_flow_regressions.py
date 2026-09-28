@@ -21,6 +21,10 @@ def run_async(fn):
     return wrapper
 
 
+async def disabled_afribapay_config(*args, **kwargs):
+    return {"enabled": False, "catalog": []}
+
+
 class MemoryCollection:
     def __init__(self, docs=None):
         self.docs = list(docs or [])
@@ -146,6 +150,8 @@ async def test_public_link_payment_accepts_active_configured_operator(
     }
     async def value(payload):
         return payload
+    monkeypatch.setattr(
+        server, "get_afribapay_config", disabled_afribapay_config)
     async def no_turnstile(*args):
         return None
     async def no_notify(*args):
@@ -262,6 +268,8 @@ async def test_deposit_provider_falls_back_when_paydunya_has_no_enabled_mode(
         monkeypatch):
     async def value(payload):
         return payload
+    monkeypatch.setattr(
+        server, "get_afribapay_config", disabled_afribapay_config)
 
     shared_route = {
         "country": "TG", "code": "tmoney_tg", "currency": "XOF",
@@ -294,6 +302,8 @@ async def test_deposit_provider_falls_back_when_paydunya_has_no_enabled_mode(
 async def test_deposit_provider_uses_ready_paydunya_route(monkeypatch, configured_code):
     async def value(payload):
         return payload
+    monkeypatch.setattr(
+        server, "get_afribapay_config", disabled_afribapay_config)
 
     shared_route = {
         "country": "TG", "code": configured_code, "currency": "XOF",
@@ -321,6 +331,8 @@ async def test_deposit_provider_uses_ready_paydunya_route(monkeypatch, configure
 async def test_direct_deposit_avoids_redirect_only_paydunya(monkeypatch):
     async def value(payload):
         return payload
+    monkeypatch.setattr(
+        server, "get_afribapay_config", disabled_afribapay_config)
 
     shared_route = {
         "country": "TG", "code": "tmoney_tg", "currency": "XOF",
@@ -351,6 +363,8 @@ async def test_direct_deposit_avoids_redirect_only_paydunya(monkeypatch):
 async def test_unavailable_deposit_error_does_not_disclose_provider(monkeypatch):
     async def value(payload):
         return payload
+    monkeypatch.setattr(
+        server, "get_afribapay_config", disabled_afribapay_config)
 
     monkeypatch.setattr(server, "get_paydunya_config", lambda: value({
         "enabled": True,
@@ -396,6 +410,183 @@ def test_public_withdrawal_catalog_keeps_active_provider_routes_distinct():
         "t-money-togo", "moov_tg",
     }
     assert all("provider" not in operator for operator in operators)
+
+
+def test_public_withdrawal_catalog_hides_routes_owned_by_another_provider():
+    config = server._public_transfer_config({
+        "mobile_money": {
+            "enabled": True,
+            "operators": [
+                {
+                    "provider": "paydunya", "country": "TG",
+                    "code": "t-money-togo", "withdraw_mode": "t-money-togo",
+                    "name": "TMoney", "currency": "XOF", "active": True,
+                },
+                {
+                    "provider": "mbiyo", "country": "TG",
+                    "code": "mbiyo_tmoney_tg", "network": "togocom",
+                    "name": "TMoney", "currency": "XOF", "active": True,
+                },
+                {
+                    "provider": "afribapay", "country": "TG",
+                    "code": "afribapay_tmoney_tg", "public_code": "tmoney_tg",
+                    "operator": "tmoney", "name": "TMoney",
+                    "currency": "XOF", "active": True,
+                },
+            ],
+        },
+        "paydunya": {"enabled": True},
+        "mbiyo": {"enabled": True},
+        "afribapay": {"enabled": True},
+    })
+
+    operators = config["mobile_money"]["operators"]
+    assert [operator["code"] for operator in operators] == ["t-money-togo"]
+    assert all("provider" not in operator for operator in operators)
+
+
+def test_withdrawal_route_resolver_is_scoped_to_selected_provider():
+    paydunya_route = next(
+        op for op in server.paydunya.default_withdrawal_catalog()
+        if op["country"] == "TG" and op["withdraw_mode"] == "moov-togo"
+    )
+    mbiyo_route = next(
+        op for op in server.mbiyo.default_catalog()
+        if op["country"] == "TG" and op["network"] == "moov"
+    )
+    afribapay_route = next(
+        op for op in server.afribapay.default_payout_catalog()
+        if op["country"] == "TG" and op["operator"] == "moov"
+    )
+    catalogue = [paydunya_route, mbiyo_route, afribapay_route]
+
+    assert server._active_withdrawal_operator(
+        catalogue, "paydunya", "TG", "moov-togo", "XOF"
+    )["withdraw_mode"] == "moov-togo"
+    assert server._active_withdrawal_operator(
+        catalogue, "mbiyo", "TG", "moov_tg", "XOF"
+    )["network"] == "moov"
+    assert server._active_withdrawal_operator(
+        catalogue, "afribapay", "TG", "moov_tg", "XOF"
+    )["operator"] == "moov"
+
+
+def test_withdrawal_route_identity_and_defaults_keep_one_provider_active():
+    paydunya_route = next(
+        op for op in server.paydunya.default_withdrawal_catalog()
+        if op["country"] == "TG" and op["withdraw_mode"] == "moov-togo"
+    )
+    mbiyo_route = next(
+        op for op in server.mbiyo.default_catalog()
+        if op["country"] == "TG" and op["network"] == "moov"
+    )
+    afribapay_route = next(
+        op for op in server.afribapay.default_payout_catalog()
+        if op["country"] == "TG" and op["operator"] == "moov"
+    )
+    routes = [afribapay_route, mbiyo_route, paydunya_route]
+
+    assert {
+        server._withdrawal_route_identity(route) for route in routes
+    } == {("TG", "moov")}
+    server._deactivate_duplicate_withdrawal_routes(routes)
+    assert paydunya_route["active"] is True
+    assert mbiyo_route["active"] is False
+    assert afribapay_route["active"] is False
+
+
+def test_legacy_provider_codes_keep_their_provider_when_catalogue_is_merged():
+    catalogue = server._merged_mobile_money(
+        server.DEFAULT_TRANSFER_CONFIG,
+        {"operators": [{
+            "country": "TG",
+            "code": "afribapay_moov_tg",
+            "currency": "XOF",
+            "active": True,
+        }]},
+    )
+    route = next(
+        op for op in catalogue["operators"]
+        if op["code"] == "afribapay_moov_tg"
+    )
+
+    assert route["provider"] == "afribapay"
+    assert route["active"] is True
+    assert route.get("archived") is False
+
+
+def test_withdrawal_catalog_rejects_same_active_route_on_multiple_providers():
+    paydunya_route = next(
+        op for op in server.paydunya.default_withdrawal_catalog()
+        if op["country"] == "TG" and op["withdraw_mode"] == "moov-togo"
+    )
+    mbiyo_route = next(
+        op for op in server.mbiyo.default_catalog()
+        if op["country"] == "TG" and op["network"] == "moov"
+    )
+
+    with pytest.raises(HTTPException, match="un seul prestataire"):
+        server._validate_withdrawal_catalog({
+            "operators": [paydunya_route, mbiyo_route],
+        })
+
+    mbiyo_route["active"] = False
+    server._validate_withdrawal_catalog({
+        "operators": [paydunya_route, mbiyo_route],
+    })
+
+
+@run_async
+async def test_transfer_config_migrates_mbiyo_payout_catalog_only_once(monkeypatch):
+    db = MemoryDB()
+    db.settings.docs.append({
+        "id": "transfer_config",
+        "mobile_money": {"enabled": True, "operators": []},
+    })
+    monkeypatch.setattr(server, "db", db)
+    legacy_catalog = [{
+        "country": "ZZ",
+        "country_label": "Test Country",
+        "code": "mbiyo_test_route",
+        "network": "test-route",
+        "currency": "XOF",
+        "name": "Test Network",
+        "active": True,
+    }]
+
+    async def paydunya_config():
+        return {"enabled": False}
+
+    async def mbiyo_config():
+        return {"enabled": False, "catalog": legacy_catalog}
+
+    async def afribapay_config():
+        return {"enabled": False}
+
+    monkeypatch.setattr(server, "get_paydunya_config", paydunya_config)
+    monkeypatch.setattr(server, "_paydunya_credentials_configured", lambda _: False)
+    monkeypatch.setattr(server, "get_mbiyo_config", mbiyo_config)
+    monkeypatch.setattr(server, "get_afribapay_config", afribapay_config)
+    monkeypatch.setattr(server, "_afribapay_ready", lambda *args, **kwargs: False)
+
+    first = await server.get_transfer_config()
+    assert any(
+        op.get("provider") == "mbiyo" and op["code"] == "mbiyo_test_route"
+        for op in first["mobile_money"]["operators"]
+    )
+    assert db.settings.docs[0]["withdrawal_catalog_migration_version"] == 1
+
+    legacy_catalog.append({
+        **legacy_catalog[0],
+        "code": "mbiyo_later_deposit_route",
+        "network": "later-deposit-route",
+    })
+    second = await server.get_transfer_config()
+    assert not any(
+        op.get("provider") == "mbiyo"
+        and op["code"] == "mbiyo_later_deposit_route"
+        for op in second["mobile_money"]["operators"]
+    )
 
 
 def test_public_withdrawal_config_exposes_provider_fees_without_identity():
@@ -748,6 +939,9 @@ async def test_provider_payout_failure_refunds_once_and_ignores_late_success(
 @run_async
 async def test_provider_reconciliation_routes_success_through_settlement(
         monkeypatch):
+    async def configured_credentials():
+        return {"enabled": True}
+
     async def get_payment_intent(intent_id):
         assert intent_id == "intent-1"
         return {
@@ -759,6 +953,8 @@ async def test_provider_reconciliation_routes_success_through_settlement(
         is_configured=lambda: True,
         get_payment_intent=get_payment_intent,
     ))
+    monkeypatch.setattr(
+        server, "_load_izipay_credentials", configured_credentials)
     settled = []
 
     async def settle(*args, **kwargs):

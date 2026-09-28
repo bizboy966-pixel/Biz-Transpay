@@ -4,6 +4,7 @@
 - [Imported Emergent dependencies](imported-emergent-dependencies.md) — imported apps may reference private packages unavailable in Replit's package registry.
 - [Biz-transPay visual system](biz-transpay-visual-system.md) — Kripa Regular is the official local font and all future UI work reuses the shared Biz-transPay visual system.
 - [PayDunya fee catalog](paydunya-fee-catalog.md) — PayDunya pay-in uses an admin-managed country/operator catalog and lets the payer choose who bears the fees.
+- [Mobile Money withdrawal routing](mobile-money-withdrawal-routing.md) — payout availability stays separate from pay-in catalogues, with one active provider per country/operator route.
 - [Customer payment routing](paydunya-public-surface.md) — payment-provider route selection stays server-side; the client receives only a generic payment action.
 - [Public payment CSRF boundary](public-payment-csrf.md) — anonymous payment-link mutations must not depend on a browser session CSRF token; Turnstile and payment validations remain active.
 - [PayDunya callback hosting](paydunya-callback-hosting.md) — PUSH rejects temporary Replit preview callbacks; use a public production deployment accepting GET, POST, and HEAD.
