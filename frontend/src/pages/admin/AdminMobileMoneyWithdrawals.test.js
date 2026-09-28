@@ -26,7 +26,7 @@ const transferConfig = {
       {
         provider: 'mbiyo', country: 'TG', country_label: 'Togo',
         code: 'mbiyo_moov_tg', network: 'moov',
-        currency: 'XOF', name: 'Moov Money', active: false,
+        currency: 'XOF', name: 'Moov Money', active: false, min: 100, max: 0,
       },
       {
         provider: 'mbiyo', country: 'BJ', country_label: 'Bénin',
@@ -123,6 +123,62 @@ describe('AdminMobileMoneyWithdrawals', () => {
       .toBe(false);
     expect(savedOperators.find((operator) => operator.provider === 'mbiyo'
       && operator.country === 'TG').active).toBe(true);
+  });
+
+  test('allows disabling every operator across providers and saving', async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminMobileMoneyWithdrawals />);
+      await Promise.resolve();
+    });
+
+    const toggleOperator = async (providerLabel, code) => {
+      const tab = Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent.includes(providerLabel));
+      await act(async () => tab.click());
+      const checkbox = container.querySelector(
+        `[data-testid="mobile-money-operator-${code}"] input[type="checkbox"]`,
+      );
+      await act(async () => checkbox.click());
+    };
+
+    await toggleOperator('Pay Junior', 'moov-togo');
+    await toggleOperator('Biya Pay', 'mbiyo_mtn_bj');
+    await toggleOperator('Afrika Pay', 'afribapay_orange_sn');
+
+    const saveButton = container.querySelector(
+      '[data-testid="btn-save-mobile-money-withdrawals"]',
+    );
+    await act(async () => {
+      saveButton.click();
+      await Promise.resolve();
+    });
+
+    const savedOperators = api.patch.mock.calls[0][1].mobile_money.operators;
+    expect(savedOperators.length).toBe(4);
+    expect(savedOperators.every((operator) => operator.active === false)).toBe(true);
+  });
+
+  test('shows a zero maximum as unlimited', async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminMobileMoneyWithdrawals />);
+      await Promise.resolve();
+    });
+
+    const biyaPayTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Biya Pay'));
+    await act(async () => biyaPayTab.click());
+
+    const operator = container.querySelector(
+      '[data-testid="mobile-money-operator-mbiyo_moov_tg"]',
+    );
+    const editButton = Array.from(operator.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Modifier'));
+    await act(async () => editButton.click());
+
+    const numberInputs = operator.querySelectorAll('input[type="number"]');
+    expect(numberInputs[5].value).toBe('');
   });
 
   test('reactivating an archived route deactivates the competing provider route', async () => {

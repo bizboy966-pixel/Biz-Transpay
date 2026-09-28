@@ -536,6 +536,43 @@ def test_withdrawal_catalog_rejects_same_active_route_on_multiple_providers():
     })
 
 
+def test_withdrawal_catalog_can_disable_all_routes_with_inconsistent_legacy_limits():
+    routes = [
+        dict(next(
+            op for op in server.paydunya.default_withdrawal_catalog()
+            if op["country"] == "TG" and op["withdraw_mode"] == "moov-togo"
+        )),
+        dict(next(
+            op for op in server.mbiyo.default_catalog()
+            if op["country"] == "TG" and op["network"] == "moov"
+        )),
+        dict(next(
+            op for op in server.afribapay.default_payout_catalog()
+            if op["country"] == "TG" and op["operator"] == "moov"
+        )),
+    ]
+    for route in routes:
+        route["active"] = False
+    routes[0]["min"] = 500
+    routes[0]["max"] = 100
+
+    # Saving an all-disabled catalogue must not require editing limits.
+    server._validate_withdrawal_catalog({"operators": routes})
+
+
+def test_active_withdrawal_routes_validate_finite_limits_but_allow_no_maximum():
+    route = dict(next(
+        op for op in server.paydunya.default_withdrawal_catalog()
+        if op["country"] == "TG" and op["withdraw_mode"] == "moov-togo"
+    ))
+    route.update({"min": 500, "max": 100})
+    with pytest.raises(HTTPException, match="limite maximale"):
+        server._validate_withdrawal_catalog({"operators": [route]})
+
+    route["max"] = 0
+    server._validate_withdrawal_catalog({"operators": [route]})
+
+
 @run_async
 async def test_transfer_config_migrates_mbiyo_payout_catalog_only_once(monkeypatch):
     db = MemoryDB()

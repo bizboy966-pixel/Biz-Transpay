@@ -17109,8 +17109,13 @@ def _validate_withdrawal_catalog(section: dict) -> None:
                     raise HTTPException(422, f"{key} doit être numérique")
                 if value < 0:
                     raise HTTPException(422, f"{key} ne peut pas être négatif")
-        if op.get("min") is not None and op.get("max") is not None:
-            if float(op["max"]) < float(op["min"]):
+        if executable and op.get("min") is not None and op.get("max") is not None:
+            minimum = float(op["min"])
+            maximum = float(op["max"])
+            # A zero maximum is treated as "no upper limit" by withdrawal
+            # routing. Disabled routes must remain saveable even if their
+            # legacy amount range is incomplete or inconsistent.
+            if maximum > 0 and maximum < minimum:
                 raise HTTPException(422, "La limite maximale doit être supérieure à la minimale")
 
 

@@ -87,6 +87,8 @@ function normalizeOperators(operators, provider) {
       min: 0,
       max: '',
       ...operator,
+      // Payout handlers interpret null and zero as an unlimited maximum.
+      max: operator.max == null || Number(operator.max) === 0 ? '' : operator.max,
        provider: operator.provider || provider,
       // The admin response does not require an id. A stable local key keeps
       // editing safe without inventing a field for the API.
@@ -291,6 +293,7 @@ export default function AdminMobileMoneyWithdrawals() {
           <div>
             <h2 className="font-cabinet font-bold text-slate-900">Catalogue des opérateurs</h2>
             <p className="text-[11px] text-slate-500 mt-0.5">Choisissez un prestataire pour voir et gérer uniquement ses pays et opérateurs. Activer un itinéraire le désactive chez les autres prestataires.</p>
+            <p className="text-[11px] text-slate-500 mt-1">Les limites encadrent le montant d’un retrait. Un maximum vide signifie « sans plafond » ; les limites n’empêchent pas d’enregistrer un opérateur désactivé.</p>
           </div>
         </div>
 
@@ -370,8 +373,8 @@ function WithdrawalOperator({ operator, onChange, onArchive }) {
             <FeeInput label="Frais passerelle (fixe)" value={operator.gateway_fee_fixed} onChange={(value) => onChange('gateway_fee_fixed', value)} disabled={operator.archived} />
             <FeeInput label="Frais Biz-transPay (%)" value={operator.platform_fee_pct} onChange={(value) => onChange('platform_fee_pct', value)} disabled={operator.archived} />
             <FeeInput label="Frais Biz-transPay (fixe)" value={operator.platform_fee_fixed} onChange={(value) => onChange('platform_fee_fixed', value)} disabled={operator.archived} />
-            <FeeInput label="Minimum" value={operator.min} onChange={(value) => onChange('min', value)} disabled={operator.archived} />
-            <FeeInput label="Maximum (vide = illimité)" value={operator.max} onChange={(value) => onChange('max', value)} disabled={operator.archived} />
+            <FeeInput label="Montant minimum du retrait" value={operator.min} onChange={(value) => onChange('min', value)} disabled={operator.archived} />
+            <FeeInput label="Montant maximum (vide = sans plafond)" value={operator.max} onChange={(value) => onChange('max', value)} disabled={operator.archived} />
           </div>
         </div>
       )}
