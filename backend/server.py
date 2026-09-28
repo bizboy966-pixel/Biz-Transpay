@@ -2343,8 +2343,14 @@ async def _create_withdrawal_email_otp(
         "Ce code expire dans 10 minutes et ne peut être utilisé qu’une fois. "
         "Ne le partagez avec personne."
     )
+    email_header = _email_brand_header_markup(
+        _configured_public_app_url(),
+        text_color="#0f172a",
+        background_color="#ffffff",
+    )
     html = (
         "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
+        f"{email_header}"
         "<h2>Confirmer votre opération</h2>"
         f"<p>Code de confirmation : <strong>{code}</strong></p>"
         "<p>Ce code expire dans 10 minutes et ne peut être utilisé qu’une fois. "
@@ -2702,21 +2708,11 @@ def _transaction_email_content(
         )
     detail_markup = "".join(detail_rows)
 
-    if logo_url:
-        logo_markup = (
-            "<table role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\"><tr>"
-            "<td style=\"padding-right:10px\">"
-            f"<img src=\"{html_escape(logo_url, quote=True)}\" width=\"40\" "
-            "height=\"40\" alt=\"\" style=\"display:block;width:40px;height:40px;"
-            "border:0;border-radius:10px\"></td>"
-            "<td style=\"color:#fff;font-size:18px;font-weight:700\">Biz-transPay</td>"
-            "</tr></table>"
-        )
-    else:
-        logo_markup = (
-            "<span style=\"font-size:18px;font-weight:700;color:#fff\">"
-            "Biz-transPay</span>"
-        )
+    logo_markup = _email_brand_header_markup(
+        app_url,
+        text_color="#fff",
+        background_color="#101d2e",
+    )
 
     whatsapp_markup = ""
     if whatsapp_url:
@@ -3445,6 +3441,11 @@ async def _prepare_password_reset_email(email: str) -> None:
         })
         reset_link = f"{public_url}/reset-password#token={token}"
         safe_link = html_escape(reset_link, quote=True)
+        email_header = _email_brand_header_markup(
+            public_url,
+            text_color="#0f172a",
+            background_color="#ffffff",
+        )
         await send_resend_email(
             api_key=os.environ.get("RESEND_API_KEY", "").strip(),
             sender=status["sender_email"],
@@ -3457,6 +3458,7 @@ async def _prepare_password_reset_email(email: str) -> None:
             ),
             html=(
                 "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
+                f"{email_header}"
                 "<h2>Réinitialiser votre mot de passe</h2>"
                 "<p>Ce lien à usage unique expire dans 30 minutes.</p>"
                 f"<p><a href=\"{safe_link}\">Choisir un nouveau mot de passe</a></p>"

@@ -470,11 +470,40 @@ def test_branded_transaction_email_includes_amount_fees_and_only_active_links(mo
     assert "tiktok.com" not in text
     assert "javascript:" not in html
     assert "https://pay.biz-transpay.com/logo-mark.png" in html
+    assert "alt=\"Logo Biz-transPay\"" in html
+    assert "align=\"right\"" in html
+    assert "border:4px solid #20e99a" in html
+    assert html.index("Biz-transPay") < html.index("logo-mark.png")
     assert "https://pay.biz-transpay.com/social-icons/whatsapp.svg" in html
     assert "https://pay.biz-transpay.com/social-icons/facebook.svg" in html
     assert "Amina &lt;K." in html
     assert "background:#07111f" in html
     assert "Voir mes transactions" not in html
+
+
+def test_password_reset_email_uses_shared_logo_header(monkeypatch):
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
+    monkeypatch.setenv("RESEND_API_KEY", "unit-test-key")
+    monkeypatch.setattr(server, "db", SimpleNamespace(
+        users=_Collection([{"id": "user-1", "email": "member@example.com"}]),
+        password_reset_tokens=_Collection(),
+    ))
+    monkeypatch.setattr(server, "_transaction_email_settings", lambda: _resolved({
+        "sender_email": "notifications@example.com",
+    }))
+    sent = []
+
+    async def capture_email(**kwargs):
+        sent.append(kwargs)
+
+    monkeypatch.setattr(server, "send_resend_email", capture_email)
+
+    asyncio.run(server._prepare_password_reset_email("member@example.com"))
+
+    assert len(sent) == 1
+    assert "https://pay.biz-transpay.com/logo-mark.png" in sent[0]["html"]
+    assert "alt=\"Logo Biz-transPay\"" in sent[0]["html"]
+    assert "align=\"right\"" in sent[0]["html"]
 
 
 def test_transaction_email_settings_upgrade_previous_defaults(monkeypatch):
@@ -1016,13 +1045,17 @@ def test_withdrawal_otp_provider_failure_creates_no_financial_transaction(monkey
     ))
     monkeypatch.setenv("SESSION_SECRET", "offline-session-secret")
     monkeypatch.setenv("RESEND_API_KEY", "offline-resend-key")
+    monkeypatch.setenv("PUBLIC_APP_URL", "https://pay.biz-transpay.com")
     monkeypatch.setattr(server, "_transaction_email_settings", lambda: _resolved({
         "sender_email": "notifications@example.com",
         "withdrawal_otp_enabled": True,
     }))
     monkeypatch.setattr(server, "_allow_withdrawal_email_otp_request", _async_true)
 
-    async def fail_email(**_kwargs):
+    sent = []
+
+    async def fail_email(**kwargs):
+        sent.append(kwargs)
         raise RuntimeError("offline mock provider")
 
     monkeypatch.setattr(server, "send_resend_email", fail_email)
@@ -1039,5 +1072,8 @@ def test_withdrawal_otp_provider_failure_creates_no_financial_transaction(monkey
             {"id": "user-otp", "email": "member@example.com"}, req
         ))
     assert error.value.status_code == 503
+    assert "https://pay.biz-transpay.com/logo-mark.png" in sent[0]["html"]
+    assert "alt=\"Logo Biz-transPay\"" in sent[0]["html"]
+    assert "align=\"right\"" in sent[0]["html"]
     assert otp_store.docs[0]["status"] == "delivery_failed"
     assert transaction_store.docs == []
