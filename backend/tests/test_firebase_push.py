@@ -61,6 +61,20 @@ def test_all_user_notification_events_have_automatic_push_messages():
     assert server._AUTOMATIC_PUSH_MESSAGES["payment_success"][2] == "/dashboard/transactions"
 
 
+def test_security_policy_allows_firebase_messaging_requests():
+    response = SimpleNamespace(headers={})
+    request = SimpleNamespace(
+        url=SimpleNamespace(path="/", scheme="http"),
+        headers={},
+    )
+
+    server._apply_edge_security_headers(response, request)
+
+    policy = response.headers["Content-Security-Policy"]
+    assert "https://firebaseinstallations.googleapis.com" in policy
+    assert "https://fcmregistrations.googleapis.com" in policy
+
+
 def test_notify_schedules_pushes_for_all_user_notification_events(monkeypatch):
     class FakeNotifications:
         async def insert_one(self, _document):

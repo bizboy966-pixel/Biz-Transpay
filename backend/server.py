@@ -690,7 +690,9 @@ def _apply_edge_security_headers(response: JSONResponse, request: Request) -> No
         "'sha256-bv3BJQ9HDRPWREafa7OTAYZEHepHMGBDm7yX52R8CKE='; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: blob: https:; font-src 'self' data: https:; "
-        "connect-src 'self' https://challenges.cloudflare.com; "
+        "connect-src 'self' https://challenges.cloudflare.com "
+        "https://firebaseinstallations.googleapis.com "
+        "https://fcmregistrations.googleapis.com; "
         "frame-src 'self' https://challenges.cloudflare.com; "
         "worker-src 'self' blob:; media-src 'self' blob: https:",
     )
