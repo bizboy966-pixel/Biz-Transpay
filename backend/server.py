@@ -2477,6 +2477,40 @@ def _configured_public_app_url() -> str:
     return ""
 
 
+def _email_brand_header_markup(
+    app_url: str,
+    *,
+    text_color: str = "#0f172a",
+    background_color: str = "#ffffff",
+) -> str:
+    """Render the shared email brand name and logo in the top-right badge."""
+    brand_markup = (
+        f"<span style=\"color:{text_color};font-size:18px;font-weight:700\">"
+        "Biz-transPay</span>"
+    )
+    if not app_url:
+        return brand_markup
+
+    logo_url = html_escape(f"{app_url.rstrip('/')}/logo-mark.png", quote=True)
+    return (
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" "
+        "cellpadding=\"0\"><tr>"
+        f"<td valign=\"middle\">{brand_markup}</td>"
+        "<td align=\"right\" valign=\"middle\" width=\"104\" "
+        "style=\"width:104px\">"
+        "<table role=\"presentation\" width=\"92\" height=\"92\" "
+        f"bgcolor=\"{background_color}\" cellspacing=\"0\" cellpadding=\"0\" "
+        "style=\"width:92px;height:92px;border:4px solid #20e99a;"
+        f"border-radius:50%;background-color:{background_color}\"><tr>"
+        "<td align=\"center\" valign=\"middle\">"
+        f"<img src=\"{logo_url}\" width=\"62\" height=\"62\" "
+        "alt=\"Logo Biz-transPay\" "
+        "style=\"display:block;width:62px;height:62px;border:0;"
+        "border-radius:50%;background:#fff\"></td></tr></table>"
+        "</td></tr></table>"
+    )
+
+
 def _transaction_email_record_is_final(
     event_type: str, record: dict, entity_kind: str
 ) -> bool:
