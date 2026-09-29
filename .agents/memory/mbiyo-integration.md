@@ -101,14 +101,17 @@ order/reference, provider-ID, and exactly-once credit checks.
 
 Mbiyo pay-ins should receive an international-format phone number, and network
 detection normally follows the phone prefix even when `metadata.network` is set.
-A successful HTTP response can still contain a terminal failed transaction.
+A successful HTTP response can still contain a terminal failed transaction;
+pending attempts may later fail, and the documented status lookup does not
+include an operator decline reason.
 
 **Why:** The provider rejects local-only numbers, may route based on the MSISDN
-prefix, and documents HTTP 200 initiation failures as `status=error` with a
-failed transaction; presenting those as awaiting confirmation would mislead
-customers.
+prefix, and does not provide a detailed cause in its documented status
+response; presenting a failed transaction as awaiting confirmation would
+mislead customers.
 
 **How to apply:** Normalize supported local formats before submission, make the
 selected operator consistent with the number, and preserve an explicit
 provider-failed status as terminal rather than retrying or showing a pending
-confirmation flow.
+confirmation flow. Do not infer the carrier's decline cause from `failed`;
+obtain it from the provider's merchant-side transaction details or support.
