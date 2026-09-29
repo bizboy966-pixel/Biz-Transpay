@@ -860,8 +860,13 @@ function MobileMoneyForm({ onSuccess }) {
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Numéro Mobile Money</label>
         <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="momo-phone"
-          placeholder="ex: 97000001" required
+          placeholder={country === 'CI' ? '10 chiffres, avec ou sans +225' : 'ex: 97000001'} required
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+        {country === 'CI' && (
+          <p className="mt-1 text-[10px] text-slate-500">
+            Saisissez les 10 chiffres du numéro ivoirien ; l’indicatif +225 est facultatif.
+          </p>
+        )}
       </div>
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Montant ({selectedOp?.currency || 'XOF'})</label>

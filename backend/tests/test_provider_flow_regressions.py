@@ -1021,3 +1021,77 @@ async def test_expired_mbiyo_deposit_fails_without_retry(monkeypatch):
     assert saved["status"] == "failed"
     assert saved["failed_reason"] == "expired"
     assert saved["retryable"] is False
+
+
+@pytest.mark.parametrize(
+    ("provider_response", "expected_status"),
+    [
+        (
+            {
+                "status": "success",
+                "data": {"transaction_id": "MBIYO-PENDING", "status": "pending"},
+            },
+            "pending",
+        ),
+        (
+            {
+                "status": "error",
+                "message": "Transaction initiation failed",
+                "data": {"transaction_id": "MBIYO-FAILED", "status": "failed"},
+            },
+            "failed",
+        ),
+    ],
+)
+@run_async
+async def test_mbiyo_ci_local_phone_is_normalized_and_provider_status_kept(
+        monkeypatch, provider_response, expected_status):
+    fake = MemoryDB()
+    monkeypatch.setattr(server, "db", fake)
+    captured = {}
+
+    async def config(*args, **kwargs):
+        return {
+            "enabled": True,
+            "_api_key": "test-key",
+            "catalog": [{
+                "country": "CI", "code": "mbiyo_mtn_ci",
+                "network": "mtn", "currency": "XOF",
+                "name": "MTN Mobile Money", "active": True,
+                "min": 500, "max": 1500000,
+            }],
+        }
+
+    class FakeMbiyoClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def payin(self, **kwargs):
+            captured.update(kwargs)
+            return provider_response
+
+    monkeypatch.setattr(server, "get_mbiyo_config", config)
+    monkeypatch.setattr(server.mbiyo, "MbiyoClient", FakeMbiyoClient)
+    request = Request({
+        "type": "http", "method": "POST",
+        "scheme": "https", "path": "/api/deposits/mobile-money/start",
+        "headers": [(b"host", b"example.test")],
+        "query_string": b"", "server": ("example.test", 443),
+    })
+    req = server.MobileMoneyDepositRequest(
+        amount=1000, currency="XOF", email="buyer@example.test",
+        full_name="Test Buyer", country="CI", operator="mtn_ci",
+        phone_number="0700000000",
+    )
+
+    result = await server._create_mbiyo_deposit(req, request, "user-1")
+
+    assert result["status"] == expected_status
+    assert captured["metadata"]["phone_number"] == "+2250700000000"
+    assert captured["metadata"]["country_code"] == "CI"
+    assert captured["metadata"]["network"] == "mtn"
+    if expected_status == "failed":
+        assert "refusé" in result["message"]
+    saved = fake.momo_deposits.docs[0]
+    assert saved["status"] == expected_status
+    assert saved["phone_number"] == "0700000000"

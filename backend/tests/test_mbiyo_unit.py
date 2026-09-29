@@ -5,6 +5,8 @@ import hmac
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import mbiyo
 
@@ -40,6 +42,28 @@ def test_provider_amount_rounding_is_deterministic_and_non_xof_safe():
     assert mbiyo.normalize_amount("BF", 1002) == 1000
     assert mbiyo.normalize_amount("BF", 1003) == 1005
     assert mbiyo.normalize_amount("GH", 1002) == 1002
+
+
+def test_ci_phone_number_normalizes_national_and_international_forms():
+    expected = "+2250700000000"
+    for phone_number in (
+        "0700000000",
+        "+2250700000000",
+        "2250700000000",
+        "00225 07 00 00 00 00",
+    ):
+        assert mbiyo.normalize_phone_number("CI", phone_number) == expected
+
+
+def test_ci_phone_number_rejects_wrong_country_code_and_invalid_length():
+    with pytest.raises(ValueError):
+        mbiyo.normalize_phone_number("CI", "+2280700000000")
+    with pytest.raises(ValueError):
+        mbiyo.normalize_phone_number("CI", "70000000")
+
+
+def test_mbiyo_phone_normalization_preserves_non_ci_input():
+    assert mbiyo.normalize_phone_number("TG", "97000001") == "97000001"
 
 
 def test_credentials_encrypt_round_trip():

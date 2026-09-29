@@ -8113,6 +8113,15 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         cfg.get("catalog") or [], req.country, req.operator)
     if not op:
         raise HTTPException(400, "Opérateur Mobile Money non disponible pour ce pays")
+    try:
+        provider_phone_number = mbiyo.normalize_phone_number(
+            req.country, req.phone_number)
+    except ValueError as exc:
+        raise HTTPException(
+            400,
+            "Pour la Côte d’Ivoire, saisissez les 10 chiffres du numéro, "
+            "avec ou sans l’indicatif +225.",
+        ) from exc
     if req.idempotency_key:
         previous = await db.momo_deposits.find_one(
             {"user_id": uid, "idempotency_key": req.idempotency_key}, {"_id": 0}
@@ -8187,7 +8196,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
     await db.momo_deposits.insert_one(pending_doc)
     try:
         metadata = {"network": op.get("network"),
-                    "phone_number": req.phone_number,
+                    "phone_number": provider_phone_number,
                     "country_code": req.country.upper()}
         if req.otp:
             metadata["om_otp"] = req.otp
@@ -8297,7 +8306,11 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             "pending_remaining_seconds": MOMO_PENDING_TIMEOUT_MINUTES * 60,
             "otp_required": doc.get("auth_mode") == "pin",
             "challenge_status": "required" if doc.get("auth_mode") == "pin" else "pending",
-            "message": "Suivez les instructions affichées puis validez la demande sur votre téléphone."}
+            "message": (
+                "Le fournisseur a refusé la demande avant l’envoi de la confirmation."
+                if doc.get("status") == "failed"
+                else "Suivez les instructions affichées puis validez la demande sur votre téléphone."
+            )}
 
 
 async def _create_afribapay_deposit(

@@ -80,6 +80,23 @@ def normalize_amount(country: str, amount: float) -> float:
     return float(value)
 
 
+def normalize_phone_number(country: str, phone_number: str) -> str:
+    """Normalize Côte d'Ivoire numbers to the international form Mbiyo expects."""
+    value = str(phone_number or "").strip()
+    if str(country or "").upper() != "CI":
+        return value
+    if not re.fullmatch(r"[\d\s().+-]+", value):
+        raise ValueError("Invalid Côte d'Ivoire mobile money phone number")
+
+    digits = re.sub(r"\D", "", value)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    national_number = digits[3:] if digits.startswith("225") else digits
+    if not re.fullmatch(r"\d{10}", national_number):
+        raise ValueError("Invalid Côte d'Ivoire mobile money phone number")
+    return f"+225{national_number}"
+
+
 class MbiyoError(Exception):
     def __init__(self, status: int, message: str, raw: Any = None):
         self.status, self.message, self.raw = status, message, raw

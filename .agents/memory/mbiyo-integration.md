@@ -98,3 +98,17 @@ the country calling code before the same national number.
 **How to apply:** Normalize formatting and an optional `00` prefix, require at
 least seven matching national digits, and retain independent amount, currency,
 order/reference, provider-ID, and exactly-once credit checks.
+
+Mbiyo pay-ins should receive an international-format phone number, and network
+detection normally follows the phone prefix even when `metadata.network` is set.
+A successful HTTP response can still contain a terminal failed transaction.
+
+**Why:** The provider rejects local-only numbers, may route based on the MSISDN
+prefix, and documents HTTP 200 initiation failures as `status=error` with a
+failed transaction; presenting those as awaiting confirmation would mislead
+customers.
+
+**How to apply:** Normalize supported local formats before submission, make the
+selected operator consistent with the number, and preserve an explicit
+provider-failed status as terminal rather than retrying or showing a pending
+confirmation flow.
