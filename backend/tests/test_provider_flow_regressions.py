@@ -1092,6 +1092,62 @@ async def test_mbiyo_ci_local_phone_is_normalized_and_provider_status_kept(
     assert captured["metadata"]["network"] == "mtn"
     if expected_status == "failed":
         assert "refusé" in result["message"]
+    else:
+        assert "Si une notification" in result["instructions"]
+        assert "Si une notification" in result["message"]
     saved = fake.momo_deposits.docs[0]
     assert saved["status"] == expected_status
     assert saved["phone_number"] == "0700000000"
+    assert saved["instructions"] == result["instructions"]
+
+
+@run_async
+async def test_mbiyo_status_poll_keeps_operator_rejection_terminal(monkeypatch):
+    fake = MemoryDB()
+    fake.momo_deposits.docs.append({
+        "id": "momo-ci-pending", "user_id": "user-1",
+        "provider": "mbiyo", "status": "pending",
+        "mbiyo_transaction_id": "MBIYO-FAILED",
+        "provider_binding_verified": True,
+        "country": "CI", "currency": "XOF", "amount": 1000,
+        "processed_amount": 1000, "provider_submitted_amount": 1000,
+        "phone_number": "0700000000",
+        "operator_snapshot": {"network": "mtn"},
+        "instructions": "Si une notification Mobile Money apparaît, confirmez-la.",
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    async def config(*args, **kwargs):
+        return {"_api_key": "test-key"}
+
+    class FakeMbiyoClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def status(self, transaction_id):
+            assert transaction_id == "MBIYO-FAILED"
+            return {
+                "status": "success",
+                "data": {
+                    "transaction_id": transaction_id,
+                    "status": "failed",
+                },
+            }
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(server, "get_mbiyo_config", config)
+    monkeypatch.setattr(server.mbiyo, "MbiyoClient", FakeMbiyoClient)
+    monkeypatch.setattr(
+        server, "_notify_integration_business_transition", no_notify)
+
+    settled = await server._reconcile_mbiyo_deposit("momo-ci-pending")
+
+    saved = fake.momo_deposits.docs[0]
+    assert settled is False
+    assert saved["status"] == "failed"
+    assert saved["provider_status"] == "failed"
+    assert saved["retryable"] is False
+    assert saved["instructions"].startswith("Si une notification")
+    assert not fake.transactions.docs

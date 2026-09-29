@@ -8157,6 +8157,13 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         provider_submitted_amount = processed_amount
         fees["charged_amount"] = processed_amount
     payment_flow = mbiyo.payment_flow({**op, "country": req.country}, req.amount)
+    phone_confirmation_message = (
+        "Si une notification Mobile Money apparaît sur votre téléphone, "
+        "confirmez-la. Le statut sera vérifié automatiquement ici."
+        if req.country.upper() == "CI"
+        and str(op.get("network") or "").strip().lower() == "mtn"
+        else None
+    )
     dep_id = new_id()
     callback_base = (os.environ.get("OFFICIAL_DOMAIN")
                      or _paydunya_callback_base(request)).rstrip("/")
@@ -8177,6 +8184,8 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "operator_name": op.get("name"), "operator_snapshot": dict(op),
         "phone_number": req.phone_number, "provider": "mbiyo",
         "status": "pending", "submission_unknown": False,
+        "payment_flow": payment_flow,
+        "instructions": phone_confirmation_message,
         "idempotency_key": req.idempotency_key,
         "request_fingerprint": _request_fingerprint(req),
         "created_at": created_at,
@@ -8244,6 +8253,9 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         )
         pending_doc.update(submission_unknown=True, provider_status="unknown")
         return _public_momo_deposit(pending_doc)
+    response_fields = _mbiyo_response_fields(response)
+    if not response_fields.get("instructions") and phone_confirmation_message:
+        response_fields["instructions"] = phone_confirmation_message
     doc = {
         "id": dep_id, "user_id": uid, "amount": processed_amount,
         "requested_amount": req.amount, "processed_amount": processed_amount,
@@ -8263,7 +8275,7 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         # unique database index.
         "provider_binding_verified": True,
         "payment_flow": payment_flow,
-        **_mbiyo_response_fields(response),
+        **response_fields,
         "status": ("failed" if mbiyo.status_value(response) in mbiyo.FAILURE_STATUSES
                    else "pending"),
         "provider_status": mbiyo.status_value(response) or "pending",
@@ -8309,6 +8321,8 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
             "message": (
                 "Le fournisseur a refusé la demande avant l’envoi de la confirmation."
                 if doc.get("status") == "failed"
+                else phone_confirmation_message
+                if phone_confirmation_message
                 else "Suivez les instructions affichées puis validez la demande sur votre téléphone."
             )}
 

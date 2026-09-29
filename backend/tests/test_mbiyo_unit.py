@@ -36,6 +36,8 @@ def test_documented_ussd_and_post_init_flows():
     assert qmoney["before_submit"] is False
     assert qmoney["otp_required"] is True
     assert mbiyo.payment_flow({"country": "BF", "network": "orange"}, 1234)["ussd_code"] == "*144*4*6*1234#"
+    ci_mtn = mbiyo.payment_flow({"country": "CI", "network": "mtn"})
+    assert "Si une notification" in ci_mtn["steps"][1]
 
 
 def test_provider_amount_rounding_is_deterministic_and_non_xof_safe():
