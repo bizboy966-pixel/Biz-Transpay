@@ -174,13 +174,18 @@ def payment_flow(operator: dict, amount: Optional[float] = None) -> dict:
             "steps": ["Lancez le paiement.", "Saisissez le PIN demandé pour finaliser."],
             "action_label": "Finaliser le paiement",
         }
+    confirmation_step = (
+        "Si une notification Mobile Money apparaît sur votre téléphone, confirmez-la."
+        if country == "CI" and network == "mtn"
+        else "Validez la notification reçue sur votre téléphone."
+    )
     return {
         "kind": "phone_confirmation",
         "before_submit": False,
         "otp_required": False,
         "steps": [
             "Lancez le paiement.",
-            "Validez la notification reçue sur votre téléphone.",
+            confirmation_step,
         ],
         "action_label": "Valider sur mon téléphone",
     }
