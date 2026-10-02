@@ -12,6 +12,7 @@ import SelectionMenu from '@/components/SelectionMenu';
 import { OperatorLogo } from '@/components/PaymentBrand';
 import { COUNTRIES } from '@/constants/countries';
 import { MOMO_PENDING_SECONDS } from '@/constants/payment';
+import PublicLinkPaymentErrorBoundary from '@/components/PublicLinkPaymentErrorBoundary';
 
 function formatPrice(value, maximumFractionDigits = 0) {
   return Number(value || 0).toLocaleString(undefined, { maximumFractionDigits });
@@ -159,7 +160,9 @@ export default function PublicLink() {
               <CryptoLinkTracker payment={payment} link={link} />
             )}
             {step === 3 && payment && payment.method === 'mobile_money' && (
-              <MoMoLinkTracker payment={payment} link={link} />
+              <PublicLinkPaymentErrorBoundary key={payment.id} payment={payment}>
+                <MoMoLinkTracker payment={payment} />
+              </PublicLinkPaymentErrorBoundary>
             )}
           </div>
 
