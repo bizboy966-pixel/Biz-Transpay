@@ -60,6 +60,9 @@ def test_provider_liquidity_detector_does_not_match_local_wallet_error():
         "Le solde du portefeuille de décaissement est insuffisant"
     )
     assert server._is_provider_balance_insufficient("insufficient liquidity")
+    assert server._is_provider_balance_insufficient(
+        "Insufficient orange network balance. Available: 0"
+    )
     assert not server._is_provider_balance_insufficient(
         "Solde insuffisant (frais inclus)"
     )

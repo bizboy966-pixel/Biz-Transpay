@@ -53,6 +53,9 @@ class MemoryCollection:
                 return False
             if "$ne" in expected and actual == expected["$ne"]:
                 return False
+            if "$gte" in expected and (
+                    actual is None or actual < expected["$gte"]):
+                return False
             if "$exists" in expected and (actual is not None) != expected["$exists"]:
                 return False
         return True
@@ -114,7 +117,186 @@ class MemoryDB:
         self.payment_links = MemoryCollection()
         self.momo_deposits = MemoryCollection()
         self.merchant_payouts = MemoryCollection()
+        self.users = MemoryCollection()
         self.transactions = MemoryCollection()
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "raw", "expected"),
+    [
+        (400, "Invalid phone number", None, True),
+        (422, "Invalid payout details", None, True),
+        (400, "Mbiyo request failed",
+         {"message": "Order ID already exists"}, False),
+        (400, "Insufficient orange network balance. Available: 0",
+         None, False),
+        (503, "Invalid phone number", None, False),
+    ],
+)
+def test_mbiyo_definitive_payout_rejection_classifier(
+        status, message, raw, expected):
+    error = server.mbiyo.MbiyoError(status, message, raw)
+    assert server._is_definitive_mbiyo_payout_rejection(error) is expected
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "provider_id_before_error", "expected_http_status",
+     "expected_outcome"),
+    [
+        (
+            server.mbiyo.MbiyoError(
+                400,
+                "Invalid phone number or unsupported network for CI/mobile_money",
+            ),
+            False, 400, "refunded",
+        ),
+        (
+            server.mbiyo.MbiyoError(
+                400, "Insufficient orange network balance. Available: 0"),
+            False, None, "provider_liquidity",
+        ),
+        (
+            server.mbiyo.MbiyoError(
+                400, "Order ID already exists; possible duplicate payout"),
+            False, 502, "manual_review",
+        ),
+        (
+            server.mbiyo.MbiyoError(503, "Invalid phone number"),
+            False, 502, "manual_review",
+        ),
+        (
+            server.mbiyo.MbiyoError(
+                400, "Invalid phone number or unsupported network"),
+            True, 502, "provider_id",
+        ),
+    ],
+)
+@run_async
+async def test_mbiyo_ci_payout_normalizes_phone_and_preserves_settlement_safety(
+        monkeypatch, provider_error, provider_id_before_error,
+        expected_http_status, expected_outcome):
+    db = MemoryDB()
+    user = {
+        "id": "biz", "balance_xof": 5000, "kyc_status": "approved",
+        "full_name": "Test Merchant",
+    }
+    db.users.docs.append(user)
+    monkeypatch.setattr(server, "db", db)
+
+    async def get_user(_uid):
+        return user
+
+    async def get_transfer_config():
+        return {"mobile_money": {"enabled": True, "operators": []}}
+
+    async def get_mbiyo_config(decrypt=False):
+        return {
+            "enabled": True, "_api_key": "test-key",
+            "base_url": "https://mbiyo.test",
+        }
+
+    async def get_platform_config():
+        return {"auto_withdrawals_disabled": False}
+
+    async def no_notify(*_args, **_kwargs):
+        return None
+
+    route = {
+        "provider": "mbiyo", "country": "CI", "code": "mtn_ci",
+        "network": "mtn", "currency": "XOF", "name": "MTN Mobile Money",
+        "active": True, "min": 100, "max": 500000,
+    }
+
+    def active_route(_catalog, provider, country, code, currency):
+        if (provider == "mbiyo" and country == "CI"
+                and code == "mtn_ci" and currency == "XOF"):
+            return route
+        return None
+
+    payout_calls = []
+
+    class RejectingMbiyoClient:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def payout(self, **kwargs):
+            payout_calls.append(kwargs)
+            if provider_id_before_error:
+                await db.transactions.update_one(
+                    {"id": kwargs["order_id"]},
+                    {"$set": {
+                        "metadata.mbiyo_transaction_id": "mbiyo-accepted",
+                        "metadata.next_reconcile_at": server.now_iso(),
+                    }},
+                )
+            raise provider_error
+
+    monkeypatch.setattr(server, "get_user", get_user)
+    monkeypatch.setattr(
+        server, "_require_kyc_verified", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "get_transfer_config", get_transfer_config)
+    monkeypatch.setattr(server, "get_mbiyo_config", get_mbiyo_config)
+    monkeypatch.setattr(server, "get_afribapay_config", disabled_afribapay_config)
+    monkeypatch.setattr(server, "_afribapay_ready", lambda *_a, **_k: False)
+    monkeypatch.setattr(server, "_active_withdrawal_operator", active_route)
+    monkeypatch.setattr(server, "get_platform_config", get_platform_config)
+    monkeypatch.setattr(server.paydunya, "calculate_fees", lambda amount, *_a: {
+        "wallet_credit_amount": amount, "charged_amount": amount,
+        "total_fee": 0.0, "gateway_fee": 0.0, "platform_fee": 0.0,
+        "fee_bearer": "sender",
+    })
+    monkeypatch.setattr(server.mbiyo, "MbiyoClient", RejectingMbiyoClient)
+    monkeypatch.setattr(server, "notify", no_notify)
+    monkeypatch.setattr(
+        server, "_notify_integration_business_transition", no_notify)
+    monkeypatch.setenv("OFFICIAL_DOMAIN", "https://payments.example.test")
+
+    request = Request({
+        "type": "http", "method": "POST", "path": "/api/transfers",
+        "scheme": "https", "headers": [(b"host", b"payments.example.test")],
+        "query_string": b"", "server": ("payments.example.test", 443),
+    })
+    request.state.merchant_api = True
+    payload = server.TransferRequest(
+        transfer_type="biz_to_mobile", recipient="0712345678",
+        country="CI", operator="mtn_ci", amount=500, currency="XOF",
+        idempotency_key="test-mbiyo-ci-payout",
+    )
+
+    if expected_http_status is None:
+        result = await server.transfer(payload, request, "biz")
+        assert result["pending_manual"] is True
+    else:
+        with pytest.raises(HTTPException) as exc:
+            await server.transfer(payload, request, "biz")
+        assert exc.value.status_code == expected_http_status
+
+    assert len(payout_calls) == 1
+    assert payout_calls[0]["metadata"]["phone_number"] == "+2250712345678"
+    tx = db.transactions.docs[0]
+    assert user["withdrawal_debit_ids"] == [tx["id"]]
+
+    if expected_outcome == "refunded":
+        assert tx["status"] == "failed"
+        assert tx["metadata"]["refunded"] is True
+        assert tx["metadata"]["mbiyo_submission_phase"] == "provider_rejected"
+        assert tx["metadata"]["provider_status"] == 400
+        assert tx["metadata"]["submission_unknown"] is False
+        assert user["balance_xof"] == 5000
+        assert user["withdrawal_refund_ids"] == [tx["id"]]
+    else:
+        assert tx["status"] == "pending"
+        assert user["balance_xof"] == 4500
+        assert "withdrawal_refund_ids" not in user
+        if expected_outcome == "provider_liquidity":
+            assert tx["metadata"]["provider_balance_insufficient"] is True
+            assert tx["metadata"]["manual_review_required"] is True
+            assert tx["metadata"]["mbiyo_submission_review_required"] is True
+        elif expected_outcome == "manual_review":
+            assert tx["metadata"]["manual_review_required"] is True
+            assert tx["metadata"]["submission_unknown"] is True
+        else:
+            assert tx["metadata"]["mbiyo_transaction_id"] == "mbiyo-accepted"
 
 
 @pytest.mark.parametrize(

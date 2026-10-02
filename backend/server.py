@@ -10619,7 +10619,11 @@ def _is_definitive_mbiyo_payout_rejection(error: Any) -> bool:
     """Identify provider 4xx rejections that prove the payout was not accepted."""
     if not isinstance(error, mbiyo.MbiyoError) or error.status not in {400, 422}:
         return False
-    message = unicodedata.normalize("NFKD", str(error.message or "").lower())
+    message_parts = [str(error.message or "")]
+    if error.raw not in (None, ""):
+        message_parts.append(json.dumps(error.raw, ensure_ascii=False, default=str))
+    message = unicodedata.normalize(
+        "NFKD", " ".join(message_parts).lower())
     message = "".join(
         char for char in message if not unicodedata.combining(char))
     if _is_provider_balance_insufficient(message):

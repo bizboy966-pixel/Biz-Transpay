@@ -115,3 +115,17 @@ selected operator consistent with the number, and preserve an explicit
 provider-failed status as terminal rather than retrying or showing a pending
 confirmation flow. Do not infer the carrier's decline cause from `failed`;
 obtain it from the provider's merchant-side transaction details or support.
+
+Mbiyo Côte d'Ivoire payouts require international-format phone numbers. A
+400/422 response without a provider transaction ID is definitive only when it
+is not a provider-liquidity or duplicate/idempotency error; refund such rejected
+debits exactly once. Keep 5xx, timeouts, and errors after provider-ID persistence
+on the conservative review path.
+
+**Why:** Mbiyo rejects unsupported or invalid payout routing, but insufficient
+network balance is a separate provider-funds condition, and a duplicate-order
+response may refer to an earlier accepted submission.
+
+**How to apply:** Normalize before debiting, guard refunds atomically on the
+absence of a persisted provider ID, preserve manual review for ambiguous
+outcomes, and never resubmit automatically.
