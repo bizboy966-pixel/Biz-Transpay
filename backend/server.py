@@ -6732,6 +6732,11 @@ async def transfer(req: TransferRequest, request: Request,
             op = mb_op
             if str(op.get("currency")).upper() != req.currency.upper():
                 raise HTTPException(400, "La devise ne correspond pas à l'opérateur")
+            try:
+                provider_phone_number = mbiyo.normalize_phone_number(
+                    req.country, req.recipient)
+            except ValueError:
+                raise HTTPException(400, "Numéro Mobile Money invalide")
             processed_amount = mbiyo.normalize_amount(req.country, req.amount)
             if processed_amount < float(op.get("min", 0) or 0) or processed_amount > float(op.get("max", 0) or 10**12):
                 raise HTTPException(400, "Montant hors des limites autorisées")
@@ -6804,7 +6809,7 @@ async def transfer(req: TransferRequest, request: Request,
                     payment_method="mobile_money", order_id=tx_out.id,
                     callback_url=f"{callback_base}/api/webhooks/mbiyo?ref={tx_out.id}",
                     metadata={"network": op.get("network"),
-                              "phone_number": req.recipient,
+                              "phone_number": provider_phone_number,
                               "country_code": req.country.upper(),
                               "beneficiary": (req.recipient_name
                                               or u.get("full_name")
@@ -6873,6 +6878,65 @@ async def transfer(req: TransferRequest, request: Request,
                             "traitement par l'administrateur."
                         ),
                     }
+                latest_tx = await db.transactions.find_one(
+                    {"id": tx_out.id}, {"_id": 0})
+                latest_metadata = (latest_tx or {}).get("metadata") or {}
+                if (
+                    not latest_metadata.get("mbiyo_transaction_id")
+                    and _is_definitive_mbiyo_payout_rejection(exc)
+                ):
+                    refunded = await _refund_mobile_withdrawal(
+                        tx_out.id,
+                        f"mbiyo_provider_rejected_http_{exc.status}",
+                        require_mbiyo_id_absent=True,
+                    )
+                    settled_tx = await db.transactions.find_one(
+                        {"id": tx_out.id}, {"_id": 0})
+                    settled_metadata = (settled_tx or {}).get("metadata") or {}
+                    if (
+                        settled_tx
+                        and settled_tx.get("status") == "failed"
+                        and settled_metadata.get("refunded") is True
+                    ):
+                        await db.transactions.update_one(
+                            {"id": tx_out.id, "status": "failed",
+                             "metadata.refunded": True},
+                            {"$set": {
+                                "metadata.provider_status": exc.status,
+                                "metadata.submission_unknown": False,
+                                "metadata.mbiyo_submission_unknown": False,
+                                "metadata.mbiyo_submission_phase": "provider_rejected",
+                                "metadata.mbiyo_submission_phase_at": now_iso(),
+                            }},
+                        )
+                        raise HTTPException(
+                            400,
+                            "Le prestataire a refusé le retrait. "
+                            "Le montant a été remboursé sur votre solde.",
+                        )
+                    if (
+                        settled_tx and settled_tx.get("status") == "pending"
+                        and not settled_metadata.get("mbiyo_transaction_id")
+                    ):
+                        await db.transactions.update_one(
+                            {"id": tx_out.id, "status": "pending",
+                             "metadata.mbiyo_transaction_id": {"$in": [None, ""]}},
+                            {"$set": {
+                                "metadata.manual_review_required": True,
+                                "metadata.manual_review_reason":
+                                    "mbiyo_rejected_refund_unconfirmed",
+                                "metadata.provider_name": "mbiyo",
+                                "metadata.provider_status": exc.status,
+                                "metadata.provider_error":
+                                    "Mbiyo rejection received; wallet refund unconfirmed",
+                            },
+                             "$unset": {"metadata.next_reconcile_at": ""}},
+                        )
+                    raise HTTPException(
+                        503,
+                        "Mbiyo a refusé le retrait, mais la restitution du solde "
+                        "doit être vérifiée.",
+                    )
                 await _mark_mbiyo_submission_manual_review(
                     tx_out.id, "dispatch_outcome_unknown", exc.message)
                 await db.transactions.update_one(
@@ -10456,12 +10520,18 @@ def _momo_platform_fee(op_cfg: dict, gross: float) -> tuple[float, float]:
     return gateway_fee, platform_fee
 
 
-async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
+async def _refund_mobile_withdrawal(
+        tx_id: str, reason: str = "", *,
+        require_mbiyo_id_absent: bool = False) -> bool:
     """Mark a mobile payout failed and refund its debit exactly once."""
     tx = await db.transactions.find_one({"id": tx_id}, {"_id": 0})
     if not tx or tx.get("type") != "transfer":
         return False
     meta = tx.get("metadata") or {}
+    if require_mbiyo_id_absent and (
+            meta.get("provider") != "mbiyo"
+            or meta.get("mbiyo_transaction_id")):
+        return False
     if tx.get("status") in ("completed", "failed") or meta.get("refunded"):
         return False
     if tx.get("status") == "pending":
@@ -10469,8 +10539,14 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
             "mbiyo": "metadata.mbiyo_status",
             "afribapay": "metadata.afribapay_status",
         }.get(meta.get("provider"), "metadata.paydunya_status")
+        claim_filter = {"id": tx_id, "status": "pending"}
+        if require_mbiyo_id_absent:
+            claim_filter.update({
+                "metadata.provider": "mbiyo",
+                "metadata.mbiyo_transaction_id": {"$in": [None, ""]},
+            })
         claimed = await db.transactions.update_one(
-            {"id": tx_id, "status": "pending"},
+            claim_filter,
             {"$set": {"status": "refund_pending",
                       provider_status_field: "failed",
                       "metadata.failure_reason": reason[:300]}})
@@ -10479,6 +10555,10 @@ async def _refund_mobile_withdrawal(tx_id: str, reason: str = "") -> bool:
             if not tx or tx.get("status") != "refund_pending":
                 return False
     elif tx.get("status") != "refund_pending":
+        return False
+    elif require_mbiyo_id_absent and (
+            meta.get("provider") != "mbiyo"
+            or meta.get("mbiyo_transaction_id")):
         return False
     currency = str(tx.get("currency") or "XOF").upper()
     field = f"balance_{currency.lower()}"
@@ -10525,7 +10605,32 @@ def _is_provider_balance_insufficient(message: Any) -> bool:
         "fonds du prestataire",
         "fonds insuffisant",
     )
-    return any(pattern in normalized for pattern in patterns)
+    if any(pattern in normalized for pattern in patterns):
+        return True
+    return (
+        "insufficient" in normalized
+        and "balance" in normalized
+        and any(term in normalized
+                for term in ("network", "operator", "payout", "provider"))
+    )
+
+
+def _is_definitive_mbiyo_payout_rejection(error: Any) -> bool:
+    """Identify provider 4xx rejections that prove the payout was not accepted."""
+    if not isinstance(error, mbiyo.MbiyoError) or error.status not in {400, 422}:
+        return False
+    message = unicodedata.normalize("NFKD", str(error.message or "").lower())
+    message = "".join(
+        char for char in message if not unicodedata.combining(char))
+    if _is_provider_balance_insufficient(message):
+        return False
+    # Duplicate/order conflicts can refer to an earlier accepted submission.
+    if any(marker in message for marker in (
+        "already", "duplicate", "duplicat", "idempotency",
+        "order id conflict", "order_id conflict",
+    )):
+        return False
+    return True
 
 
 async def _hold_mobile_withdrawal_for_provider_funds(
