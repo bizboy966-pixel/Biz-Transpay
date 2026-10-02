@@ -82,7 +82,7 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 pyflakes==3.4.0
 Pygments==2.20.0
-PyJWT==2.13.0
+PyJWT==2.14.0
 pymongo==4.6.3
 pyparsing==3.3.2
 pytest==9.1.1

@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "asyncpg>=0.31.0",
+    "pyjwt==2.14.0",
     "pymupdf>=1.28.2",
     "reportlab==5.0.0",
 ]
