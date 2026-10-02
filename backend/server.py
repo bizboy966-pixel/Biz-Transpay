@@ -12292,6 +12292,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 "currency": result.get("currency"),
                 "country": req.country, "operator": req.operator,
                 "operator_name": mb_op.get("name"),
+                "provider": "mbiyo",
+                "provider_network": mb_op.get("network"),
                 "customer_email": req.email, "customer_name": req.full_name,
                 "customer_phone": req.phone_number,
                 "status": "paid" if result.get("status") == "approved" else "pending",
@@ -13253,8 +13255,31 @@ async def _release_single_use_link(link_id: str, claim_id: Optional[str]) -> Non
     )
 
 
+def _public_mbiyo_wave_redirect(payment: dict) -> Optional[str]:
+    """Allow only Mbiyo Côte d'Ivoire Wave checkouts to leave public links."""
+    if (
+        str(payment.get("provider") or "").lower() != "mbiyo"
+        or str(payment.get("provider_network") or "").lower() != "wave"
+        or str(payment.get("country") or "").upper() != "CI"
+        or str(payment.get("status") or "").lower() != "pending"
+    ):
+        return None
+    candidate = str(payment.get("redirect_url") or payment.get("checkout_url") or "").strip()
+    if not candidate or len(candidate) > 2048:
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    if (parsed.scheme.lower() != "https" or not parsed.hostname
+            or parsed.username or parsed.password):
+        return None
+    return candidate
+
+
 def _public_link_payment_status(payment: dict) -> dict:
     """Expose only fields needed by a public checkout tracker."""
+    mbiyo_wave_redirect = _public_mbiyo_wave_redirect(payment)
     out = {
         "id": payment.get("id"),
         # The public client uses this discriminator to select the correct
@@ -13287,11 +13312,11 @@ def _public_link_payment_status(payment: dict) -> dict:
             "challenge_status": payment.get("challenge_status")
                 or ("required" if payment.get("auth_mode") == "pin" else "pending"),
             "instructions": _plain_payment_instructions(payment.get("instructions")),
-            # Public link payments stay on Biz-transPay. Provider checkout URLs
-            # are internal reconciliation data and must never trigger a browser
-            # redirect from the public checkout.
-            "checkout_url": None,
-            "redirect_url": None,
+            # Only Mbiyo Wave CI may leave the public checkout, and only when
+            # Mbiyo returned a valid hosted-checkout URL. Other providers and
+            # operators remain on Biz-transPay.
+            "checkout_url": mbiyo_wave_redirect,
+            "redirect_url": mbiyo_wave_redirect,
             "prompt_sent": bool(payment.get("prompt_sent")),
             "prompt_error": _public_payment_error(payment.get("prompt_error")),
         })

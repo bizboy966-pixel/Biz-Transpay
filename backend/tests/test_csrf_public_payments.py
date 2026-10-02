@@ -61,6 +61,38 @@ def test_public_mobile_money_status_does_not_expose_provider_checkout_url():
     assert result["redirect_url"] is None
 
 
+def test_public_link_exposes_only_pending_mbiyo_ci_wave_redirect():
+    url = "https://checkout.mbiyo.example/pay/tx-1"
+    payment = {
+        "id": "payment-2",
+        "method": "mobile_money",
+        "status": "pending",
+        "provider": "mbiyo",
+        "provider_network": "wave",
+        "country": "CI",
+        "redirect_url": url,
+        "checkout_url": "https://ignored.example/other",
+    }
+    result = server._public_link_payment_status(payment)
+
+    assert result["redirect_url"] == url
+    assert result["checkout_url"] == url
+    assert "provider" not in result
+
+    for changes in (
+        {"provider": "paydunya"},
+        {"provider_network": "orange"},
+        {"country": "SN"},
+        {"status": "paid"},
+        {"redirect_url": "http://checkout.mbiyo.example/pay/tx-1"},
+        {"redirect_url": "https://user:pass@checkout.mbiyo.example/pay/tx-1"},
+    ):
+        candidate = {**payment, **changes}
+        hidden = server._public_link_payment_status(candidate)
+        assert hidden["redirect_url"] is None
+        assert hidden["checkout_url"] is None
+
+
 def test_universal_link_resolves_operator_using_operator_currency(monkeypatch):
     async def value(payload):
         return payload
@@ -77,6 +109,10 @@ def test_universal_link_resolves_operator_using_operator_currency(monkeypatch):
         }],
     }))
     monkeypatch.setattr(server, "get_mbiyo_config", lambda: value({
+        "enabled": False,
+        "catalog": [],
+    }))
+    monkeypatch.setattr(server, "get_afribapay_config", lambda: value({
         "enabled": False,
         "catalog": [],
     }))

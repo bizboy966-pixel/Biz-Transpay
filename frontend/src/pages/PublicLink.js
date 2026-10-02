@@ -533,6 +533,12 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
         data = await res.json();
       }
        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Erreur');
+      const redirectUrl = data.redirect_url || data.checkout_url;
+      if (data.payment_kind === 'redirect' || redirectUrl) {
+        if (!redirectUrl) throw new Error('Le lien de paiement n’a pas pu être préparé. Veuillez réessayer.');
+        window.location.assign(redirectUrl);
+        return;
+      }
       onSuccess({ ...data, fee_bearer: feeBearer });
     } catch (err) {
       setTurnstileToken('');
