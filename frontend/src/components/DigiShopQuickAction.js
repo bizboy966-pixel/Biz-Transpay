@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { ShoppingBag, X } from 'lucide-react';
+import { X } from 'lucide-react';
+import digiShopEmblem from '../assets/digishop-emblem.webp';
 
 export default function DigiShopQuickAction() {
   const [open, setOpen] = useState(false);
@@ -13,8 +14,14 @@ export default function DigiShopQuickAction() {
           data-testid="quick-action-digishop"
           className="group flex flex-col items-center gap-1.5 rounded-xl py-2.5 transition-colors hover:bg-slate-50 active:scale-95 sm:gap-2 sm:py-3"
         >
-          <span className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-[#3B82F6] to-[#1D4ED8] text-white shadow-sm ring-1 ring-blue-200/70 transition-transform group-hover:scale-105 sm:h-12 sm:w-12">
-            <ShoppingBag className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={1.8} aria-hidden="true" />
+          <span className="h-10 w-10 overflow-hidden rounded-full ring-1 ring-slate-200/70 transition-transform group-hover:scale-105 sm:h-12 sm:w-12">
+            <img
+              src={digiShopEmblem}
+              alt=""
+              aria-hidden="true"
+              className="h-full w-full rounded-full object-cover"
+              decoding="async"
+            />
           </span>
           <span className="font-cabinet text-[10px] font-bold text-slate-900 sm:text-xs">
             DigiShop
@@ -38,8 +45,14 @@ export default function DigiShopQuickAction() {
               <X className="h-4 w-4" aria-hidden="true" />
             </button>
           </Dialog.Close>
-          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
-            <ShoppingBag className="h-6 w-6" strokeWidth={1.8} aria-hidden="true" />
+          <div className="mx-auto h-16 w-16 overflow-hidden rounded-full ring-1 ring-slate-200/70">
+            <img
+              src={digiShopEmblem}
+              alt=""
+              aria-hidden="true"
+              className="h-full w-full rounded-full object-cover"
+              decoding="async"
+            />
           </div>
           <Dialog.Title className="mt-3 font-cabinet text-lg font-extrabold text-slate-900">
             DigiShop

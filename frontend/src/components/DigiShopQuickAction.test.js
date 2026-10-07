@@ -25,6 +25,8 @@ describe('DigiShop dashboard action', () => {
     await act(async () => root.render(<DigiShopQuickAction />));
     expect(container.querySelector('[data-testid="quick-action-digishop"]')?.textContent)
       .toBe('DigiShop');
+    expect(container.querySelector('[data-testid="quick-action-digishop"] img')?.getAttribute('src'))
+      .toBeTruthy();
     expect(document.body.querySelector('[data-testid="digishop-modal"]')).toBeNull();
 
     await act(async () => {
@@ -35,6 +37,8 @@ describe('DigiShop dashboard action', () => {
     expect(document.body.querySelector('[data-testid="digishop-modal"]')).not.toBeNull();
     expect(document.body.querySelector('[data-testid="digishop-status"]')?.textContent)
       .toBe('Bientôt disponible 🚀');
+    expect(document.body.querySelector('[data-testid="digishop-modal"] img')?.getAttribute('src'))
+      .toBeTruthy();
 
     await act(async () => {
       document.body.querySelector('[data-testid="digishop-close"]')
