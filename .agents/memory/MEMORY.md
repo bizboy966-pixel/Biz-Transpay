@@ -42,3 +42,4 @@
 - [PWA installation eligibility](pwa-installability.md) — Chromium needs a meaningful navigation fetch handler for its in-app install prompt; preserve the offline fallback.
 - [FCM delivery errors](firebase-delivery-errors.md) — preserve sanitized per-token FCM codes; remove only registrations marked permanently invalid.
 - [Client query cache boundaries](client-query-cache-boundaries.md) — scope authenticated cached data by account and invalidate financial views after mutations.
+- [Local dependency mitigations](local-dependency-mitigations.md) — retain truthful package metadata when upstream has no fix; source guards do not clear version-only scans.

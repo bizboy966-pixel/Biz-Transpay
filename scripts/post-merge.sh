@@ -15,6 +15,8 @@ else
   )
 fi
 
+node "$ROOT_DIR/scripts/patch-braces.cjs"
+
 python -m pip install --break-system-packages --disable-pip-version-check --no-input \
   -r "$ROOT_DIR/backend/requirements.txt"
 
