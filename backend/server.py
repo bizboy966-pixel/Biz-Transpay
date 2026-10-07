@@ -8867,7 +8867,8 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
               "La confirmation prend du temps. Restez sur Biz-transPay et "
               "ne relancez pas ce dépôt; son statut sera vérifié ici."
              if locals().get("softpay_fallback", False)
-              else "Vérifiez votre téléphone et suivez la confirmation ici."),
+              else payment_flow.get("instructions")
+              or "Vérifiez votre téléphone et suivez la confirmation ici."),
     }
 
 
@@ -9777,6 +9778,10 @@ def _public_momo_deposit(d: dict) -> dict:
         d.get("provider") == "paydunya"
         and d.get("paydunya_flow") == "softpay_direct"
     )
+    if direct_paydunya and d.get("endpoint_slug") == "moov-burkina":
+        # Also correct the instructions on deposits created before this flow
+        # was distinguished from a phone-notification confirmation.
+        flow = paydunya.payment_flow({"endpoint_slug": "moov-burkina"})
     expiry = _momo_pending_expiry(d)
     pending_remaining_seconds = (
         max(0, math.ceil((expiry - datetime.now(timezone.utc)).total_seconds()))

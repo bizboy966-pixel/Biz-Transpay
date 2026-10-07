@@ -955,7 +955,7 @@ export function MobileMoneyForm({ onSuccess }) {
   );
 }
 
-function MobileMoneyTracker({ deposit }) {
+export function MobileMoneyTracker({ deposit }) {
   const { refresh } = useAuth();
   const [d, setD] = useState(deposit);
   const [otp, setOtp] = useState('');
@@ -1047,13 +1047,14 @@ function MobileMoneyTracker({ deposit }) {
   const fallbackCheckoutUrl = d.payment_fallback === 'hosted_checkout'
     ? (d.redirect_url || d.checkout_url)
     : '';
-  const instructionValue = d.instructions || d.payment_instructions || d.pending_instructions || d.message;
+  const flow = d.payment_flow || {};
+  const instructionValue = (!d.submission_unknown && flow.instructions)
+    || d.instructions || d.payment_instructions || d.pending_instructions || d.message;
   const instructions = Array.isArray(instructionValue)
     ? instructionValue.join(' ')
     : (typeof instructionValue === 'string' && instructionValue.trim()
       ? instructionValue
       : `Une demande de ${d.amount_to_pay?.toLocaleString?.() || d.amount_to_pay || d.charged_amount || d.amount} ${d.currency || 'XOF'} via ${operatorName} a été envoyée au ${d.phone_number || 'numéro indiqué'}. Ouvrez la notification ou l’application Mobile Money et confirmez le paiement.`);
-  const flow = d.payment_flow || {};
   const needsPostInitOtp = pending && (d.auth_mode === 'pin' || (d.otp_required && !flow.before_submit));
   const afribapayWaveRedirect = pending && d.provider === 'afribapay' && d.redirect_url;
   const finalize = async () => {
@@ -1087,7 +1088,9 @@ function MobileMoneyTracker({ deposit }) {
       {ok && <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-6 h-6 text-emerald-500" /></div>}
       {failed && <div className="mx-auto w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><XCircle className="w-6 h-6 text-red-500" /></div>}
       <h2 className="font-cabinet text-lg sm:text-xl font-extrabold text-slate-900">
-        {pending && (fallbackCheckoutUrl ? 'Terminez le paiement sécurisé' : 'Vérifiez votre téléphone')}
+        {pending && (fallbackCheckoutUrl ? 'Terminez le paiement sécurisé'
+          : flow.kind === 'ussd_confirmation' && !d.submission_unknown
+            ? 'Confirmez avec le code USSD' : 'Vérifiez votre téléphone')}
         {ok && 'Paiement effectué avec succès'}
         {failed && 'Paiement échoué'}
       </h2>

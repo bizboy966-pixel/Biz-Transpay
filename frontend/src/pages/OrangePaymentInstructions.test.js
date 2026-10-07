@@ -1,8 +1,8 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useQuery } from '@tanstack/react-query';
-import { MobileMoneyForm } from './dashboard/Deposit';
-import { MoMoLinkForm } from './PublicLink';
+import { MobileMoneyForm, MobileMoneyTracker } from './dashboard/Deposit';
+import { MoMoLinkForm, MoMoLinkTracker } from './PublicLink';
 
 jest.mock('@tanstack/react-query', () => ({
   useQuery: jest.fn(),
@@ -142,4 +142,31 @@ describe('Orange USSD instructions use the amount actually paid', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`*144*4*6*${expected}#`);
     expect(container.textContent).toContain(`${bearer === 'owner' ? 480 : 500} XOF`);
   });
+
+  test.each(['deposit', 'link'])(
+    'Moov Burkina %s tracker requests USSD confirmation instead of a notification',
+    async (type) => {
+      const payment = {
+        id: 'test-deposit', status: 'pending', amount: 500, currency: 'XOF',
+        phone_number: '51765664', customer_phone: '51765664',
+        pending_remaining_seconds: 600,
+        instructions: 'Ouvrez la notification sur votre téléphone.',
+        payment_flow: {
+          kind: 'ussd_confirmation', before_submit: false, otp_required: false,
+          ussd_code: '*555*6#',
+          instructions: 'Composez *555*6# depuis le numéro Moov Money du dépôt, puis confirmez le paiement.',
+          steps: ['Lancez le paiement.', 'Composez *555*6# pour confirmer.'],
+        },
+      };
+      await act(async () => root.render(type === 'deposit'
+        ? <MobileMoneyTracker deposit={payment} />
+        : <MoMoLinkTracker payment={payment} />));
+      expect(container.querySelector('h2').textContent).toBe('Confirmez avec le code USSD');
+      expect(container.textContent).not.toContain('notification');
+      expect(container.textContent).not.toContain('Paiement effectué avec succès');
+      expect(container.querySelector('code').textContent).toBe('*555*6#');
+      await act(async () => container.querySelector('[aria-label="Copier le code USSD"]').click());
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('*555*6#');
+    },
+  );
 });

@@ -686,7 +686,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
   );
 }
 
-function MoMoLinkTracker({ payment }) {
+export function MoMoLinkTracker({ payment }) {
   const [p, setP] = useState(payment);
   const [otp, setOtp] = useState('');
   const [finalizing, setFinalizing] = useState(false);
@@ -761,7 +761,8 @@ function MoMoLinkTracker({ payment }) {
   const pending = !ok && !failed;
   const flow = p.payment_flow || {};
   const needsPostInitOtp = pending && (p.auth_mode === 'pin' || (p.otp_required && !flow.before_submit));
-  const instructionValue = p.instructions || p.payment_instructions || p.pending_instructions;
+  const instructionValue = (!p.submission_unknown && flow.instructions)
+    || p.instructions || p.payment_instructions || p.pending_instructions;
   const instructions = Array.isArray(instructionValue)
     ? instructionValue.join(' ')
     : (typeof instructionValue === 'string' && instructionValue.trim()
@@ -803,7 +804,8 @@ function MoMoLinkTracker({ payment }) {
       {ok && <div className="mx-auto w-14 h-14 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-6 h-6 text-emerald-500" /></div>}
       {failed && <div className="mx-auto w-14 h-14 rounded-full bg-red-50 flex items-center justify-center"><XCircle className="w-6 h-6 text-red-500" /></div>}
       <h2 className="font-cabinet text-base font-extrabold text-slate-900">
-        {pending && 'Vérifiez votre téléphone'}
+        {pending && (flow.kind === 'ussd_confirmation' && !p.submission_unknown
+          ? 'Confirmez avec le code USSD' : 'Vérifiez votre téléphone')}
         {ok && 'Paiement effectué avec succès'}
         {failed && 'Paiement échoué'}
       </h2>

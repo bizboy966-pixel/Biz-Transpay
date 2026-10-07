@@ -101,6 +101,24 @@ def payment_flow(operator: dict, amount: Optional[float] = None) -> dict:
         ],
         "action_label": "Valider sur mon téléphone",
     }
+    if slug == "moov-burkina":
+        return {
+            "kind": "ussd_confirmation",
+            "before_submit": False,
+            "otp_required": False,
+            "ussd_code": "*555*6#",
+            "instructions": (
+                "Composez *555*6# depuis le numéro Moov Money utilisé pour ce "
+                "dépôt, puis suivez le menu pour confirmer le paiement. "
+                "Revenez ici pour suivre sa confirmation."
+            ),
+            "steps": [
+                "Lancez le paiement sur cette page.",
+                "Composez *555*6# depuis le numéro Moov Money du dépôt.",
+                "Suivez le menu pour confirmer, puis revenez ici pour suivre le paiement.",
+            ],
+            "action_label": "Confirmer avec le code USSD",
+        }
     if slug == "orange-money-ci":
         return {
             "kind": "otp",
@@ -575,7 +593,13 @@ async def softpay_payment(config: dict, *, invoice_token: str, operator: dict,
                 "payment_token": invoice_token}
     else:
         raise PayDunyaError(400, "Opérateur Mobile Money non pris en charge")
-    return await _request("POST", f"/api/v1/softpay/{slug}", config, body)
+    result = await _request("POST", f"/api/v1/softpay/{slug}", config, body)
+    if slug == "moov-burkina" and result.get("success") is False:
+        raise PayDunyaError(
+            400, str(result.get("message") or "La demande Mobile Money a été refusée"),
+            result,
+        )
+    return result
 
 
 async def wizall_confirm(config: dict, *, authorization_code: str,
