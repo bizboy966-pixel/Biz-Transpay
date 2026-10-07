@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet, TrendingUp, Smartphone, Landmark, Mail } from 'lucide-react';
+import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet, TrendingUp, Smartphone, Landmark, Mail, BarChart3 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import NotificationBell from '@/components/NotificationBell';
 import { Link } from 'react-router-dom';
@@ -17,6 +17,7 @@ const NAV = [
   { to: '/admin/transactions', i: ArrowLeftRight, l: 'Toutes', permission: 'transactions:read' },
   { to: '/admin/deposits', i: ArrowDownToLine, l: 'Dépôts', permission: 'transactions:read' },
   { to: '/admin/withdrawals', i: ArrowUpFromLine, l: 'Retraits', permission: 'transactions:read' },
+  { to: '/admin/statistics', i: BarChart3, l: 'Statistiques', permission: 'finance:read' },
   { section: 'Réglages' },
   { to: '/admin/features', i: Wallet, l: 'Fonctionnalités', permission: 'settings:read' },
   { to: '/admin/email-notifications', i: Mail, l: 'E-mails transactionnels', permission: 'settings:read' },

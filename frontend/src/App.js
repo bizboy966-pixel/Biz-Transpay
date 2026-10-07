@@ -49,6 +49,7 @@ const AdminFees = lazy(pageLoaders.adminFees);
 const AdminBenefits = lazy(pageLoaders.adminBenefits);
 const AdminPaymentProviders = lazy(pageLoaders.adminPaymentProviders);
 const AdminFunds = lazy(pageLoaders.adminFunds);
+const AdminStatistics = lazy(pageLoaders.adminStatistics);
 const AdminEmailNotifications = lazy(pageLoaders.adminEmailNotifications);
 const AdminNotifications = lazy(pageLoaders.adminNotifications);
 const AdminLegacyCleanup = lazy(pageLoaders.adminLegacyCleanup);
@@ -178,6 +179,7 @@ function App() {
             <Route path="benefits" element={lazyPage(AdminBenefits)} />
             <Route path="payment-providers" element={lazyPage(AdminPaymentProviders)} />
             <Route path="funds" element={lazyPage(AdminFunds)} />
+            <Route path="statistics" element={lazyPage(AdminStatistics)} />
             <Route path="maintenance/legacy-merchant-api" element={lazyPage(AdminLegacyCleanup)} />
           </Route>
         </Routes>

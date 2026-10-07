@@ -42,6 +42,7 @@ export const pageLoaders = {
   adminBenefits: () => import('@/pages/admin/AdminBenefits'),
   adminPaymentProviders: () => import('@/pages/admin/AdminPaymentProviders'),
   adminFunds: () => import('@/pages/admin/AdminFunds'),
+  adminStatistics: () => import('@/pages/admin/AdminStatistics'),
   adminEmailNotifications: () => import('@/pages/admin/AdminEmailNotifications'),
   adminNotifications: () => import('@/pages/admin/AdminNotifications'),
   adminLegacyCleanup: () => import('@/pages/admin/AdminLegacyCleanup'),
@@ -82,6 +83,7 @@ const ROUTE_PAGES = {
   '/admin/benefits': 'adminBenefits',
   '/admin/payment-providers': 'adminPaymentProviders',
   '/admin/funds': 'adminFunds',
+  '/admin/statistics': 'adminStatistics',
   '/admin/maintenance/legacy-merchant-api': 'adminLegacyCleanup',
 };
 
