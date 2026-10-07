@@ -469,6 +469,48 @@ def test_reads_are_user_and_environment_scoped():
     assert exc.value.status_code == 404
 
 
+def test_live_api_uses_responsive_shared_deposit_verification(monkeypatch):
+    async def scenario():
+        released = asyncio.Event()
+        deposit = {
+            "id": "deposit-fast", "user_id": "biz", "provider": "paydunya",
+            "paydunya_flow": "softpay_direct", "status": "pending", "amount": 500,
+            "currency": "XOF", "payment_flow": server.paydunya.payment_flow(
+                {"endpoint_slug": "moov-burkina"}),
+        }
+        db = DB(
+            momo_deposits=Collection([deposit]),
+            integration_operations=Collection([{
+                "id": "operation-fast", "user_id": "biz", "environment": "live",
+                "kind": "deposit", "business_id": "deposit-fast", "status": "pending",
+            }]),
+        )
+        monkeypatch.setattr(server, "db", db)
+        monkeypatch.setattr(server, "MOMO_STATUS_WAIT_SECONDS", 0.01)
+
+        async def verify(identifier):
+            await released.wait()
+            await db.momo_deposits.update_one(
+                {"id": identifier}, {"$set": {"status": "approved"}})
+            return True
+
+        monkeypatch.setattr(server, "_verify_paydunya_deposit", verify)
+        router = create_router(ctx(db))
+        endpoint = route(router, "/v1/deposits/{deposit_id}", "GET")
+        credential = {"user_id": "biz", "environment": "live"}
+        pending = await endpoint("deposit-fast", credential)
+        assert pending["status"] == "pending"
+        assert pending["payment_flow"]["ussd_code"] == "*555*6#"
+        task = server._paydunya_confirmation_tasks["deposit-fast"]
+        assert not task.done()
+        released.set()
+        await task
+        assert (await endpoint("deposit-fast", credential))["status"] == "approved"
+        assert db.integration_operations.docs[0]["status"] == "approved"
+
+    run(scenario())
+
+
 def test_test_environment_payment_link_creation_fails_closed():
     db = DB()
     router = create_router(ctx(db))

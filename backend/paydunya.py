@@ -452,8 +452,13 @@ def invoice_token(invoice: dict) -> str:
         return ""
     response = invoice.get("response")
     nested = response if isinstance(response, dict) else {}
+    details = invoice.get("invoice")
+    details = details if isinstance(details, dict) else {}
+    nested_details = nested.get("invoice")
+    nested_details = nested_details if isinstance(nested_details, dict) else {}
     return str(invoice.get("token") or invoice.get("invoice_token")
-               or nested.get("token") or nested.get("invoice_token") or "")
+               or nested.get("token") or nested.get("invoice_token")
+               or details.get("token") or nested_details.get("token") or "")
 
 
 def checkout_url(invoice: Any) -> str:
@@ -793,6 +798,29 @@ def confirmation_valid(response: dict, *, master_key: str, token: str,
 
 def parse_webhook(form: dict) -> tuple[dict, str]:
     """Parse PayDunya's form webhook and return (payload, static hash)."""
+    # PHP-style form encoding preserves bracketed names in Starlette:
+    # data[hash], data[invoice][token], etc. Decode the documented envelope
+    # before signature validation; never treat a missing signature as valid.
+    if "data" not in form:
+        nested = {}
+        for key, value in form.items():
+            if not isinstance(key, str) or not re.fullmatch(r"data(?:\[[^\[\]]+\])+", key):
+                continue
+            path = re.findall(r"\[([^\[\]]+)\]", key)
+            if len(path) > 8 or any(len(part) > 128 for part in path):
+                raise ValueError("Invalid PayDunya form nesting")
+            node = nested
+            for part in path[:-1]:
+                if part not in node:
+                    node[part] = {}
+                if not isinstance(node[part], dict):
+                    raise ValueError("Conflicting PayDunya form fields")
+                node = node[part]
+            if path[-1] in node:
+                raise ValueError("Conflicting PayDunya form fields")
+            node[path[-1]] = value
+        if nested:
+            form = {**form, "data": nested}
     supplied = str(form.get("hash") or form.get("HASH") or form.get("signature") or "")
     raw = form.get("data") or form.get("payload") or form.get("response") or form
     if isinstance(raw, str):
@@ -800,4 +828,5 @@ def parse_webhook(form: dict) -> tuple[dict, str]:
             raw = json.loads(raw)
         except Exception:
             raw = {"raw": raw}
-    return (raw if isinstance(raw, dict) else {"data": raw}, supplied)
+    payload = raw if isinstance(raw, dict) else {"data": raw}
+    return payload, supplied or str(payload.get("hash") or "")

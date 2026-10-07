@@ -9227,7 +9227,38 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
     return result.modified_count == 1
 
 
+_paydunya_confirmation_tasks: dict[str, asyncio.Task] = {}
+MOMO_STATUS_WAIT_SECONDS = 2.0
+
+
 async def _reconcile_momo_deposit(dep_id: str) -> bool:
+    """Share one provider verification across webhook, browser, API and worker."""
+    task = _paydunya_confirmation_tasks.get(dep_id)
+    if task is None or task.done():
+        task = asyncio.create_task(_verify_paydunya_deposit(dep_id))
+        _paydunya_confirmation_tasks[dep_id] = task
+
+        def cleanup(finished):
+            if _paydunya_confirmation_tasks.get(dep_id) is finished:
+                _paydunya_confirmation_tasks.pop(dep_id, None)
+            if not finished.cancelled():
+                finished.exception()  # Observe failures even after a client disconnects.
+
+        task.add_done_callback(cleanup)
+    # A disconnected browser must not cancel settlement or another caller.
+    return await asyncio.shield(task)
+
+
+async def _wait_for_momo_confirmation(dep_id: str) -> bool:
+    """Keep status reads responsive while the actual verification continues."""
+    try:
+        return await asyncio.wait_for(
+            _reconcile_momo_deposit(dep_id), timeout=MOMO_STATUS_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        return False
+
+
+async def _verify_paydunya_deposit(dep_id: str) -> bool:
     """Reconcile a pending PayDunya deposit server-to-server."""
     d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
     if not d:
@@ -9240,6 +9271,13 @@ async def _reconcile_momo_deposit(dep_id: str) -> bool:
         return False
     if d.get("status") in ("pending", "failed"):
         try:
+            await db.momo_deposits.update_one(
+                {"id": dep_id, "status": d["status"]},
+                {"$set": {"next_reconcile_at": (
+                    datetime.now(timezone.utc) + timedelta(
+                        seconds=60 if d["status"] == "failed" else 10)
+                ).isoformat()}},
+            )
             cfg = await get_paydunya_config(decrypt=True)
             response = await paydunya.confirm_invoice(cfg, d["paydunya_token"])
             if not paydunya.confirmation_valid(
@@ -9452,6 +9490,28 @@ async def _reconcile_mbiyo_deposit(dep_id: str) -> bool:
     return False
 
 
+async def _reconcile_momo_batch(deposits: list[dict]) -> None:
+    """Bound provider concurrency instead of checking every invoice serially."""
+    slots = asyncio.Semaphore(4)
+
+    async def verify(deposit):
+        async with slots:
+            try:
+                if deposit.get("provider") == "afribapay":
+                    await _reconcile_afribapay_deposit(deposit["id"])
+                elif deposit.get("provider") == "mbiyo":
+                    await _reconcile_mbiyo_deposit(deposit["id"])
+                else:
+                    await _reconcile_momo_deposit(deposit["id"])
+            except Exception:
+                logger.exception(
+                    "Mobile Money deposit reconciliation failed for %s",
+                    deposit.get("id"),
+                )
+
+    await asyncio.gather(*(verify(deposit) for deposit in deposits))
+
+
 async def _paydunya_reconcile_loop() -> None:
     """Repair paid deposits even when the browser and provider callback vanish."""
     while True:
@@ -9461,6 +9521,10 @@ async def _paydunya_reconcile_loop() -> None:
                 {
                     "provider": {"$in": ["paydunya", "mbiyo", "afribapay"]},
                     "created_at": {"$gt": cutoff},
+                    "$and": [{"$or": [
+                        {"next_reconcile_at": {"$exists": False}},
+                        {"next_reconcile_at": {"$lte": now_iso()}},
+                    ]}],
                     "$or": [
                         {"status": "pending"},
                         {"status": "failed", "retryable": True},
@@ -9472,19 +9536,8 @@ async def _paydunya_reconcile_loop() -> None:
                 },
                 {"_id": 0, "id": 1, "provider": 1},
             ).sort("created_at", -1).limit(50)
-            async for deposit in cursor:
-                try:
-                    if deposit.get("provider") == "afribapay":
-                        await _reconcile_afribapay_deposit(deposit["id"])
-                    elif deposit.get("provider") == "mbiyo":
-                        await _reconcile_mbiyo_deposit(deposit["id"])
-                    else:
-                        await _reconcile_momo_deposit(deposit["id"])
-                except Exception:
-                    logger.exception(
-                        "Mobile Money deposit reconciliation failed for %s",
-                        deposit.get("id"),
-                    )
+            deposits = [deposit async for deposit in cursor]
+            await _reconcile_momo_batch(deposits)
             due = now_iso()
             tokenless_grace = (
                 datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
@@ -9898,7 +9951,7 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     elif d.get("status") in ("pending", "approved") or (
             d.get("status") == "failed" and d.get("retryable")):
-        await _reconcile_momo_deposit(deposit_id)
+        await _wait_for_momo_confirmation(deposit_id)
         d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0}) or d
     return _public_momo_deposit(d)
 
@@ -10129,7 +10182,10 @@ async def paydunya_webhook(request: Request):
     the API before changing any wallet balance.
     """
     try:
-        form = dict(await request.form())
+        if "application/json" in str(request.headers.get("content-type", "")).lower():
+            form = await request.json()
+        else:
+            form = dict(await request.form())
     except Exception:
         raw = await request.body()
         try:
@@ -10137,12 +10193,19 @@ async def paydunya_webhook(request: Request):
         except Exception:
             from urllib.parse import parse_qs
             form = {k: v[-1] for k, v in parse_qs(raw.decode()).items()}
-    payload, supplied_hash = paydunya.parse_webhook(form)
+    try:
+        if not isinstance(form, dict):
+            raise ValueError("Invalid PayDunya payload")
+        payload, supplied_hash = paydunya.parse_webhook(form)
+    except ValueError:
+        raise HTTPException(400, "Invalid PayDunya payload")
     cfg = await get_paydunya_config(decrypt=True)
     master = (cfg.get("_credentials") or {}).get("master_key", "")
     if not paydunya.verify_static_hash(supplied_hash or payload.get("hash", ""), master):
         raise HTTPException(400, "Invalid PayDunya webhook hash")
     token = paydunya.invoice_token(payload)
+    if not token:
+        raise HTTPException(400, "Missing PayDunya invoice token")
     dep = await db.momo_deposits.find_one(
         {"provider": "paydunya", "paydunya_token": token}, {"_id": 0})
     event_id = f"paydunya:{token}:{payload.get('status', '')}:{payload.get('response_code', '')}"
@@ -12135,7 +12198,7 @@ async def get_link_payment_status(payment_id: str):
         d = await db.momo_deposits.find_one({"id": lp.get("momo_deposit_id")}, {"_id": 0})
         if d:
             if d.get("provider") == "paydunya" and d.get("status") in ("pending", "approved"):
-                await _reconcile_momo_deposit(d["id"])
+                await _wait_for_momo_confirmation(d["id"])
                 lp = await db.link_payments.find_one({"id": payment_id}, {"_id": 0})
             elif d.get("provider") == "mbiyo" and d.get("status") in ("pending", "approved"):
                 await _reconcile_mbiyo_deposit(d["id"])

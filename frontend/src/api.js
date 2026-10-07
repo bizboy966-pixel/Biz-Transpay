@@ -12,6 +12,20 @@ const CSRF_PUBLIC_PATHS = new Set([
   '/auth/recover',
 ]);
 let csrfRequest = null;
+let sessionRefreshRequest = null;
+let sessionGeneration = 0;
+
+export function refreshBrowserSession() {
+  if (!sessionRefreshRequest) {
+    sessionRefreshRequest = api.post('/auth/session/refresh', {}, { _sessionRefresh: true })
+      .then((result) => {
+        sessionGeneration += 1;
+        return result;
+      })
+      .finally(() => { sessionRefreshRequest = null; });
+  }
+  return sessionRefreshRequest;
+}
 
 function readCookie(name) {
   const prefix = `${encodeURIComponent(name)}=`;
@@ -33,6 +47,10 @@ async function ensureCsrfToken() {
 }
 
 api.interceptors.request.use(async (config) => {
+  if (sessionRefreshRequest && !config._sessionRefresh) {
+    await sessionRefreshRequest.catch(() => {});
+  }
+  config._sessionGeneration = sessionGeneration;
   const method = String(config.method || 'get').toLowerCase();
   const path = String(config.url || '').split('?')[0];
   if (MUTATING_METHODS.has(method) && !CSRF_PUBLIC_PATHS.has(path)) {
@@ -50,7 +68,18 @@ api.interceptors.request.use(async (config) => {
 
 api.interceptors.response.use(
   (res) => res,
-  (err) => {
+  async (err) => {
+    if (err.response?.status === 401
+      && String(err.config?.method || 'get').toLowerCase() === 'get'
+      && !err.config?._sessionRetry) {
+      if (sessionRefreshRequest) await sessionRefreshRequest.catch(() => {});
+      if (Number.isInteger(err.config?._sessionGeneration)
+        && err.config._sessionGeneration < sessionGeneration) {
+        // Retry only reads rejected for the old cookie during a successful
+        // rotation. Never replay a financial mutation or ignore real expiry.
+        return api({ ...err.config, _sessionRetry: true });
+      }
+    }
     const securityDetail = err.response?.data?.detail;
     if (
       err.response?.status === 428

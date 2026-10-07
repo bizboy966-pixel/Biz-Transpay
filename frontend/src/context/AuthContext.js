@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import api from '../api';
+import api, { refreshBrowserSession } from '../api';
 import { ACTIVE_MOMO_DEPOSIT_KEY } from '../constants/payment';
 import {
   currentPushToken,
@@ -75,7 +75,7 @@ export function AuthProvider({ children }) {
     events.forEach((name) => window.addEventListener(name, markActivity, { passive: true }));
     const timer = window.setInterval(() => {
       if (Date.now() - lastActivity < 10 * 60 * 1000) {
-        api.post('/auth/session/refresh').catch(() => {});
+        refreshBrowserSession().catch(() => {});
       }
     }, 5 * 60 * 1000);
     return () => {
