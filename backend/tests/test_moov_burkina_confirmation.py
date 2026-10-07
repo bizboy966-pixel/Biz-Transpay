@@ -24,8 +24,9 @@ def test_moov_burkina_instructions_are_post_submission_ussd():
     assert server.paydunya.payment_flow({"endpoint_slug": "moov-ci"})["kind"] == "phone_confirmation"
 
 
-@pytest.mark.parametrize("accepted", [True, False])
-def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatch, accepted):
+@pytest.mark.parametrize("outcome", ["accepted", "rejected", "insufficient"])
+def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatch, outcome):
+    accepted = outcome == "accepted"
     config = {
         "mode": "live", "enabled": True,
         "modes": {"softpay_direct": {"enabled": True}},
@@ -48,6 +49,9 @@ def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatc
         "message": ("Veuillez compléter le paiement en composant le *555*6#."
                     if accepted else "Paiement refusé"),
     })
+    if outcome == "insufficient":
+        provider_request.side_effect = server.paydunya.PayDunyaError(
+            403, "FAILED: Solde client insuffisant")
     monkeypatch.setattr(server.paydunya, "_request", provider_request)
     payload = server.MobileMoneyDepositRequest(
         amount=500, currency="XOF", country="BF", operator="moov_bf",
@@ -69,6 +73,9 @@ def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatc
         with pytest.raises(HTTPException) as caught:
             asyncio.run(server.create_mobile_money_deposit(payload, request, "test-user"))
         assert caught.value.status_code == 400
+        if outcome == "insufficient":
+            assert "solde Mobile Money du payeur est insuffisant" in caught.value.detail
+            assert "mal configuré" not in caught.value.detail
         assert collection.update_one.await_args.args[1]["$set"]["status"] == "failed"
         assert collection.update_one.await_args.args[1]["$set"]["prompt_sent"] is False
     method, path, _, body = provider_request.await_args.args
@@ -89,3 +96,18 @@ def test_existing_pending_direct_deposit_gets_corrected_instructions():
     })
     assert result["status"] == "pending"
     assert result["payment_flow"]["ussd_code"] == "*555*6#"
+
+
+@pytest.mark.parametrize(("status", "message", "expected"), [
+    (403, "FAILED: Solde client insuffisant", "solde Mobile Money du payeur est insuffisant"),
+    (400, "Solde client insuffisant", "solde Mobile Money du payeur est insuffisant"),
+    (403, "FAILED: SOLDE  CLIENT\nINSUFFISANT", "solde Mobile Money du payeur est insuffisant"),
+    (403, "Forbidden", "temporairement mal configuré"),
+    (401, "Unauthorized", "temporairement mal configuré"),
+    (503, "PayDunya credentials are not configured", "temporairement mal configuré"),
+    (502, "PayDunya unreachable", "momentanément indisponible"),
+])
+def test_provider_business_refusal_is_not_a_credential_error(status, message, expected):
+    result = server._paydunya_operation_error(server.paydunya.PayDunyaError(status, message))
+    assert expected in result
+    assert "FAILED" not in result

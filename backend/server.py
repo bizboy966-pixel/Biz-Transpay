@@ -8042,6 +8042,13 @@ def _paydunya_operation_error(exc: paydunya.PayDunyaError) -> str:
     """Map provider failures to actionable, secret-free customer messages."""
     message = str(exc.message or "").strip()
     lowered = message.lower()
+    if "solde client insuffisant" in re.sub(r"\s+", " ", lowered):
+        # PayDunya also uses HTTP 403 for this business refusal. It is not
+        # evidence that the platform's API credentials are misconfigured.
+        return (
+            "Le solde Mobile Money du payeur est insuffisant pour couvrir "
+            "le montant demandé et les frais éventuels."
+        )
     if "sandbox" in lowered and ("customer" in lowered or "client" in lowered):
         return (
             "Le compte client de test Mobile Money n’est pas configuré. "
