@@ -2,26 +2,29 @@ import { Check, Clock3, LoaderCircle, X } from 'lucide-react';
 
 const STATUS_CONTENT = {
   success: {
-    title: 'Retrait réussi',
+    result: 'réussi',
     Icon: Check,
     iconClass: 'bg-emerald-50 text-emerald-600',
   },
   failed: {
-    title: 'Retrait échoué',
+    result: 'échoué',
     Icon: X,
     iconClass: 'bg-red-50 text-red-600',
   },
   pending: {
-    title: 'Retrait toujours en cours',
+    result: 'toujours en cours',
     Icon: Clock3,
     iconClass: 'bg-amber-50 text-amber-600',
   },
 };
 
-function WithdrawalStatusModal({ status, onClose }) {
+function TransferStatusModal({ status, transferType, onClose }) {
   const isProcessing = status === 'processing';
   const content = STATUS_CONTENT[status] || STATUS_CONTENT.pending;
   const Icon = isProcessing ? LoaderCircle : content.Icon;
+  const isInternalTransfer = transferType === 'biz_to_biz';
+  const action = isInternalTransfer ? 'transfert' : 'retrait';
+  const actionTitle = isInternalTransfer ? 'Transfert' : 'Retrait';
 
   return (
     <div
@@ -29,12 +32,12 @@ function WithdrawalStatusModal({ status, onClose }) {
       role="presentation"
     >
       <section
-        aria-labelledby="withdrawal-status-title"
+        aria-labelledby="transfer-status-title"
         aria-modal="true"
         aria-live="assertive"
         className="w-full max-w-[26rem] rounded-2xl bg-white px-6 py-7 text-center shadow-[0_18px_60px_rgba(15,23,42,0.18)] sm:px-8 sm:py-8"
         role="dialog"
-        data-testid="withdrawal-status-modal"
+        data-testid="transfer-status-modal"
       >
         <div
           className={`mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full ${
@@ -50,14 +53,14 @@ function WithdrawalStatusModal({ status, onClose }) {
 
         <h2
           className="font-cabinet text-lg font-bold leading-snug text-slate-900 sm:text-xl"
-          id="withdrawal-status-title"
+          id="transfer-status-title"
         >
-          {isProcessing ? 'Traitement en cours' : content.title}
+          {isProcessing ? 'Traitement en cours' : `${actionTitle} ${content.result}`}
         </h2>
 
         {isProcessing && (
           <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-slate-500">
-            Veuillez patienter pendant le traitement de votre retrait…
+            Veuillez patienter pendant le traitement de votre {action}…
           </p>
         )}
 
@@ -75,4 +78,4 @@ function WithdrawalStatusModal({ status, onClose }) {
   );
 }
 
-export default WithdrawalStatusModal;
+export default TransferStatusModal;

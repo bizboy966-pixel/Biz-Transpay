@@ -11,7 +11,7 @@ import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 import DashboardPageLogo from '@/components/DashboardPageLogo';
-import WithdrawalStatusModal from '@/components/WithdrawalStatusModal';
+import TransferStatusModal from '@/components/TransferStatusModal';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -23,7 +23,7 @@ export default function Transfer() {
   const [type, setType] = useState(null);
   const [config, setConfig] = useState(null);
   const [done, setDone] = useState(null);
-  const [withdrawalFeedback, setWithdrawalFeedback] = useState(null);
+  const [transferFeedback, setTransferFeedback] = useState(null);
 
   useEffect(() => {
     api.get('/transfer/config').then(({ data }) => setConfig(data)).catch(() => {});
@@ -50,10 +50,13 @@ export default function Transfer() {
   }, [features, config]);
 
   const onDone = (data, meta) => {
-    if (meta?.type === 'biz_to_mobile') {
-      setWithdrawalFeedback((current) => (
+    if (['biz_to_biz', 'biz_to_mobile', 'biz_to_crypto'].includes(meta?.type)) {
+      setTransferFeedback((current) => (
         current?.status === 'processing'
-          ? { status: data?.pending_manual ? 'pending' : 'success' }
+          ? {
+            status: data?.pending_manual ? 'pending' : 'success',
+            transferType: meta.type,
+          }
           : current
       ));
     }
@@ -117,18 +120,36 @@ export default function Transfer() {
         </div>
       )}
 
-      {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} turnstile={turnstile} walletCryptoEnabled={features?.wallet_crypto_enabled !== false} />}
+      {step === 2 && type === 'biz_to_biz' && (
+        <BizToBizForm
+          onDone={onDone}
+          balance={user}
+          turnstile={turnstile}
+          walletCryptoEnabled={features?.wallet_crypto_enabled !== false}
+          transferFeedback={transferFeedback}
+          onTransferFeedback={setTransferFeedback}
+        />
+      )}
       {step === 2 && type === 'biz_to_mobile' && (
         <BizToMobileForm
           config={config}
           onDone={onDone}
           balance={user}
           turnstile={turnstile}
-          withdrawalFeedback={withdrawalFeedback}
-          onWithdrawalFeedback={setWithdrawalFeedback}
+          transferFeedback={transferFeedback}
+          onTransferFeedback={setTransferFeedback}
         />
       )}
-      {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
+      {step === 2 && type === 'biz_to_crypto' && (
+        <BizToCryptoForm
+          config={config}
+          onDone={onDone}
+          balance={user}
+          turnstile={turnstile}
+          transferFeedback={transferFeedback}
+          onTransferFeedback={setTransferFeedback}
+        />
+      )}
 
       {step === 3 && done && (
         <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 text-center" data-testid="transfer-success">
@@ -156,10 +177,11 @@ export default function Transfer() {
           </div>
         </div>
       )}
-      {withdrawalFeedback && (
-        <WithdrawalStatusModal
-          status={withdrawalFeedback.status}
-          onClose={() => setWithdrawalFeedback(null)}
+      {transferFeedback && (
+        <TransferStatusModal
+          status={transferFeedback.status}
+          transferType={transferFeedback.transferType || type}
+          onClose={() => setTransferFeedback(null)}
         />
       )}
     </div>
@@ -320,7 +342,9 @@ function WithdrawalEmailOtpPanel({
 }
 
 // ------- BIZ TO BIZ -------
-function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
+function BizToBizForm({
+  onDone, balance, turnstile, walletCryptoEnabled, transferFeedback, onTransferFeedback,
+}) {
   const turnstileRef = useRef(null);
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
@@ -389,6 +413,7 @@ function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
       return;
     }
     setPending(true);
+    onTransferFeedback({ status: 'processing', transferType: 'biz_to_biz' });
     try {
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_biz', recipient: username || phone,
@@ -396,10 +421,15 @@ function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
+        onTransferFeedback(null);
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
     } catch (err) {
+      onTransferFeedback({
+        status: err.response ? 'failed' : 'pending',
+        transferType: 'biz_to_biz',
+      });
       setTurnstileToken('');
       turnstileRef.current?.reset();
       toast.error(err.response?.data?.detail || 'Erreur');
@@ -489,7 +519,7 @@ function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
         </button>
       )}
 
-      {confirmOpen && recipient && (
+      {confirmOpen && recipient && !transferFeedback && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="b2b-confirm-modal" rows={[
           ['Bénéficiaire', `${recipient.full_name} (@${recipient.username})`],
           ['Montant', `${amt.toLocaleString()} ${currencyLabel}`, 'strong'],
@@ -504,7 +534,7 @@ function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
 
 // ------- BIZ TO MOBILE -------
 function BizToMobileForm({
-  config, onDone, balance, turnstile, withdrawalFeedback, onWithdrawalFeedback,
+  config, onDone, balance, turnstile, transferFeedback, onTransferFeedback,
 }) {
   const turnstileRef = useRef(null);
   const operators = useMemo(
@@ -559,7 +589,7 @@ function BizToMobileForm({
       return;
     }
     setPending(true);
-    onWithdrawalFeedback({ status: 'processing' });
+    onTransferFeedback({ status: 'processing', transferType: 'biz_to_mobile' });
     try {
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_mobile', recipient: phone, country, operator,
@@ -568,12 +598,15 @@ function BizToMobileForm({
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
-        onWithdrawalFeedback(null);
+        onTransferFeedback(null);
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
     } catch (err) {
-      onWithdrawalFeedback({ status: err.response ? 'failed' : 'pending' });
+      onTransferFeedback({
+        status: err.response ? 'failed' : 'pending',
+        transferType: 'biz_to_mobile',
+      });
       setTurnstileToken('');
       turnstileRef.current?.reset();
       const status = err.response?.status;
@@ -710,7 +743,7 @@ function BizToMobileForm({
         </button>
       )}
 
-      {confirmOpen && !withdrawalFeedback && (
+      {confirmOpen && !transferFeedback && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="mm-confirm-modal" rows={[
           ['Opérateur', op?.name],
           ['Numéro', phone],
@@ -726,7 +759,9 @@ function BizToMobileForm({
 }
 
 // ------- BIZ TO CRYPTO -------
-function BizToCryptoForm({ config, onDone, balance, turnstile }) {
+function BizToCryptoForm({
+  config, onDone, balance, turnstile, transferFeedback, onTransferFeedback,
+}) {
   const turnstileRef = useRef(null);
   const idempotencyRef = useRef({ fingerprint: '', key: '' });
   const ccfg = config?.crypto || { enabled: false };
@@ -839,6 +874,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
       };
     }
     setPending(true);
+    onTransferFeedback({ status: 'processing', transferType: 'biz_to_crypto' });
     try {
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_crypto', recipient: walletAddress,
@@ -851,10 +887,15 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
+        onTransferFeedback(null);
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
     } catch (err) {
+      onTransferFeedback({
+        status: err.response ? 'failed' : 'pending',
+        transferType: 'biz_to_crypto',
+      });
       setTurnstileToken('');
       turnstileRef.current?.reset();
       toast.error(err.response?.data?.detail || 'Erreur');
@@ -991,7 +1032,7 @@ function BizToCryptoForm({ config, onDone, balance, turnstile }) {
         </button>
       )}
 
-      {confirmOpen && (
+      {confirmOpen && !transferFeedback && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="crypto-confirm-modal" rows={[
           ['Cryptomonnaie', `${cryptoCode} · ${network?.name || networkCode}`],
           ['Adresse', walletAddress, 'mono'],
