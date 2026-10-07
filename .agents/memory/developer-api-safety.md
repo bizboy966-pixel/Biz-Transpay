@@ -36,3 +36,9 @@ Deleting an integration environment must revoke its keys and remove its webhook 
 **Why:** Credential deletion is an access-control action, not a cancellation or rollback of already submitted financial work. Removing idempotency history can let an earlier uncertain payment be submitted again.
 
 **How to apply:** Require fresh merchant authentication and explicit confirmation for deletion. State clearly that in-flight operations may continue and historical records remain. A re-created integration receives new credentials rather than reviving old secrets.
+
+The developer API product scope includes both automatic deposits (pay-in) and automatic withdrawals (pay-out), not deposits alone.
+
+**Why:** The user explicitly clarified: “Ça gère le dépôt automatique, retrait automatique. Il faut que les deux soient bons.”
+
+**How to apply:** Verify both flows when changing shared financial integration behavior, including provider-confirmed outcomes and merchant notifications. Preserve payout opt-in, KYC, ownership checks, and financial idempotency; never enable live withdrawals on an API key without authorization.
