@@ -10,6 +10,7 @@ import LanguageSwitcher from '@/components/LanguageSwitcher';
 import FloatingSupportButtons from '@/components/FloatingSupportButtons';
 import SocialChannelsBanner from '@/components/SocialChannelsBanner';
 import { useAuth } from '@/context/AuthContext';
+import { prefetchPageForRoute } from '@/pageLoaders';
 
 export default function DashboardLayout() {
   const { t } = useTranslation();
@@ -66,6 +67,9 @@ export default function DashboardLayout() {
         <nav className="p-3 space-y-0.5">
           {nav.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.end}
+              onMouseEnter={() => prefetchPageForRoute(n.to)}
+              onFocus={() => prefetchPageForRoute(n.to)}
+              onTouchStart={() => prefetchPageForRoute(n.to)}
               onClick={() => {
                 if (typeof window !== 'undefined' && window.innerWidth < 1024) setSidebarOpen(false);
               }}
@@ -155,6 +159,9 @@ export default function DashboardLayout() {
             key={n.to}
             to={n.to}
             end={n.end}
+            onMouseEnter={() => prefetchPageForRoute(n.to)}
+            onFocus={() => prefetchPageForRoute(n.to)}
+            onTouchStart={() => prefetchPageForRoute(n.to)}
             data-testid={`bottomnav-${n.l.toLowerCase()}`}
             className={({ isActive }) => `bt-bottom-nav__item ${n.prominent ? 'bt-bottom-nav__item--prominent' : ''} ${
               isActive || n.activePaths?.some((path) => loc.pathname.startsWith(path)) ? 'active' : ''

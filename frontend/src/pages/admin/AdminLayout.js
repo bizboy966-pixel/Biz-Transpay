@@ -4,6 +4,7 @@ import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLin
 import { useAuth } from '@/context/AuthContext';
 import NotificationBell from '@/components/NotificationBell';
 import { Link } from 'react-router-dom';
+import { prefetchPageForRoute } from '@/pageLoaders';
 
 const NAV = [
   { section: 'Général' },
@@ -86,6 +87,9 @@ export default function AdminLayout() {
           ) : (
             <NavLink
               key={n.to} to={n.to} end={n.end}
+              onMouseEnter={() => prefetchPageForRoute(n.to)}
+              onFocus={() => prefetchPageForRoute(n.to)}
+              onTouchStart={() => prefetchPageForRoute(n.to)}
               data-testid={`admin-nav-${n.to.replace(/\//g, '-')}`}
               className={({ isActive }) => `flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold transition-colors ${
                 isActive ? 'bg-[#2563EB] text-white shadow-lg shadow-blue-600/20' : 'text-slate-300 hover:bg-white/5 hover:text-white'

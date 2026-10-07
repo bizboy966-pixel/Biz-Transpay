@@ -1,55 +1,74 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster, toast } from 'sonner';
-import { useEffect } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
-import Landing from '@/pages/Landing';
-import Login from '@/pages/Login';
-import Register from '@/pages/Register';
-import RecoverAccount from '@/pages/RecoverAccount';
-import RequestPasswordReset from '@/pages/RequestPasswordReset';
-import ResetPassword from '@/pages/ResetPassword';
-import PaymentSuccess from '@/pages/PaymentSuccess';
-import PaymentCancel from '@/pages/PaymentCancel';
-import PublicLink from '@/pages/PublicLink';
+import { pageLoaders } from '@/pageLoaders';
 import DashboardLayout from '@/pages/dashboard/DashboardLayout';
-import DashboardHome from '@/pages/dashboard/Home';
-import Transactions from '@/pages/dashboard/Transactions';
-import Links from '@/pages/dashboard/Links';
-import Kyc from '@/pages/dashboard/Kyc';
-import Fees from '@/pages/dashboard/Fees';
-import Settings from '@/pages/dashboard/Settings';
-import Support from '@/pages/dashboard/Support';
-import Transfer from '@/pages/dashboard/Transfer';
-import Deposit from '@/pages/dashboard/Deposit';
-import Exchange from '@/pages/dashboard/Exchange';
-import Services from '@/pages/dashboard/Services';
-import Integration from '@/pages/dashboard/integration/Integration';
-import IntegrationDocs from '@/pages/dashboard/integration/IntegrationDocs';
-import Profile from '@/pages/dashboard/Profile';
 import AdminLayout from '@/pages/admin/AdminLayout';
-import AdminHome from '@/pages/admin/AdminHome';
-import AdminUsers from '@/pages/admin/AdminUsers';
-import AdminUserDetail from '@/pages/admin/AdminUserDetail';
-import AdminKyc from '@/pages/admin/AdminKyc';
-import AdminTransactions from '@/pages/admin/AdminTransactions';
-import AdminLogs from '@/pages/admin/AdminLogs';
-import AdminAdmins from '@/pages/admin/AdminAdmins';
-import AdminLinks from '@/pages/admin/AdminLinks';
-import AdminTransferConfig from '@/pages/admin/AdminTransferConfig';
-import AdminDepositConfig from '@/pages/admin/AdminDepositConfig';
-import AdminSupport from '@/pages/admin/AdminSupport';
-import AdminFeatures from '@/pages/admin/AdminFeatures';
-import AdminRates from '@/pages/admin/AdminRates';
-import AdminFees from '@/pages/admin/AdminFees';
-import AdminBenefits from '@/pages/admin/AdminBenefits';
-import AdminPaymentProviders from '@/pages/admin/AdminPaymentProviders';
-import AdminFunds from '@/pages/admin/AdminFunds';
-import AdminEmailNotifications from '@/pages/admin/AdminEmailNotifications';
-import AdminNotifications from '@/pages/admin/AdminNotifications';
-import AdminLegacyCleanup from '@/pages/admin/AdminLegacyCleanup';
 import ReauthGate from '@/components/ReauthGate';
 import PushOptInPrompt from '@/components/PushOptInPrompt';
 import '@/App.css';
+
+const Landing = lazy(pageLoaders.landing);
+const Login = lazy(pageLoaders.login);
+const Register = lazy(pageLoaders.register);
+const RecoverAccount = lazy(pageLoaders.recoverAccount);
+const RequestPasswordReset = lazy(pageLoaders.requestPasswordReset);
+const ResetPassword = lazy(pageLoaders.resetPassword);
+const PaymentSuccess = lazy(pageLoaders.paymentSuccess);
+const PaymentCancel = lazy(pageLoaders.paymentCancel);
+const PublicLink = lazy(pageLoaders.publicLink);
+const DashboardHome = lazy(pageLoaders.dashboardHome);
+const Transactions = lazy(pageLoaders.transactions);
+const Links = lazy(pageLoaders.links);
+const Kyc = lazy(pageLoaders.kyc);
+const Fees = lazy(pageLoaders.fees);
+const Settings = lazy(pageLoaders.settings);
+const Support = lazy(pageLoaders.support);
+const Transfer = lazy(pageLoaders.transfer);
+const Deposit = lazy(pageLoaders.deposit);
+const Exchange = lazy(pageLoaders.exchange);
+const Services = lazy(pageLoaders.services);
+const Integration = lazy(pageLoaders.integration);
+const IntegrationDocs = lazy(pageLoaders.integrationDocs);
+const Profile = lazy(pageLoaders.profile);
+const AdminHome = lazy(pageLoaders.adminHome);
+const AdminUsers = lazy(pageLoaders.adminUsers);
+const AdminUserDetail = lazy(pageLoaders.adminUserDetail);
+const AdminKyc = lazy(pageLoaders.adminKyc);
+const AdminTransactions = lazy(pageLoaders.adminTransactions);
+const AdminLogs = lazy(pageLoaders.adminLogs);
+const AdminAdmins = lazy(pageLoaders.adminAdmins);
+const AdminLinks = lazy(pageLoaders.adminLinks);
+const AdminTransferConfig = lazy(pageLoaders.adminTransferConfig);
+const AdminDepositConfig = lazy(pageLoaders.adminDepositConfig);
+const AdminSupport = lazy(pageLoaders.adminSupport);
+const AdminFeatures = lazy(pageLoaders.adminFeatures);
+const AdminRates = lazy(pageLoaders.adminRates);
+const AdminFees = lazy(pageLoaders.adminFees);
+const AdminBenefits = lazy(pageLoaders.adminBenefits);
+const AdminPaymentProviders = lazy(pageLoaders.adminPaymentProviders);
+const AdminFunds = lazy(pageLoaders.adminFunds);
+const AdminEmailNotifications = lazy(pageLoaders.adminEmailNotifications);
+const AdminNotifications = lazy(pageLoaders.adminNotifications);
+const AdminLegacyCleanup = lazy(pageLoaders.adminLegacyCleanup);
+
+function RouteLoading() {
+  return (
+    <div
+      className="flex min-h-[35vh] items-center justify-center gap-3 text-sm text-slate-500"
+      role="status"
+      aria-live="polite"
+    >
+      <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-200 border-t-[#2563EB]" />
+      <span>Affichage de la page…</span>
+    </div>
+  );
+}
+
+function lazyPage(Page) {
+  return <Suspense fallback={<RouteLoading />}><Page /></Suspense>;
+}
 
 function Protected({ children }) {
   const { user, loading } = useAuth();
@@ -89,6 +108,14 @@ function AdminHomeEntry() {
   return <AdminHome />;
 }
 
+function AdminDepositsEntry() {
+  return <AdminTransactions filterType="deposit" />;
+}
+
+function AdminWithdrawalsEntry() {
+  return <AdminTransactions filterType="withdrawal" />;
+}
+
 function App() {
   return (
     <AuthProvider>
@@ -98,54 +125,54 @@ function App() {
         <PushOptInPrompt />
         <ReauthGate />
         <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/recover" element={<RequestPasswordReset />} />
-          <Route path="/recover/mfa" element={<RecoverAccount />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          <Route path="/pay/:slug" element={<PublicLink />} />
-          <Route path="/payment/success" element={<PaymentSuccess />} />
-          <Route path="/payment/cancel" element={<PaymentCancel />} />
-          <Route path="/integration/docs" element={<IntegrationDocs />} />
+          <Route path="/" element={lazyPage(Landing)} />
+          <Route path="/login" element={lazyPage(Login)} />
+          <Route path="/register" element={lazyPage(Register)} />
+          <Route path="/recover" element={lazyPage(RequestPasswordReset)} />
+          <Route path="/recover/mfa" element={lazyPage(RecoverAccount)} />
+          <Route path="/reset-password" element={lazyPage(ResetPassword)} />
+          <Route path="/pay/:slug" element={lazyPage(PublicLink)} />
+          <Route path="/payment/success" element={lazyPage(PaymentSuccess)} />
+          <Route path="/payment/cancel" element={lazyPage(PaymentCancel)} />
+          <Route path="/integration/docs" element={lazyPage(IntegrationDocs)} />
           <Route path="/dashboard" element={<Protected><DashboardLayout /></Protected>}>
-            <Route index element={<DashboardHome />} />
-            <Route path="transactions" element={<Transactions />} />
-            <Route path="links" element={<Links />} />
-            <Route path="kyc" element={<Kyc />} />
-            <Route path="fees" element={<Fees />} />
-            <Route path="settings" element={<Settings />} />
-            <Route path="support" element={<Support />} />
-            <Route path="transfer" element={<Transfer />} />
-            <Route path="deposit" element={<Deposit />} />
-            <Route path="services" element={<Services />} />
-            <Route path="profile" element={<Profile />} />
-            <Route path="exchange" element={<Exchange />} />
-            <Route path="integration" element={<Integration />} />
+            <Route index element={lazyPage(DashboardHome)} />
+            <Route path="transactions" element={lazyPage(Transactions)} />
+            <Route path="links" element={lazyPage(Links)} />
+            <Route path="kyc" element={lazyPage(Kyc)} />
+            <Route path="fees" element={lazyPage(Fees)} />
+            <Route path="settings" element={lazyPage(Settings)} />
+            <Route path="support" element={lazyPage(Support)} />
+            <Route path="transfer" element={lazyPage(Transfer)} />
+            <Route path="deposit" element={lazyPage(Deposit)} />
+            <Route path="services" element={lazyPage(Services)} />
+            <Route path="profile" element={lazyPage(Profile)} />
+            <Route path="exchange" element={lazyPage(Exchange)} />
+            <Route path="integration" element={lazyPage(Integration)} />
           </Route>
           <Route path="/admin" element={<AdminOnly><AdminLayout /></AdminOnly>}>
-            <Route index element={<AdminHomeEntry />} />
-            <Route path="users" element={<AdminUsers />} />
-            <Route path="users/:id" element={<AdminUserDetail />} />
-            <Route path="kyc" element={<AdminKyc />} />
-            <Route path="links" element={<AdminLinks />} />
-            <Route path="transactions" element={<AdminTransactions />} />
-            <Route path="deposits" element={<AdminTransactions filterType="deposit" />} />
-            <Route path="withdrawals" element={<AdminTransactions filterType="withdrawal" />} />
-            <Route path="logs" element={<AdminLogs />} />
-            <Route path="admins" element={<AdminAdmins />} />
-            <Route path="transfer-config" element={<AdminTransferConfig />} />
-            <Route path="deposit-config" element={<AdminDepositConfig />} />
-            <Route path="support" element={<AdminSupport />} />
-            <Route path="email-notifications" element={<AdminEmailNotifications />} />
-            <Route path="notifications" element={<AdminNotifications />} />
-            <Route path="features" element={<AdminFeatures />} />
-            <Route path="rates" element={<AdminRates />} />
-            <Route path="fees" element={<AdminFees />} />
-            <Route path="benefits" element={<AdminBenefits />} />
-             <Route path="payment-providers" element={<AdminPaymentProviders />} />
-             <Route path="funds" element={<AdminFunds />} />
-              <Route path="maintenance/legacy-merchant-api" element={<AdminLegacyCleanup />} />
+            <Route index element={lazyPage(AdminHomeEntry)} />
+            <Route path="users" element={lazyPage(AdminUsers)} />
+            <Route path="users/:id" element={lazyPage(AdminUserDetail)} />
+            <Route path="kyc" element={lazyPage(AdminKyc)} />
+            <Route path="links" element={lazyPage(AdminLinks)} />
+            <Route path="transactions" element={lazyPage(AdminTransactions)} />
+            <Route path="deposits" element={lazyPage(AdminDepositsEntry)} />
+            <Route path="withdrawals" element={lazyPage(AdminWithdrawalsEntry)} />
+            <Route path="logs" element={lazyPage(AdminLogs)} />
+            <Route path="admins" element={lazyPage(AdminAdmins)} />
+            <Route path="transfer-config" element={lazyPage(AdminTransferConfig)} />
+            <Route path="deposit-config" element={lazyPage(AdminDepositConfig)} />
+            <Route path="support" element={lazyPage(AdminSupport)} />
+            <Route path="email-notifications" element={lazyPage(AdminEmailNotifications)} />
+            <Route path="notifications" element={lazyPage(AdminNotifications)} />
+            <Route path="features" element={lazyPage(AdminFeatures)} />
+            <Route path="rates" element={lazyPage(AdminRates)} />
+            <Route path="fees" element={lazyPage(AdminFees)} />
+            <Route path="benefits" element={lazyPage(AdminBenefits)} />
+            <Route path="payment-providers" element={lazyPage(AdminPaymentProviders)} />
+            <Route path="funds" element={lazyPage(AdminFunds)} />
+            <Route path="maintenance/legacy-merchant-api" element={lazyPage(AdminLegacyCleanup)} />
           </Route>
         </Routes>
       </BrowserRouter>
