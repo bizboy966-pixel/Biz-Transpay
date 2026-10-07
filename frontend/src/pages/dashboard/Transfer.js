@@ -11,6 +11,7 @@ import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 import DashboardPageLogo from '@/components/DashboardPageLogo';
+import WithdrawalStatusModal from '@/components/WithdrawalStatusModal';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -22,6 +23,7 @@ export default function Transfer() {
   const [type, setType] = useState(null);
   const [config, setConfig] = useState(null);
   const [done, setDone] = useState(null);
+  const [withdrawalFeedback, setWithdrawalFeedback] = useState(null);
 
   useEffect(() => {
     api.get('/transfer/config').then(({ data }) => setConfig(data)).catch(() => {});
@@ -48,6 +50,13 @@ export default function Transfer() {
   }, [features, config]);
 
   const onDone = (data, meta) => {
+    if (meta?.type === 'biz_to_mobile') {
+      setWithdrawalFeedback((current) => (
+        current?.status === 'processing'
+          ? { status: data?.pending_manual ? 'pending' : 'success' }
+          : current
+      ));
+    }
     setDone({ ...data, meta });
     setStep(3);
     refresh();
@@ -109,7 +118,16 @@ export default function Transfer() {
       )}
 
       {step === 2 && type === 'biz_to_biz' && <BizToBizForm onDone={onDone} balance={user} turnstile={turnstile} walletCryptoEnabled={features?.wallet_crypto_enabled !== false} />}
-      {step === 2 && type === 'biz_to_mobile' && <BizToMobileForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
+      {step === 2 && type === 'biz_to_mobile' && (
+        <BizToMobileForm
+          config={config}
+          onDone={onDone}
+          balance={user}
+          turnstile={turnstile}
+          withdrawalFeedback={withdrawalFeedback}
+          onWithdrawalFeedback={setWithdrawalFeedback}
+        />
+      )}
       {step === 2 && type === 'biz_to_crypto' && <BizToCryptoForm config={config} onDone={onDone} balance={user} turnstile={turnstile} />}
 
       {step === 3 && done && (
@@ -137,6 +155,12 @@ export default function Transfer() {
             <button onClick={() => nav('/dashboard')} data-testid="btn-tr-done" className="bg-[#2563EB] text-white font-bold px-4 sm:px-5 py-2 sm:py-2.5 rounded-full text-[11px] sm:text-xs">Terminer</button>
           </div>
         </div>
+      )}
+      {withdrawalFeedback && (
+        <WithdrawalStatusModal
+          status={withdrawalFeedback.status}
+          onClose={() => setWithdrawalFeedback(null)}
+        />
       )}
     </div>
   );
@@ -479,7 +503,9 @@ function BizToBizForm({ onDone, balance, turnstile, walletCryptoEnabled }) {
 }
 
 // ------- BIZ TO MOBILE -------
-function BizToMobileForm({ config, onDone, balance, turnstile }) {
+function BizToMobileForm({
+  config, onDone, balance, turnstile, withdrawalFeedback, onWithdrawalFeedback,
+}) {
   const turnstileRef = useRef(null);
   const operators = useMemo(
     () => (config?.mobile_money?.operators || []).filter((operator) => operator.active === true),
@@ -533,6 +559,7 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
       return;
     }
     setPending(true);
+    onWithdrawalFeedback({ status: 'processing' });
     try {
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_mobile', recipient: phone, country, operator,
@@ -541,10 +568,12 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
+        onWithdrawalFeedback(null);
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
     } catch (err) {
+      onWithdrawalFeedback({ status: err.response ? 'failed' : 'pending' });
       setTurnstileToken('');
       turnstileRef.current?.reset();
       const status = err.response?.status;
@@ -681,7 +710,7 @@ function BizToMobileForm({ config, onDone, balance, turnstile }) {
         </button>
       )}
 
-      {confirmOpen && (
+      {confirmOpen && !withdrawalFeedback && (
         <ConfirmModal onClose={() => setConfirmOpen(false)} testId="mm-confirm-modal" rows={[
           ['Opérateur', op?.name],
           ['Numéro', phone],
