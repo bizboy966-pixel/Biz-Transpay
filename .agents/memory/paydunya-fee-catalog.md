@@ -7,6 +7,12 @@ PayDunya pay-in must use a configurable tariff grid per country and operator. Ad
 
 At payment time, the user chooses whether the client or Biz-transPay bears the fees. If the client bears them, fees are added to the amount charged and the wallet receives the requested amount. If Biz-transPay bears them, the client pays the requested amount and the wallet receives that amount minus all fees.
 
+For Orange incoming payments, the amount in the USSD instructions must be the payer's total, not the requested wallet credit. For 500 XOF plus 20 XOF in fees: client-borne fees mean a 520 XOF code and 500 XOF net; Biz-transPay-borne fees mean a 500 XOF code and 480 XOF net.
+
+**Why:** The user explicitly approved these examples and required the existing confirmation instructions and payment process to remain unchanged.
+
+**How to apply:** Keep the displayed and copied code, explanatory steps, and server-returned instructions consistent with the actual charged amount, including on public payment links.
+
 The separate server-to-server integration API is an exception: deposits always include fees in the payer's requested total and credit only the net amount to the merchant; payouts always add fees to the merchant's debit while preserving the beneficiary's requested amount. Legacy fee-bearer values remain accepted in API requests for compatibility but cannot alter this rule.
 
 **Why:** API callers treat the requested deposit amount as the exact payer total and the requested payout amount as the exact beneficiary receipt. A client-controlled fee-bearer would silently change those promises; the interactive payment choices should remain unchanged.

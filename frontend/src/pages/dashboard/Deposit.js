@@ -605,7 +605,7 @@ function SoonMobileMoney() {
   );
 }
 
-function MobileMoneyForm({ onSuccess }) {
+export function MobileMoneyForm({ onSuccess }) {
   const { data: depositConfig, isPending: modeLoading } = useQuery({
     queryKey: ['deposit-config'],
     queryFn: async () => {
@@ -788,7 +788,7 @@ function MobileMoneyForm({ onSuccess }) {
         <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} data-testid="momo-fullname" required
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
       </div>
-      <PaymentFlowCard flow={paymentFlow} amount={baseAmount} currency={currency} />
+      <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
       {flowNeedsOtp && (
         <Field label={paymentFlow.otp_label || 'Code de paiement'}>
           <input

@@ -448,7 +448,7 @@ function Field({ label, children }) {
   );
 }
 
-function MoMoLinkForm({ link, turnstile, onSuccess }) {
+export function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const isFree = link.amount_type === 'free';
   const [catalog, setCatalog] = useState([]);
   const [country, setCountry] = useState('');
@@ -621,7 +621,7 @@ function MoMoLinkForm({ link, turnstile, onSuccess }) {
         <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="ex: 97000001" required
           className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
       </Field>
-      <PaymentFlowCard flow={paymentFlow} amount={isFree ? baseAmount : Number(link.amount) || baseAmount} currency={currency} />
+      <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
       {flowNeedsOtp && (
         <Field label={paymentFlow.otp_label || 'Code de paiement'}>
           <input

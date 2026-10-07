@@ -8220,7 +8220,8 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         # Merchant-borne fees do not change the amount collected from the payer.
         provider_submitted_amount = processed_amount
         fees["charged_amount"] = processed_amount
-    payment_flow = mbiyo.payment_flow({**op, "country": req.country}, req.amount)
+    payment_flow = mbiyo.payment_flow(
+        {**op, "country": req.country}, provider_submitted_amount)
     phone_confirmation_message = (
         "Si une notification Mobile Money apparaît sur votre téléphone, "
         "confirmez-la. Le statut sera vérifié automatiquement ici."
@@ -8654,7 +8655,11 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
         cfg.get("catalog") or [], req.country, req.operator)
     if not admin_op:
         raise HTTPException(400, "Opérateur non disponible pour ce pays")
-    payment_flow = paydunya.payment_flow(admin_op, req.amount)
+    instruction_fees = paydunya.calculate_fees(
+        req.amount, admin_op,
+        "merchant" if req.fee_bearer in ("merchant", "receiver") else "client")
+    payment_flow = paydunya.payment_flow(
+        admin_op, instruction_fees["charged_amount"])
     if (payment_flow.get("otp_required") and payment_flow.get("before_submit")
             and not req.otp):
         raise HTTPException(
@@ -12298,7 +12303,8 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
                 "customer_phone": req.phone_number,
                 "status": "paid" if result.get("status") == "approved" else "pending",
                 "momo_deposit_id": dep_id, "fee_bearer": result.get("fee_bearer"),
-                "payment_flow": result.get("payment_flow") or mbiyo.payment_flow(mb_op, amount),
+                "payment_flow": result.get("payment_flow") or mbiyo.payment_flow(
+                    mb_op, result.get("charged_amount") or amount),
                 "auth_mode": result.get("auth_mode"),
                 "instructions": result.get("instructions"),
                 "redirect_url": result.get("redirect_url"),
@@ -12350,7 +12356,11 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
         cfg.get("catalog") or [], req.country, req.operator)
     if not admin_op:
         raise HTTPException(400, "Cet opérateur est désactivé.")
-    payment_flow = paydunya.payment_flow(admin_op, amount)
+    instruction_fees = paydunya.calculate_fees(
+        amount, admin_op,
+        "merchant" if link.get("fee_bearer") == "owner" else "client")
+    payment_flow = paydunya.payment_flow(
+        admin_op, instruction_fees["charged_amount"])
     if (payment_flow.get("otp_required") and payment_flow.get("before_submit")
             and not req.otp):
         raise HTTPException(
