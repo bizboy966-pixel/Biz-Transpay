@@ -7,6 +7,7 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { prefetchPageForRoute } from '@/pageLoaders';
+import DigiShopQuickAction from '@/components/DigiShopQuickAction';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem from './TransactionListItem';
 import walletReferenceCard from '@/assets/wallet-reference-card.jpg';
@@ -70,11 +71,13 @@ export default function DashboardHome() {
   const actions = [
     { to: '/dashboard/transfer', image: '/images/transfer-dashboard-icon.webp', label: t('dashboard.transfer'), key: 'transfer' },
     { to: '/dashboard/deposit', image: '/images/deposit-dashboard-icon.webp', label: t('dashboard.deposit'), key: 'deposit' },
+    { key: 'digishop' },
     ...(features?.links_enabled !== false
       ? [{ to: '/dashboard/links', image: '/images/link-dashboard-icon.webp', label: t('dashboard.link'), key: 'link' }]
       : []),
     { to: '/dashboard/exchange', image: '/images/exchange-dashboard-icon.webp', label: t('dashboard.exchange'), key: 'exchange' },
   ];
+  const actionGridColumns = actions.length === 5 ? 'grid-cols-5' : 'grid-cols-4';
 
   const needsKyc = user?.kyc_status !== 'verified' && showKycBanner;
 
@@ -228,8 +231,10 @@ export default function DashboardHome() {
 
       {/* Quick actions */}
       <div className="bg-white border border-slate-100 rounded-2xl p-3 sm:p-5 shadow-[0_2px_12px_rgba(15,23,42,0.03)]">
-        <div className="grid grid-cols-4 gap-2 sm:gap-3">
-          {actions.map((a) => (
+        <div className={`grid ${actionGridColumns} gap-2 sm:gap-3`}>
+          {actions.map((a) => a.key === 'digishop' ? (
+            <DigiShopQuickAction key={a.key} />
+          ) : (
             <button
               key={a.key}
               onClick={() => nav(a.to)}
@@ -237,7 +242,7 @@ export default function DashboardHome() {
               onFocus={() => prefetchPageForRoute(a.to)}
               onTouchStart={() => prefetchPageForRoute(a.to)}
               data-testid={`quick-action-${a.key}`}
-              className="group flex flex-col items-center gap-1.5 sm:gap-2 py-2.5 sm:py-3 rounded-xl hover:bg-slate-50 transition-colors active:scale-95"
+              className="group flex flex-col items-center gap-1.5 py-2.5 rounded-xl transition-colors hover:bg-slate-50 active:scale-95 sm:gap-2 sm:py-3"
             >
               <div className="w-10 h-10 sm:w-12 sm:h-12 overflow-hidden rounded-full ring-1 ring-slate-200/70 transition-transform group-hover:scale-105">
                 <img src={a.image} alt="" aria-hidden="true" className="h-full w-full object-cover" decoding="async" />
