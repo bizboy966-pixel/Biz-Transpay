@@ -28,6 +28,7 @@
 - [VM publish readiness](vm-publish-readiness.md) — production must serve the prebuilt frontend quickly on the public port; do not start CRA compilation in the VM run command.
 - [Financial idempotency and wallet routing](financial-idempotency.md) — keep wallet mutations atomic and crypto transfers bound to exact enabled networks.
 - [Provider liquidity review](provider-liquidity-review.md) — provider-fund failures keep the customer debit reserved for manual payout review; local wallet insufficiency remains a normal rejection.
+- [Provider treasury by country](provider-country-treasury-statistics.md) — country availability uses provider-reported treasury balances, grouped by currency, never customer-wallet balances.
 - [Backend test environment](backend-test-environment.md) — integration tests need an explicit local/Preview base URL; external Preview TLS and shared rate limits can invalidate results.
 - [Cloudflare Turnstile hostnames](cloudflare-turnstile.md) — real Turnstile keys reject unlisted Preview domains with client error 110200; configure Hostname Management explicitly.
 - [Telegram notification delivery](telegram-notifications.md) — platform notifications use a non-blocking Telegram queue with an allowlisted, redacted event payload.

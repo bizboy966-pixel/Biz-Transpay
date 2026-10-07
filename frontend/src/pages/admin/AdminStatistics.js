@@ -27,10 +27,10 @@ import api from '@/api';
 import './AdminStatistics.css';
 
 const PERIODS = [
-  { value: '24h', label: '24 heures' },
-  { value: '7d', label: '7 jours' },
-  { value: '30d', label: '30 jours' },
-  { value: '1y', label: '1 an' },
+  { value: '24h', label: '24 dernières heures' },
+  { value: '7d', label: '7 derniers jours' },
+  { value: '30d', label: '30 derniers jours' },
+  { value: '1y', label: '1 dernière année' },
 ];
 
 const numberFormatters = new Map();
@@ -257,17 +257,67 @@ function CountryActivity({ countries }) {
   );
 }
 
-function ProviderLiquidity({ countries, countryActivity }) {
+function ProviderLiquidity({
+  countries,
+  countryActivity,
+  loading,
+  error,
+  onRetry,
+}) {
+  const countryRowsByCode = new Map(
+    countries
+      .filter((country) => country.country_code)
+      .map((country) => [country.country_code, country]),
+  );
+  countryActivity.forEach((activity) => {
+    const code = activity.country_code;
+    if (!code || code === 'XX' || countryRowsByCode.has(code)) return;
+    countryRowsByCode.set(code, {
+      country_code: code,
+      country: activity.country,
+      totals_by_currency: [],
+      providers: [],
+      missing_providers: ['Aucun prestataire actif'],
+      complete: false,
+      approximate: false,
+      refreshed_at: null,
+    });
+  });
+  const countryRows = [...countryRowsByCode.values()].sort((left, right) => {
+    const leftCurrency = (left.totals_by_currency || [])
+      .map((item) => item.currency).sort()[0] || 'ZZZ';
+    const rightCurrency = (right.totals_by_currency || [])
+      .map((item) => item.currency).sort()[0] || 'ZZZ';
+    const currencyOrder = leftCurrency.localeCompare(rightCurrency);
+    if (currencyOrder !== 0) return currencyOrder;
+    const leftAmount = (left.totals_by_currency || [])
+      .find((item) => item.currency === leftCurrency)?.balance || 0;
+    const rightAmount = (right.totals_by_currency || [])
+      .find((item) => item.currency === rightCurrency)?.balance || 0;
+    return Number(rightAmount) - Number(leftAmount);
+  });
+
   return (
     <Panel>
       <SectionHeading
         icon={Landmark}
         title="Soldes et activité par pays"
-        detail="Soldes des prestataires disponibles et activité transactionnelle sur la période sélectionnée."
+        detail="Soldes classés par montant au sein de chaque devise. Les relevés partiels et les montants estimatifs sont signalés ; aucune conversion n’est appliquée."
       />
-      {!countries.length ? <EmptyNotice title="Aucun relevé par pays" detail="L’API n’a retourné ni soldes prestataires ni activité par pays." /> : (
+      {error && (
+        <div role="alert" className="flex flex-col gap-2 border-b border-amber-200 bg-amber-50 px-4 py-3 text-[11px] text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+          <span>{countries.length ? 'La dernière mise à jour des relevés prestataires a échoué ; les autres statistiques restent disponibles.' : 'Les relevés des prestataires sont momentanément indisponibles.'}</span>
+          <button type="button" onClick={onRetry} className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-3 py-1.5 font-bold text-amber-800 hover:bg-amber-100">Réessayer <RefreshCw className="h-3 w-3" /></button>
+        </div>
+      )}
+      {loading && countryRows.length === 0 ? (
+        <div className="flex min-h-36 items-center justify-center gap-2 px-4 py-8 text-xs font-medium text-slate-500" role="status">
+          <RefreshCw className="h-4 w-4 animate-spin text-blue-600" />
+          Chargement des relevés prestataires en arrière-plan…
+        </div>
+      ) : !countryRows.length ? <EmptyNotice title="Aucun relevé par pays" detail="Aucun solde prestataire ni aucune activité par pays ne sont disponibles." /> : (
         <div className="divide-y divide-slate-100">
-          {countries.map((country, index) => {
+          {countryRows.map((country, index) => {
             const totalRows = country.totals_by_currency || [];
             const providers = country.providers || [];
             const missing = country.missing_providers || [];
@@ -280,7 +330,7 @@ function ProviderLiquidity({ countries, countryActivity }) {
                     <div><h3 className="text-xs font-extrabold text-slate-800">{country.country || 'Pays non précisé'}</h3><p className="mt-1 text-[10px] text-slate-500">{activity ? countText(activity.transaction_count) : '—'} transactions sur la période</p></div>
                   </div>
                   {country.complete
-                    ? <span className="inline-flex w-fit items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[9px] font-bold text-emerald-700"><Check className="h-3 w-3" /> Relevé complet</span>
+                    ? <span className="inline-flex w-fit items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[9px] font-bold text-emerald-700"><Check className="h-3 w-3" />{country.approximate ? 'Couverture complète · montant estimatif' : 'Relevé complet'}</span>
                     : <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[9px] font-bold text-amber-800"><ShieldAlert className="h-3 w-3" /> Relevé incomplet</span>}
                 </div>
 
@@ -311,7 +361,7 @@ function ProviderLiquidity({ countries, countryActivity }) {
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                         {providers.map((provider, providerIndex) => (
                           <div key={`${provider.provider}-${provider.currency}-${providerIndex}`} className="flex min-w-0 items-center justify-between gap-2 rounded-lg bg-slate-50 px-2.5 py-2">
-                            <div className="min-w-0"><div className="truncate text-[10px] font-bold text-slate-700">{provider.provider || 'Prestataire non précisé'}</div><div className="mt-0.5 text-[9px] font-extrabold text-slate-400">{provider.currency || 'Devise non précisée'}</div></div>
+                            <div className="min-w-0"><div className="truncate text-[10px] font-bold text-slate-700">{provider.provider || 'Prestataire non précisé'}{provider.approximate && <span className="ml-1 font-medium text-amber-700">estimatif</span>}</div><div className="mt-0.5 text-[9px] font-extrabold text-slate-400">{provider.currency || 'Devise non précisée'}</div></div>
                             <span className="shrink-0 font-mono text-[10px] font-bold text-slate-800">{amountText(provider.balance, provider.currency)}</span>
                           </div>
                         ))}
@@ -337,9 +387,13 @@ function ProviderLiquidity({ countries, countryActivity }) {
 export default function AdminStatistics() {
   const [period, setPeriod] = useState('7d');
   const [reloadToken, setReloadToken] = useState(0);
+  const [providerReloadToken, setProviderReloadToken] = useState(0);
   const [payload, setPayload] = useState(null);
+  const [providerLiquidity, setProviderLiquidity] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [providerLoading, setProviderLoading] = useState(true);
+  const [providerError, setProviderError] = useState(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -358,19 +412,33 @@ export default function AdminStatistics() {
     return () => controller.abort();
   }, [period, reloadToken]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    setProviderLoading(true);
+    setProviderError(null);
+    api.get('/admin/statistics/provider-liquidity', { signal: controller.signal })
+      .then(({ data }) => setProviderLiquidity(data.provider_liquidity || []))
+      .catch((err) => {
+        if (controller.signal.aborted || err?.code === 'ERR_CANCELED') return;
+        setProviderError(err);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setProviderLoading(false);
+      });
+    return () => controller.abort();
+  }, [providerReloadToken]);
+
   const summary = payload?.summary || {};
   const operations = summary.operations || {};
   const timeline = payload?.timeline || [];
   const volumeRows = summary.volume_by_currency || [];
   const countries = payload?.countries || [];
-  const liquidity = payload?.provider_liquidity || [];
+  const liquidity = providerLiquidity ?? payload?.provider_liquidity ?? [];
   const errorDetail = typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : null;
   const isEmpty = payload
     && Number(summary.transaction_count || 0) === 0
-    && timeline.length === 0
     && volumeRows.length === 0
-    && countries.length === 0
-    && liquidity.length === 0;
+    && countries.every((country) => Number(country.transaction_count || 0) === 0);
 
   return (
     <div className="bt-statistics space-y-5" data-testid="admin-statistics">
@@ -436,14 +504,14 @@ export default function AdminStatistics() {
           )}
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <Metric icon={BarChart3} label="Transactions" value={countText(summary.transaction_count)} detail="Toutes opérations confondues" tone="blue" />
-            <Metric icon={ArrowDownToLine} label="Dépôts" value={countText(operations.deposits?.count)} detail="Nombre d’opérations" tone="teal" />
-            <Metric icon={ArrowUpFromLine} label="Retraits" value={countText(operations.withdrawals?.count)} detail="Nombre d’opérations" tone="amber" />
-            <Metric icon={Repeat2} label="Conversions" value={countText(operations.exchanges?.count)} detail="Nombre d’opérations" tone="ink" />
+            <Metric icon={BarChart3} label="Transactions" value={countText(summary.transaction_count)} detail="Dépôts, retraits et conversions" tone="blue" />
+            <Metric icon={ArrowDownToLine} label="Dépôts" value={countText(operations.deposits?.count)} detail="Opérations créées" tone="teal" />
+            <Metric icon={ArrowUpFromLine} label="Retraits" value={countText(operations.withdrawals?.count)} detail="Opérations créées" tone="amber" />
+            <Metric icon={Repeat2} label="Conversions" value={countText(operations.exchanges?.count)} detail="Opérations créées" tone="ink" />
           </div>
 
           <Panel>
-            <SectionHeading icon={WalletCards} title="Volumes par devise" detail="Les montants ne sont jamais additionnés entre devises." />
+            <SectionHeading icon={WalletCards} title="Volumes par devise" detail="Montants des opérations confirmées, sans additionner les devises entre elles." />
             {!volumeRows.length ? <EmptyNotice title="Aucun volume par devise" detail="Aucun montant n’a été retourné pour cette période." /> : (
               <div className="grid grid-cols-1 divide-y divide-slate-100 sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-3">
                 {volumeRows.map((row) => (
@@ -476,7 +544,13 @@ export default function AdminStatistics() {
           </div>
 
           <CountryActivity countries={countries} />
-          <ProviderLiquidity countries={liquidity} countryActivity={countries} />
+          <ProviderLiquidity
+            countries={liquidity}
+            countryActivity={countries}
+            loading={providerLoading}
+            error={providerError}
+            onRetry={() => setProviderReloadToken((value) => value + 1)}
+          />
 
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3 text-[10px] text-slate-500">
             <span className="inline-flex items-center gap-1.5"><Landmark className="h-3.5 w-3.5 text-blue-600" />Données de lecture seule fournies par Biz-transPay · aucune conversion appliquée</span>

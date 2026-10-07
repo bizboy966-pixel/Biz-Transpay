@@ -14282,6 +14282,8 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         return "admin_users:read" if method == "GET" else "admin_users:write"
     if path == "/admin/funds" or path.startswith("/admin/funds/"):
         return "finance:read"
+    if path.startswith("/admin/statistics"):
+        return "finance:read"
     if path.startswith("/admin/logs"):
         return "audit:read"
     if path.startswith("/admin/benefits") or path.startswith("/admin/stats") \
@@ -14353,15 +14355,16 @@ def _mbiyo_collection(payload: Any, aliases: tuple[str, ...],
     return records
 
 
-def _paydunya_balance_totals(payload: Any) -> list[dict]:
-    """Aggregate documented PayDunya country-account balances by currency."""
+def _paydunya_country_balances(payload: Any) -> list[dict]:
+    """Read the documented country-specific PayDunya account balances."""
     if not isinstance(payload, dict) or payload.get("success") is not True:
         raise ValueError("PayDunya did not return a successful balance response")
-    totals: dict[str, Decimal] = {}
+    rows = []
     for key, value in payload.items():
         country_match = re.fullmatch(r"balance\s+([a-z]{2})", str(key).strip(), re.I)
         if not country_match:
             continue
+        country_code = country_match.group(1).upper()
         amount_match = re.fullmatch(
             r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+([a-z]{3})",
             str(value).strip(),
@@ -14375,10 +14378,25 @@ def _paydunya_balance_totals(payload: Any) -> list[dict]:
             raise ValueError("Invalid PayDunya balance amount")
         if not amount.is_finite():
             raise ValueError("Invalid PayDunya balance amount")
-        currency = amount_match.group(2).upper()
-        totals[currency] = totals.get(currency, Decimal("0")) + amount
-    if not totals:
+        rows.append({
+            "country_code": country_code,
+            "country": paydunya.COUNTRY_LABELS.get(
+                country_code, country_code),
+            "currency": amount_match.group(2).upper(),
+            "balance": amount,
+            "approximate": True,
+        })
+    if not rows:
         raise ValueError("PayDunya response did not include country balances")
+    return rows
+
+
+def _paydunya_balance_totals(payload: Any) -> list[dict]:
+    """Aggregate documented PayDunya country-account balances by currency."""
+    totals: dict[str, Decimal] = {}
+    for row in _paydunya_country_balances(payload):
+        currency = row["currency"]
+        totals[currency] = totals.get(currency, Decimal("0")) + row["balance"]
     return [
         {"currency": currency, "balance": format(amount, "f")}
         for currency, amount in sorted(totals.items())
@@ -14660,6 +14678,744 @@ async def admin_funds(
         "network_balances": safe_networks,
         # Network balances intentionally never participate in these totals.
         "wallet_totals": safe_totals,
+    }
+
+
+_ADMIN_STATISTICS_PERIOD_DAYS = {
+    "24h": 1,
+    "7d": 7,
+    "30d": 30,
+    "1y": 365,
+}
+_ADMIN_STATISTICS_PROVIDER_CACHE = {"expires_at": 0.0, "snapshot": None}
+_ADMIN_STATISTICS_PROVIDER_CACHE_LOCK = asyncio.Lock()
+_ADMIN_STATISTICS_PROVIDER_CACHE_SECONDS = 60
+_ADMIN_STATISTICS_OPERATION_TYPES = ("deposits", "withdrawals", "exchanges")
+_ADMIN_STATISTICS_COUNTRY_LABELS_CACHE = None
+
+
+def _admin_statistics_timestamp(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        timestamp = value
+    elif isinstance(value, str):
+        try:
+            timestamp = datetime.fromisoformat(
+                value.strip().replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def _admin_statistics_country_labels() -> dict:
+    global _ADMIN_STATISTICS_COUNTRY_LABELS_CACHE
+    if _ADMIN_STATISTICS_COUNTRY_LABELS_CACHE is not None:
+        return _ADMIN_STATISTICS_COUNTRY_LABELS_CACHE
+    labels = {}
+    for provider_module in (paydunya, mbiyo, afribapay):
+        for code, label in getattr(
+                provider_module, "COUNTRY_LABELS", {}).items():
+            labels[str(code).strip().upper()] = str(label)
+    _ADMIN_STATISTICS_COUNTRY_LABELS_CACHE = labels
+    return _ADMIN_STATISTICS_COUNTRY_LABELS_CACHE
+
+
+def _admin_statistics_add_volume(target: dict, currency: str,
+                                  amount: Decimal) -> None:
+    target[currency] = target.get(currency, Decimal("0")) + amount
+
+
+def _admin_statistics_country(value: Any, label: Any = None) -> tuple:
+    """Normalize a transaction country without inferring it from its currency."""
+    labels = _admin_statistics_country_labels()
+    candidate = str(value or "").strip()
+    supplied_label = str(label or "").strip()
+    if len(candidate) == 2 and candidate.isalpha():
+        code = candidate.upper()
+        if code in labels or code != "XX":
+            return code, labels.get(code) or supplied_label or code
+
+    candidate_folded = candidate.casefold()
+    for code, country_label in labels.items():
+        if candidate_folded and candidate_folded == country_label.casefold():
+            return code, country_label
+    supplied_folded = supplied_label.casefold()
+    if supplied_folded:
+        for code, country_label in labels.items():
+            if supplied_folded == country_label.casefold():
+                return code, country_label
+    return None, None
+
+
+def _admin_statistics_transaction_country(
+        transaction: dict, account_country: Optional[dict] = None) -> tuple:
+    metadata = transaction.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    account_country = account_country if isinstance(account_country, dict) else {}
+    candidates = (
+        (metadata.get("country_code"), metadata.get("country_label")),
+        (transaction.get("country_code"), transaction.get("country_label")),
+        (metadata.get("country"), metadata.get("country_label")),
+        (transaction.get("country"), transaction.get("country_label")),
+        (account_country.get("country_code"),
+         account_country.get("country_name")),
+        (account_country.get("country"),
+         account_country.get("country_name")),
+    )
+    for country_value, label in candidates:
+        normalized = _admin_statistics_country(country_value, label)
+        if normalized[0]:
+            return normalized
+    return "XX", "Pays non renseigné"
+
+
+def _admin_statistics_operation(transaction: dict) -> Optional[str]:
+    transaction_type = str(
+        transaction.get("type") or "").strip().lower()
+    if transaction_type in {"deposit", "deposit_in", "payin"}:
+        return "deposits"
+    if transaction_type == "exchange":
+        return "exchanges"
+    metadata = transaction.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    transfer_type = str(
+        metadata.get("transfer_type") or transaction.get("transfer_type") or ""
+    ).strip().lower()
+    direction = str(
+        transaction.get("direction") or "").strip().lower()
+    if transaction_type in {"withdrawal", "payout"}:
+        return "withdrawals"
+    if transaction_type in {"transfer", "payout"} and direction in {
+            "out", "debit"} and transfer_type in {
+                "biz_to_mobile", "biz_to_crypto"}:
+        return "withdrawals"
+    return None
+
+
+def _admin_statistics_bucket_starts(
+        period: str, start: datetime, end: datetime) -> list:
+    if period == "24h":
+        cursor = start.replace(minute=0, second=0, microsecond=0)
+        last = end.replace(minute=0, second=0, microsecond=0)
+        step = timedelta(hours=1)
+    elif period in {"7d", "30d"}:
+        cursor = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        last = end.replace(hour=0, minute=0, second=0, microsecond=0)
+        step = timedelta(days=1)
+    else:
+        cursor = start.replace(day=1, hour=0, minute=0, second=0,
+                               microsecond=0)
+        last = end.replace(day=1, hour=0, minute=0, second=0,
+                           microsecond=0)
+        starts = []
+        while cursor <= last:
+            starts.append(cursor)
+            next_month_index = cursor.year * 12 + cursor.month
+            cursor = cursor.replace(
+                year=next_month_index // 12,
+                month=next_month_index % 12 + 1,
+            )
+        return starts
+
+    starts = []
+    while cursor <= last:
+        starts.append(cursor)
+        cursor += step
+    return starts
+
+
+def _admin_statistics_empty_bucket(bucket: datetime) -> dict:
+    return {
+        "bucket": bucket.isoformat(),
+        "transaction_count": 0,
+        "deposits": 0,
+        "withdrawals": 0,
+        "exchanges": 0,
+        "_volumes": {},
+    }
+
+
+def _admin_statistics_money_rows(amounts: dict) -> list:
+    return [
+        {"currency": currency, "volume": float(amount)}
+        for currency, amount in sorted(amounts.items())
+    ]
+
+
+def _aggregate_admin_statistics(
+        rows: list, period: str, start: datetime, end: datetime) -> dict:
+    buckets = _admin_statistics_bucket_starts(period, start, end)
+    timeline_by_key = {
+        bucket.isoformat(): _admin_statistics_empty_bucket(bucket)
+        for bucket in buckets
+    }
+    summary = {
+        "transaction_count": 0,
+        "volume_by_currency": {},
+        "operations": {
+            operation: {"count": 0, "volume_by_currency": {}}
+            for operation in _ADMIN_STATISTICS_OPERATION_TYPES
+        },
+    }
+    country_totals = {}
+
+    for row in rows:
+        transaction = row.get("transaction_document")
+        if isinstance(transaction, str):
+            try:
+                transaction = json.loads(transaction)
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(transaction, dict):
+            continue
+        created_at = _admin_statistics_timestamp(transaction.get("created_at"))
+        if not created_at or created_at < start or created_at > end:
+            continue
+        operation = _admin_statistics_operation(transaction)
+        if not operation:
+            continue
+
+        bucket_start = created_at.replace(minute=0, second=0, microsecond=0) \
+            if period == "24h" else created_at.replace(
+                hour=0, minute=0, second=0, microsecond=0)
+        if period == "1y":
+            bucket_start = created_at.replace(day=1, hour=0, minute=0,
+                                              second=0, microsecond=0)
+        bucket = timeline_by_key.get(bucket_start.isoformat())
+        if not bucket:
+            continue
+        bucket[operation] += 1
+        bucket["transaction_count"] += 1
+        summary["transaction_count"] += 1
+        operation_summary = summary["operations"][operation]
+        operation_summary["count"] += 1
+
+        country_value, country_label = _admin_statistics_transaction_country(
+            transaction, row.get("account_country"))
+        country = country_totals.setdefault(country_value, {
+            "country_code": country_value,
+            "country": country_label,
+            "transaction_count": 0,
+            "_volumes": {},
+        })
+        country["transaction_count"] += 1
+
+        status = str(transaction.get("status") or "").strip().lower()
+        if status not in {"completed", "success", "succeeded", "confirmed",
+                          "paid", "approved"}:
+            continue
+        metadata = transaction.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        currency = str(
+            transaction.get("currency") or metadata.get("currency") or ""
+        ).strip().upper()
+        amount_value = transaction.get("amount")
+        try:
+            amount = Decimal(str(amount_value))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if not currency or not re.fullmatch(r"[A-Z]{3}", currency) \
+                or not amount.is_finite():
+            continue
+
+        _admin_statistics_add_volume(
+            summary["volume_by_currency"], currency, amount)
+        _admin_statistics_add_volume(
+            operation_summary["volume_by_currency"], currency, amount)
+        _admin_statistics_add_volume(
+            bucket["_volumes"].setdefault(currency, {}), operation, amount)
+        _admin_statistics_add_volume(
+            country["_volumes"], currency, amount)
+
+    output_buckets = []
+    for bucket in timeline_by_key.values():
+        volume_rows = []
+        for currency, amounts in sorted(bucket["_volumes"].items()):
+            total = sum(amounts.values(), Decimal("0"))
+            volume_rows.append({
+                "currency": currency,
+                "total": float(total),
+                **{operation: float(amounts.get(operation, Decimal("0")))
+                   for operation in _ADMIN_STATISTICS_OPERATION_TYPES},
+            })
+        output_buckets.append({
+            key: value for key, value in bucket.items() if key != "_volumes"
+        } | {"volume_by_currency": volume_rows})
+
+    return {
+        "summary": {
+            "transaction_count": summary["transaction_count"],
+            "volume_by_currency": [
+                {
+                    "currency": currency,
+                    "total": float(amount),
+                    **{
+                        operation: float(
+                            summary["operations"][operation]
+                            ["volume_by_currency"].get(currency, Decimal("0")))
+                        for operation in _ADMIN_STATISTICS_OPERATION_TYPES
+                    },
+                }
+                for currency, amount in sorted(
+                    summary["volume_by_currency"].items())
+            ],
+            "operations": {
+                operation: {
+                    "count": values["count"],
+                    "volume_by_currency": _admin_statistics_money_rows(
+                        values["volume_by_currency"]),
+                }
+                for operation, values in summary["operations"].items()
+            },
+        },
+        "timeline": output_buckets,
+        "countries": [
+            {
+                "country_code": item["country_code"],
+                "country": item["country"],
+                "transaction_count": item["transaction_count"],
+                "volume_by_currency": [
+                    {"currency": currency, "volume": float(amount)}
+                    for currency, amount in sorted(item["_volumes"].items())
+                ],
+            }
+            for item in sorted(
+                country_totals.values(),
+                key=lambda value: (-value["transaction_count"],
+                                   value["country_code"]))
+        ],
+    }
+
+
+async def _admin_statistics_transaction_rows(
+        start: datetime, end: datetime) -> list:
+    collection = db.transactions
+    store = getattr(collection, "store", None)
+    pool = getattr(store, "pool", None)
+    if pool is not None:
+        sql = """
+            SELECT tx.document AS transaction_document,
+                   CASE WHEN account.document IS NULL THEN NULL ELSE
+                       jsonb_build_object(
+                           'country', account.document -> 'country',
+                           'country_name', account.document -> 'country_name',
+                           'country_code', account.document -> 'country_code'
+                       )
+                   END AS account_country
+            FROM document_store AS tx
+            LEFT JOIN document_store AS account
+                ON account.collection = 'users'
+               AND account.doc_id = tx.document ->> 'user_id'
+            WHERE tx.collection = $1
+              AND tx.document ->> 'created_at' >= $2
+              AND tx.document ->> 'created_at' <= $3
+        """
+        rows = []
+        async with pool.acquire() as connection:
+            async with connection.transaction(readonly=True):
+                async for result in connection.cursor(
+                    sql, "transactions", start.isoformat(), end.isoformat(),
+                    prefetch=500,
+                ):
+                    transaction = result["transaction_document"]
+                    if isinstance(transaction, str):
+                        try:
+                            transaction = json.loads(transaction)
+                        except (TypeError, ValueError):
+                            continue
+                    account_country = result["account_country"]
+                    if isinstance(account_country, str):
+                        try:
+                            account_country = json.loads(account_country)
+                        except (TypeError, ValueError):
+                            account_country = None
+                    rows.append({
+                        "transaction_document": transaction,
+                        "account_country": account_country,
+                    })
+        return rows
+
+    cursor = collection.find({
+        "created_at": {
+            "$gte": start.isoformat(),
+            "$lte": end.isoformat(),
+        },
+    })
+    records = await cursor.to_list(None)
+    return [{"transaction_document": item, "account_country": None}
+            for item in records if isinstance(item, dict)]
+
+
+def _admin_statistics_provider_label(provider: str) -> str:
+    return {
+        "paydunya": "PayDunya",
+        "mbiyo": "Mbiyo",
+        "afribapay": "AfribaPay",
+    }.get(provider, provider)
+
+
+def _admin_statistics_decimal(value: Any) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("Invalid provider balance amount")
+    if not amount.is_finite():
+        raise ValueError("Invalid provider balance amount")
+    return amount
+
+
+def _build_admin_statistics_provider_liquidity(
+        routes: dict, records_by_provider: dict, refreshed_at: str) -> list:
+    totals = {}
+    observed_currencies = {}
+    provider_rows = {}
+    for provider, rows in records_by_provider.items():
+        for row in rows:
+            country_code = str(row.get("country_code") or "").upper()
+            currency = str(row.get("currency") or "").upper()
+            if not country_code or not currency:
+                continue
+            country_routes = routes.get(country_code, {})
+            if currency not in country_routes.get(provider, set()):
+                continue
+            key = (country_code, provider, currency)
+            amount = _admin_statistics_decimal(row.get("balance"))
+            if key in totals:
+                totals[key] += amount
+            else:
+                totals[key] = amount
+            observed_currencies.setdefault(
+                (country_code, provider), set()).add(currency)
+            country_label = row.get("country")
+            provider_rows[(country_code, provider, currency)] = {
+                "provider": _admin_statistics_provider_label(provider),
+                "currency": currency,
+                "approximate": bool(row.get("approximate", False)),
+                "balance": totals[key],
+                "country": country_label,
+            }
+
+    country_codes = set(routes)
+    country_codes.update(code for code, _provider, _currency in totals)
+    output = []
+    for country_code in country_codes:
+        currency_totals = {}
+        providers = []
+        providers_available = set()
+        for (row_country, provider, currency), amount in totals.items():
+            if row_country != country_code:
+                continue
+            providers_available.add(provider)
+            currency_totals[currency] = currency_totals.get(
+                currency, Decimal("0")) + amount
+            row = provider_rows[(row_country, provider, currency)]
+            providers.append({
+                "provider": row["provider"],
+                "currency": currency,
+                "balance": float(amount),
+                "approximate": row["approximate"],
+            })
+        missing_providers = []
+        for provider, currencies in routes.get(country_code, {}).items():
+            if not currencies.issubset(
+                    observed_currencies.get((country_code, provider), set())):
+                missing_providers.append(
+                    _admin_statistics_provider_label(provider))
+        if not routes.get(country_code):
+            missing_providers.append("Aucun prestataire actif")
+        label = next((
+            record["country"]
+            for (row_country, _provider, _currency), record
+            in provider_rows.items()
+            if row_country == country_code and record["country"]
+        ), None)
+        if not label:
+            label = _admin_statistics_country_labels().get(
+                country_code, country_code)
+        output.append({
+            "country_code": country_code,
+            "country": label,
+            "totals_by_currency": [
+                {"currency": currency, "balance": float(amount)}
+                for currency, amount in sorted(currency_totals.items())
+            ],
+            "providers": sorted(
+                providers,
+                key=lambda row: (row["currency"], row["provider"])),
+            "missing_providers": sorted(set(missing_providers)),
+            "approximate": any(
+                row.get("approximate", False) for row in providers),
+            "complete": bool(routes.get(country_code))
+                and not missing_providers
+                and providers_available == set(routes.get(country_code, {})),
+            "refreshed_at": refreshed_at,
+        })
+    return output
+
+
+def _merge_admin_statistics_country_balances(
+        provider_liquidity: list, countries: list) -> list:
+    by_code = {
+        row["country_code"]: row
+        for row in provider_liquidity
+        if row.get("country_code")
+    }
+    labels = _admin_statistics_country_labels()
+    for activity in countries:
+        country_code = activity.get("country_code")
+        if not country_code or country_code == "XX" \
+                or country_code in by_code:
+            continue
+        by_code[country_code] = {
+            "country_code": country_code,
+            "country": activity.get("country") or labels.get(
+                country_code, country_code),
+            "totals_by_currency": [],
+            "providers": [],
+            "missing_providers": ["Aucun prestataire actif"],
+            "complete": False,
+            "refreshed_at": None,
+        }
+
+    def sort_key(row):
+        balances = row.get("totals_by_currency") or []
+        if not balances:
+            return ("ZZZ", 0, row.get("country_code") or "")
+        primary_currency = min(item["currency"] for item in balances)
+        primary_amount = next(
+            item["balance"] for item in balances
+            if item["currency"] == primary_currency)
+        # Balances can only be ranked against others expressed in the same
+        # currency. Currency groups remain separate, not implicitly converted.
+        return (primary_currency, -primary_amount,
+                row.get("country_code") or "")
+
+    return sorted(by_code.values(), key=sort_key)
+
+
+async def _fetch_admin_statistics_provider_liquidity() -> list:
+    transfer_doc, paydunya_doc, mbiyo_doc, afribapay_doc = await asyncio.gather(
+        db.settings.find_one({"id": "transfer_config"}, {"_id": 0}),
+        db.settings.find_one(
+            {"id": "payment_provider_paydunya"}, {"_id": 0}),
+        db.settings.find_one(
+            {"id": "payment_provider_mbiyo"}, {"_id": 0}),
+        db.settings.find_one(
+            {"id": "payment_provider_afribapay"}, {"_id": 0}),
+    )
+    transfer_doc = dict(transfer_doc or DEFAULT_TRANSFER_CONFIG)
+    paydunya_doc = dict(paydunya_doc or {})
+    mbiyo_doc = dict(mbiyo_doc or {})
+    afribapay_doc = dict(afribapay_doc or {})
+    mobile_money = _merged_mobile_money(
+        DEFAULT_TRANSFER_CONFIG, transfer_doc.get("mobile_money") or {})
+    payout_catalog = list(mobile_money.get("operators") or [])
+    if transfer_doc.get("withdrawal_catalog_migration_version") \
+            != WITHDRAWAL_CATALOG_MIGRATION_VERSION:
+        for operator in mbiyo_doc.get("catalog") or []:
+            candidate = dict(operator)
+            candidate["provider"] = "mbiyo"
+            payout_catalog.append(candidate)
+    afribapay_defaults = {
+        str(operator.get("id")): operator
+        for operator in afribapay.default_payout_catalog()
+    }
+    normalized_catalog = []
+    for operator in payout_catalog:
+        provider = str(operator.get("provider") or "").strip().lower()
+        if provider != "afribapay":
+            normalized_catalog.append(operator)
+            continue
+        base = afribapay_defaults.get(str(operator.get("id") or ""))
+        if not base:
+            continue
+        normalized = dict(operator)
+        for field in (
+            "id", "provider", "country", "country_label", "currency",
+            "code", "public_code", "operator", "otp_required", "ussd_code",
+        ):
+            normalized[field] = base[field]
+        normalized_catalog.append(normalized)
+    known_afribapay_keys = {
+        (str(operator.get("country") or "").upper(),
+         str(operator.get("code") or "").lower(),
+         str(operator.get("currency") or "").upper())
+        for operator in normalized_catalog
+        if str(operator.get("provider") or "").lower() == "afribapay"
+    }
+    for operator in afribapay.default_payout_catalog():
+        key = (
+            str(operator["country"]).upper(),
+            str(operator["code"]).lower(),
+            str(operator["currency"]).upper(),
+        )
+        if key not in known_afribapay_keys:
+            normalized_catalog.append(operator)
+            known_afribapay_keys.add(key)
+    _deactivate_duplicate_withdrawal_routes(normalized_catalog)
+
+    provider_configs = {
+        "paydunya": {
+            "enabled": bool(
+                paydunya_doc.get("enabled")
+                and _paydunya_credentials_configured(paydunya_doc)),
+        },
+        "mbiyo": {
+            "enabled": bool(mbiyo_doc.get("enabled") and (
+                mbiyo_doc.get("secret_key_encrypted")
+                or mbiyo_doc.get("api_key_encrypted")
+                or os.environ.get("MBIYO_SECRET_KEY")
+                or os.environ.get("MBIYO_API_KEY"))),
+        },
+        "afribapay": {
+            "enabled": _afribapay_ready(afribapay_doc, payout=True),
+        },
+    }
+    labels = _admin_statistics_country_labels()
+    routes = {}
+    for operator in normalized_catalog:
+        if not isinstance(operator, dict) or operator.get("active") is False \
+                or operator.get("archived") or operator.get("hidden"):
+            continue
+        country_code = str(operator.get("country") or "").strip().upper()
+        provider = str(operator.get("provider") or "").strip().lower()
+        if provider not in {"paydunya", "mbiyo", "afribapay"} \
+                or country_code not in labels:
+            continue
+        provider_config = provider_configs.get(provider) or {}
+        if not provider_config.get("enabled"):
+            continue
+        currency = str(operator.get("currency") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", currency):
+            continue
+        routes.setdefault(country_code, {}).setdefault(
+            provider, set()).add(currency)
+
+    refreshed_at = now_iso()
+    records_by_provider = {}
+
+    async def read_paydunya():
+        config = await get_paydunya_config(decrypt=True)
+        payload = await asyncio.wait_for(
+            paydunya.get_balance(config), timeout=5)
+        return _paydunya_country_balances(payload)
+
+    async def read_mbiyo():
+        config = await get_mbiyo_config(decrypt=True)
+        api_key = str(config.get("_api_key") or "").strip()
+        if not config.get("enabled") or not api_key:
+            raise ValueError("Mbiyo balance account is not configured")
+        client = mbiyo.MbiyoClient(
+            api_key, config.get("base_url", mbiyo.BASE_URL))
+        payload = await asyncio.wait_for(
+            client.network_balances(), timeout=5)
+        return _sanitize_mbiyo_networks(payload)
+
+    provider_readers = {
+        "paydunya": read_paydunya,
+        "mbiyo": read_mbiyo,
+    }
+    providers_to_read = sorted({
+        provider
+        for country_routes in routes.values()
+        for provider in country_routes
+    })
+    fetch_results = await asyncio.gather(*(
+        provider_readers[provider]()
+        if provider in provider_readers
+        else asyncio.sleep(0, result=[])
+        for provider in providers_to_read
+    ), return_exceptions=True)
+    for provider, result in zip(providers_to_read, fetch_results):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "Admin statistics provider balance unavailable for %s (%s)",
+                provider, type(result).__name__)
+            records_by_provider[provider] = []
+            continue
+        records_by_provider[provider] = result
+
+    return _build_admin_statistics_provider_liquidity(
+        routes, records_by_provider, refreshed_at)
+
+
+async def _cached_admin_statistics_provider_liquidity() -> list:
+    now = datetime.now(timezone.utc).timestamp()
+    if _ADMIN_STATISTICS_PROVIDER_CACHE["expires_at"] > now:
+        return copy.deepcopy(
+            _ADMIN_STATISTICS_PROVIDER_CACHE["snapshot"] or [])
+    async with _ADMIN_STATISTICS_PROVIDER_CACHE_LOCK:
+        now = datetime.now(timezone.utc).timestamp()
+        if _ADMIN_STATISTICS_PROVIDER_CACHE["expires_at"] > now:
+            return copy.deepcopy(
+                _ADMIN_STATISTICS_PROVIDER_CACHE["snapshot"] or [])
+        try:
+            snapshot = await _fetch_admin_statistics_provider_liquidity()
+        except Exception as exc:
+            logger.warning(
+                "Admin statistics provider liquidity could not be loaded (%s)",
+                type(exc).__name__)
+            snapshot = []
+        _ADMIN_STATISTICS_PROVIDER_CACHE["snapshot"] = snapshot
+        _ADMIN_STATISTICS_PROVIDER_CACHE["expires_at"] = (
+            datetime.now(timezone.utc).timestamp()
+            + _ADMIN_STATISTICS_PROVIDER_CACHE_SECONDS)
+        return copy.deepcopy(snapshot)
+
+
+@api.get("/admin/statistics")
+async def admin_statistics(
+        period: str = Query("7d"),
+        admin=Depends(get_admin)):
+    """Return bounded, period-filtered activity without provider API latency."""
+    selected_period = str(period or "7d").strip().lower()
+    if selected_period not in _ADMIN_STATISTICS_PERIOD_DAYS:
+        raise HTTPException(
+            400, "Période invalide. Choisissez 24h, 7d, 30d ou 1y.")
+    end = datetime.now(timezone.utc)
+    days = _ADMIN_STATISTICS_PERIOD_DAYS[selected_period]
+    try:
+        start = end.replace(year=end.year - 1) \
+            if selected_period == "1y" else end - timedelta(days=days)
+    except ValueError:
+        start = end.replace(year=end.year - 1, day=28)
+
+    try:
+        transaction_rows = await _admin_statistics_transaction_rows(start, end)
+        statistics = _aggregate_admin_statistics(
+            transaction_rows, selected_period, start, end)
+        cached_liquidity = (
+            _ADMIN_STATISTICS_PROVIDER_CACHE.get("snapshot") or [])
+        provider_liquidity = _merge_admin_statistics_country_balances(
+            copy.deepcopy(cached_liquidity), statistics["countries"])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Unable to aggregate admin statistics (%s)",
+            type(exc).__name__)
+        raise HTTPException(
+            503, "Les statistiques sont temporairement indisponibles.")
+
+    return {
+        "period": selected_period,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "generated_at": now_iso(),
+        **statistics,
+        "provider_liquidity": provider_liquidity,
+    }
+
+
+@api.get("/admin/statistics/provider-liquidity")
+async def admin_statistics_provider_liquidity(admin=Depends(get_admin)):
+    """Fetch cached provider balances separately so charts stay responsive."""
+    return {
+        "provider_liquidity": await _cached_admin_statistics_provider_liquidity(),
+        "generated_at": now_iso(),
     }
 
 
