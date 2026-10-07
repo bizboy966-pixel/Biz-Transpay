@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
-import api from '@/api';
+import { useEffect, useMemo, useState } from 'react';
 import { SOCIAL_CHANNELS } from './socialChannels';
 import { SafeImage } from './SafeImage';
+import { useSupportConfig } from '@/hooks/useSupportConfig';
 
 function SocialIcon({ channel }) {
   const [failed, setFailed] = useState(false);
@@ -45,22 +45,17 @@ function ChannelLink({ channel, url, active }) {
 }
 
 export default function SocialChannelsBanner() {
-  const [channels, setChannels] = useState([]);
+  const config = useSupportConfig();
+  const channels = useMemo(
+    () => (config?.social_channels || [])
+      .map((item) => ({
+        ...item,
+        definition: SOCIAL_CHANNELS.find((channel) => channel.key === item.key),
+      }))
+      .filter((item) => item.definition && item.url),
+    [config],
+  );
   const [activeIndex, setActiveIndex] = useState(0);
-
-  useEffect(() => {
-    api.get('/support/config')
-      .then(({ data }) => {
-        const configured = (data.social_channels || [])
-          .map((item) => ({
-            ...item,
-            definition: SOCIAL_CHANNELS.find((channel) => channel.key === item.key),
-          }))
-          .filter((item) => item.definition && item.url);
-        setChannels(configured);
-      })
-      .catch(() => setChannels([]));
-  }, []);
 
   useEffect(() => {
     setActiveIndex(0);

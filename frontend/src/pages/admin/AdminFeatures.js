@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Wallet, Coins, Bitcoin, ArrowDownToLine, ArrowUpFromLine, Eye, EyeOff, Check, X, AlertTriangle, Info, Link2, Code2 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
+import { FEATURES_QUERY_KEY } from '@/hooks/useFeatures';
 
 /* Currency descriptors — order matters (visual order in the page). */
 const CURRENCIES = [
@@ -56,6 +58,7 @@ function Toggle({ checked, onChange, disabled, size = 'md', tid }) {
 
 /* ------------------------------ Page ------------------------------- */
 export default function AdminFeatures() {
+  const queryClient = useQueryClient();
   const [features, setFeatures] = useState(null);
   const [saving, setSaving] = useState(null);
 
@@ -67,6 +70,7 @@ export default function AdminFeatures() {
     try {
       const { data } = await api.patch('/admin/settings/features', { [key]: value });
       setFeatures(data);
+      queryClient.invalidateQueries({ queryKey: FEATURES_QUERY_KEY });
       toast.success(value ? 'Activé' : 'Désactivé');
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Erreur');

@@ -3,12 +3,12 @@ import { Toaster, toast } from 'sonner';
 import { lazy, Suspense, useEffect } from 'react';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { pageLoaders } from '@/pageLoaders';
-import DashboardLayout from '@/pages/dashboard/DashboardLayout';
-import AdminLayout from '@/pages/admin/AdminLayout';
 import ReauthGate from '@/components/ReauthGate';
-import PushOptInPrompt from '@/components/PushOptInPrompt';
 import '@/App.css';
 
+const DashboardLayout = lazy(pageLoaders.dashboardLayout);
+const AdminLayout = lazy(pageLoaders.adminLayout);
+const PushOptInPrompt = lazy(pageLoaders.pushOptInPrompt);
 const Landing = lazy(pageLoaders.landing);
 const Login = lazy(pageLoaders.login);
 const Register = lazy(pageLoaders.register);
@@ -70,6 +70,12 @@ function lazyPage(Page) {
   return <Suspense fallback={<RouteLoading />}><Page /></Suspense>;
 }
 
+function AuthenticatedPushOptInPrompt() {
+  const { user } = useAuth();
+  if (!user) return null;
+  return <Suspense fallback={null}><PushOptInPrompt /></Suspense>;
+}
+
 function Protected({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="min-h-screen flex items-center justify-center">Chargement…</div>;
@@ -122,7 +128,7 @@ function App() {
       <BrowserRouter>
         <Toaster position="top-right" richColors closeButton offset={72} />
         <ForegroundPushToasts />
-        <PushOptInPrompt />
+        <AuthenticatedPushOptInPrompt />
         <ReauthGate />
         <Routes>
           <Route path="/" element={lazyPage(Landing)} />
@@ -135,7 +141,7 @@ function App() {
           <Route path="/payment/success" element={lazyPage(PaymentSuccess)} />
           <Route path="/payment/cancel" element={lazyPage(PaymentCancel)} />
           <Route path="/integration/docs" element={lazyPage(IntegrationDocs)} />
-          <Route path="/dashboard" element={<Protected><DashboardLayout /></Protected>}>
+          <Route path="/dashboard" element={<Protected>{lazyPage(DashboardLayout)}</Protected>}>
             <Route index element={lazyPage(DashboardHome)} />
             <Route path="transactions" element={lazyPage(Transactions)} />
             <Route path="links" element={lazyPage(Links)} />
@@ -150,7 +156,7 @@ function App() {
             <Route path="exchange" element={lazyPage(Exchange)} />
             <Route path="integration" element={lazyPage(Integration)} />
           </Route>
-          <Route path="/admin" element={<AdminOnly><AdminLayout /></AdminOnly>}>
+          <Route path="/admin" element={<AdminOnly>{lazyPage(AdminLayout)}</AdminOnly>}>
             <Route index element={lazyPage(AdminHomeEntry)} />
             <Route path="users" element={lazyPage(AdminUsers)} />
             <Route path="users/:id" element={lazyPage(AdminUserDetail)} />

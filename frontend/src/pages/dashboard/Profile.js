@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { BadgeCheck, BriefcaseBusiness, Copy, Globe2, ImagePlus, Mail, Phone, Share2, ShieldCheck, Trash2, UserRound, Users, WalletCards } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -11,26 +12,22 @@ export default function Profile() {
   const { user, refresh } = useAuth();
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
-  const [referral, setReferral] = useState(null);
-  const [referralLoading, setReferralLoading] = useState(true);
-  const [referralError, setReferralError] = useState(false);
+  const {
+    data: referral,
+    isPending: referralLoading,
+    isError: referralError,
+    refetch: loadReferral,
+  } = useQuery({
+    queryKey: ['referral', 'me', user?.id],
+    queryFn: async () => {
+      const { data } = await api.get('/referrals/me');
+      return data;
+    },
+    staleTime: 10_000,
+    retry: false,
+  });
   const country = COUNTRIES.find((c) => c.code === user?.country);
   const kycVerified = user?.kyc_status === 'verified';
-
-  const loadReferral = async () => {
-    setReferralLoading(true);
-    setReferralError(false);
-    try {
-      const { data } = await api.get('/referrals/me');
-      setReferral(data);
-    } catch {
-      setReferralError(true);
-    } finally {
-      setReferralLoading(false);
-    }
-  };
-
-  useEffect(() => { loadReferral(); }, []);
 
   const referralLink = referral?.code
     ? `${window.location.origin}/register?ref=${encodeURIComponent(referral.code)}`
@@ -185,7 +182,7 @@ export default function Profile() {
           <div className="p-5 sm:p-6" role="alert">
             <p className="text-sm font-semibold text-slate-800">Vos informations de parrainage ne sont pas disponibles.</p>
             <p className="mt-1 text-xs text-slate-500">Réessayez dans quelques instants.</p>
-            <button type="button" onClick={loadReferral} className="mt-3 rounded-full border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500">Réessayer</button>
+            <button type="button" onClick={() => loadReferral()} className="mt-3 rounded-full border border-slate-200 px-4 py-2 text-xs font-bold text-slate-700 hover:border-blue-300 focus:outline-none focus:ring-2 focus:ring-blue-500">Réessayer</button>
           </div>
         ) : (
           <div className="space-y-5 p-5 sm:p-6">

@@ -139,6 +139,32 @@ def _matches(document: dict, query: dict) -> bool:
     return True
 
 
+def _query_candidate_filter(query: dict | None) -> dict | None:
+    """Extract safe top-level string equalities for PostgreSQL pre-filtering.
+
+    The adapter still applies its full Mongo-shaped matcher in Python.  A
+    candidate is included here only when every matching document must have the
+    same top-level string value (or an array containing that value).
+    """
+    if not isinstance(query, dict):
+        return None
+    candidates = {
+        key: value
+        for key, value in query.items()
+        if not key.startswith("$") and "." not in key and isinstance(value, str)
+    }
+    return candidates or None
+
+
+def _is_simple_string_query(query: dict) -> bool:
+    return isinstance(query, dict) and all(
+        not key.startswith("$")
+        and "." not in key
+        and isinstance(value, str)
+        for key, value in query.items()
+    )
+
+
 def _set_path(document: dict, path: str, value: Any) -> None:
     parts = path.split(".")
     target = document
@@ -245,7 +271,19 @@ class Cursor:
         return self
 
     async def _items(self) -> list[dict]:
-        rows = await self.collection._rows()
+        candidate_filter = _query_candidate_filter(self.query)
+        push_page = (
+            candidate_filter is not None
+            and _is_simple_string_query(self.query)
+            and not self._sort
+            and self._skip >= 0
+            and (self._limit is None or self._limit >= 0)
+        )
+        rows = await self.collection._rows(
+            candidate_filter=candidate_filter,
+            limit=self._limit if push_page else None,
+            offset=self._skip if push_page else 0,
+        )
         docs = [row for row in rows if _matches(row, self.query)]
         for key, direction in reversed(self._sort):
             docs.sort(key=lambda item: (_first(item, key) is None, _first(item, key)), reverse=direction < 0)
@@ -272,7 +310,12 @@ class AggregateCursor(Cursor):
         self.pipeline = pipeline
 
     async def _items(self) -> list[dict]:
-        docs = await self.collection._rows()
+        candidate_filter = {}
+        for stage in self.pipeline:
+            if "$match" not in stage:
+                break
+            candidate_filter.update(_query_candidate_filter(stage["$match"]) or {})
+        docs = await self.collection._rows(candidate_filter=candidate_filter or None)
         for stage in self.pipeline:
             if "$match" in stage:
                 docs = [doc for doc in docs if _matches(doc, stage["$match"])]
@@ -316,12 +359,38 @@ class Collection:
             self.name,
         )
 
-    async def _rows(self, connection=None) -> list[dict]:
+    async def _rows(
+        self,
+        connection=None,
+        candidate_filter: dict | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict]:
         conn = connection or await self.store.pool.acquire()
         try:
-            rows = await conn.fetch(
-                "SELECT document FROM document_store WHERE collection=$1", self.name
-            )
+            sql = "SELECT document FROM document_store WHERE collection=$1"
+            args: list[Any] = [self.name]
+            if candidate_filter:
+                filter_arg = len(args) + 1
+                sql += f"""
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM jsonb_each(${filter_arg}::jsonb) AS candidate(field_name, field_value)
+                        WHERE NOT (
+                            (document -> candidate.field_name) = candidate.field_value
+                            OR (document -> candidate.field_name)
+                                @> jsonb_build_array(candidate.field_value)
+                        )
+                    )
+                """
+                args.append(self.store.encode(candidate_filter))
+            if limit is not None:
+                args.append(max(0, int(limit)))
+                sql += f" LIMIT ${len(args)}"
+            if offset:
+                args.append(max(0, int(offset)))
+                sql += f" OFFSET ${len(args)}"
+            rows = await conn.fetch(sql, *args)
             documents = []
             for row in rows:
                 document = row["document"]
@@ -371,7 +440,9 @@ class Collection:
             try:
                 async with conn.transaction():
                     await self._lock_mutations(conn)
-                    rows = await self._rows(conn)
+                    rows = await self._rows(
+                        conn, candidate_filter=_query_candidate_filter(query)
+                    )
                     matches = [doc for doc in rows if _matches(doc, query)]
                     if not matches:
                         if not upsert:
@@ -413,7 +484,9 @@ class Collection:
             try:
                 async with conn.transaction():
                     await self._lock_mutations(conn)
-                    rows = await self._rows(conn)
+                    rows = await self._rows(
+                        conn, candidate_filter=_query_candidate_filter(query)
+                    )
                     matches = [doc for doc in rows if _matches(doc, query)]
                     if not matches and upsert:
                         base = {key: value for key, value in query.items() if not key.startswith("$") and not isinstance(value, dict)}
@@ -442,7 +515,9 @@ class Collection:
         async with self.store.pool.acquire() as conn:
             async with conn.transaction():
                 await self._lock_mutations(conn)
-                rows = await self._rows(conn)
+                rows = await self._rows(
+                    conn, candidate_filter=_query_candidate_filter(query)
+                )
                 matches = [doc for doc in rows if _matches(doc, query)]
                 if not many:
                     matches = matches[:1]
@@ -451,7 +526,9 @@ class Collection:
                 return Result(deleted_count=len(matches))
 
     async def count_documents(self, query: dict) -> int:
-        return len([doc for doc in await self._rows() if _matches(doc, query or {})])
+        query = query or {}
+        rows = await self._rows(candidate_filter=_query_candidate_filter(query))
+        return len([doc for doc in rows if _matches(doc, query)])
 
     async def distinct(self, field: str) -> list[Any]:
         result = []

@@ -50,8 +50,11 @@ export default function NotificationBell({ compact = false }) {
   const [unread, setUnread] = useState(0);
   const esRef = useRef(null);
   const wrapRef = useRef(null);
+  const initialLoadStartedRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
 
   const load = () => {
+    lastLoadAtRef.current = Date.now();
     api.get('/notifications', { params: { limit: 20 } })
       .then(({ data }) => setItems(data || [])).catch(() => {});
     api.get('/notifications/unread-count')
@@ -59,7 +62,10 @@ export default function NotificationBell({ compact = false }) {
   };
 
   useEffect(() => {
-    load();
+    if (!initialLoadStartedRef.current) {
+      initialLoadStartedRef.current = true;
+      load();
+    }
     // The browser sends the HttpOnly session cookie with this same-origin stream.
     const url = `${process.env.REACT_APP_BACKEND_URL || ''}/api/notifications/stream`;
     const es = new EventSource(url, { withCredentials: true });
@@ -133,7 +139,10 @@ export default function NotificationBell({ compact = false }) {
     <div className="relative" ref={wrapRef}>
       <button
         data-testid="btn-notifications"
-        onClick={() => { setOpen((v) => !v); if (!open) load(); }}
+        onClick={() => {
+          setOpen((v) => !v);
+          if (!open && Date.now() - lastLoadAtRef.current > 30_000) load();
+        }}
         aria-expanded={open}
         className={`relative rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors ${compact ? 'h-8 w-8' : 'h-10 w-10'}`}
       >

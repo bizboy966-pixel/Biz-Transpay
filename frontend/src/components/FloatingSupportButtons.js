@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import api from '@/api';
+import { useSupportConfig } from '@/hooks/useSupportConfig';
 
 /**
  * Floating live-support shortcut visible on authenticated user pages.
@@ -11,14 +10,7 @@ import api from '@/api';
  * On mobile the two buttons stay at the screen edges and shrink to 48px.
  */
 export default function FloatingSupportButtons() {
-  const [cfg, setCfg] = useState(null);
-
-  useEffect(() => {
-    // Public endpoint but we use api (auth is fine, just returns the doc).
-    api.get('/support/config')
-      .then(({ data }) => setCfg(data))
-      .catch(() => setCfg({}));
-  }, []);
+  const cfg = useSupportConfig();
 
   if (!cfg) return null;
 

@@ -1,4 +1,7 @@
 export const pageLoaders = {
+  dashboardLayout: () => import('@/pages/dashboard/DashboardLayout'),
+  adminLayout: () => import('@/pages/admin/AdminLayout'),
+  pushOptInPrompt: () => import('@/components/PushOptInPrompt'),
   landing: () => import('@/pages/Landing'),
   login: () => import('@/pages/Login'),
   register: () => import('@/pages/Register'),

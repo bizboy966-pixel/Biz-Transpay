@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight, Users, Smartphone, ArrowLeft, CheckCircle2, Clock, ShieldCheck, AtSign, Phone, Info, Bitcoin } from 'lucide-react';
@@ -17,17 +18,21 @@ export default function Transfer() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { refresh, user } = useAuth();
+  const queryClient = useQueryClient();
   const turnstile = useTurnstileConfig();
   const features = useFeatures();
+  const { data: config = null } = useQuery({
+    queryKey: ['transfer-config'],
+    queryFn: async () => {
+      const { data } = await api.get('/transfer/config');
+      return data;
+    },
+    staleTime: 10_000,
+  });
   const [step, setStep] = useState(1);
   const [type, setType] = useState(null);
-  const [config, setConfig] = useState(null);
   const [done, setDone] = useState(null);
   const [transferFeedback, setTransferFeedback] = useState(null);
-
-  useEffect(() => {
-    api.get('/transfer/config').then(({ data }) => setConfig(data)).catch(() => {});
-  }, []);
 
   const opts = useMemo(() => {
     // Mobile Money withdrawal requires an active operator backed by its
@@ -63,6 +68,13 @@ export default function Transfer() {
     setDone({ ...data, meta });
     setStep(3);
     refresh();
+    queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    queryClient.invalidateQueries({
+      queryKey: ['dashboard-recent-transactions', user?.id],
+    });
+    queryClient.invalidateQueries({
+      queryKey: ['conversion-crypto-wallets', user?.id],
+    });
   };
 
   return (
@@ -124,6 +136,7 @@ export default function Transfer() {
         <BizToBizForm
           onDone={onDone}
           balance={user}
+          userId={user?.id}
           turnstile={turnstile}
           walletCryptoEnabled={features?.wallet_crypto_enabled !== false}
           transferFeedback={transferFeedback}
@@ -343,15 +356,28 @@ function WithdrawalEmailOtpPanel({
 
 // ------- BIZ TO BIZ -------
 function BizToBizForm({
-  onDone, balance, turnstile, walletCryptoEnabled, transferFeedback, onTransferFeedback,
+  onDone, balance, userId, turnstile, walletCryptoEnabled, transferFeedback, onTransferFeedback,
 }) {
   const turnstileRef = useRef(null);
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('XOF');
-  const [cryptoWallets, setCryptoWallets] = useState([]);
-  const [cryptoCatalogError, setCryptoCatalogError] = useState('');
+  const {
+    data: cryptoWallets = [],
+    isError: cryptoWalletsError,
+  } = useQuery({
+    queryKey: ['conversion-crypto-wallets', userId],
+    queryFn: async () => {
+      const { data } = await api.get('/conversion/crypto-wallets');
+      return Array.isArray(data) ? data : [];
+    },
+    staleTime: 10_000,
+    enabled: Boolean(userId),
+  });
+  const cryptoCatalogError = cryptoWalletsError
+    ? 'Impossible de charger les actifs crypto disponibles.'
+    : '';
   const [description, setDescription] = useState('');
   const [recipient, setRecipient] = useState(null);
   const [lookupErr, setLookupErr] = useState(null);
@@ -359,22 +385,6 @@ function BizToBizForm({
   const [pending, setPending] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
   const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_biz');
-
-  useEffect(() => {
-    let active = true;
-    api.get('/conversion/crypto-wallets')
-      .then(({ data }) => {
-        if (!active) return;
-        setCryptoWallets(Array.isArray(data) ? data : []);
-        setCryptoCatalogError('');
-      })
-      .catch(() => {
-        if (!active) return;
-        setCryptoWallets([]);
-        setCryptoCatalogError('Impossible de charger les actifs crypto disponibles.');
-      });
-    return () => { active = false; };
-  }, []);
 
   const lookup = async () => {
     setLookupErr(null); setRecipient(null);
@@ -765,15 +775,14 @@ function BizToCryptoForm({
   const turnstileRef = useRef(null);
   const idempotencyRef = useRef({ fingerprint: '', key: '' });
   const ccfg = config?.crypto || { enabled: false };
-  const [coins, setCoins] = useState([]);
-  const [loadingCoins, setLoadingCoins] = useState(true);
-  useEffect(() => {
-    setLoadingCoins(true);
-    api.get('/crypto/coins')
-      .then(({ data }) => setCoins(data || []))
-      .catch(() => setCoins([]))
-      .finally(() => setLoadingCoins(false));
-  }, []);
+  const { data: coins = [], isPending: loadingCoins } = useQuery({
+    queryKey: ['crypto-coins'],
+    queryFn: async () => {
+      const { data } = await api.get('/crypto/coins');
+      return data || [];
+    },
+    staleTime: 30_000,
+  });
   const [cryptoCode, setCryptoCode] = useState('');
   useEffect(() => {
     if (!cryptoCode && coins.length > 0) setCryptoCode(coins[0].coin);

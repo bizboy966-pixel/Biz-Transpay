@@ -1,4 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, ArrowRight, Bitcoin, Smartphone, ShieldCheck, Copy, CheckCircle2, Clock, XCircle, Loader2, Rocket } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
@@ -19,6 +20,7 @@ const PSR_ASSET_IDS = {
   jquery: 'paydunya-psr-jquery',
   script: 'paydunya-psr-script',
 };
+const EMPTY_CRYPTO_ASSETS = [];
 let psrAssetsPromise;
 
 function loadExternalAsset({ id, tag, url, attributes = {} }) {
@@ -119,10 +121,30 @@ function startPaydunyaPsr({ deposit, onTerminate }) {
 
 export default function Deposit() {
   const nav = useNavigate();
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
   const features = useFeatures();
   const [step, setStep] = useState(1);
   const [method, setMethod] = useState(null);
   const [deposit, setDeposit] = useState(null);
+
+  const refreshActivityCache = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    queryClient.invalidateQueries({
+      queryKey: ['dashboard-recent-transactions', user?.id],
+    });
+  }, [queryClient, user?.id]);
+
+  const handleDepositCreated = useCallback((data, mobileMoney = false) => {
+    refreshActivityCache();
+    setDeposit(mobileMoney ? { ...data, __momo: true } : data);
+    setStep(3);
+  }, [refreshActivityCache]);
+
+  useEffect(() => {
+    window.addEventListener('btp-wallet-updated', refreshActivityCache);
+    return () => window.removeEventListener('btp-wallet-updated', refreshActivityCache);
+  }, [refreshActivityCache]);
 
   useEffect(() => {
     if (step !== 1 || deposit) return undefined;
@@ -192,7 +214,7 @@ export default function Deposit() {
         }
         return <MethodPicker features={features} onPick={(m) => { setMethod(m); setStep(2); }} />;
       })()}
-      {step === 2 && method === 'crypto' && features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false && <CryptoDepositForm onSuccess={(d) => { setDeposit(d); setStep(3); }} />}
+      {step === 2 && method === 'crypto' && features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false && <CryptoDepositForm onSuccess={handleDepositCreated} />}
       {step === 2 && method === 'mobile_money' && (
         (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
         || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
@@ -200,8 +222,7 @@ export default function Deposit() {
         || features?.wallet_usd_enabled !== false
       ) && <MobileMoneyForm onSuccess={(d) => {
         sessionStorage.setItem(ACTIVE_MOMO_DEPOSIT_KEY, d.id);
-        setDeposit({ ...d, __momo: true });
-        setStep(3);
+        handleDepositCreated(d, true);
       }} />}
       {step === 3 && deposit?.__momo && <MobileMoneyTracker deposit={deposit} />}
       {step === 3 && deposit && !deposit.__momo && <CryptoDepositTracker deposit={deposit} />}
@@ -230,12 +251,15 @@ function MethodPicker({ features, onPick }) {
     || features?.wallet_gnf_enabled !== false || features?.wallet_cdf_enabled !== false
     || features?.wallet_usd_enabled !== false
   );
-  const [providerAvailable, setProviderAvailable] = useState(false);
-  useEffect(() => {
-    api.get('/deposits/config').then(({ data }) => {
-      setProviderAvailable(data.mobile_money_enabled === true);
-    }).catch(() => setProviderAvailable(false));
-  }, []);
+  const { data: depositConfig } = useQuery({
+    queryKey: ['deposit-config'],
+    queryFn: async () => {
+      const { data } = await api.get('/deposits/config');
+      return data;
+    },
+    staleTime: 10_000,
+  });
+  const providerAvailable = depositConfig?.mobile_money_enabled === true;
   const methods = [
     { key: 'crypto', I: Bitcoin, c: 'bg-orange-50 text-orange-600', l: 'Crypto', d: 'USDT · USDC · BTC · ETH — Multi-réseaux', enabled: cryptoOn },
     { key: 'mobile_money', I: Smartphone, c: 'bg-emerald-50 text-emerald-600', l: 'Mobile Money', d: 'Orange, MTN, Moov, Wave…', enabled: mmOn && providerAvailable },
@@ -260,8 +284,20 @@ function MethodPicker({ features, onPick }) {
 
 function CryptoDepositForm({ onSuccess }) {
   const { user } = useAuth();
-  const [assets, setAssets] = useState([]);
-  const [assetsError, setAssetsError] = useState('');
+  const assetsQuery = useQuery({
+    queryKey: ['crypto-deposit-assets'],
+    queryFn: async () => {
+      const { data } = await api.get('/crypto/assets');
+      return Array.isArray(data) ? data : [];
+    },
+    staleTime: 30_000,
+  });
+  const assets = assetsQuery.data || EMPTY_CRYPTO_ASSETS;
+  const assetsError = assetsQuery.isError
+    ? 'Impossible de charger les actifs crypto.'
+    : !assetsQuery.isPending && !assets.length
+      ? 'Aucun actif crypto avec un taux USDT configuré n’est disponible.'
+      : '';
   const [fullName, setFullName] = useState(user?.full_name || '');
   const [email, setEmail] = useState(user?.email || '');
   const [refundAddress, setRefundAddress] = useState('');
@@ -269,15 +305,17 @@ function CryptoDepositForm({ onSuccess }) {
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
   const idempotencyRef = useRef({ fingerprint: '', key: '' });
+  const assetDefaultAppliedRef = useRef(false);
 
   useEffect(() => {
-    api.get('/crypto/assets').then(({ data }) => {
-      setAssets(data);
-      const usdtTrc = data.find((a) => a.asset_code === 'USDT.TRC20') || data[0];
-      if (usdtTrc) setAssetCode(usdtTrc.asset_code);
-      if (!data.length) setAssetsError('Aucun actif crypto avec un taux USDT configuré n’est disponible.');
-    }).catch(() => setAssetsError('Impossible de charger les actifs crypto.'));
-  }, []);
+    if (assets.length > 0 && !assetDefaultAppliedRef.current) {
+      const usdtTrc = assets.find((a) => a.asset_code === 'USDT.TRC20') || assets[0];
+      if (usdtTrc) {
+        setAssetCode(usdtTrc.asset_code);
+        assetDefaultAppliedRef.current = true;
+      }
+    }
+  }, [assets]);
 
   const asset = assets.find((a) => a.asset_code === assetCode);
   const amt = parseFloat(amount) || 0;
@@ -568,8 +606,26 @@ function SoonMobileMoney() {
 }
 
 function MobileMoneyForm({ onSuccess }) {
-  const [catalog, setCatalog] = useState([]);
-  const [provider, setProvider] = useState(null);
+  const { data: depositConfig, isPending: modeLoading } = useQuery({
+    queryKey: ['deposit-config'],
+    queryFn: async () => {
+      const { data } = await api.get('/deposits/config');
+      return data;
+    },
+    staleTime: 10_000,
+  });
+  const catalog = useMemo(() => {
+    const rows = depositConfig?.catalog || [];
+    return rows.length && rows[0]?.operators
+      ? rows
+      : Object.values(rows.reduce((acc, row) => {
+        const key = row.country;
+        if (!acc[key]) acc[key] = { country: key, country_label: row.country_label || key, operators: [] };
+        acc[key].operators.push(row);
+        return acc;
+      }, {}));
+  }, [depositConfig]);
+  const providerAvailable = depositConfig?.mobile_money_enabled === true;
   const [country, setCountry] = useState('');
   const [operator, setOperator] = useState('');
   const [phone, setPhone] = useState('');
@@ -578,7 +634,6 @@ function MobileMoneyForm({ onSuccess }) {
   const [fullName, setFullName] = useState('');
   const [otp, setOtp] = useState('');
   const [feeBearer, setFeeBearer] = useState('merchant');
-  const [modeLoading, setModeLoading] = useState(true);
   const [psrAssetError, setPsrAssetError] = useState('');
   const [loading, setLoading] = useState(false);
   const psrPollRef = useRef(null);
@@ -590,25 +645,6 @@ function MobileMoneyForm({ onSuccess }) {
   }, []);
 
   useEffect(() => {
-    api.get('/deposits/config').then(({ data }) => {
-      const rows = data.catalog || [];
-      const grouped = rows.length && rows[0]?.operators
-        ? rows
-        : Object.values(rows.reduce((acc, row) => {
-          const key = row.country;
-          if (!acc[key]) acc[key] = { country: key, country_label: row.country_label || key, operators: [] };
-          acc[key].operators.push(row);
-          return acc;
-        }, {}));
-      setCatalog(grouped);
-      setProvider({
-        enabled: data.mobile_money_enabled === true,
-        mobile_money_enabled: data.mobile_money_enabled === true,
-      });
-      return null;
-    }).catch(() => {
-      setProvider({ enabled: false, mobile_money_enabled: false });
-    }).finally(() => setModeLoading(false));
     if (user?.email) setEmail(user.email);
     if (user?.full_name) setFullName(user.full_name);
   }, [user]);
@@ -730,7 +766,7 @@ function MobileMoneyForm({ onSuccess }) {
     } finally { setLoading(false); }
   };
 
-  if (!modeLoading && (!provider?.enabled || !provider?.mobile_money_enabled)) {
+  if (!modeLoading && !providerAvailable) {
     return (
       <div className="bg-white border border-slate-100 rounded-2xl p-6 text-center" data-testid="momo-disabled">
         <h2 className="font-cabinet text-lg font-extrabold text-slate-900">Mobile Money indisponible</h2>

@@ -6,15 +6,16 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
+import { useAuth } from '@/context/AuthContext';
 
 const flags = { CI: 'CI', SN: 'SN', TG: 'TG', ML: 'ML', BF: 'BF', CM: 'CM', BJ: 'BJ' };
 
 export default function AdminUsers() {
+  const { user: me } = useAuth();
   const [users, setUsers] = useState([]);
   const [q, setQ] = useState('');
   const [kyc, setKyc] = useState('');
   const [status, setStatus] = useState('');
-  const [me, setMe] = useState(null);
   const nav = useNavigate();
 
   const load = () => {
@@ -25,7 +26,6 @@ export default function AdminUsers() {
   // `load` is intentionally recreated with the active filters.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [kyc, status]);
-  useEffect(() => { api.get('/auth/me').then(({ data }) => setMe(data)).catch(() => {}); }, []);
 
   const exportCsv = () => {
     const rows = [['ID', 'Name', 'Username', 'Email', 'Phone', 'Country', 'KYC', 'XOF', 'XAF', 'USDT', 'Status', 'Created']];

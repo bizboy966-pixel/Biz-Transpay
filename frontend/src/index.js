@@ -9,7 +9,14 @@ import { initializePwaInstall } from '@/lib/pwaInstall';
 initializePwaInstall();
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: false } },
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  },
 });
 
 const root = ReactDOM.createRoot(document.getElementById('root'));

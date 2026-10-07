@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useQuery } from '@tanstack/react-query';
 import { Download, Search, SlidersHorizontal } from 'lucide-react';
 import api from '@/api';
+import { useAuth } from '@/context/AuthContext';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem, { money, typeLabel, TYPE_LABELS, STATUS_LABELS } from './TransactionListItem';
 
@@ -16,34 +18,45 @@ function csvValue(value) {
 
 export default function Transactions() {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const [params] = useSearchParams();
   const [q, setQ] = useState(params.get('q') || '');
   const [type, setType] = useState('all');
   const [status, setStatus] = useState('all');
-  const [txs, setTxs] = useState([]);
+  const [debouncedQ, setDebouncedQ] = useState(params.get('q') || '');
   const [selectedTx, setSelectedTx] = useState(null);
-  const [loading, setLoading] = useState(false);
 
-  const load = () => {
-    const query = {};
-    if (q.trim()) query.q = q.trim();
-    if (type !== 'all') query.type = type;
-    if (status !== 'all') query.status = status;
-    setLoading(true);
-    api.get('/transactions', { params: query })
-      .then(({ data }) => setTxs(Array.isArray(data) ? data : []))
-      .catch(() => setTxs([]))
-      .finally(() => setLoading(false));
-  };
-
-  // `load` is intentionally recreated with the active filters.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [type, status]);
   useEffect(() => {
-    const timer = setTimeout(load, 250);
+    const timer = setTimeout(() => setDebouncedQ(q.trim()), 250);
     return () => clearTimeout(timer);
-    /* eslint-disable-next-line */
   }, [q]);
+
+  const transactionsQuery = useQuery({
+    queryKey: ['transactions', {
+      userId: user?.id,
+      q: debouncedQ,
+      type,
+      status,
+    }],
+    queryFn: async ({ signal }) => {
+      const query = {};
+      if (debouncedQ) query.q = debouncedQ;
+      if (type !== 'all') query.type = type;
+      if (status !== 'all') query.status = status;
+      const { data } = await api.get('/transactions', { params: query, signal });
+      return Array.isArray(data) ? data : [];
+    },
+    staleTime: 5_000,
+    placeholderData: (previousData, previousQuery) => (
+      previousQuery?.queryKey?.[1]?.userId === user?.id
+        ? previousData
+        : undefined
+    ),
+    retry: false,
+    enabled: Boolean(user?.id),
+  });
+  const txs = transactionsQuery.data || [];
+  const loading = transactionsQuery.isPending;
 
   const exportCsv = () => {
     const rows = [['Référence Biz-transPay', 'Type', 'Direction', 'Montant', 'Devise', 'Statut', 'Identifiant externe', 'Référence prestataire', 'TXID', 'Date']];
@@ -102,6 +115,11 @@ export default function Transactions() {
           </div>
         </div>
         <p className="mt-2 truncate text-[11px] text-slate-400">Recherche par référence/ID Biz-transPay, ID EasyChangePay, adresse crypto, TXID, téléphone, e-mail ou montant.</p>
+        {transactionsQuery.isFetching && !loading && (
+          <p className="mt-2 text-[11px] text-slate-400" role="status" aria-live="polite">
+            Actualisation de l’historique…
+          </p>
+        )}
       </div>
 
       <div className="min-w-0 overflow-hidden rounded-[20px] border border-slate-100 bg-white">

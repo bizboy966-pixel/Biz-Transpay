@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ArrowDown, ArrowLeftRight, Loader2, CheckCircle2, ShieldCheck, Info } from 'lucide-react';
 import { toast } from 'sonner';
@@ -17,38 +18,47 @@ const BASE_CUR = {
 
 export default function Exchange() {
   const { user, refresh } = useAuth();
+  const queryClient = useQueryClient();
   const features = useFeatures();
-  const [cfg, setCfg] = useState(null);
-  const [cryptoWallets, setCryptoWallets] = useState([]);
-  const [cryptoCatalogError, setCryptoCatalogError] = useState('');
+  const { data: cfg = null } = useQuery({
+    queryKey: ['conversion-config'],
+    queryFn: async () => {
+      const { data } = await api.get('/conversion/config');
+      return data;
+    },
+    staleTime: 10_000,
+  });
+  const {
+    data: cryptoWallets = [],
+    isError: cryptoWalletsFailed,
+    error: cryptoWalletsError,
+  } = useQuery({
+    queryKey: ['conversion-crypto-wallets', user?.id],
+    queryFn: async () => {
+      try {
+        const { data } = await api.get('/conversion/crypto-wallets');
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        const detail = error.response?.data?.detail;
+        throw new Error(
+          typeof detail === 'string'
+            ? detail
+            : 'Impossible de charger les portefeuilles crypto disponibles.',
+        );
+      }
+    },
+    staleTime: 10_000,
+    enabled: Boolean(user?.id),
+  });
+  const cryptoCatalogError = cryptoWalletsFailed
+    ? cryptoWalletsError?.message || 'Impossible de charger les portefeuilles crypto disponibles.'
+    : '';
   const [fromCur, setFromCur] = useState('');
   const [toCur, setToCur] = useState('');
   const [amount, setAmount] = useState('');
   const [quote, setQuote] = useState(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
-
-  const loadCryptoWallets = async () => {
-    try {
-      const { data } = await api.get('/conversion/crypto-wallets');
-      setCryptoWallets(Array.isArray(data) ? data : []);
-      setCryptoCatalogError('');
-    } catch (error) {
-      const detail = error.response?.data?.detail;
-      setCryptoCatalogError(
-        typeof detail === 'string'
-          ? detail
-          : 'Impossible de charger les portefeuilles crypto disponibles.',
-      );
-      setCryptoWallets([]);
-    }
-  };
-
-  useEffect(() => {
-    api.get('/conversion/config').then(({ data }) => setCfg(data)).catch(() => {});
-    loadCryptoWallets();
-    // eslint-disable-next-line
-  }, []);
 
   const CUR = useMemo(() => {
     const cryptoCurrencies = cryptoWallets.map((wallet) => ({
@@ -163,7 +173,13 @@ export default function Exchange() {
       });
       setDone(data);
       await refresh?.();
-      await loadCryptoWallets();
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({
+        queryKey: ['dashboard-recent-transactions', user?.id],
+      });
+      await queryClient.invalidateQueries({
+        queryKey: ['conversion-crypto-wallets', user?.id],
+      });
       toast.success('Conversion effectuée');
     } catch (e) { toast.error(e.response?.data?.detail || 'Erreur'); }
     finally { setBusy(false); }

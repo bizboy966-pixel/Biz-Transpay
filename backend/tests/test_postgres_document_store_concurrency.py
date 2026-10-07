@@ -24,6 +24,7 @@ class FakePostgres:
             for doc in docs
         }
         self.locks = {}
+        self.fetch_calls = []
 
     def acquire(self):
         return _Acquire(self)
@@ -69,13 +70,26 @@ class _Connection:
     def transaction(self):
         return _Transaction(self)
 
-    async def fetch(self, query, collection):
+    async def fetch(self, query, collection, *args):
         await asyncio.sleep(0)
-        return [
-            {"document": value}
-            for (name, _), value in list(self.pool.documents.items())
-            if name == collection
-        ]
+        self.pool.fetch_calls.append((query, (collection, *args)))
+        candidate_filter = json.loads(args[0]) if "jsonb_each" in query else {}
+        rows = []
+        for (name, _), value in list(self.pool.documents.items()):
+            if name != collection:
+                continue
+            document = json.loads(value)
+            if any(
+                document.get(field) != expected
+                and not (
+                    isinstance(document.get(field), list)
+                    and expected in document[field]
+                )
+                for field, expected in candidate_filter.items()
+            ):
+                continue
+            rows.append({"document": value})
+        return rows
 
     async def execute(self, query, *args):
         if "pg_advisory_xact_lock" in query:
@@ -143,6 +157,39 @@ def test_concurrent_conditional_wallet_debits_and_idempotency_upserts():
         assert len(markers) == 1
         assert markers[0]["status"] == "claimed"
         assert sum(result.upserted_id is not None for result in marker_results) == 1
+
+    asyncio.run(scenario())
+
+
+def test_string_filter_pushdown_preserves_array_matching_and_complex_filters():
+    async def scenario():
+        pool = FakePostgres({
+            "transactions": [
+                {"id": "tx-1", "user_id": "user-1", "status": "completed"},
+                {"id": "tx-2", "user_id": "user-1", "status": "pending"},
+                {"id": "tx-3", "user_id": "user-2", "status": "completed"},
+                {"id": "tx-4", "user_id": ["user-1"], "status": "completed"},
+            ],
+        })
+        store = PostgresDocumentStore("unused")
+        store.pool = pool
+
+        rows = await store.transactions.find({
+            "user_id": "user-1",
+            "status": {"$in": ["completed"]},
+        }).to_list()
+
+        assert {row["id"] for row in rows} == {"tx-1", "tx-4"}
+        sql, args = pool.fetch_calls[-1]
+        assert "jsonb_each" in sql
+        assert args[0] == "transactions"
+        assert json.loads(args[1]) == {"user_id": "user-1"}
+
+        limited = await store.transactions.find({"user_id": "user-1"}).limit(1).to_list()
+        assert len(limited) == 1
+        sql, args = pool.fetch_calls[-1]
+        assert "LIMIT $3" in sql
+        assert args[2] == 1
 
     asyncio.run(scenario())
 

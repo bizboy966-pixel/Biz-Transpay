@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Search, Filter, ShieldAlert, X, Eye, EyeOff } from 'lucide-react';
 import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
+import { prefetchPageForRoute } from '@/pageLoaders';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem from './TransactionListItem';
 import walletReferenceCard from '@/assets/wallet-reference-card.jpg';
@@ -16,32 +18,48 @@ export default function DashboardHome() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { user, refresh } = useAuth();
+  const queryClient = useQueryClient();
   const features = useFeatures();
-  const [txs, setTxs] = useState([]);
+  const { data: txs = [] } = useQuery({
+    queryKey: ['dashboard-recent-transactions', user?.id, RECENT_TRANSACTIONS_LIMIT],
+    queryFn: async () => {
+      const { data } = await api.get('/transactions', {
+        params: { limit: RECENT_TRANSACTIONS_LIMIT },
+      });
+      return Array.isArray(data) ? data.slice(0, RECENT_TRANSACTIONS_LIMIT) : [];
+    },
+    staleTime: 5_000,
+    enabled: Boolean(user?.id),
+  });
   const [selectedTx, setSelectedTx] = useState(null);
   const [query, setQuery] = useState('');
   const [showKycBanner, setShowKycBanner] = useState(true);
   const [hidden, setHidden] = useState(() => localStorage.getItem('btp_balance_hidden') === '1');
-  const [activeCryptoWallets, setActiveCryptoWallets] = useState([]);
-  const [cryptoWalletsLoading, setCryptoWalletsLoading] = useState(true);
+  const { data: activeCryptoWallets = [], isPending: cryptoWalletsLoading } = useQuery({
+    queryKey: ['conversion-crypto-wallets', user?.id],
+    queryFn: async () => {
+      const { data } = await api.get('/conversion/crypto-wallets');
+      return Array.isArray(data) ? data : [];
+    },
+    staleTime: 10_000,
+    enabled: Boolean(user?.id),
+  });
   const [selectedCryptoWallet, setSelectedCryptoWallet] = useState('');
 
   useEffect(() => {
-    const loadDashboard = () => {
-      api.get('/transactions', { params: { limit: RECENT_TRANSACTIONS_LIMIT } })
-        .then(({ data }) => setTxs(Array.isArray(data) ? data.slice(0, RECENT_TRANSACTIONS_LIMIT) : []))
-        .catch(() => setTxs([]));
-      api.get('/conversion/crypto-wallets')
-        .then(({ data }) => setActiveCryptoWallets(Array.isArray(data) ? data : []))
-        .catch(() => setActiveCryptoWallets([]))
-        .finally(() => setCryptoWalletsLoading(false));
+    const refreshDashboard = () => {
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+      queryClient.invalidateQueries({
+        queryKey: ['dashboard-recent-transactions', user?.id],
+      });
+      queryClient.invalidateQueries({
+        queryKey: ['conversion-crypto-wallets', user?.id],
+      });
       refresh();
     };
-    loadDashboard();
-    window.addEventListener('btp-wallet-updated', loadDashboard);
-    return () => window.removeEventListener('btp-wallet-updated', loadDashboard);
-    // eslint-disable-next-line
-  }, []);
+    window.addEventListener('btp-wallet-updated', refreshDashboard);
+    return () => window.removeEventListener('btp-wallet-updated', refreshDashboard);
+  }, [queryClient, refresh, user?.id]);
 
   const toggleHidden = () => {
     const nv = !hidden;
@@ -113,7 +131,14 @@ export default function DashboardHome() {
           <div className="flex-1 min-w-0">
             <div className="font-cabinet font-bold text-slate-900 text-xs sm:text-sm">{t('dashboard.kyc_banner_title')}</div>
             <p className="mt-0.5 text-[11px] sm:text-xs text-slate-700">{t('dashboard.kyc_banner_body')}</p>
-            <Link to="/dashboard/kyc" data-testid="btn-kyc-cta" className="mt-2 inline-flex items-center gap-1.5 bg-orange-500 hover:bg-orange-600 text-white font-semibold px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-[11px] sm:text-xs">
+            <Link
+              to="/dashboard/kyc"
+              onMouseEnter={() => prefetchPageForRoute('/dashboard/kyc')}
+              onFocus={() => prefetchPageForRoute('/dashboard/kyc')}
+              onTouchStart={() => prefetchPageForRoute('/dashboard/kyc')}
+              data-testid="btn-kyc-cta"
+              className="mt-2 inline-flex items-center gap-1.5 bg-orange-500 hover:bg-orange-600 text-white font-semibold px-3 sm:px-4 py-1.5 sm:py-2 rounded-full text-[11px] sm:text-xs"
+            >
               {t('dashboard.kyc_banner_cta')}
             </Link>
           </div>
@@ -208,6 +233,9 @@ export default function DashboardHome() {
             <button
               key={a.key}
               onClick={() => nav(a.to)}
+              onMouseEnter={() => prefetchPageForRoute(a.to)}
+              onFocus={() => prefetchPageForRoute(a.to)}
+              onTouchStart={() => prefetchPageForRoute(a.to)}
               data-testid={`quick-action-${a.key}`}
               className="group flex flex-col items-center gap-1.5 sm:gap-2 py-2.5 sm:py-3 rounded-xl hover:bg-slate-50 transition-colors active:scale-95"
             >
@@ -240,7 +268,16 @@ export default function DashboardHome() {
       <div className="bg-white border border-slate-100 rounded-2xl shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
         <div className="p-4 sm:p-6 flex items-center justify-between border-b border-slate-100">
           <h3 className="font-cabinet font-bold text-slate-900 text-sm sm:text-lg">{t('dashboard.recent_activity')}</h3>
-          <Link to="/dashboard/transactions" className="text-xs sm:text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]" data-testid="link-all-tx">{t('hero.see_all')} →</Link>
+          <Link
+            to="/dashboard/transactions"
+            onMouseEnter={() => prefetchPageForRoute('/dashboard/transactions')}
+            onFocus={() => prefetchPageForRoute('/dashboard/transactions')}
+            onTouchStart={() => prefetchPageForRoute('/dashboard/transactions')}
+            className="text-xs sm:text-sm font-semibold text-[#2563EB] hover:text-[#1D4ED8]"
+            data-testid="link-all-tx"
+          >
+            {t('hero.see_all')} →
+          </Link>
         </div>
         <div className="divide-y divide-slate-50">
           {txs.length === 0 && <div className="p-8 sm:p-10 text-center text-slate-400 text-xs sm:text-sm">{t('dashboard.no_tx')}</div>}

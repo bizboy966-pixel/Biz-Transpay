@@ -1,16 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import api from '@/api';
 
-/** Public /settings/features cached in-memory for the current session.
- *  Refreshed each time useFeatures() mounts so admin toggles reflect quickly. */
+export const FEATURES_QUERY_KEY = ['public-features'];
+
+const DEFAULT_FEATURES = { mobile_money_enabled: true, crypto_enabled: true };
+
+/** Share the small public feature response between pages; admin saves invalidate it. */
 export function useFeatures() {
-  const [features, setFeatures] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    api.get('/settings/features')
-      .then(({ data }) => { if (alive) setFeatures(data); })
-      .catch(() => { if (alive) setFeatures({ mobile_money_enabled: true, crypto_enabled: true }); });
-    return () => { alive = false; };
-  }, []);
-  return features;
+  const { data } = useQuery({
+    queryKey: FEATURES_QUERY_KEY,
+    queryFn: async () => {
+      try {
+        const { data: features } = await api.get('/settings/features');
+        return features;
+      } catch {
+        return DEFAULT_FEATURES;
+      }
+    },
+    staleTime: 15_000,
+  });
+  return data ?? null;
 }
