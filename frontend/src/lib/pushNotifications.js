@@ -5,13 +5,20 @@ import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 const TOKEN_KEY = 'btp_push_token';
 export const PUSH_OPT_IN_DISMISSED_KEY = 'btp_push_opt_in_dismissed';
 let unsubscribeForeground = null;
+let browserPushStartPromise = null;
 
-export async function startBrowserPush({ requestPermission = false } = {}) {
+async function registerBrowserPush({ requestPermission = false, configData = null } = {}) {
   if (!('Notification' in window) || !('serviceWorker' in navigator)) return null;
-  const { data } = await api.get('/push/config');
+  if (requestPermission && await Notification.requestPermission() !== 'granted') {
+    throw new Error('Autorisation de notifications refusée.');
+  }
+  if (Notification.permission !== 'granted') return null;
+  let data = configData;
+  if (!data) {
+    const response = await api.get('/push/config');
+    data = response.data;
+  }
   if (!data?.configured || !data?.server_configured || !data.config) return null;
-  if (Notification.permission !== 'granted' && !requestPermission) return null;
-  if (requestPermission && await Notification.requestPermission() !== 'granted') throw new Error('Autorisation de notifications refusée.');
   const app = getApps().length ? getApps()[0] : initializeApp(data.config);
   const messaging = getMessaging(app);
   await navigator.serviceWorker.register('/firebase-messaging-sw.js');
@@ -35,6 +42,14 @@ export async function startBrowserPush({ requestPermission = false } = {}) {
   return token;
 }
 
+export function startBrowserPush(options = {}) {
+  if (!browserPushStartPromise) {
+    browserPushStartPromise = registerBrowserPush(options)
+      .finally(() => { browserPushStartPromise = null; });
+  }
+  return browserPushStartPromise;
+}
+
 export function disposeBrowserPush() {
   if (unsubscribeForeground) unsubscribeForeground();
   unsubscribeForeground = null;
@@ -46,13 +61,17 @@ export async function enableBrowserPush() {
   if (!('Notification' in window) || !('serviceWorker' in navigator)) {
     throw new Error('Ce navigateur ne prend pas en charge les notifications push.');
   }
+  // Request permission synchronously from the click handler, before network
+  // work can consume the browser's transient user activation.
+  if (Notification.permission !== 'granted') {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') throw new Error('Autorisation de notifications refusée.');
+  }
   const { data } = await api.get('/push/config');
   if (!data?.configured || !data?.server_configured || !data.config) {
     throw new Error('Les notifications push ne sont pas encore configurées.');
   }
-  const permission = await Notification.requestPermission();
-  if (permission !== 'granted') throw new Error('Autorisation de notifications refusée.');
-  const token = await startBrowserPush();
+  const token = await startBrowserPush({ configData: data });
   if (!token) throw new Error('Impossible de créer le jeton de notifications.');
   return token;
 }

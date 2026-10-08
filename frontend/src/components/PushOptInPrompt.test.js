@@ -6,6 +6,7 @@ import {
   currentPushToken,
   enableBrowserPush,
   PUSH_OPT_IN_DISMISSED_KEY,
+  startBrowserPush,
 } from '../lib/pushNotifications';
 import { toast } from 'sonner';
 import PushOptInPrompt from './PushOptInPrompt';
@@ -32,7 +33,7 @@ jest.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key) => ({
       'push.title': 'Activez les notifications.',
-      'push.body': 'Autorisez Bitranspa à vous envoyer des notifications.',
+      'push.body': 'Activez les notifications push pour recevoir les informations importantes, les mises à jour et les alertes de votre compte Biz-transPay.',
       'push.allow': 'Activer les notifications',
       'push.later': 'Plus tard',
       'push.enabled': 'Notifications activées',
@@ -59,6 +60,7 @@ describe('PushOptInPrompt', () => {
     useAuth.mockReturnValue({ user: { id: 'merchant-1' }, loading: false });
     currentPushToken.mockReturnValue(null);
     enableBrowserPush.mockResolvedValue('push-token');
+    startBrowserPush.mockResolvedValue(null);
     api.get.mockResolvedValue({
       data: { configured: true, server_configured: true },
     });
@@ -110,8 +112,8 @@ describe('PushOptInPrompt', () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(container.querySelector('[data-testid="push-opt-in-modal"]')?.textContent)
-      .toContain('Activez les notifications.');
-    expect(container.textContent).toContain('Autorisez Bitranspa à vous envoyer des notifications.');
+      .toContain('Activez les notifications');
+    expect(container.textContent).toContain('les alertes de votre compte Biz-transPay');
   });
 
   it('lets the user defer the prompt and keeps the profile option available', async () => {
@@ -134,9 +136,27 @@ describe('PushOptInPrompt', () => {
     expect(toast.success).toHaveBeenCalledWith('Notifications activées');
   });
 
-  it('does not display the prompt if browser notifications were already denied', async () => {
+  it('keeps reminding users whose browser permission is blocked', async () => {
     window.Notification.permission = 'denied';
     await renderPrompt();
+    expect(api.get).toHaveBeenCalledWith('/push/config');
+    expect(container.querySelector('[data-testid="push-opt-in-modal"]')?.textContent)
+      .toContain('Les notifications sont bloquées.');
+  });
+
+  it('does not treat browser permission alone as an active push registration', async () => {
+    window.Notification.permission = 'granted';
+    await renderPrompt();
+    expect(startBrowserPush).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="push-opt-in-modal"]')).not.toBeNull();
+  });
+
+  it('suppresses the reminder only after an existing token is registered successfully', async () => {
+    window.Notification.permission = 'granted';
+    currentPushToken.mockReturnValue('saved-token');
+    startBrowserPush.mockResolvedValue('registered-token');
+    await renderPrompt();
+    expect(startBrowserPush).toHaveBeenCalledTimes(1);
     expect(api.get).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="push-opt-in-modal"]')).toBeNull();
   });

@@ -273,8 +273,8 @@ const resources = {
         fixed: 'fixe', from: 'à partir de', to: 'jusqu’à', unavailable: 'Indisponible',
       },
       push: {
-        title: 'Activez les notifications.',
-        body: 'Autorisez Bitranspa à vous envoyer des notifications.',
+        title: 'Activez les notifications',
+        body: 'Activez les notifications push pour recevoir les informations importantes, les mises à jour et les alertes de votre compte Biz-transPay.',
         allow: 'Activer les notifications',
         later: 'Plus tard',
         enabled: 'Notifications activées',
@@ -429,8 +429,8 @@ const resources = {
         asset: 'Asset', fee: 'Fee', limits: 'Limits', no_data: 'No active fee is configured.',
         fixed: 'fixed', from: 'from', to: 'to', unavailable: 'Unavailable' },
       push: {
-        title: 'Enable notifications.',
-        body: 'Allow Bitranspa to send you notifications.',
+        title: 'Enable notifications',
+        body: 'Enable push notifications to receive important information, updates, and alerts about your Biz-transPay account.',
         allow: 'Enable notifications',
         later: 'Later',
         enabled: 'Notifications enabled',

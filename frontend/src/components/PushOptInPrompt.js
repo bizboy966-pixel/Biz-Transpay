@@ -33,31 +33,47 @@ export default function PushOptInPrompt() {
     if (loading || !userId || !isAuthenticatedArea) {
       return () => { active = false; };
     }
-    if (currentPushToken()) return () => { active = false; };
-
     const NotificationAPI = window.Notification;
     if (!NotificationAPI || !navigator.serviceWorker) {
-      return () => { active = false; };
-    }
-    if (NotificationAPI.permission === 'denied') {
-      return () => { active = false; };
-    }
-    if (NotificationAPI.permission === 'granted') {
-      startBrowserPush().catch(() => {});
       return () => { active = false; };
     }
     if (sessionStorage.getItem(PUSH_OPT_IN_DISMISSED_KEY)) {
       return () => { active = false; };
     }
 
-    api.get('/push/config')
-      .then(({ data }) => {
-        if (active && data?.configured && data?.server_configured) setOpen(true);
-      })
-      .catch(() => {});
+    const checkPushStatus = async () => {
+      const permission = NotificationAPI.permission;
+      if (permission === 'granted' && currentPushToken()) {
+        try {
+          // A saved browser permission or token alone is not proof of an
+          // active subscription. Refresh the FCM token and confirm the API
+          // accepted its registration before suppressing the reminder.
+          const token = await startBrowserPush();
+          if (!active) return;
+          if (token) {
+            sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
+            setOpen(false);
+            return;
+          }
+        } catch {
+          // A failed registration is treated as not enabled; show the prompt
+          // only if both sides of Firebase push are configured.
+        }
+      }
+
+      try {
+        const { data } = await api.get('/push/config');
+        if (!active || !data?.configured || !data?.server_configured) return;
+        if (NotificationAPI.permission === 'denied') setError(t('push.blocked'));
+        setOpen(true);
+      } catch {
+        // The prompt cannot enable push until the server is reachable.
+      }
+    };
+    checkPushStatus();
 
     return () => { active = false; };
-  }, [isAuthenticatedArea, loading, userId]);
+  }, [isAuthenticatedArea, loading, t, userId]);
 
   const dismiss = () => {
     sessionStorage.setItem(PUSH_OPT_IN_DISMISSED_KEY, '1');
