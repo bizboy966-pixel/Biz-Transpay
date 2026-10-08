@@ -123,6 +123,29 @@ describe('PushOptInPrompt', () => {
     });
     expect(container.querySelector('[data-testid="push-opt-in-modal"]')).toBeNull();
     expect(sessionStorage.getItem(PUSH_OPT_IN_DISMISSED_KEY)).toBe('1');
+    expect(enableBrowserPush).not.toHaveBeenCalled();
+  });
+
+  it('shows the reminder again after a fresh login if the user never enabled push', async () => {
+    await renderPrompt();
+    await act(async () => {
+      container.querySelector('[data-testid="push-opt-in-later"]').click();
+    });
+
+    useAuth.mockReturnValue({ user: null, loading: false });
+    await act(async () => {
+      root.render(<PushOptInPrompt />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // AuthContext clears this value when a new login succeeds.
+    sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
+    useAuth.mockReturnValue({ user: { id: 'merchant-1' }, loading: false });
+    await act(async () => {
+      root.render(<PushOptInPrompt />);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector('[data-testid="push-opt-in-modal"]')).not.toBeNull();
   });
 
   it('requests opt-in only after the user presses the activation button', async () => {

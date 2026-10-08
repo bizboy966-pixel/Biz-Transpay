@@ -20,7 +20,7 @@ jest.mock('firebase/messaging', () => ({
 import api from '../api';
 import { initializeApp, getApps } from 'firebase/app';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
-import { startBrowserPush } from './pushNotifications';
+import { enableBrowserPush, startBrowserPush } from './pushNotifications';
 
 describe('browser push registration', () => {
   let activeRegistration;
@@ -30,7 +30,10 @@ describe('browser push registration', () => {
     activeRegistration = { active: { state: 'activated' } };
     Object.defineProperty(window, 'Notification', {
       configurable: true,
-      value: { permission: 'granted' },
+      value: {
+        permission: 'granted',
+        requestPermission: jest.fn().mockResolvedValue('granted'),
+      },
     });
     Object.defineProperty(navigator, 'serviceWorker', {
       configurable: true,
@@ -87,5 +90,50 @@ describe('browser push registration', () => {
     );
     expect(getToken).not.toHaveBeenCalled();
     expect(api.post).not.toHaveBeenCalled();
+  });
+
+  it('requests browser permission before starting any network request', async () => {
+    const order = [];
+    window.Notification.permission = 'default';
+    window.Notification.requestPermission = jest.fn().mockImplementation(async () => {
+      order.push('permission');
+      window.Notification.permission = 'granted';
+      return 'granted';
+    });
+    api.get.mockImplementation(async () => {
+      order.push('config');
+      return {
+        data: {
+          configured: true,
+          server_configured: true,
+          config: { apiKey: 'public-key', vapidKey: 'public-vapid-key' },
+        },
+      };
+    });
+
+    await expect(enableBrowserPush()).resolves.toBe('test-fcm-token');
+    expect(order).toEqual(['permission', 'config']);
+  });
+
+  it('does not contact the server if the browser permission is refused', async () => {
+    window.Notification.permission = 'default';
+    window.Notification.requestPermission = jest.fn().mockResolvedValue('denied');
+
+    await expect(enableBrowserPush()).rejects.toThrow(
+      'Autorisation de notifications refusée.',
+    );
+    expect(api.get).not.toHaveBeenCalled();
+  });
+
+  it('shares one FCM registration when login checks overlap', async () => {
+    const [firstToken, secondToken] = await Promise.all([
+      startBrowserPush(),
+      startBrowserPush(),
+    ]);
+
+    expect(firstToken).toBe('test-fcm-token');
+    expect(secondToken).toBe('test-fcm-token');
+    expect(api.get).toHaveBeenCalledTimes(1);
+    expect(api.post).toHaveBeenCalledTimes(1);
   });
 });

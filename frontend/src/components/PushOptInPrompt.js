@@ -16,6 +16,7 @@ export default function PushOptInPrompt() {
   const { t } = useTranslation();
   const { user, loading } = useAuth();
   const { pathname } = useLocation();
+  const blockedMessage = t('push.blocked');
   const userId = user?.id;
   const isAuthenticatedArea = pathname === '/dashboard'
     || pathname.startsWith('/dashboard/')
@@ -64,7 +65,7 @@ export default function PushOptInPrompt() {
       try {
         const { data } = await api.get('/push/config');
         if (!active || !data?.configured || !data?.server_configured) return;
-        if (NotificationAPI.permission === 'denied') setError(t('push.blocked'));
+        if (NotificationAPI.permission === 'denied') setError(blockedMessage);
         setOpen(true);
       } catch {
         // The prompt cannot enable push until the server is reachable.
@@ -73,7 +74,7 @@ export default function PushOptInPrompt() {
     checkPushStatus();
 
     return () => { active = false; };
-  }, [isAuthenticatedArea, loading, t, userId]);
+  }, [blockedMessage, isAuthenticatedArea, loading, userId]);
 
   const dismiss = () => {
     sessionStorage.setItem(PUSH_OPT_IN_DISMISSED_KEY, '1');
