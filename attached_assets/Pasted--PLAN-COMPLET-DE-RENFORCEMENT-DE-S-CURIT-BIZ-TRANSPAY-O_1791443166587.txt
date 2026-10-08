@@ -1,0 +1,2599 @@
+# PLAN COMPLET DE RENFORCEMENT DE SÉCURITÉ — BIZ-TRANSPAY
+
+**Objectif : renforcer intégralement la sécurité de Biz-transPay sans modifier le fonctionnement métier existant.**  
+Les dépôts, retraits, transferts, échanges, liens de paiement, API, notifications, comptes utilisateurs, KYC, historique, fournisseurs de paiement, administration et autres fonctionnalités doivent continuer à fonctionner exactement selon les règles actuelles.
+
+Le principe doit être : **sécuriser le fonctionnement existant, pas le remplacer.**
+
+L’OWASP recommande notamment de traiter séparément l’authentification, les sessions, les autorisations, la validation, la cryptographie, les API, la protection des données, la journalisation et la logique métier. Pour les API, les risques critiques comprennent notamment les autorisations insuffisantes sur les objets/fonctions, l’authentification défaillante, la consommation excessive de ressources, les flux métier sensibles, les mauvaises configurations, le SSRF et la mauvaise consommation d’API tierces. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+> **Important :** aucune sécurité ne peut garantir mathématiquement « zéro vulnérabilité ». Le bon objectif est de couvrir systématiquement la surface d’attaque, puis de réaliser des tests de sécurité et de non-régression. Une sécurité mal implémentée peut elle-même provoquer un dysfonctionnement ; chaque protection ci-dessous doit donc être **fail-safe, testée et compatible avec les flux existants**.
+
+---
+
+# 1. AUTHENTIFICATION ET COMPTES UTILISATEURS
+
+### 1.1 Protection du login
+Empêcher les tentatives massives de connexion et les attaques par force brute.
+
+**Implémentation :**
+- limitation du nombre de tentatives ;
+- délai progressif après plusieurs échecs ;
+- blocage temporaire ;
+- protection par IP + compte + appareil ;
+- journalisation de chaque tentative ;
+- détection des comportements anormaux.
+
+**Impact fonctionnel :** aucun pour un utilisateur légitime.
+
+### 1.2 Protection contre le credential stuffing
+Détecter l'utilisation automatisée de couples email/mot de passe volés.
+
+### 1.3 Mots de passe robustes
+- longueur minimale ;
+- interdiction des mots de passe extrêmement faibles ;
+- hash sécurisé côté serveur ;
+- jamais de stockage en clair ;
+- jamais de mot de passe dans les logs.
+
+### 1.4 MFA pour les comptes sensibles
+Activer une authentification supplémentaire pour :
+- administrateurs ;
+- comptes à privilèges ;
+- opérations sensibles.
+
+### 1.5 Vérification supplémentaire pour opérations financières
+Pour certaines opérations à risque :
+- retrait important ;
+- changement de numéro ;
+- changement de mot de passe ;
+- changement de sécurité ;
+- ajout d'un bénéficiaire ;
+- changement d'API.
+
+### 1.6 Protection contre l'énumération des comptes
+Les réponses doivent éviter de révéler :
+- si un email existe ;
+- si un numéro existe ;
+- si un compte existe.
+
+### 1.7 Expiration des codes OTP
+Un OTP doit :
+- avoir une durée courte ;
+- être utilisable une seule fois ;
+- être lié à l'opération ;
+- être limité en nombre d'essais.
+
+### 1.8 Anti-abus OTP
+Limiter :
+- envoi SMS ;
+- renvoi OTP ;
+- vérifications ;
+- changement de numéro.
+
+---
+
+# 2. GESTION DES SESSIONS
+
+### 2.1 Sessions sécurisées
+Les sessions doivent utiliser des mécanismes sécurisés et difficiles à deviner.
+
+### 2.2 Rotation des sessions
+Après :
+- connexion ;
+- changement de mot de passe ;
+- changement de privilèges ;
+- reconnexion sensible.
+
+### 2.3 Expiration automatique
+Une session inactive doit expirer selon la politique définie.
+
+### 2.4 Déconnexion globale
+Permettre d'invalider les anciennes sessions après une compromission.
+
+### 2.5 Cookies sécurisés
+Utiliser notamment :
+- Secure ;
+- HttpOnly ;
+- SameSite approprié.
+
+### 2.6 Protection contre le vol de token
+Les tokens ne doivent jamais être :
+- exposés dans les URLs ;
+- enregistrés dans les logs ;
+- envoyés à des services tiers inutilement.
+
+---
+
+# 3. AUTORISATION — PROTECTION DE CHAQUE ENDPOINT
+
+C'est une des protections **les plus importantes** pour Biz-transPay.
+
+L'OWASP souligne qu'un endpoint qui reçoit un identifiant d'objet doit effectuer une vérification d'autorisation au niveau de cet objet. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+### 3.1 Vérification utilisateur → ressource
+
+Un utilisateur ne doit jamais pouvoir accéder à :
+
+`/api/users/123`
+
+simplement parce qu'il remplace `123` par un autre ID.
+
+Le serveur doit vérifier :
+
+**« Cette ressource appartient-elle réellement à cet utilisateur ? »**
+
+### 3.2 Protection IDOR/BOLA
+Bloquer les accès du type :
+- compte d'un autre utilisateur ;
+- transaction d'un autre utilisateur ;
+- wallet d'un autre utilisateur ;
+- KYC d'un autre utilisateur ;
+- lien de paiement d'un autre utilisateur ;
+- retrait d'un autre utilisateur ;
+- API key d'un autre utilisateur.
+
+### 3.3 Autorisation par rôle
+Séparer strictement :
+- utilisateur ;
+- marchand ;
+- développeur ;
+- support ;
+- administrateur ;
+- super-administrateur.
+
+### 3.4 Protection des endpoints administrateur
+Toutes les routes `/admin/*` doivent être protégées côté serveur.
+
+**Jamais uniquement dans React.**
+
+### 3.5 Protection des fonctions cachées
+Une fonction cachée dans l'interface ne doit pas être considérée comme sécurisée.
+
+Si un endpoint existe, il doit avoir sa propre autorisation.
+
+### 3.6 Protection contre l'élévation de privilèges
+Un utilisateur ne doit jamais pouvoir modifier :
+- son rôle ;
+- son statut ;
+- ses permissions ;
+- ses limites ;
+- ses soldes ;
+- ses frais ;
+- son niveau KYC ;
+- ses privilèges administrateur.
+
+---
+
+# 4. PROTECTION DU WALLET ET DU LEDGER
+
+Pour une plateforme financière, c'est **critique**.
+
+### 4.1 Ledger financier immuable
+
+Chaque mouvement doit être enregistré dans un ledger :
+
+- dépôt ;
+- retrait ;
+- transfert ;
+- échange ;
+- frais ;
+- remboursement ;
+- correction ;
+- commission éventuelle.
+
+### 4.2 Aucun solde calculé uniquement depuis le frontend
+
+Le frontend ne doit jamais décider :
+
+`balance = balance + 100000`
+
+Le serveur doit être l'autorité financière.
+
+### 4.3 Transactions atomiques
+
+Une opération financière doit être :
+
+**Tout ou rien.**
+
+Exemple :
+
+> Débit wallet + création transaction + frais + réservation fournisseur
+
+ne doit pas laisser une situation partiellement exécutée.
+
+### 4.4 Protection contre les doubles dépenses
+
+Empêcher :
+
+- deux retraits simultanés ;
+- deux transferts simultanés ;
+- deux confirmations simultanées ;
+
+de dépenser deux fois le même solde.
+
+### 4.5 Verrouillage transactionnel
+
+Utiliser les mécanismes appropriés de transaction/verrouillage de base de données pour éviter les race conditions.
+
+### 4.6 Réservation du solde
+
+Pour un retrait en cours :
+
+`solde disponible → montant réservé → traitement → succès/échec`
+
+et non :
+
+`solde disponible → argent définitivement supprimé immédiatement`.
+
+### 4.7 Aucun crédit sans preuve de paiement
+
+Un dépôt ne doit être crédité que lorsque le backend a obtenu une confirmation fiable.
+
+### 4.8 Aucun montant provenant du frontend comme vérité
+
+Le serveur doit recalculer :
+- montant ;
+- frais ;
+- devise ;
+- total ;
+- montant reçu.
+
+### 4.9 Protection contre les montants négatifs
+
+Bloquer :
+
+`-5000 XOF`
+
+ou valeurs anormales.
+
+### 4.10 Protection contre les nombres extrêmes
+
+Bloquer les montants :
+- trop grands ;
+- NaN ;
+- Infinity ;
+- valeurs décimales invalides ;
+- valeurs hors limites.
+
+---
+
+# 5. IDEMPOTENCE DES PAIEMENTS
+
+**Indispensable pour Biz-transPay.**
+
+Chaque opération financière doit avoir une clé d'idempotence.
+
+Exemple :
+
+`IDEMPOTENCY_KEY = abc123`
+
+Si la même demande arrive 5 fois :
+
+**une seule opération financière est exécutée.**
+
+Cela protège contre :
+- double clic ;
+- timeout ;
+- retry automatique ;
+- réseau instable ;
+- webhook répété ;
+- attaque automatisée.
+
+L'OWASP considère également la protection des flux métier sensibles et de la consommation excessive comme des aspects majeurs de sécurité API. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+---
+
+# 6. DÉPÔTS
+
+Pour chaque dépôt :
+
+### 6.1 Vérifier l'utilisateur
+### 6.2 Vérifier le montant
+### 6.3 Vérifier la devise
+### 6.4 Vérifier le provider
+### 6.5 Vérifier l'identifiant de transaction
+### 6.6 Vérifier le statut réel auprès du provider
+### 6.7 Vérifier la signature du webhook
+### 6.8 Vérifier que la transaction n'a jamais été créditée
+### 6.9 Vérifier le montant réellement payé
+### 6.10 Vérifier le destinataire
+### 6.11 Vérifier le réseau crypto si applicable
+### 6.12 Vérifier l'adresse de destination
+### 6.13 Refuser les callbacks falsifiés
+### 6.14 Empêcher les crédits manuels non autorisés
+### 6.15 Journaliser chaque décision
+
+---
+
+# 7. WEBHOOKS
+
+Les webhooks des fournisseurs sont une **surface d'attaque critique**.
+
+### 7.1 Signature HMAC
+Vérifier systématiquement la signature fournie par le provider.
+
+### 7.2 Secret différent par fournisseur
+Ne jamais utiliser un secret global pour tous les providers.
+
+### 7.3 Rotation des secrets
+Permettre de renouveler les secrets.
+
+### 7.4 Anti-replay
+Refuser un ancien webhook réutilisé.
+
+### 7.5 Vérification timestamp
+Lorsque le provider le permet.
+
+### 7.6 Idempotence webhook
+Un webhook reçu 10 fois ne doit générer qu'une seule opération.
+
+### 7.7 Vérification serveur-à-serveur
+
+Lorsque possible :
+
+`Webhook reçu → vérification signature → interrogation provider → validation → crédit`
+
+### 7.8 Aucun crédit uniquement sur `status=success`
+Vérifier également :
+- transaction ;
+- montant ;
+- devise ;
+- compte ;
+- référence ;
+- destination.
+
+---
+
+# 8. RETRAITS
+
+### 8.1 Vérifier le solde disponible
+### 8.2 Vérifier le montant
+### 8.3 Calculer les frais côté serveur
+### 8.4 Vérifier les limites quotidiennes
+### 8.5 Vérifier les limites par transaction
+### 8.6 Vérifier KYC
+### 8.7 Vérifier le bénéficiaire
+### 8.8 Détecter les retraits anormaux
+### 8.9 Réserver le montant avant traitement
+### 8.10 Empêcher les doubles retraits
+### 8.11 Vérifier le résultat provider
+### 8.12 Réconcilier le résultat
+### 8.13 Libérer/rendre le montant en cas d'échec
+### 8.14 Enregistrer le TXID/référence provider
+### 8.15 Journaliser toute modification administrative.
+
+---
+
+# 9. PROTECTION DES TRANSFERTS
+
+Mettre en place :
+
+- limites ;
+- idempotence ;
+- vérification bénéficiaire ;
+- confirmation ;
+- anti-bot ;
+- anti-automatisation ;
+- détection d'activité inhabituelle ;
+- verrouillage en cas de risque ;
+- journalisation.
+
+---
+
+# 10. PROTECTION DES LIENS DE PAIEMENT
+
+### 10.1 Identifiant aléatoire
+### 10.2 Impossible de deviner les liens
+### 10.3 Expiration optionnelle
+### 10.4 Limite de montant
+### 10.5 Protection contre la modification du prix
+### 10.6 Vérification serveur du marchand
+### 10.7 Idempotence du paiement
+### 10.8 Protection contre plusieurs crédits
+### 10.9 Protection contre les paramètres manipulés
+### 10.10 Ne jamais exposer les secrets internes.
+
+---
+
+# 11. API MARCHANDS / DÉVELOPPEURS
+
+### 11.1 API keys hashées lorsque possible
+### 11.2 Secret jamais exposé au frontend
+### 11.3 Rotation API keys
+### 11.4 Révocation immédiate
+### 11.5 Permissions/scopes
+### 11.6 Rate limiting
+### 11.7 Limite par marchand
+### 11.8 Limite par IP
+### 11.9 Limite par clé
+### 11.10 Idempotency-Key obligatoire pour opérations financières
+### 11.11 Validation de chaque requête
+### 11.12 Protection des callbacks
+### 11.13 Signature des réponses/webhooks lorsque nécessaire
+### 11.14 Séparation test/live
+### 11.15 Pas de clés dans GitHub.
+
+---
+
+# 12. RATE LIMITING
+
+Appliquer plusieurs niveaux :
+
+- IP ;
+- compte ;
+- API key ;
+- endpoint ;
+- appareil ;
+- fournisseur ;
+- opération financière.
+
+Exemples de endpoints à protéger fortement :
+
+`/login`
+
+`/otp/send`
+
+`/otp/verify`
+
+`/deposit`
+
+`/withdraw`
+
+`/transfer`
+
+`/exchange`
+
+`/payment-link`
+
+`/api/*`
+
+`/admin/*`
+
+Cela protège également contre la consommation abusive de ressources, un risque explicitement identifié par OWASP. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+---
+
+# 13. ANTI-BOT / ANTI-AUTOMATISATION
+
+Détecter :
+- trop de requêtes ;
+- comportement mécanique ;
+- création massive de comptes ;
+- OTP massif ;
+- dépôts massifs ;
+- tentatives répétées ;
+- rotation rapide d'IP ;
+- appareils suspects.
+
+Utiliser selon le risque :
+- CAPTCHA ;
+- challenge progressif ;
+- fingerprinting prudent ;
+- réputation IP ;
+- règles comportementales.
+
+---
+
+# 14. VALIDATION DES DONNÉES
+
+Chaque endpoint doit valider :
+
+- type ;
+- longueur ;
+- format ;
+- plage ;
+- devise ;
+- pays ;
+- opérateur ;
+- identifiant ;
+- enum ;
+- format téléphone ;
+- email ;
+- adresse crypto ;
+- montant.
+
+Ne jamais faire confiance aux données venant du frontend.
+
+---
+
+# 15. INJECTIONS
+
+Protéger contre :
+
+- SQL Injection ;
+- NoSQL Injection ;
+- Command Injection ;
+- LDAP Injection ;
+- Template Injection ;
+- Header Injection ;
+- XSS ;
+- Path Traversal ;
+- CRLF Injection.
+
+Utiliser :
+- requêtes paramétrées ;
+- ORM correctement configuré ;
+- validation stricte ;
+- encodage de sortie ;
+- listes blanches.
+
+---
+
+# 16. XSS
+
+Protéger :
+- dashboard ;
+- profil ;
+- support ;
+- commentaires ;
+- noms de liens ;
+- noms marchands ;
+- descriptions ;
+- notifications ;
+- paramètres API.
+
+Mettre également une politique CSP adaptée.
+
+---
+
+# 17. CSRF
+
+Pour les mécanismes utilisant des cookies/session :
+
+- CSRF tokens ;
+- SameSite ;
+- vérification Origin/Referer lorsque approprié ;
+- protection particulière des opérations financières.
+
+---
+
+# 18. CORS
+
+Configurer précisément :
+
+- domaines autorisés ;
+- méthodes autorisées ;
+- headers autorisés ;
+- credentials.
+
+Ne jamais utiliser inutilement :
+
+`Access-Control-Allow-Origin: *`
+
+pour des endpoints authentifiés/sensibles.
+
+---
+
+# 19. SSRF
+
+Toute fonctionnalité qui permet au serveur de contacter une URL externe doit être protégée.
+
+Bloquer notamment les destinations internes non autorisées.
+
+L'OWASP classe le SSRF parmi les dix risques API majeurs. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+---
+
+# 20. UPLOADS / KYC
+
+Les fichiers KYC doivent être protégés contre :
+
+- fichiers exécutables ;
+- extensions falsifiées ;
+- fichiers trop volumineux ;
+- contenu malveillant ;
+- double extension ;
+- path traversal ;
+- fichiers polyglottes ;
+- accès direct non autorisé.
+
+Mettre :
+
+- limite taille ;
+- MIME validation ;
+- extension autorisée ;
+- antivirus/scanner si possible ;
+- nom aléatoire ;
+- stockage privé ;
+- URL temporaire ;
+- contrôle d'accès.
+
+---
+
+# 21. KYC
+
+Les données KYC sont particulièrement sensibles.
+
+Protéger :
+
+- CNI ;
+- passeport ;
+- permis ;
+- selfie ;
+- nom ;
+- numéro de document ;
+- adresse ;
+- pays.
+
+Ne jamais exposer directement ces fichiers à tous les utilisateurs.
+
+---
+
+# 22. CHIFFREMENT
+
+### En transit
+HTTPS/TLS partout.
+
+### Au repos
+Chiffrer les données particulièrement sensibles lorsque nécessaire.
+
+### Secrets
+Utiliser un gestionnaire de secrets / variables d'environnement sécurisées.
+
+### Clés
+Prévoir :
+- rotation ;
+- révocation ;
+- séparation ;
+- accès minimal.
+
+---
+
+# 23. PROTECTION DES SECRETS
+
+**Aucun secret dans :**
+
+- React ;
+- GitHub ;
+- fichiers publics ;
+- logs ;
+- screenshots ;
+- réponses API ;
+- HTML ;
+- JavaScript client.
+
+Concernant les secrets providers :
+
+- MBIYOPAY ;
+- Dioko ;
+- Nexus ;
+- autres gateways ;
+- Firebase service account ;
+- clés crypto ;
+- API keys ;
+- webhook secrets.
+
+Tout doit rester côté serveur.
+
+---
+
+# 24. BASE DE DONNÉES
+
+Sécuriser :
+
+- compte DB dédié ;
+- privilèges minimum ;
+- pas de compte root applicatif ;
+- mots de passe forts ;
+- connexions sécurisées ;
+- sauvegardes ;
+- migrations contrôlées ;
+- logs ;
+- indexes ;
+- contraintes ;
+- transactions atomiques.
+
+---
+
+# 25. REDIS / CACHE
+
+Si Redis est utilisé :
+
+- authentification ;
+- réseau privé ;
+- aucune exposition publique ;
+- TLS si nécessaire ;
+- ACL ;
+- timeout contrôlé ;
+- limites mémoire ;
+- suppression des secrets ;
+- séparation des environnements.
+
+Les erreurs Redis ne doivent jamais exposer d'informations internes à l'utilisateur.
+
+---
+
+# 26. ERREURS ET EXCEPTIONS
+
+Ne jamais afficher au client :
+
+- stack trace ;
+- SQL ;
+- chemin serveur ;
+- nom des fichiers ;
+- secrets ;
+- variables d'environnement ;
+- configuration Redis ;
+- tokens ;
+- détails internes.
+
+Afficher seulement :
+
+> « Une erreur est survenue. Veuillez réessayer. »
+
+Et conserver le détail côté logs sécurisés.
+
+---
+
+# 27. HEADERS HTTP DE SÉCURITÉ
+
+Configurer selon compatibilité :
+
+- Content-Security-Policy ;
+- HSTS ;
+- X-Content-Type-Options ;
+- Referrer-Policy ;
+- Permissions-Policy ;
+- protection clickjacking via CSP/frame-ancestors ;
+- cookies sécurisés.
+
+---
+
+# 28. PROTECTION CONTRE LE CLICKJACKING
+
+Empêcher qu'une page financière soit chargée dans un iframe malveillant.
+
+---
+
+# 29. PROTECTION DES ENDPOINTS INEXISTANTS / DEBUG
+
+Désactiver en production :
+
+- debug ;
+- Swagger public non protégé si non nécessaire ;
+- endpoints de test ;
+- routes de développement ;
+- seed endpoints ;
+- reset endpoints ;
+- fake payment endpoints ;
+- test webhook endpoints ;
+- console admin cachée.
+
+L'inventaire des endpoints et la suppression des anciennes versions/routes sont également une recommandation OWASP importante. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+---
+
+# 30. INVENTAIRE COMPLET DES API
+
+Créer une liste de **100 % des endpoints** :
+
+| Endpoint | Méthode | Auth | Rôle | Données sensibles | Limite | Idempotence |
+|---|---|---|---|---|---|---|
+
+Aucun endpoint oublié.
+
+Cela inclut :
+- frontend ;
+- backend ;
+- admin ;
+- webhooks ;
+- providers ;
+- API développeurs ;
+- endpoints internes.
+
+---
+
+# 31. VERSIONNAGE DES API
+
+Éviter qu'une ancienne API vulnérable reste accessible.
+
+Exemple :
+
+`/api/v1`
+
+`/api/v2`
+
+Une ancienne version doit être :
+- corrigée ;
+- désactivée ;
+- ou strictement contrôlée.
+
+---
+
+# 32. ADMINISTRATION
+
+Pour l'admin :
+
+- MFA obligatoire ;
+- sessions courtes ;
+- contrôle IP selon politique ;
+- RBAC ;
+- séparation des rôles ;
+- journalisation complète ;
+- confirmation pour actions critiques ;
+- limitation des actions ;
+- détection comportementale.
+
+---
+
+# 33. ACTIONS ADMIN FINANCIÈRES
+
+Toute action comme :
+
+- créditer ;
+- débiter ;
+- modifier un solde ;
+- valider un dépôt ;
+- valider un retrait ;
+- annuler une transaction ;
+- modifier des frais ;
+- modifier une configuration provider ;
+
+doit générer un audit :
+
+**Qui → quoi → quand → avant → après → pourquoi → IP/session.**
+
+---
+
+# 34. PROTECTION CONTRE L'USURPATION ADMIN
+
+Même si quelqu'un vole un compte admin :
+
+- MFA ;
+- détection appareil ;
+- notification ;
+- limites ;
+- confirmation ;
+- journalisation ;
+- possibilité de verrouillage d'urgence.
+
+---
+
+# 35. AUDIT LOG IMMUTABLE
+
+Journaliser notamment :
+
+- connexion ;
+- déconnexion ;
+- changement mot de passe ;
+- changement email ;
+- changement téléphone ;
+- KYC ;
+- dépôt ;
+- retrait ;
+- transfert ;
+- échange ;
+- création API ;
+- révocation API ;
+- modification frais ;
+- action admin.
+
+Les logs financiers critiques doivent être protégés contre leur modification/suppression.
+
+---
+
+# 36. ANTI-FRAUDE FINANCIÈRE
+
+Mettre un moteur de scoring.
+
+Signaux possibles :
+
+- nouveau compte ;
+- nouvel appareil ;
+- nouvelle adresse IP ;
+- montant inhabituel ;
+- fréquence inhabituelle ;
+- changement récent de KYC ;
+- changement récent de numéro ;
+- retrait immédiat après dépôt ;
+- nombreuses transactions rapides ;
+- comportement inhabituel.
+
+Le système peut :
+
+**Autoriser → Surveiller → Demander vérification → Bloquer temporairement → Alerter admin.**
+
+---
+
+# 37. LIMITES FINANCIÈRES
+
+Configurer par :
+
+- utilisateur ;
+- pays ;
+- opérateur ;
+- transaction ;
+- jour ;
+- mois ;
+- méthode ;
+- niveau KYC ;
+- marchand ;
+- API.
+
+---
+
+# 38. PROTECTION DES BÉNÉFICIAIRES
+
+Pour les transferts/retraits :
+
+- vérifier le bénéficiaire ;
+- empêcher les modifications silencieuses ;
+- éventuellement délai de sécurité après changement ;
+- confirmation pour nouvelle destination ;
+- détection des changements rapides.
+
+---
+
+# 39. PROTECTION CONTRE LE REPLAY
+
+Chaque opération sensible doit pouvoir être reconnue comme :
+
+**nouvelle demande** ou **ancienne demande déjà exécutée**.
+
+Cela concerne :
+- paiements ;
+- retraits ;
+- webhooks ;
+- API ;
+- OTP ;
+- confirmations.
+
+---
+
+# 40. EXPIRATION DES OPÉRATIONS
+
+Les opérations en attente depuis trop longtemps doivent avoir un mécanisme contrôlé :
+
+`pending → expired`
+
+ou être réconciliées avec le provider.
+
+---
+
+# 41. RÉCONCILIATION FINANCIÈRE
+
+C'est **essentiel pour éviter les pertes financières**.
+
+Comparer périodiquement :
+
+**Biz-transPay ↔ Provider ↔ Wallet/Ledger ↔ Banque**
+
+Détecter :
+
+- argent provider sans transaction locale ;
+- transaction locale sans argent provider ;
+- montant différent ;
+- statut différent ;
+- double crédit ;
+- retrait marqué succès mais non payé ;
+- retrait payé mais encore pending.
+
+---
+
+# 42. PROTECTION CONTRE LES « GHOST CREDITS »
+
+Impossible de créditer un wallet simplement parce qu'un utilisateur :
+
+- appelle un endpoint ;
+- modifie un paramètre ;
+- envoie `status=success` ;
+- modifie un ID ;
+- recharge la page.
+
+Le crédit doit toujours provenir d'une preuve serveur valide.
+
+---
+
+# 43. PROTECTION DES FRAIS
+
+Les frais doivent être calculés côté serveur.
+
+L'utilisateur ne doit jamais pouvoir envoyer :
+
+`fee=0`
+
+pour éviter les frais.
+
+Le serveur recalcule :
+
+`montant + frais = total`
+
+ou
+
+`montant - frais = montant marchand`
+
+selon la configuration.
+
+---
+
+# 44. PROTECTION DES DEVISES
+
+Vérifier côté serveur :
+
+- XOF ;
+- XAF ;
+- USDT ;
+- crypto supportée ;
+- réseau ;
+- taux ;
+- précision ;
+- frais.
+
+Ne jamais accepter une devise arbitraire envoyée par le frontend.
+
+---
+
+# 45. PROTECTION DES TAUX DE CHANGE
+
+Pour l'échange crypto ↔ monnaie locale :
+
+- taux provenant d'une source autorisée ;
+- durée de validité ;
+- timestamp ;
+- frais ;
+- slippage ;
+- montant minimum ;
+- confirmation serveur.
+
+---
+
+# 46. CRYPTO
+
+Pour les opérations crypto :
+
+- validation adresse ;
+- validation réseau ;
+- vérification montant ;
+- confirmations blockchain selon politique ;
+- protection contre double traitement ;
+- suivi TXID ;
+- surveillance des statuts ;
+- séparation hot/cold wallet selon architecture ;
+- limites ;
+- journalisation.
+
+---
+
+# 47. PROTECTION DES CLÉS CRYPTO
+
+Les clés privées ne doivent jamais être :
+
+- dans React ;
+- dans GitHub ;
+- dans une base non protégée ;
+- dans les logs ;
+- dans les messages d'erreur.
+
+Si Biz-transPay détient réellement des clés privées, leur protection doit être traitée comme une infrastructure critique.
+
+---
+
+# 48. FOURNISSEURS TIERS
+
+Chaque provider doit être considéré comme une zone de confiance limitée.
+
+OWASP recommande justement de traiter la consommation des API tierces comme un risque propre, car les données reçues d'un service externe ne doivent pas être considérées automatiquement comme fiables. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+Pour chaque provider :
+
+- timeout ;
+- retry contrôlé ;
+- circuit breaker ;
+- validation réponse ;
+- signature ;
+- montant ;
+- statut ;
+- référence ;
+- idempotence ;
+- logs ;
+- réconciliation.
+
+---
+
+# 49. CIRCUIT BREAKER
+
+Si un provider devient instable :
+
+`Provider → erreurs répétées → circuit ouvert`
+
+Cela évite que Biz-transPay envoie des milliers de requêtes et aggrave le problème.
+
+---
+
+# 50. TIMEOUTS
+
+Aucune requête externe ne doit rester bloquée indéfiniment.
+
+Configurer :
+
+- timeout connexion ;
+- timeout réponse ;
+- retry limité ;
+- backoff.
+
+---
+
+# 51. RETRIES SÉCURISÉS
+
+**Attention :** un retry financier ne doit jamais créer un deuxième paiement.
+
+Les retries doivent être couplés à l'idempotence.
+
+---
+
+# 52. PROTECTION DDOS / DOS
+
+Mettre selon l'infrastructure :
+
+- WAF ;
+- rate limiting ;
+- CDN ;
+- protection réseau ;
+- limitation requêtes ;
+- cache ;
+- protection endpoints coûteux ;
+- timeout ;
+- circuit breaker.
+
+---
+
+# 53. PROTECTION DES RESSOURCES
+
+Limiter :
+
+- taille requête ;
+- taille JSON ;
+- upload ;
+- pagination ;
+- nombre de résultats ;
+- temps de traitement ;
+- concurrence ;
+- appels externes.
+
+L'OWASP identifie précisément la consommation illimitée de ressources comme un risque API pouvant provoquer un déni de service ou des coûts supplémentaires. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+---
+
+# 54. PAGINATION
+
+Ne jamais permettre :
+
+`GET /transactions?limit=999999999`
+
+Utiliser :
+
+- limite maximale ;
+- pagination ;
+- cursor ;
+- index DB.
+
+---
+
+# 55. PROTECTION DES REQUÊTES COÛTEUSES
+
+Limiter les recherches lourdes sur :
+
+- transactions ;
+- statistiques ;
+- rapports ;
+- utilisateurs ;
+- logs.
+
+---
+
+# 56. PROTECTION FRONTEND
+
+Le frontend ne doit jamais être considéré comme une frontière de sécurité.
+
+Tout contrôle important doit être répété :
+
+**Frontend + Backend + Database lorsque nécessaire.**
+
+---
+
+# 57. PROTECTION CONTRE LA MANIPULATION DU JAVASCRIPT
+
+Même si quelqu'un modifie le JavaScript dans son navigateur :
+
+- impossible d'obtenir plus de droits ;
+- impossible de modifier le solde ;
+- impossible de valider un paiement ;
+- impossible de bypasser KYC ;
+- impossible de modifier les frais.
+
+---
+
+# 58. MASS ASSIGNMENT
+
+Ne jamais accepter aveuglément :
+
+```text
+{
+  role: "admin",
+  balance: 100000000,
+  verified: true
+}
+```
+
+Le backend doit définir explicitement les champs modifiables.
+
+OWASP classe la protection incorrecte des propriétés d'objet parmi les principaux risques API. [OWASP API Security Top 10](https://api-security.owasp.org/editions/2023/fr/0x11-t10/?utm_source=chatgpt.com)
+
+---
+
+# 59. EXPOSITION DE DONNÉES
+
+Les API ne doivent retourner que les champs nécessaires.
+
+Ne jamais retourner inutilement :
+
+- password hash ;
+- secrets ;
+- tokens ;
+- clés privées ;
+- données KYC complètes ;
+- données internes provider ;
+- configuration interne.
+
+---
+
+# 60. PROTECTION DES INFORMATIONS PERSONNELLES
+
+Masquer lorsque nécessaire :
+
+- numéro téléphone ;
+- email ;
+- document ;
+- adresse ;
+- informations financières.
+
+---
+
+# 61. NOTIFICATIONS
+
+Les notifications doivent éviter d'exposer des informations sensibles.
+
+Exemple :
+
+éviter de mettre une clé/API/token dans une notification Telegram, email ou push.
+
+---
+
+# 62. FIREBASE / PUSH
+
+Pour FCM :
+
+- service account uniquement backend ;
+- VAPID public côté frontend uniquement ;
+- credentials privés côté serveur ;
+- tokens FCM associés correctement au compte ;
+- révocation des anciens tokens ;
+- protection contre l'envoi abusif.
+
+---
+
+# 63. EMAIL / SMS
+
+Limiter :
+
+- fréquence ;
+- OTP ;
+- récupération ;
+- notifications ;
+- changement numéro.
+
+Empêcher qu'un attaquant utilise Biz-transPay comme plateforme d'envoi abusive.
+
+---
+
+# 64. PROTECTION DES DOMAINES
+
+Configurer :
+
+- HTTPS ;
+- DNS sécurisé ;
+- certificats renouvelés ;
+- redirections HTTP → HTTPS ;
+- protection du domaine ;
+- surveillance des changements DNS.
+
+---
+
+# 65. CONFIGURATION PRODUCTION
+
+Désactiver :
+
+- debug ;
+- verbose errors ;
+- dev tools serveur ;
+- test accounts ;
+- endpoints de test ;
+- credentials par défaut.
+
+---
+
+# 66. ENVIRONNEMENTS
+
+Séparer :
+
+**Development → Test → Production**
+
+Aucune clé de production dans l'environnement de développement.
+
+---
+
+# 67. GITHUB / CODE SOURCE
+
+Protéger contre :
+
+- secrets commités ;
+- `.env` public ;
+- clés API ;
+- passwords ;
+- certificats ;
+- service accounts.
+
+Mettre un secret scanner dans CI/CD.
+
+---
+
+# 68. DÉPENDANCES
+
+Scanner régulièrement :
+
+- npm ;
+- Python ;
+- PHP ;
+- OS ;
+- Docker ;
+- bibliothèques.
+
+Corriger les dépendances vulnérables sans mettre automatiquement à jour aveuglément en production.
+
+---
+
+# 69. CI/CD SÉCURISÉ
+
+Avant chaque déploiement :
+
+1. tests ;
+2. lint ;
+3. scan secrets ;
+4. scan dépendances ;
+5. tests sécurité ;
+6. tests financiers ;
+7. tests de non-régression ;
+8. déploiement ;
+9. vérification.
+
+---
+
+# 70. BACKUPS
+
+Sauvegarder :
+
+- DB ;
+- configuration ;
+- ledger ;
+- paramètres importants.
+
+Les sauvegardes doivent être :
+
+- chiffrées ;
+- isolées ;
+- protégées contre suppression ;
+- testées régulièrement.
+
+---
+
+# 71. PLAN DE RESTAURATION
+
+Il ne suffit pas d'avoir une sauvegarde.
+
+Tester :
+
+**« Peut-on réellement restaurer Biz-transPay après incident ? »**
+
+---
+
+# 72. KILL SWITCH FINANCIER
+
+Prévoir un mécanisme d'urgence permettant de suspendre temporairement :
+
+- dépôts ;
+- retraits ;
+- transferts ;
+- échanges ;
+- provider spécifique.
+
+**Sans désactiver toute la plateforme.**
+
+Exemple :
+
+> Provider Togo indisponible → suspendre uniquement Togo Mobile Money.
+
+---
+
+# 73. MODE MAINTENANCE SÉCURISÉ
+
+Si attaque détectée :
+
+- bloquer opérations financières ;
+- conserver consultation ;
+- afficher message neutre ;
+- empêcher nouveaux paiements ;
+- préserver les données.
+
+---
+
+# 74. DÉTECTION D'ANOMALIES
+
+Créer des alertes :
+
+- volume inhabituel ;
+- beaucoup de retraits ;
+- plusieurs comptes depuis même appareil ;
+- plusieurs comptes même numéro ;
+- nombreuses erreurs ;
+- changement massif de paramètres ;
+- beaucoup de webhooks invalides.
+
+---
+
+# 75. ALERTES ADMIN
+
+Notifier les administrateurs pour :
+
+- tentative d'accès admin ;
+- changement de secrets ;
+- gros retrait ;
+- anomalie financière ;
+- provider défaillant ;
+- attaque détectée ;
+- augmentation anormale des erreurs.
+
+---
+
+# 76. SURVEILLANCE DES ENDPOINTS
+
+Surveiller :
+
+- taux erreur ;
+- latence ;
+- nombre requêtes ;
+- erreurs 401 ;
+- erreurs 403 ;
+- erreurs 429 ;
+- erreurs 500 ;
+- volume financier.
+
+---
+
+# 77. HEALTH CHECK
+
+Créer des contrôles internes pour :
+
+- DB ;
+- Redis ;
+- providers ;
+- API ;
+- webhooks ;
+- queue ;
+- services.
+
+Mais les endpoints de diagnostic ne doivent pas divulguer de secrets.
+
+---
+
+# 78. PROTECTION DES QUEUES
+
+Si Biz-transPay utilise des jobs :
+
+- authentification ;
+- files protégées ;
+- retries ;
+- idempotence ;
+- dead-letter queue ;
+- surveillance.
+
+---
+
+# 79. TRANSACTIONS ASYNCHRONES
+
+Une transaction `pending` doit avoir une machine d'état claire.
+
+Exemple :
+
+`created → pending → processing → success`
+
+ou
+
+`created → pending → failed`
+
+ou
+
+`created → pending → expired`
+
+Aucun saut arbitraire.
+
+---
+
+# 80. MACHINE D'ÉTAT FINANCIÈRE
+
+Empêcher :
+
+`success → pending`
+
+ou
+
+`failed → success`
+
+sans mécanisme de correction autorisé.
+
+---
+
+# 81. PROTECTION CONTRE LES RACE CONDITIONS
+
+Tester spécifiquement :
+
+- deux retraits simultanés ;
+- dépôt + retrait simultané ;
+- deux confirmations ;
+- deux webhooks ;
+- deux appels API ;
+- double clic.
+
+---
+
+# 82. PROTECTION DU SOLDE EN TEMPS RÉEL
+
+Lors d'une opération :
+
+**Lire → vérifier → réserver → effectuer → confirmer → ledger → libérer/valider**
+
+tout doit être cohérent.
+
+---
+
+# 83. FRAIS DYNAMIQUES
+
+Les frais doivent être figés pour une transaction donnée.
+
+Un changement d'administration des frais ne doit pas modifier rétroactivement une transaction déjà créée.
+
+---
+
+# 84. HISTORIQUE DES TRANSACTIONS
+
+L'utilisateur doit voir le statut réel.
+
+Ne jamais afficher :
+
+`SUCCESS`
+
+avant confirmation serveur.
+
+---
+
+# 85. RÉFÉRENCES TRANSACTIONS
+
+Chaque transaction doit avoir :
+
+- ID interne ;
+- référence publique ;
+- référence provider ;
+- timestamp ;
+- statut ;
+- montant ;
+- frais ;
+- devise.
+
+Les références sensibles provider peuvent être masquées lorsque nécessaire.
+
+---
+
+# 86. PROTECTION CONTRE LA MODIFICATION D'HISTORIQUE
+
+Un utilisateur ne doit jamais pouvoir modifier :
+
+- montant ;
+- statut ;
+- date ;
+- frais ;
+- référence ;
+- destinataire.
+
+---
+
+# 87. PROTECTION DES STATISTIQUES
+
+Les statistiques doivent provenir des données serveur.
+
+Un utilisateur ne doit jamais pouvoir envoyer :
+
+`country=TOGO`
+
+pour obtenir les statistiques globales.
+
+---
+
+# 88. PROTECTION DU DASHBOARD ADMIN
+
+Les données affichées doivent respecter les permissions du compte administrateur.
+
+---
+
+# 89. SÉPARATION DES DONNÉES PAR PAYS
+
+Si nécessaire, appliquer les autorisations :
+
+`pays → provider → marchand → utilisateur`
+
+pour empêcher l'accès transversal non autorisé.
+
+---
+
+# 90. TESTS DE SÉCURITÉ AUTOMATISÉS
+
+Ajouter des tests pour :
+
+- authentification ;
+- autorisation ;
+- API ;
+- paiements ;
+- retraits ;
+- webhooks ;
+- ledger ;
+- permissions ;
+- rate limits ;
+- injections ;
+- XSS ;
+- CSRF ;
+- IDOR/BOLA.
+
+---
+
+# 91. TESTS DE NON-RÉGRESSION FINANCIÈRE
+
+Avant chaque mise en production :
+
+### Test dépôt
+`1000 XOF → wallet +1000`
+
+### Test frais
+`1000 XOF + frais → calcul correct`
+
+### Test retrait
+`1000 XOF → débit correct`
+
+### Test échec provider
+`transaction échoue → argent correctement restauré`
+
+### Test double webhook
+`2 callbacks → 1 seul crédit`
+
+### Test double clic
+`2 clics → 1 seule opération`
+
+---
+
+# 92. TESTS DE CONCURRENCE
+
+Simuler :
+
+- 10 retraits simultanés ;
+- 100 webhooks simultanés ;
+- plusieurs paiements ;
+- plusieurs appels API.
+
+Le solde final doit rester mathématiquement correct.
+
+---
+
+# 93. TESTS D'IDOR
+
+Tester systématiquement :
+
+> Utilisateur A tente d'accéder aux données de B.
+
+Résultat attendu :
+
+**403/404**, jamais les données.
+
+---
+
+# 94. TESTS D'ÉLÉVATION DE PRIVILÈGES
+
+Tester :
+
+> utilisateur → admin
+
+> marchand → admin
+
+> API client → admin
+
+> admin limité → super-admin
+
+Toutes les escalades non autorisées doivent être bloquées.
+
+---
+
+# 95. TESTS DE RATE LIMIT
+
+Vérifier qu'une attaque de milliers de requêtes :
+
+- ne fait pas tomber le serveur ;
+- ne génère pas des coûts incontrôlés ;
+- ne permet pas de contourner les limites.
+
+---
+
+# 96. TESTS DE WEBHOOK
+
+Tester :
+
+- signature invalide ;
+- secret invalide ;
+- ancien webhook ;
+- webhook dupliqué ;
+- montant différent ;
+- utilisateur différent ;
+- transaction inexistante ;
+- statut incohérent.
+
+---
+
+# 97. TESTS API PROVIDERS
+
+Tester les réponses :
+
+- timeout ;
+- 500 ;
+- 400 ;
+- réponse vide ;
+- JSON invalide ;
+- statut inattendu ;
+- montant différent.
+
+---
+
+# 98. TESTS DE RÉCUPÉRATION
+
+Simuler :
+
+- Redis indisponible ;
+- DB temporairement indisponible ;
+- provider indisponible ;
+- réseau interrompu ;
+- webhook retardé.
+
+Aucune situation ne doit créer de crédit financier fantôme.
+
+---
+
+# 99. TESTS DE PÉNÉTRATION
+
+Faire réaliser des tests contrôlés :
+
+- Web ;
+- API ;
+- authentification ;
+- autorisation ;
+- logique métier ;
+- infrastructure.
+
+L'OWASP ASVS fournit justement un cadre de vérification de la sécurité technique des applications web. [OWASP Foundation](https://owasp.org/projects/asvs?utm_source=chatgpt.com)
+
+---
+
+# 100. SCANNER AUTOMATIQUE
+
+Utiliser dans un environnement autorisé :
+
+- SAST ;
+- DAST ;
+- dependency scanning ;
+- secret scanning ;
+- container scanning ;
+- API security testing.
+
+---
+
+# 101. PROTECTION DES ENDPOINTS INTERNES
+
+Les endpoints utilisés uniquement entre services doivent être :
+
+- authentifiés ;
+- non exposés publiquement si possible ;
+- protégés par réseau ;
+- validés.
+
+---
+
+# 102. SERVICE-TO-SERVICE AUTHENTICATION
+
+Si plusieurs services communiquent :
+
+`Frontend → API → Payment Service → Provider`
+
+chaque communication sensible doit être authentifiée.
+
+---
+
+# 103. PRINCIPE DU MOINDRE PRIVILÈGE
+
+Chaque service obtient uniquement les permissions dont il a besoin.
+
+Exemple :
+
+Le service notification ne doit pas pouvoir modifier le solde.
+
+---
+
+# 104. SÉPARATION DU LEDGER
+
+Le service capable de modifier les soldes doit être particulièrement isolé.
+
+---
+
+# 105. PROTECTION DES MIGRATIONS DB
+
+Une migration ne doit jamais :
+
+- supprimer silencieusement le ledger ;
+- remettre les soldes à zéro ;
+- modifier les transactions historiques.
+
+---
+
+# 106. PROTECTION CONTRE LES RESET
+
+Toute fonction :
+
+`reset`
+
+`delete all`
+
+`clear database`
+
+doit être impossible en production sauf procédure extrêmement contrôlée.
+
+---
+
+# 107. SUPPRESSION DE COMPTE
+
+Lorsqu'un utilisateur est supprimé :
+
+**les obligations financières et historiques nécessaires ne doivent pas disparaître.**
+
+Utiliser éventuellement :
+- anonymisation ;
+- soft delete ;
+- conservation réglementaire.
+
+---
+
+# 108. PROTECTION CONTRE LES COMPTES DUPLIQUÉS
+
+Détecter selon les règles applicables :
+
+- email ;
+- téléphone ;
+- identité ;
+- appareil ;
+- comportement.
+
+---
+
+# 109. PROTECTION DES CHANGEMENTS SENSIBLES
+
+Pour :
+
+- téléphone ;
+- email ;
+- mot de passe ;
+- KYC ;
+- bénéficiaire ;
+- API key ;
+
+prévoir authentification/revalidation appropriée.
+
+---
+
+# 110. CENTRE DE SÉCURITÉ ADMIN
+
+Ajouter dans l'admin :
+
+**Sécurité**
+
+avec :
+
+- attaques détectées ;
+- connexions suspectes ;
+- comptes bloqués ;
+- webhooks invalides ;
+- IPs suspectes ;
+- erreurs API ;
+- providers ;
+- événements financiers ;
+- alertes critiques ;
+- état sécurité.
+
+---
+
+# 111. JOURNAL D'AUDIT COMPLET
+
+Créer une timeline :
+
+> 06:30 — connexion  
+> 06:31 — dépôt  
+> 06:32 — création retrait  
+> 06:32 — provider appelé  
+> 06:32 — retrait confirmé
+
+Cela facilite les enquêtes.
+
+---
+
+# 112. PROTECTION DES LOGS
+
+Les logs ne doivent pas contenir :
+
+- mot de passe ;
+- token ;
+- clé API ;
+- secret webhook ;
+- clé privée ;
+- données KYC inutiles.
+
+---
+
+# 113. DÉTECTION DE FUITE DE SECRETS
+
+Scanner régulièrement :
+
+- repository ;
+- logs ;
+- frontend bundle ;
+- variables ;
+- fichiers ;
+- backups.
+
+---
+
+# 114. ROTATION DES SECRETS
+
+Prévoir la rotation pour :
+
+- DB ;
+- API ;
+- webhook ;
+- Firebase ;
+- crypto ;
+- providers.
+
+---
+
+# 115. RÉVOCATION RAPIDE
+
+Un secret compromis doit pouvoir être désactivé sans arrêter toute la plateforme.
+
+---
+
+# 116. PROTECTION PAR PROVIDER
+
+Dans l'admin :
+
+**Provider A**
+- actif/inactif ;
+- clé ;
+- secret ;
+- webhook ;
+- statut ;
+- limites ;
+- erreurs ;
+- circuit breaker.
+
+Même chose indépendamment pour chaque provider.
+
+---
+
+# 117. ISOLATION DES INCIDENTS
+
+Si un provider est compromis :
+
+**ne pas permettre que l'incident compromette Biz-transPay entier.**
+
+---
+
+# 118. PROTECTION DES FRAIS PROVIDER
+
+Les frais provider doivent être récupérés/validés côté serveur.
+
+Un client ne doit pas pouvoir déclarer :
+
+`providerFee=0`.
+
+---
+
+# 119. PROTECTION CONTRE LA MANIPULATION DES PAYS
+
+Le frontend ne doit pas pouvoir contourner :
+
+- pays autorisés ;
+- opérateurs autorisés ;
+- méthodes disponibles ;
+- restrictions provider.
+
+---
+
+# 120. PROTECTION CONTRE LA MANIPULATION DU PRIX
+
+Pour DigiShop et autres produits/services :
+
+Le prix affiché côté frontend ne doit pas être la source de vérité.
+
+Le serveur doit vérifier :
+
+`produit → prix officiel → devise → frais → total`.
+
+---
+
+# 121. PROTECTION DES STOCKS / PRODUITS DIGITAUX
+
+Pour DigiShop :
+
+- empêcher double achat ;
+- empêcher double livraison ;
+- protéger les clés/licences ;
+- expiration ;
+- traçabilité ;
+- idempotence.
+
+---
+
+# 122. PROTECTION DES CODES DIGITAUX
+
+Si DigiShop vend des codes :
+
+- chiffrement ;
+- accès limité ;
+- livraison une seule fois ;
+- statut utilisé/non utilisé ;
+- logs ;
+- anti-bruteforce.
+
+---
+
+# 123. PROTECTION DU SUPPORT
+
+Les fonctions support ne doivent pas permettre à un agent de :
+
+- changer arbitrairement le solde ;
+- changer le propriétaire ;
+- récupérer des secrets ;
+- contourner les contrôles.
+
+---
+
+# 124. DOUBLE VALIDATION POUR ACTIONS CRITIQUES
+
+Pour certaines actions administratives :
+
+**Demande → validation → exécution**
+
+selon le niveau de risque.
+
+---
+
+# 125. SÉPARATION DES RESPONSABILITÉS
+
+Éviter qu'une seule identité puisse :
+
+> créer → approuver → modifier → supprimer
+
+une opération financière critique sans contrôle.
+
+---
+
+# 126. SURVEILLANCE DE L'INTÉGRITÉ
+
+Surveiller :
+
+- fichiers ;
+- configuration ;
+- dépendances ;
+- variables ;
+- schéma DB ;
+- endpoints.
+
+---
+
+# 127. PROTECTION SERVEUR
+
+Si Plesk/Cybrancee reste l'environnement de production :
+
+- HTTPS ;
+- permissions fichiers ;
+- comptes séparés ;
+- SSH sécurisé si disponible ;
+- clés SSH ;
+- absence de mots de passe par défaut ;
+- mises à jour ;
+- logs ;
+- sauvegardes.
+
+---
+
+# 128. PROTECTION CONTRE L'ACCÈS DIRECT AUX FICHIERS
+
+Les fichiers internes ne doivent pas être accessibles via HTTP.
+
+Exemple :
+
+`.env`
+
+fichiers de configuration
+
+logs
+
+backups
+
+credentials.
+
+---
+
+# 129. PROTECTION DES BACKUPS WEB
+
+Ne jamais laisser :
+
+`/backup.zip`
+
+accessible publiquement.
+
+---
+
+# 130. PROTECTION DES VARIABLES D'ENVIRONNEMENT
+
+Les variables sensibles ne doivent jamais être exposées par une route de configuration.
+
+---
+
+# 131. PROTECTION DE L'ADMIN CONTRE LE CACHE
+
+Les pages administratives sensibles ne doivent pas être mises en cache de façon dangereuse.
+
+---
+
+# 132. PROTECTION DU NAVIGATEUR
+
+Configurer correctement :
+
+- CSP ;
+- HSTS ;
+- cookies ;
+- cache ;
+- permissions navigateur.
+
+---
+
+# 133. PROTECTION DES TOKENS
+
+Chaque token doit avoir :
+
+- audience ;
+- expiration ;
+- signature ;
+- validation ;
+- révocation lorsque nécessaire.
+
+---
+
+# 134. PROTECTION JWT SI JWT UTILISÉ
+
+Vérifier strictement :
+
+- algorithme ;
+- signature ;
+- expiration ;
+- issuer ;
+- audience ;
+- claims.
+
+Ne jamais accepter aveuglément un JWT.
+
+---
+
+# 135. OAUTH/OIDC SI UTILISÉ
+
+Protéger :
+
+- redirect URI ;
+- state ;
+- nonce ;
+- PKCE ;
+- tokens ;
+- scopes.
+
+---
+
+# 136. PROTECTION DES API PUBLIQUES
+
+Toutes les API publiques doivent avoir :
+
+- authentification appropriée ;
+- validation ;
+- autorisation ;
+- rate limit ;
+- monitoring ;
+- documentation ;
+- versioning.
+
+---
+
+# 137. PROTECTION DES ENDPOINTS DE RECHERCHE
+
+Limiter les recherches pour empêcher :
+
+- scraping massif ;
+- extraction de données ;
+- déni de service.
+
+---
+
+# 138. PROTECTION DES EXPORTS
+
+Les exports CSV/Excel/PDF doivent :
+
+- être autorisés ;
+- être limités ;
+- expirer ;
+- ne pas exposer les données d'autres utilisateurs.
+
+---
+
+# 139. PROTECTION CONTRE CSV INJECTION
+
+Pour les exports contenant des données utilisateur, neutraliser les formules dangereuses.
+
+---
+
+# 140. PROTECTION DES STATISTIQUES FINANCIÈRES
+
+Les statistiques globales ne doivent être accessibles qu'aux rôles autorisés.
+
+---
+
+# 141. PROTECTION DES WEBHOOKS SORTANTS
+
+Lorsque Biz-transPay envoie un webhook à un marchand :
+
+- signature ;
+- timestamp ;
+- ID événement ;
+- retry contrôlé ;
+- idempotence ;
+- timeout ;
+- logs.
+
+---
+
+# 142. PROTECTION CONTRE LES FAUX WEBHOOKS MARCHANDS
+
+Le marchand doit pouvoir vérifier que l'événement vient réellement de Biz-transPay.
+
+---
+
+# 143. RETRY DES WEBHOOKS
+
+Les retries doivent avoir :
+
+- nombre maximal ;
+- backoff ;
+- idempotence ;
+- statut final.
+
+---
+
+# 144. PROTECTION DES URLS DE CALLBACK
+
+Ne jamais permettre à un utilisateur de transformer arbitrairement une callback URL en destination interne dangereuse.
+
+---
+
+# 145. PROTECTION DES REDIRECTIONS
+
+Valider les URLs de redirection pour éviter les open redirects et certains scénarios de phishing.
+
+---
+
+# 146. PROTECTION CONTRE LE PHISHING INTERNE
+
+Les emails/SMS/push doivent :
+
+- utiliser des domaines officiels ;
+- éviter les secrets ;
+- afficher clairement l'opération ;
+- ne pas inclure de liens arbitraires.
+
+---
+
+# 147. DÉTECTION DE COMPROMISSION
+
+Détecter :
+
+- nouvelle localisation inhabituelle ;
+- appareil inhabituel ;
+- changement brutal d'activité ;
+- accès admin anormal ;
+- volume financier inhabituel.
+
+---
+
+# 148. NOTIFICATION DE SÉCURITÉ
+
+Notifier l'utilisateur lors de :
+
+- nouveau login ;
+- changement téléphone ;
+- changement email ;
+- changement mot de passe ;
+- création API key ;
+- retrait important ;
+- changement bénéficiaire.
+
+---
+
+# 149. PROTECTION DE LA CONFIDENTIALITÉ
+
+Appliquer le principe :
+
+**collecter uniquement ce qui est nécessaire, exposer uniquement ce qui est nécessaire.**
+
+---
+
+# 150. POLITIQUE DE RÉTENTION
+
+Définir combien de temps conserver :
+
+- logs ;
+- KYC ;
+- transactions ;
+- données utilisateur ;
+- événements de sécurité.
+
+Selon les obligations applicables.
+
+---
+
+# 151. INCIDENT RESPONSE
+
+Préparer une procédure :
+
+**Détection → Isolation → Analyse → Blocage → Correction → Récupération → Réconciliation → Rapport.**
+
+---
+
+# 152. MODE « INCIDENT FINANCIER »
+
+En cas d'anomalie grave :
+
+- suspendre retraits ;
+- suspendre dépôts concernés ;
+- isoler provider ;
+- préserver logs ;
+- protéger ledger ;
+- empêcher nouvelles pertes.
+
+---
+
+# 153. RÉCONCILIATION APRÈS INCIDENT
+
+Après un incident :
+
+`Provider ↔ Ledger ↔ Wallet ↔ Transactions`
+
+doit être comparé avant de réactiver les opérations.
+
+---
+
+# 154. TESTS DE CHARGE
+
+Tester la plateforme avec une charge contrôlée afin de vérifier qu'une hausse de trafic ne provoque pas :
+
+- crash ;
+- perte transaction ;
+- double transaction ;
+- corruption DB.
+
+---
+
+# 155. TESTS DE CHAOS / PANNE
+
+Tester :
+
+- provider indisponible ;
+- Redis indisponible ;
+- timeout ;
+- DB lente ;
+- webhook retardé ;
+- réseau interrompu.
+
+---
+
+# 156. TESTS DE SÉCURITÉ AVANT PRODUCTION
+
+Créer une checklist obligatoire :
+
+**CRITIQUE = 0 fail**
+
+avant activation d'une nouvelle fonctionnalité financière.
+
+---
+
+# 157. RÈGLE ABSOLUE POUR LES OPÉRATIONS FINANCIÈRES
+
+Pour toute opération :
+
+> **Le frontend demande.  
+> Le backend décide.  
+> Le provider confirme.  
+> Le ledger enregistre.**
+
+Jamais l'inverse.
+
+---
+
+# 158. RÈGLE ABSOLUE POUR LES SOLDES
+
+> **Le solde affiché n'est jamais la source de vérité.**
+
+La source de vérité doit être le système financier serveur/ledger.
+
+---
+
+# 159. RÈGLE ABSOLUE POUR LES WEBHOOKS
+
+> **Webhook reçu ≠ paiement automatiquement accepté.**
+
+Il doit être :
+1. authentifié ;
+2. validé ;
+3. comparé ;
+4. rendu idempotent ;
+5. enregistré ;
+6. réconcilié.
+
+---
+
+# 160. RÈGLE ABSOLUE POUR LES ENDPOINTS
+
+Chaque endpoint doit répondre à ces questions :
+
+- Qui peut l'appeler ?
+- Pourquoi ?
+- Quelles données peut-il envoyer ?
+- Quelles données peut-il recevoir ?
+- Quelle opération peut-il provoquer ?
+- Quelle limite possède-t-il ?
+- Est-il idempotent ?
+- Est-il journalisé ?
+- Que se passe-t-il en cas de panne ?
+- Peut-il provoquer une perte financière ?
+
+---
+
+# 161. EXIGENCE DE NON-RÉGRESSION POUR BIZ-TRANSPAY
+
+**Aucune sécurité ne doit supprimer ou modifier volontairement les fonctionnalités existantes.**
+
+Les fonctionnalités actuelles doivent rester disponibles :
+
+- connexion ;
+- inscription ;
+- KYC ;
+- dashboard ;
+- portefeuille ;
+- dépôt ;
+- retrait ;
+- transfert ;
+- échange ;
+- Mobile Money ;
+- crypto ;
+- liens de paiement ;
+- API développeur ;
+- historique ;
+- notifications ;
+- DigiShop ;
+- gestion des providers ;
+- administration ;
+- statistiques ;
+- gestion des frais.
+
+La sécurité doit être ajoutée **autour et à l'intérieur des flux existants**, sans réécrire inutilement la logique métier.
+
+---
+
+# 162. RÈGLE DE DÉPLOIEMENT
+
+Ne pas appliquer les 160 protections directement en production sans vérification.
+
+Processus recommandé :
+
+**1. Audit de l'architecture actuelle**  
+↓  
+**2. Inventaire des endpoints**  
+↓  
+**3. Identification des flux financiers**  
+↓  
+**4. Mise en place des protections critiques**  
+↓  
+**5. Tests unitaires**  
+↓  
+**6. Tests API**  
+↓  
+**7. Tests financiers**  
+↓  
+**8. Tests de non-régression**  
+↓  
+**9. Tests de charge**  
+↓  
+**10. Test de sécurité contrôlé**  
+↓  
+**11. Déploiement progressif**  
+↓  
+**12. Surveillance**.
+
+---
+
+# LES PROTECTIONS À CLASSER « CRITIQUES »
+
+Pour Biz-transPay, je mettrais en priorité absolue :
+
+1. **Ledger financier sécurisé**
+2. **Transactions atomiques**
+3. **Protection contre double dépense**
+4. **Idempotence de tous les paiements**
+5. **Validation serveur de tous les montants**
+6. **Validation serveur de tous les statuts**
+7. **Webhooks signés**
+8. **Anti-replay webhook**
+9. **Réconciliation provider ↔ Biz-transPay**
+10. **BOLA/IDOR sur tous les endpoints**
+11. **RBAC strict**
+12. **Protection des endpoints admin**
+13. **MFA administrateur**
+14. **Rate limiting**
+15. **Anti-bot**
+16. **Protection contre les injections**
+17. **Protection XSS**
+18. **Protection CSRF**
+19. **Protection SSRF**
+20. **Protection des fichiers KYC**
+21. **Protection des API keys**
+22. **Protection des secrets**
+23. **Protection des retraits**
+24. **Limites financières**
+25. **Anti-fraude**
+26. **Protection contre les race conditions**
+27. **Protection des fournisseurs**
+28. **Circuit breaker**
+29. **Kill switch financier**
+30. **Audit logs immuables**
+31. **Monitoring**
+32. **Alertes de sécurité**
+33. **Backups**
+34. **Plan de restauration**
+35. **Tests de pénétration**
+36. **Tests de non-régression financière**.
+
+### Objectif final
+
+Le système doit être conçu de façon à ce qu'une tentative de piratage ne puisse pas simplement transformer une requête HTTP en argent.
+
+Même si quelqu'un manipule le frontend, modifie les paramètres, répète une requête, reproduit un webhook, change un ID, force un statut `success`, tente un double retrait ou appelle directement une API, **le backend doit revalider l'opération et refuser toute opération financière non autorisée**.
+
+Cette approche correspond aux principes de l'OWASP ASVS, qui sert précisément de base pour vérifier les contrôles techniques de sécurité des applications web, ainsi qu'à l'OWASP API Security Top 10 pour les vulnérabilités propres aux API. [OWASP Foundation](https://owasp.org/projects/asvs?utm_source=chatgpt.com)
+
+**Et surtout : je ne considérerais pas « toutes les sécurités sont implantées » comme une affirmation à faire avant audit du code.** La formulation correcte pour Replit serait : **« implémenter et vérifier chacune de ces protections sur l'architecture existante, sans modifier les règles métier, puis produire un rapport indiquant pour chaque contrôle : implémenté / partiellement implémenté / non applicable / à corriger, avec tests de non-régression réussis. »** C'est beaucoup plus sûr que de demander à l'IA de déclarer que tout est sécurisé sans vérification.

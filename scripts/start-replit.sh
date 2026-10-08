@@ -3,7 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-export JWT_SECRET="${JWT_SECRET:-${SESSION_SECRET:-dev-secret}}"
+if [[ -z "${JWT_SECRET:-}" && -z "${SESSION_SECRET:-}" ]]; then
+  echo "JWT_SECRET or SESSION_SECRET must be configured; refusing to start." >&2
+  exit 1
+fi
+export JWT_SECRET="${JWT_SECRET:-${SESSION_SECRET:-}}"
 
 BACKEND_PID=""
 FRONTEND_PID=""

@@ -14306,7 +14306,9 @@ def _admin_permission_for_request(request: Request) -> Optional[str]:
         return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
     if path.startswith("/admin/email-notifications"):
         return "settings:write" if method not in {"GET", "HEAD"} else "settings:read"
-    return "settings:read"
+    # New admin routes must opt into an explicit permission instead of
+    # inheriting settings access from the default branch.
+    return "admin:unclassified"
 
 
 async def get_admin(
@@ -19065,6 +19067,92 @@ async def api_security_middleware(request: Request, call_next):
     if is_admin:
         await _record_admin_request(request, response.status_code)
     return response
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+def _contains_request_body_limit_error(error: Exception) -> bool:
+    if isinstance(error, _RequestBodyTooLarge):
+        return True
+    return any(
+        _contains_request_body_limit_error(nested)
+        for nested in getattr(error, "exceptions", ())
+        if isinstance(nested, Exception)
+    )
+
+
+class _RequestBodySizeLimitMiddleware:
+    """Enforce API byte limits while streaming, including chunked requests."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "")
+        if (
+            scope.get("type") != "http"
+            or not (path.startswith("/api/") or path == IZIPAY_WEBHOOK_ALIAS_PATH)
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        is_webhook = (
+            path.startswith("/api/webhook")
+            or path.startswith("/api/webhooks/")
+            or path == IZIPAY_WEBHOOK_ALIAS_PATH
+        )
+        max_bytes = MAX_WEBHOOK_BYTES if is_webhook else MAX_REQUEST_BYTES
+        received_bytes = 0
+        response_started = False
+
+        async def limited_receive():
+            nonlocal received_bytes
+            message = await receive()
+            if message.get("type") == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > max_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        async def track_send(message):
+            nonlocal response_started
+            if message.get("type") == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, track_send)
+        except Exception as error:
+            if not _contains_request_body_limit_error(error) or response_started:
+                raise
+
+            request = Request(scope, receive=receive)
+            await _queue_security_telegram_alert(
+                "request_too_large",
+                request,
+                outcome="Tentative bloquée avant traitement du contenu.",
+                solution=(
+                    "Vérifier si la même source recommence. En cas de répétition, "
+                    "bloquer le réseau source et contrôler les limites de taille."
+                ),
+            )
+            response = JSONResponse(
+                status_code=413,
+                content={
+                    "detail": {
+                        "message": "Requête trop volumineuse.",
+                        "code": "REQUEST_ENTITY_TOO_LARGE",
+                        "max_bytes": max_bytes,
+                    }
+                },
+            )
+            _apply_edge_security_headers(response, request)
+            await response(scope, receive, send)
+
+
+app.add_middleware(_RequestBodySizeLimitMiddleware)
 
 
 async def _referral_reconcile_loop() -> None:

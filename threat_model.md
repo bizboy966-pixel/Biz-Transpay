@@ -2,10 +2,10 @@
 
 ## Project Overview
 
-Biz-transPay is a React/CRACO frontend with a FastAPI backend and MongoDB. It
-supports merchant accounts, payment links, mobile-money and crypto flows,
-wallet operations, payouts, currency exchange, KYC, administrator actions, and
-provider webhooks.
+Biz-transPay is a React/CRACO frontend with a FastAPI backend and a
+PostgreSQL-backed JSONB document adapter. It supports merchant accounts,
+payment links, mobile-money and crypto flows, wallet operations, payouts,
+currency exchange, KYC, administrator actions, and provider webhooks.
 
 ## Assets
 
@@ -17,6 +17,10 @@ provider webhooks.
   uploaded-document metadata, payment-link configuration, and notifications.
 - **Provider credentials** — encrypted provider keys, webhook secrets, and
   server-side routing configuration.
+- **Firebase browser configuration** — the Firebase web API key and VAPID key
+  are public client configuration; the Firebase service-account credential
+  remains server-side and secret. Restrict the browser key to required APIs and
+  approved application domains.
 - **Administrative controls** — roles, MFA state, balance actions, provider
   configuration, and audit-relevant changes.
 
@@ -24,8 +28,9 @@ provider webhooks.
 
 - **Browser to API** — the browser is untrusted; protected requests require
   server-side authentication, authorization, CSRF, and origin checks.
-- **API to MongoDB** — all filters and updates must be structured and scoped;
-  user-provided search text is treated as bounded literal input.
+- **API to persistence layer** — the server accesses PostgreSQL through a
+  JSONB-backed document adapter. Filters and updates must be structured and
+  scoped; user-provided search text is treated as bounded literal input.
 - **API to payment providers** — provider selection and credentials remain
   server-side; callbacks must be authenticated, signed, idempotent, and
   reconciliable.
@@ -82,15 +87,25 @@ tokens, or personal data.
 ### Denial of Service
 
 Authentication, public payment, webhook, search, and money-movement routes use
-route-aware rate limits. External calls require bounded timeouts. Request,
-upload, and search inputs must have explicit size and complexity limits.
+route-aware rate limits. External calls require bounded timeouts. Request byte
+limits apply to streamed bodies, including requests without Content-Length;
+uploads and search inputs must also have explicit size and complexity limits.
 
 ### Elevation of Privilege
 
 Every protected operation must enforce permissions on the backend, not only in
 the frontend. Admin routes require effective roles and, where applicable,
 recent step-up authentication and explicit confirmation. MongoDB lookups must
-include the owning user or permitted administrative scope.
+include the owning user or permitted administrative scope. Unclassified admin
+routes must be denied until assigned an explicit permission.
+
+### Server-Side Request Forgery and upstream API use
+
+Merchant-configured webhook destinations are untrusted. Validate HTTPS URLs,
+reject private or non-global DNS answers, pin the vetted address for the
+connection, disable redirects and proxy-environment inheritance, and bound
+timeouts and retries. Provider responses must be validated before changing
+transaction or wallet state.
 
 ## Required Guarantees
 
@@ -101,6 +116,10 @@ include the owning user or permitted administrative scope.
   key or a single-use link.
 - A provider outage or reconciliation error does not silently become a
   successful financial state.
+- API request-size ceilings are enforced against bytes actually received, not
+  only a client-supplied Content-Length header.
+- Every admin route maps to an explicit server-side permission; unmapped routes
+  fail closed.
 - Security controls reject unsafe requests while leaving valid customer,
   merchant, payment-link, payout, exchange, and administrative flows available.
 - Published production deployments must provide the external callback reachability
