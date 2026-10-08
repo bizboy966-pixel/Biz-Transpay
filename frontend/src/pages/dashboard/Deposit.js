@@ -788,23 +788,6 @@ export function MobileMoneyForm({ onSuccess }) {
         <input type="text" value={fullName} onChange={(e) => setFullName(e.target.value)} data-testid="momo-fullname" required
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
       </div>
-      <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
-      {flowNeedsOtp && (
-        <Field label={paymentFlow.otp_label || 'Code de paiement'}>
-          <input
-            type="text"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            value={otp}
-            onChange={(e) => setOtp(e.target.value)}
-            placeholder="Saisissez le code généré sur votre téléphone"
-            required
-            data-testid="momo-otp"
-            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm font-mono tracking-widest"
-          />
-          <p className="mt-1 text-[10px] text-slate-500">Collez ou tapez exactement le code affiché par votre opérateur.</p>
-        </Field>
-      )}
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Adresse e-mail</label>
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="momo-email" required
@@ -947,6 +930,23 @@ export function MobileMoneyForm({ onSuccess }) {
            </p>
          )}
       </div>
+      <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
+      {flowNeedsOtp && (
+        <Field label={paymentFlow.otp_label || 'Code de paiement'}>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            placeholder="Saisissez le code généré sur votre téléphone"
+            required
+            data-testid="momo-otp"
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm font-mono tracking-widest"
+          />
+          <p className="mt-1 text-[10px] text-slate-500">Collez ou tapez exactement le code affiché par votre opérateur.</p>
+        </Field>
+      )}
       <button type="submit" disabled={loading || (flowNeedsOtp && !otp.trim())} data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
         {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}

@@ -621,23 +621,6 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
         <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="ex: 97000001" required
           className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
       </Field>
-      <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
-      {flowNeedsOtp && (
-        <Field label={paymentFlow.otp_label || 'Code de paiement'}>
-          <input
-            type="text"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            value={otp}
-            onChange={(e) => setOtp(e.target.value)}
-            placeholder="Saisissez le code généré sur votre téléphone"
-            required
-            data-testid="pay-momo-otp"
-            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm font-mono tracking-widest"
-          />
-          <p className="mt-1 text-[10px] text-slate-500">Collez ou tapez exactement le code affiché par votre opérateur.</p>
-        </Field>
-      )}
       {isFree && (
         <Field label={`Montant (${selectedOp?.currency || 'XOF'})`}>
           <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} required
@@ -668,6 +651,23 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
           ? 'Les frais sont ajoutés au montant payé. Le marchand reçoit le montant demandé.'
           : 'Les frais sont déduits du paiement. Le marchand reçoit le montant net.'}
       </div>
+      <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
+      {flowNeedsOtp && (
+        <Field label={paymentFlow.otp_label || 'Code de paiement'}>
+          <input
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+            placeholder="Saisissez le code généré sur votre téléphone"
+            required
+            data-testid="pay-momo-otp"
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm font-mono tracking-widest"
+          />
+          <p className="mt-1 text-[10px] text-slate-500">Collez ou tapez exactement le code affiché par votre opérateur.</p>
+        </Field>
+      )}
       <TurnstileWidget
         ref={turnstileRef}
         siteKey={turnstile.siteKey}

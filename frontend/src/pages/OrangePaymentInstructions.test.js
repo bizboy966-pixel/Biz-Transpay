@@ -103,12 +103,39 @@ describe('Orange USSD instructions use the amount actually paid', () => {
     expect(card.textContent).toContain('Suivez le menu pour générer le code de paiement.');
   }
 
+  function expectBefore(first, second) {
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  }
+
+  function expectConfirmationLast(type, hasOtp = true) {
+    const isDeposit = type === 'deposit';
+    const card = container.querySelector(`[data-testid="${isDeposit ? 'momo-payment-flow' : 'pay-payment-flow'}"]`);
+    const otp = container.querySelector(`[data-testid="${isDeposit ? 'momo-otp' : 'pay-momo-otp'}"]`);
+    const button = container.querySelector(`[data-testid="${isDeposit ? 'momo-submit' : 'momo-link-submit'}"]`);
+    const amount = container.querySelector('input[type="number"]');
+    if (amount) expectBefore(amount, card);
+    const totalLabel = Array.from(container.querySelectorAll('span'))
+      .find((element) => element.textContent === 'Total à payer');
+    expectBefore(totalLabel, card);
+    if (isDeposit) expectBefore(container.querySelector('[data-testid="momo-fee-client"]'), card);
+    if (hasOtp) {
+      expectBefore(card, otp);
+      expectBefore(otp, button);
+    } else {
+      expect(otp).toBeNull();
+      expectBefore(card, button);
+    }
+  }
+
   test('wallet deposit updates instructions and copied code when fee bearer changes', async () => {
     await act(async () => root.render(<MobileMoneyForm onSuccess={jest.fn()} />));
     await change(container.querySelector('[data-testid="momo-country"]'), 'BF');
     await change(container.querySelector('[data-testid="momo-operator"]'), 'orange_bf');
     await change(container.querySelector('input[type="number"]'), '500');
     expectInstructions(500, 'momo-payment-flow');
+    expectConfirmationLast('deposit');
     await act(async () => container.querySelector('[data-testid="momo-fee-client"]').click());
     expectInstructions(520, 'momo-payment-flow');
     await act(async () => container.querySelector('[aria-label="Copier le code USSD"]').click());
@@ -138,10 +165,57 @@ describe('Orange USSD instructions use the amount actually paid', () => {
     await change(container.querySelectorAll('select')[1], 'orange_bf');
     if (type === 'free') await change(container.querySelector('input[type="number"]'), '500');
     expectInstructions(expected, 'pay-payment-flow');
+    expectConfirmationLast('link');
     await act(async () => container.querySelector('[aria-label="Copier le code USSD"]').click());
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`*144*4*6*${expected}#`);
     expect(container.textContent).toContain(`${bearer === 'owner' ? 480 : 500} XOF`);
   });
+
+  test('deposit OTP remains required and is cleared when the operator changes', async () => {
+    await act(async () => root.render(<MobileMoneyForm onSuccess={jest.fn()} />));
+    await change(container.querySelector('[data-testid="momo-country"]'), 'BF');
+    await change(container.querySelector('[data-testid="momo-operator"]'), 'orange_bf');
+    const button = container.querySelector('[data-testid="momo-submit"]');
+    expect(button.disabled).toBe(true);
+    await change(container.querySelector('[data-testid="momo-otp"]'), '123456');
+    expect(button.disabled).toBe(false);
+    await change(container.querySelector('[data-testid="momo-operator"]'), '');
+    expect(container.querySelector('[data-testid="momo-otp"]')).toBeNull();
+    await change(container.querySelector('[data-testid="momo-operator"]'), 'orange_bf');
+    expect(container.querySelector('[data-testid="momo-otp"]').value).toBe('');
+    expect(button.disabled).toBe(true);
+  });
+
+  test.each(['deposit', 'link'])(
+    'other %s operators keep their instructions after the amount without adding OTP',
+    async (type) => {
+      const otherConfig = {
+        ...config,
+        catalog: [{
+          ...config.catalog[0],
+          operators: [{
+            ...orange,
+            code: 'other_operator',
+            payment_flow: {
+              before_submit: false, otp_required: false,
+              ussd_code: '*123#', steps: ['Confirmez le paiement sur votre téléphone.'],
+            },
+          }],
+        }],
+      };
+      useQuery.mockReturnValue({ data: otherConfig, isPending: false });
+      global.fetch.mockResolvedValue({ json: async () => otherConfig });
+      await act(async () => root.render(type === 'deposit'
+        ? <MobileMoneyForm onSuccess={jest.fn()} />
+        : <MoMoLinkForm link={{ amount_type: 'free', min_amount: 100, currency: 'XOF' }}
+            turnstile={{ enabled: false }} onSuccess={jest.fn()} />));
+      await change(container.querySelectorAll('select')[0], 'BF');
+      await change(container.querySelectorAll('select')[1], 'other_operator');
+      await change(container.querySelector('input[type="number"]'), '500');
+      expectConfirmationLast(type, false);
+      expect(container.querySelector('code').textContent).toBe('*123#');
+    },
+  );
 
   test.each(['deposit', 'link'])(
     'Moov Burkina %s tracker requests USSD confirmation instead of a notification',
