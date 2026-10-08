@@ -633,6 +633,7 @@ export function MobileMoneyForm({ onSuccess }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [otp, setOtp] = useState('');
+  const [authorizedPaymentFlowKey, setAuthorizedPaymentFlowKey] = useState('');
   const [feeBearer, setFeeBearer] = useState('merchant');
   const [psrAssetError, setPsrAssetError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -661,6 +662,13 @@ export function MobileMoneyForm({ onSuccess }) {
     totalToPay,
     creditedAmount,
   } = mobileMoneyFeePreview(baseAmount, selectedOp, feeBearer);
+  const requiresMaliUssdAuthorization = country === 'ML'
+    && paymentFlow.kind === 'ussd'
+    && paymentFlow.before_submit === true;
+  const paymentFlowAuthorizationKey = [
+    country, operator, phone.trim(), baseAmount, totalToPay,
+  ].join(':');
+  const paymentFlowAuthorized = authorizedPaymentFlowKey === paymentFlowAuthorizationKey;
   const beginPaymentStatusPolling = (trackedDeposit) => {
     if (psrPollRef.current) clearInterval(psrPollRef.current);
     let checking = false;
@@ -700,6 +708,10 @@ export function MobileMoneyForm({ onSuccess }) {
     }
     if (flowNeedsOtp && !otp.trim()) {
       toast.error(`Saisissez ${paymentFlow.otp_label || 'le code de paiement'} avant de continuer.`);
+      return;
+    }
+    if (requiresMaliUssdAuthorization && !paymentFlowAuthorized) {
+      toast.error('Composez le code USSD et autorisez la demande sur votre téléphone avant de continuer.');
       return;
     }
     setLoading(true);
@@ -799,7 +811,12 @@ export function MobileMoneyForm({ onSuccess }) {
           <select
             data-testid="momo-country"
             value={country}
-            onChange={(e) => { setCountry(e.target.value); setOperator(''); setOtp(''); }}
+            onChange={(e) => {
+              setCountry(e.target.value);
+              setOperator('');
+              setOtp('');
+              setAuthorizedPaymentFlowKey('');
+            }}
             tabIndex="-1"
             aria-hidden="true"
             className="sr-only"
@@ -810,7 +827,12 @@ export function MobileMoneyForm({ onSuccess }) {
           <SelectionMenu
             label="Sélectionner le pays"
             value={country}
-            onChange={(value) => { setCountry(value); setOperator(''); setOtp(''); }}
+            onChange={(value) => {
+              setCountry(value);
+              setOperator('');
+              setOtp('');
+              setAuthorizedPaymentFlowKey('');
+            }}
             placeholder="Sélectionner"
             testId="momo-country-picker"
             options={catalog.map((c) => {
@@ -830,7 +852,11 @@ export function MobileMoneyForm({ onSuccess }) {
           <select
             data-testid="momo-operator"
             value={operator}
-            onChange={(e) => { setOperator(e.target.value); setOtp(''); }}
+            onChange={(e) => {
+              setOperator(e.target.value);
+              setOtp('');
+              setAuthorizedPaymentFlowKey('');
+            }}
             required
             disabled={!country}
             aria-label="Opérateur Mobile Money"
@@ -851,7 +877,11 @@ export function MobileMoneyForm({ onSuccess }) {
             <SelectionMenu
               label="Sélectionner l’opérateur"
               value={operator}
-               onChange={(value) => { setOperator(value); setOtp(''); }}
+              onChange={(value) => {
+                setOperator(value);
+                setOtp('');
+                setAuthorizedPaymentFlowKey('');
+              }}
               placeholder="Sélectionner"
               testId="momo-operator-picker"
               options={operators.map((o) => ({
@@ -878,18 +908,31 @@ export function MobileMoneyForm({ onSuccess }) {
       </div>
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Numéro Mobile Money</label>
-        <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="momo-phone"
-          placeholder={country === 'CI' ? '10 chiffres, avec ou sans +225' : 'ex: 97000001'} required
+        <input type="tel" value={phone} onChange={(e) => {
+          setPhone(e.target.value);
+          setAuthorizedPaymentFlowKey('');
+        }} data-testid="momo-phone"
+          placeholder={country === 'CI'
+            ? '10 chiffres, avec ou sans +225'
+            : country === 'ML' ? '8 chiffres, avec ou sans +223' : 'ex: 97000001'} required
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
         {country === 'CI' && (
           <p className="mt-1 text-[10px] text-slate-500">
             Saisissez les 10 chiffres du numéro ivoirien ; l’indicatif +225 est facultatif.
           </p>
         )}
+        {country === 'ML' && (
+          <p className="mt-1 text-[10px] text-slate-500">
+            Saisissez les 8 chiffres du numéro malien ; l’indicatif +223 est facultatif.
+          </p>
+        )}
       </div>
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Montant ({selectedOp?.currency || 'XOF'})</label>
-        <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} data-testid="momo-amount"
+        <input type="number" value={amount} onChange={(e) => {
+          setAmount(e.target.value);
+          setAuthorizedPaymentFlowKey('');
+        }} data-testid="momo-amount"
           placeholder={selectedOp ? `Min ${selectedOp.min}${selectedOp.max ? ' — Max ' + selectedOp.max : ''}` : '1000'}
           min={selectedOp?.min || 100}
           max={selectedOp?.max || undefined}
@@ -913,11 +956,17 @@ export function MobileMoneyForm({ onSuccess }) {
       <div>
         <label className="block text-xs font-semibold text-slate-700 mb-1.5">Frais supportés par</label>
         <div className="grid grid-cols-2 gap-2">
-             <button type="button" onClick={() => setFeeBearer('merchant')} data-testid="momo-fee-merchant"
+              <button type="button" onClick={() => {
+                setFeeBearer('merchant');
+                setAuthorizedPaymentFlowKey('');
+              }} data-testid="momo-fee-merchant"
              className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'merchant' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
              Biz-transPay
           </button>
-           <button type="button" onClick={() => setFeeBearer('client')} data-testid="momo-fee-client"
+            <button type="button" onClick={() => {
+              setFeeBearer('client');
+              setAuthorizedPaymentFlowKey('');
+            }} data-testid="momo-fee-client"
              className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${feeBearer === 'client' ? 'border-[#2563EB] bg-blue-50 text-[#2563EB]' : 'border-slate-200 text-slate-600'}`}>
             Client
           </button>
@@ -931,6 +980,20 @@ export function MobileMoneyForm({ onSuccess }) {
          )}
       </div>
       <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
+      {requiresMaliUssdAuthorization && (
+        <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-[11px] leading-relaxed text-amber-900">
+          <input
+            type="checkbox"
+            checked={paymentFlowAuthorized}
+            onChange={(event) => setAuthorizedPaymentFlowKey(
+              event.target.checked ? paymentFlowAuthorizationKey : '',
+            )}
+            data-testid="momo-mali-ussd-authorized"
+            className="mt-0.5 accent-amber-600"
+          />
+          <span>J’ai composé le code USSD affiché et suivi le menu Orange sur le téléphone associé au numéro indiqué.</span>
+        </label>
+      )}
       {flowNeedsOtp && (
         <Field label={paymentFlow.otp_label || 'Code de paiement'}>
           <input
@@ -947,9 +1010,16 @@ export function MobileMoneyForm({ onSuccess }) {
           <p className="mt-1 text-[10px] text-slate-500">Collez ou tapez exactement le code affiché par votre opérateur.</p>
         </Field>
       )}
-      <button type="submit" disabled={loading || (flowNeedsOtp && !otp.trim())} data-testid="momo-submit"
+      <button type="submit"
+        disabled={loading || (flowNeedsOtp && !otp.trim())
+          || (requiresMaliUssdAuthorization && !paymentFlowAuthorized)}
+        data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
-        {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</> : <>Payer maintenant <ArrowRight className="w-4 h-4" /></>}
+        {loading
+          ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</>
+          : <>{requiresMaliUssdAuthorization
+            ? (paymentFlow.action_label || 'J’ai autorisé la demande, lancer le paiement')
+            : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
       </button>
     </form>
   );

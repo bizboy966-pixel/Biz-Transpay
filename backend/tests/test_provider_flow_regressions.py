@@ -1283,6 +1283,75 @@ async def test_mbiyo_ci_local_phone_is_normalized_and_provider_status_kept(
     assert saved["instructions"] == result["instructions"]
 
 
+@pytest.mark.parametrize(
+    ("network", "local_phone_number", "expected_instruction"),
+    [
+        ("orange", "70123456", "menu USSD"),
+        ("moov", "68123456", "application Moov Money"),
+    ],
+)
+@run_async
+async def test_mbiyo_mali_deposit_sends_international_phone_and_network(
+        monkeypatch, network, local_phone_number, expected_instruction):
+    fake = MemoryDB()
+    monkeypatch.setattr(server, "db", fake)
+    captured = {}
+
+    async def config(*args, **kwargs):
+        return {
+            "enabled": True,
+            "_api_key": "test-key",
+            "catalog": [{
+                "country": "ML", "code": f"mbiyo_{network}_ml",
+                "network": network, "currency": "XOF",
+                "name": f"{network.title()} Money", "active": True,
+                "min": 500, "max": 1500000,
+            }],
+        }
+
+    class FakeMbiyoClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def payin(self, **kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "success",
+                "data": {
+                    "transaction_id": f"MBIYO-ML-{network.upper()}",
+                    "status": "pending",
+                },
+            }
+
+    monkeypatch.setattr(server, "get_mbiyo_config", config)
+    monkeypatch.setattr(server.mbiyo, "MbiyoClient", FakeMbiyoClient)
+    request = Request({
+        "type": "http", "method": "POST",
+        "scheme": "https", "path": "/api/deposits/mobile-money/start",
+        "headers": [(b"host", b"example.test")],
+        "query_string": b"", "server": ("example.test", 443),
+    })
+    req = server.MobileMoneyDepositRequest(
+        amount=1000, currency="XOF", email="buyer@example.test",
+        full_name="Test Buyer", country="ML", operator=f"{network}_ml",
+        phone_number=local_phone_number,
+    )
+
+    result = await server._create_mbiyo_deposit(req, request, "user-1")
+
+    assert captured["metadata"]["phone_number"] == f"+223{local_phone_number}"
+    assert captured["metadata"]["country_code"] == "ML"
+    assert captured["metadata"]["network"] == network
+    assert result["status"] == "pending"
+    assert result["payment_flow"]["kind"] == (
+        "ussd" if network == "orange" else "phone_confirmation"
+    )
+    assert expected_instruction in result["instructions"]
+    assert result["message"] == result["instructions"]
+    assert fake.momo_deposits.docs[0]["provider"] == "mbiyo"
+    assert fake.momo_deposits.docs[0]["status"] == "pending"
+
+
 @run_async
 async def test_mbiyo_status_poll_keeps_operator_rejection_terminal(monkeypatch):
     fake = MemoryDB()

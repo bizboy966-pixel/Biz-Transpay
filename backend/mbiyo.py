@@ -81,20 +81,28 @@ def normalize_amount(country: str, amount: float) -> float:
 
 
 def normalize_phone_number(country: str, phone_number: str) -> str:
-    """Normalize Côte d'Ivoire numbers to the international form Mbiyo expects."""
+    """Normalize supported local phone formats to the international form Mbiyo expects."""
     value = str(phone_number or "").strip()
-    if str(country or "").upper() != "CI":
+    country_code = str(country or "").upper()
+    formats = {
+        "CI": ("225", 10, "Côte d'Ivoire"),
+        "ML": ("223", 8, "Mali"),
+    }
+    if country_code not in formats:
         return value
+    calling_code, national_length, country_label = formats[country_code]
     if not re.fullmatch(r"[\d\s().+-]+", value):
-        raise ValueError("Invalid Côte d'Ivoire mobile money phone number")
+        raise ValueError(f"Invalid {country_label} mobile money phone number")
 
     digits = re.sub(r"\D", "", value)
     if digits.startswith("00"):
         digits = digits[2:]
-    national_number = digits[3:] if digits.startswith("225") else digits
-    if not re.fullmatch(r"\d{10}", national_number):
-        raise ValueError("Invalid Côte d'Ivoire mobile money phone number")
-    return f"+225{national_number}"
+    national_number = (
+        digits[len(calling_code):] if digits.startswith(calling_code) else digits
+    )
+    if not re.fullmatch(rf"\d{{{national_length}}}", national_number):
+        raise ValueError(f"Invalid {country_label} mobile money phone number")
+    return f"+{calling_code}{national_number}"
 
 
 class MbiyoError(Exception):

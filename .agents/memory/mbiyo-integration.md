@@ -116,6 +116,18 @@ provider-failed status as terminal rather than retrying or showing a pending
 confirmation flow. Do not infer the carrier's decline cause from `failed`;
 obtain it from the provider's merchant-side transaction details or support.
 
+For Mali pay-ins, submit the payer number with the +223 country code. Orange Mali
+requires the payer to authorize the request through `#144#77#` before the API
+submission; Moov Mali uses the phone-confirmation flow.
+
+**Why:** Mbiyo's official pay-in documentation lists both Mali networks and
+documents a pre-submission USSD step for Orange, while a provider response of
+`pending` alone does not prove the customer received or approved a prompt.
+
+**How to apply:** Keep the Orange USSD authorization step explicit before
+submission, use an international-format MSISDN for both networks, and leave
+webhook/status reconciliation and exactly-once crediting unchanged.
+
 Mbiyo Côte d'Ivoire payouts require international-format phone numbers. A
 400/422 response without a provider transaction ID is definitive only when it
 is not a provider-liquidity or duplicate/idempotency error; refund such rejected

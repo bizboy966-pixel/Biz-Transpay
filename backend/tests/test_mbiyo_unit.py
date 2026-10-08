@@ -36,6 +36,9 @@ def test_documented_ussd_and_post_init_flows():
     assert qmoney["before_submit"] is False
     assert qmoney["otp_required"] is True
     assert mbiyo.payment_flow({"country": "BF", "network": "orange"}, 1234)["ussd_code"] == "*144*4*6*1234#"
+    ml_orange = mbiyo.payment_flow({"country": "ML", "network": "orange"})
+    assert ml_orange["before_submit"] is True
+    assert ml_orange["ussd_code"] == "#144#77#"
     ci_mtn = mbiyo.payment_flow({"country": "CI", "network": "mtn"})
     assert "Si une notification" in ci_mtn["steps"][1]
 
@@ -62,6 +65,24 @@ def test_ci_phone_number_rejects_wrong_country_code_and_invalid_length():
         mbiyo.normalize_phone_number("CI", "+2280700000000")
     with pytest.raises(ValueError):
         mbiyo.normalize_phone_number("CI", "70000000")
+
+
+def test_mali_phone_number_normalizes_national_and_international_forms():
+    expected = "+22370123456"
+    for phone_number in (
+        "70123456",
+        "+223 70 12 34 56",
+        "22370123456",
+        "00223 70 12 34 56",
+    ):
+        assert mbiyo.normalize_phone_number("ML", phone_number) == expected
+
+
+def test_mali_phone_number_rejects_wrong_country_code_and_invalid_length():
+    with pytest.raises(ValueError):
+        mbiyo.normalize_phone_number("ML", "+22570123456")
+    with pytest.raises(ValueError):
+        mbiyo.normalize_phone_number("ML", "7012345")
 
 
 def test_mbiyo_phone_normalization_preserves_non_ci_input():

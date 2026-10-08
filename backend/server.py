@@ -8188,10 +8188,19 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         provider_phone_number = mbiyo.normalize_phone_number(
             req.country, req.phone_number)
     except ValueError as exc:
+        phone_format_message = {
+            "CI": (
+                "Pour la Côte d’Ivoire, saisissez les 10 chiffres du numéro, "
+                "avec ou sans l’indicatif +225."
+            ),
+            "ML": (
+                "Pour le Mali, saisissez les 8 chiffres du numéro, "
+                "avec ou sans l’indicatif +223."
+            ),
+        }.get(str(req.country or "").upper(), "Numéro Mobile Money invalide.")
         raise HTTPException(
             400,
-            "Pour la Côte d’Ivoire, saisissez les 10 chiffres du numéro, "
-            "avec ou sans l’indicatif +225.",
+            phone_format_message,
         ) from exc
     if req.idempotency_key:
         previous = await db.momo_deposits.find_one(
@@ -8234,6 +8243,18 @@ async def _create_mbiyo_deposit(req: MobileMoneyDepositRequest, request: Request
         "confirmez-la. Le statut sera vérifié automatiquement ici."
         if req.country.upper() == "CI"
         and str(op.get("network") or "").strip().lower() == "mtn"
+        else (
+            "Votre demande Orange Mali a été lancée après l’autorisation via "
+            "le menu USSD. Sa confirmation sera vérifiée automatiquement ici."
+        )
+        if req.country.upper() == "ML"
+        and str(op.get("network") or "").strip().lower() == "orange"
+        else (
+            "Ouvrez l’application Moov Money ou la notification reçue pour "
+            "confirmer la demande. Le statut sera vérifié automatiquement ici."
+        )
+        if req.country.upper() == "ML"
+        and str(op.get("network") or "").strip().lower() == "moov"
         else None
     )
     dep_id = new_id()
