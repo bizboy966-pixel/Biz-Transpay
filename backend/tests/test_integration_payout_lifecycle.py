@@ -29,7 +29,7 @@ class WalletCollection(MemoryCollection):
         return "test-index"
 
 
-def configure(monkeypatch):
+def configure(monkeypatch, mode="moov-burkina-faso"):
     user = {"id": "test-merchant", "kyc_status": "verified",
             "full_name": "Test Merchant", "balance_xof": 5000}
     users = WalletCollection()
@@ -37,7 +37,7 @@ def configure(monkeypatch):
     db = DB(users=users, transactions=WalletCollection())
     monkeypatch.setattr(server, "db", db)
     operator = next(dict(op) for op in server.paydunya.default_withdrawal_catalog()
-                    if op["withdraw_mode"] == "moov-burkina-faso")
+                    if op["withdraw_mode"] == mode)
     operator.update(active=True, platform_fee_fixed=20)
     async def get_user(uid):
         return await db.users.find_one({"id": uid})
@@ -77,14 +77,15 @@ def request(key="test-payout-operation"):
 
 
 @pytest.mark.parametrize("outcome", ["pending", "completed", "failed"])
-def test_api_dispatches_real_payout_handler_and_tracks_verified_callback(monkeypatch, outcome):
+@pytest.mark.parametrize("mode", ["moov-burkina-faso", "orange-money-burkina"])
+def test_api_dispatches_real_payout_handler_and_tracks_verified_callback(monkeypatch, outcome, mode):
     async def scenario():
-        db, router, invoice, submit, notify = configure(monkeypatch)
+        db, router, invoice, submit, notify = configure(monkeypatch, mode)
         create = route(router, "/v1/payouts", "POST")
         get = route(router, "/v1/payouts/{payout_id}", "GET")
         body_type = create.__annotations__["body"]
         body = body_type(amount=1000, currency="XOF", country="BF",
-                         operator="moov-burkina-faso", recipient="70000000")
+                          operator=mode, recipient="70000000")
         credential = {"user_id": "test-merchant", "environment": "live",
                       "user": {"kyc_status": "verified"},
                       "scopes": ["payouts:write"], "payout_opt_in": True}
@@ -99,12 +100,12 @@ def test_api_dispatches_real_payout_handler_and_tracks_verified_callback(monkeyp
         assert (await create(body, request(), credential)) == initial
         invoice.assert_awaited_once()
         submit.assert_awaited_once()
-        assert submit.await_args.kwargs["withdraw_mode"] == "moov-burkina-faso"
+        assert submit.await_args.kwargs["withdraw_mode"] == mode
         tx = await db.transactions.find_one({"id": initial["id"]})
         check.return_value = {
             "response_code": "00", "status": outcome,
             "invoice_token": "test-payout-token", "amount": 1000,
-            "withdraw_mode": "moov-burkina-faso", "disburse_id": tx["reference"],
+            "withdraw_mode": mode, "disburse_id": tx["reference"],
         }
         await server.paydunya_disbursement_webhook(request(), ref=tx["reference"])
         await server.paydunya_disbursement_webhook(request(), ref=tx["reference"])

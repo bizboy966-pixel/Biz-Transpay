@@ -218,6 +218,8 @@ def ctx(db, **overrides):
         "PaymentLinkCreate": server.PaymentLinkCreate,
         "start_mobile_money_deposit": server.start_mobile_money_deposit,
         "get_momo_deposit": server.get_momo_deposit,
+        "deposits_config_public": server.deposits_config_public,
+        "transfer_config": server.transfer_config,
         "transfer": server.transfer,
         "do_exchange": server.do_exchange,
         "conversion_quote": server.conversion_quote,

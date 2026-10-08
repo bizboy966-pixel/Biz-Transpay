@@ -19,9 +19,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, EmailStr, Field
 from pymongo.errors import DuplicateKeyError
+from integration_mobile_money import burkina_guides, operator_catalog
 
 
 ENDPOINTS = [
+    {"method": "GET", "path": "/api/integration/v1/mobile-money/operators?direction=deposit|payout",
+     "auth": "Authorization Bearer + X-Public-Key", "auth_type": "bearer",
+     "purpose": "Lister les opérateurs Mobile Money activés et leurs instructions, séparément pour les dépôts et les retraits."},
     {"method": "GET", "path": "/api/integration/settings?environment=test|live",
      "auth": "Session Biz-transPay du marchand", "auth_type": "session",
      "purpose": "Consulter les paramètres d’intégration."},
@@ -1453,6 +1457,12 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             query, {"_id": 0, "payload": 0}
         ).sort("created_at", -1).to_list(limit)
 
+    @v1.get("/mobile-money/operators")
+    async def mobile_money_operators(
+            direction: Literal["deposit", "payout"] = "deposit",
+            credential: dict = Depends(authenticate)):
+        return await operator_catalog(ctx, direction, credential["user_id"])
+
     @v1.post("/deposits")
     async def start_deposit(body: DepositBody, request: Request,
                             credential: dict = Depends(authenticate)):
@@ -1468,8 +1478,25 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
         req = ctx["MobileMoneyDepositRequest"](
             **{**payload, "fee_bearer": "merchant"},
             idempotency_key=f"btpi_{claim_doc['id'][:64]}")
-        result = await ctx["start_mobile_money_deposit"](
-            req, request, credential["user_id"])
+        try:
+            result = await ctx["start_mobile_money_deposit"](
+                req, request, credential["user_id"])
+        except HTTPException as exc:
+            # This precise pre-dispatch challenge creates no invoice. Allow the
+            # client to supply its OTP, but never release an uncertain payment.
+            if (exc.status_code == 400 and isinstance(exc.detail, dict)
+                    and exc.detail.get("code") == "OTP_REQUIRED"):
+                persisted = await db.momo_deposits.find_one({
+                    "user_id": credential["user_id"],
+                    "idempotency_key": req.idempotency_key,
+                })
+                if not persisted:
+                    await db.integration_idempotency.delete_many({
+                        "id": claim_doc["id"], "user_id": credential["user_id"],
+                        "environment": credential["environment"], "response": None,
+                        "fingerprint": claim_doc["fingerprint"],
+                    })
+            raise
         business_id = result.get("id") or result.get("deposit_id")
         result = {"id": business_id, "status": result.get("status", "pending"),
                   "deposit": result}
@@ -1942,6 +1969,19 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             "tx_hash": None, "created_at": "2026-01-01T12:00:00+00:00",
         }
         responses = {
+            ("GET", "/api/integration/v1/mobile-money/operators"): {
+                "direction": "deposit", "enabled": True,
+                "availability_source": "serving_environment_configuration",
+                "operators": [{
+                    "country": "BF", "country_label": "Burkina Faso",
+                    "code": "moov_bf", "name": "Moov Money Burkina",
+                    "currency": "XOF", "min": 100, "max": None,
+                    "payment_flow": {
+                        "kind": "ussd_confirmation", "before_submit": False,
+                        "otp_required": False, "ussd_code": "*555*6#",
+                    },
+                }],
+            },
             ("GET", "/api/integration/settings"): {
                 "environment": "test",
                 "credentials": {
@@ -2177,7 +2217,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     body_field("full_name", "string", True, "Nom complet du payeur.", "Buyer"),
                     body_field("reference", "string|null", False, "Référence du marchand.", "order-125"),
                     body_field("description", "string|null", False, "Description du dépôt.", "Order 125"),
-                    body_field("otp", "string|null", False, "Code OTP si l’opérateur le demande.", "123456"),
+                    body_field("otp", "string|null", False, "Code généré par le client avant POST lorsque payment_flow.before_submit et otp_required valent true (Orange Burkina).", "123456"),
                     body_field("fee_bearer", "string", False,
                                "Ancien paramètre accepté pour compatibilité, ignoré : les frais sont toujours inclus dans le montant payé et déduits du crédit marchand.",
                                "client", "client"),
@@ -2195,6 +2235,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     error(422, validation_error),
                     error(503, "Sandbox transactions are unavailable: no isolated official provider test environment is configured. No funds were moved."),
                     error(400, "Opérateur non disponible pour ce pays"),
+                     error(400, {"code": "OTP_REQUIRED",
+                                 "message": "Générez le code indiqué puis saisissez-le avant de lancer le paiement.",
+                                 "payment_flow": {"kind": "otp", "before_submit": True,
+                                                  "otp_required": True,
+                                                  "ussd_template": "*144*4*6*{amount}#"}}),
                     error(503, "Mobile Money temporairement indisponible"),
                 ],
             },
@@ -2356,6 +2401,11 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
             "/api/integration/v1/crypto/payouts",
         }
         query_fields = {
+            "/api/integration/v1/mobile-money/operators": [
+                param("direction", "query", False, "string (deposit|payout)",
+                      "Catalogue activé dans l’environnement servi ; les codes peuvent différer selon la direction.",
+                      "deposit", "deposit"),
+            ],
             "/api/integration/settings": [
                 param("environment", "query", True, "string (test|live)",
                       "Choisir l’environnement des identifiants et de la configuration du webhook.",
@@ -2686,7 +2736,9 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                     f"response = requests.{method.lower()}({py_url}, {python_options})")
             if path.startswith("/api/integration/v1/"):
                 section = path.split("/")[4]
-                if section not in {"deposits", "payouts", "exchanges", "links", "transactions", "crypto"}:
+                if section == "mobile-money":
+                    section = "mobile-money-discovery"
+                if section not in {"deposits", "payouts", "exchanges", "links", "transactions", "crypto", "mobile-money-discovery"}:
                     raise ValueError(f"Undocumented integration section: {path}")
             elif path.startswith("/api/integration/webhooks/"):
                 section = "webhooks"
@@ -2724,6 +2776,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                   "POST /api/integration/v1/deposits lance un dépôt Mobile Money et renvoie {id,status,deposit}. Le montant demandé est le total payé par le client : pour 2 000 de paiement et 500 de frais, le client paie 2 000 et le portefeuille marchand reçoit 1 500. Le champ fee_bearer historique est accepté mais ignoré. La route GET par identifiant renvoie l’état public du dépôt ; la route de liste renvoie les enregistrements d’opération d’intégration. Envoyez Idempotency-Key lors de la création."},
                  {"id": "payouts", "title": "Retraits", "description":
                   "POST /api/integration/v1/payouts renvoie {id,status,payout} ; payout contient le résultat du transfert. Le bénéficiaire reçoit le montant demandé intact : pour 2 000 de retrait et 500 de frais, le portefeuille marchand est débité de 2 500 et le bénéficiaire reçoit 2 000. Le champ fee_bearer historique est accepté mais ignoré. Activez l’autorisation de retrait en production avant d’accorder payouts:write. Un état pending ne prouve pas que l’opération est terminée."},
+                *burkina_guides(),
                 {"id": "crypto", "title": "Cryptomonnaies", "description":
                   "GET /api/integration/v1/crypto/assets?direction=deposit|payout liste les actifs et réseaux actifs (asset_code) de l’environnement servi ; les clés test peuvent consulter ce catalogue, mais ne peuvent pas créer d’opération. POST /crypto/deposits crée une adresse de paiement à transmettre au payeur avec le montant amount_to_send, le réseau et, si nécessaire, le mémo ; seuls les dépôts confirmés sont crédités dans le portefeuille crypto/réseau du marchand. POST /crypto/payouts débite le portefeuille réseau correspondant puis lance un retrait on-chain ; la réponse pending ne signifie pas que le retrait est confirmé. Les montants acceptent au plus 6 décimales ; sender ajoute les frais au débit, receiver les déduit du montant reçu si le net est aussi représentable à 6 décimales. Les deux créations exigent Idempotency-Key et les portées deposits:write ou payouts:write ; les retraits exigent aussi l’autorisation explicite en production. Les routes GET par identifiant donnent l’état courant ; les listes renvoient les opérations de l’intégration. Le statut confirmed d’un dépôt, ou completed d’un retrait, signale la réussite. Les webhooks crypto_deposit.pending/success/failed et crypto_payout.pending/success/failed sont signés et émis avec l’identifiant et l’état ; vérifiez la signature et l’événement, puis consultez GET avant de finaliser une commande. Si pending_manual vaut true ou si le dépôt n’a pas encore d’adresse, ne transférez rien et demandez une vérification de l’opération ; les fonds d’un retrait incertain restent réservés. Ne réémettez pas un paiement sur une nouvelle clé si l’issue est incertaine. Les actifs désactivés ne sont plus proposés pour de nouvelles opérations, mais l’historique reste consultable."},
                 {"id": "exchanges", "title": "Change", "description":
@@ -2752,7 +2805,7 @@ def create_router(ctx: dict[str, Any]) -> APIRouter:
                 {"id": "http", "title": "Codes de réponse HTTP", "description":
                   "200 : requête acceptée ou ressource renvoyée. 400 : Idempotency-Key invalide ou absente, ou condition métier non satisfaite. 401 : identifiants absents ou invalides. 403 : clé désactivée, portée manquante, compte non marchand ou autorisation de retrait absente. 404 : opération ou ressource appartenant au propriétaire introuvable. 409 : conflit ou issue incertaine d’idempotence. 422 : paramètres ou corps invalides. 429 : limite de débit atteinte. 502 : échec du prestataire. 503 : environnement de test ou prestataire indisponible."},
                 {"id": "errors", "title": "Erreurs et nouvelles tentatives", "description":
-                 "Les corps d’erreur suivent la structure FastAPI {detail: ...}. Les erreurs de validation contiennent un tableau d’erreurs de champ ; les erreurs de portée et d’Idempotency-Key absente utilisent les objets detail structurés indiqués pour chaque route. Réutilisez une même Idempotency-Key uniquement pour une requête identique ; une issue incertaine 409 n’autorise pas à soumettre une seconde opération."},
+                 "Les corps d’erreur suivent la structure FastAPI {detail: ...}. Les erreurs de validation contiennent un tableau d’erreurs de champ ; les erreurs de portée et d’Idempotency-Key absente utilisent les objets detail structurés indiqués pour chaque route. Réutilisez une même Idempotency-Key uniquement pour une requête identique ; une issue incertaine 409 n’autorise pas à soumettre une seconde opération. Exception explicite : après HTTP 400 OTP_REQUIRED avant toute soumission de dépôt, vous pouvez compléter otp avec la même clé, selon le guide Orange Burkina."},
             ],
             "endpoints": decorated,
         }

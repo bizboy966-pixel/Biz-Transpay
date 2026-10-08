@@ -14,3 +14,9 @@ The withdrawal catalog may be saved with every route inactive. Check min/max ord
 **Why:** Administrators must be able to disable a legacy route without first editing unrelated limits, and zero is already interpreted as unbounded during payouts.
 
 **How to apply:** Keep numeric and structural validation, but require a valid range only when a route is active, visible, and not archived. Preserve the one-active-provider-per-route check.
+
+Merchant integrations must discover operator codes independently for deposits and payouts; a display name or a deposit code is not a payout identifier.
+
+**Why:** Official Burkina collection and disbursement contracts use different Moov route identifiers, and deployments may configure different public aliases. Assuming one universal code breaks otherwise valid integrations.
+
+**How to apply:** Present direction-specific enabled catalogues and examples. Treat the serving environment's catalogue as the authority for new operations; keep provider routing and credentials private.
