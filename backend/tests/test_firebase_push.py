@@ -542,7 +542,7 @@ def test_push_campaign_persists_permanent_failure_code_summary(monkeypatch):
         return 1, [
             {"id": "device-1", "token": "token-1"},
             {"id": "device-2", "token": "token-2"},
-        ]
+        ], ["user-1"]
 
     results = iter(["sent", "failed:THIRD_PARTY_AUTH_ERROR"])
 

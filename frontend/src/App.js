@@ -4,6 +4,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { pageLoaders } from '@/pageLoaders';
 import ReauthGate from '@/components/ReauthGate';
+import PersistentNotificationModal from '@/components/PersistentNotificationModal';
 import '@/App.css';
 
 const DashboardLayout = lazy(pageLoaders.dashboardLayout);
@@ -130,6 +131,7 @@ function App() {
         <Toaster position="top-right" richColors closeButton offset={72} />
         <ForegroundPushToasts />
         <AuthenticatedPushOptInPrompt />
+        <PersistentNotificationModal />
         <ReauthGate />
         <Routes>
           <Route path="/" element={lazyPage(Landing)} />

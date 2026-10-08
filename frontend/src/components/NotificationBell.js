@@ -50,13 +50,20 @@ export default function NotificationBell({ compact = false }) {
   const [unread, setUnread] = useState(0);
   const esRef = useRef(null);
   const wrapRef = useRef(null);
+  const seenNotificationIdsRef = useRef(new Set());
   const initialLoadStartedRef = useRef(false);
   const lastLoadAtRef = useRef(0);
 
   const load = () => {
     lastLoadAtRef.current = Date.now();
     api.get('/notifications', { params: { limit: 20 } })
-      .then(({ data }) => setItems(data || [])).catch(() => {});
+      .then(({ data }) => {
+        const notifications = data || [];
+        seenNotificationIdsRef.current = new Set(
+          notifications.map((notification) => notification.id).filter(Boolean),
+        );
+        setItems(notifications);
+      }).catch(() => {});
     api.get('/notifications/unread-count')
       .then(({ data }) => setUnread(data?.count || 0)).catch(() => {});
   };
@@ -73,8 +80,11 @@ export default function NotificationBell({ compact = false }) {
     es.addEventListener('notification', (ev) => {
       try {
         const doc = JSON.parse(ev.data);
-        setItems((prev) => [doc, ...prev].slice(0, 20));
-        setUnread((n) => n + 1);
+        const isNew = !doc.id || !seenNotificationIdsRef.current.has(doc.id);
+        if (doc.id) seenNotificationIdsRef.current.add(doc.id);
+        setItems((prev) => [doc, ...prev.filter((item) => item.id !== doc.id)].slice(0, 20));
+        if (isNew && !doc.read) setUnread((n) => n + 1);
+        window.dispatchEvent(new CustomEvent('btp-notification-created', { detail: doc }));
         // Toast pop-up for immediate feedback.
         toast(notificationTitle(doc), { description: doc.body, duration: 6000 });
       } catch (e) { /* ignore parse errors */ }
@@ -83,6 +93,19 @@ export default function NotificationBell({ compact = false }) {
       // Browser will auto-reconnect. Nothing to do here.
     };
     return () => { es.close(); esRef.current = null; };
+  }, []);
+
+  useEffect(() => {
+    const onRead = (event) => {
+      const id = event.detail?.id;
+      if (!id) return;
+      setItems((previous) => previous.map((item) => (
+        item.id === id ? { ...item, read: true } : item
+      )));
+      setUnread((count) => Math.max(0, count - 1));
+    };
+    window.addEventListener('btp-notification-read', onRead);
+    return () => window.removeEventListener('btp-notification-read', onRead);
   }, []);
 
   // Close dropdown on outside click.
@@ -104,10 +127,12 @@ export default function NotificationBell({ compact = false }) {
   const markAll = async () => {
     const previousItems = items;
     const previousUnread = unread;
-    setItems([]);
-    setUnread(0);
     try {
-      await api.post('/notifications/read-all');
+      const { data } = await api.post('/notifications/read-all');
+      setItems((prev) => prev.filter((notification) => (
+        notification.requires_confirmation && !notification.read
+      )));
+      setUnread(Number.isFinite(data?.unread_count) ? data.unread_count : 0);
     } catch (e) {
       // Restore the local view if the server could not persist the action.
       setItems(previousItems);
@@ -118,16 +143,18 @@ export default function NotificationBell({ compact = false }) {
   const deleteAll = async () => {
     if (!items.length) return;
     const confirmed = window.confirm(
-      'Supprimer toutes les notifications ? Cette action est irréversible.'
+      'Supprimer les notifications déjà reçues ? Les messages importants non confirmés resteront dans l’application.'
     );
     if (!confirmed) return;
 
     const previousItems = items;
     const previousUnread = unread;
-    setItems([]);
-    setUnread(0);
     try {
-      await api.delete('/notifications/all');
+      const { data } = await api.delete('/notifications/all');
+      setItems((prev) => prev.filter((notification) => (
+        notification.requires_confirmation && !notification.read
+      )));
+      setUnread(Number.isFinite(data?.unread_count) ? data.unread_count : 0);
     } catch (e) {
       setItems(previousItems);
       setUnread(previousUnread);
@@ -204,7 +231,16 @@ export default function NotificationBell({ compact = false }) {
                 <button
                   key={n.id}
                   data-testid={`notif-row-${n.id}`}
-                  onClick={() => !n.read && markOne(n.id)}
+                  onClick={() => {
+                    if (n.requires_confirmation) {
+                      setOpen(false);
+                      window.dispatchEvent(new CustomEvent('btp-notification-created', {
+                        detail: { ...n, force: true },
+                      }));
+                    } else if (!n.read) {
+                      markOne(n.id);
+                    }
+                  }}
                   className={`w-full text-left px-4 py-3 flex items-start gap-3 border-t border-slate-50 hover:bg-slate-50/70 transition-colors ${!n.read ? 'bg-blue-50/30' : ''}`}
                 >
                   <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${meta.cls}`}>

@@ -251,6 +251,11 @@ class Result:
     upserted_id: str | None = None
 
 
+@dataclass
+class InsertManyResult:
+    inserted_ids: list[str]
+
+
 class Cursor:
     def __init__(self, collection: "Collection", query: dict, projection: dict | None):
         self.collection, self.query, self.projection = collection, query, projection
@@ -426,6 +431,41 @@ class Collection:
             from pymongo.errors import DuplicateKeyError
             raise DuplicateKeyError(str(exc)) from exc
         return Result(inserted_id=doc_id)
+
+    async def insert_many(self, documents: list[dict], ordered: bool = True) -> InsertManyResult:
+        """Insert a bounded batch with Mongo-compatible duplicate semantics.
+
+        Unordered inserts ignore existing document IDs, which lets durable
+        campaign fan-out resume safely after a worker restart.
+        """
+        inserted_ids: list[str] = []
+        for offset in range(0, len(documents), 250):
+            batch = []
+            for document in documents[offset:offset + 250]:
+                doc = copy.deepcopy(document)
+                doc.setdefault("_id", str(uuid.uuid4()))
+                batch.append((str(doc.get("id") or doc["_id"]), self.store.encode(doc)))
+            if not batch:
+                continue
+            placeholders = []
+            args: list[Any] = []
+            for doc_id, encoded in batch:
+                index = len(args) + 1
+                placeholders.append(f"($1, ${index + 1}, ${index + 2}::jsonb)")
+                args.extend((doc_id, encoded))
+            conflict_clause = " ON CONFLICT DO NOTHING" if not ordered else ""
+            sql = (
+                "INSERT INTO document_store(collection, doc_id, document) VALUES "
+                + ", ".join(placeholders)
+                + conflict_clause + " RETURNING doc_id"
+            )
+            try:
+                rows = await self.store.pool.fetch(sql, self.name, *args)
+            except asyncpg.UniqueViolationError as exc:
+                from pymongo.errors import DuplicateKeyError
+                raise DuplicateKeyError(str(exc)) from exc
+            inserted_ids.extend(str(row["doc_id"]) for row in rows)
+        return InsertManyResult(inserted_ids=inserted_ids)
 
     async def replace_one(self, query: dict, replacement: dict,
                           upsert: bool = False) -> Result:

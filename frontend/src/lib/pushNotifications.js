@@ -22,7 +22,12 @@ export async function startBrowserPush({ requestPermission = false } = {}) {
   if (unsubscribeForeground) unsubscribeForeground();
   unsubscribeForeground = onMessage(messaging, ({ notification, data: payload }) => {
     window.dispatchEvent(new CustomEvent('btp-foreground-push', {
-      detail: { title: notification?.title || payload?.title, body: notification?.body || payload?.body, url: payload?.url },
+      detail: {
+        title: notification?.title || payload?.title,
+        body: notification?.body || payload?.body,
+        url: payload?.url,
+        campaignId: payload?.campaign_id || payload?.campaignId,
+      },
     }));
   });
   await api.post('/push/devices', { token });

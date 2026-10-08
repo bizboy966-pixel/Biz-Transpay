@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 from stripe_checkout import (
     StripeCheckout, CheckoutSessionRequest, CheckoutSessionResponse,
 )
@@ -14107,6 +14107,22 @@ async def list_notifications(uid: str = Depends(get_current_user_id),
     return docs
 
 
+@api.get("/notifications/pending-confirmation")
+async def pending_confirmation_notifications(
+    uid: str = Depends(get_current_user_id),
+    limit: int = Query(50, ge=1, le=100),
+):
+    docs = await db.notifications.find(
+        {
+            "user_id": uid,
+            "read": False,
+            "requires_confirmation": True,
+        },
+        {"_id": 0},
+    ).sort("created_at", -1).limit(limit).to_list(limit)
+    return docs
+
+
 @api.get("/notifications/unread-count")
 async def unread_count(uid: str = Depends(get_current_user_id)):
     n = await db.notifications.count_documents({"user_id": uid, "read": False})
@@ -14126,15 +14142,24 @@ async def notification_mark_read(nid: str, uid: str = Depends(get_current_user_i
 @api.post("/notifications/read-all")
 async def notification_mark_all_read(uid: str = Depends(get_current_user_id)):
     r = await db.notifications.update_many(
-        {"user_id": uid, "read": False}, {"$set": {"read": True}}
+        {"user_id": uid, "read": False, "requires_confirmation": {"$ne": True}},
+        {"$set": {"read": True}},
     )
-    return {"ok": True, "updated": r.modified_count}
+    n = await db.notifications.count_documents({"user_id": uid, "read": False})
+    return {"ok": True, "updated": r.modified_count, "unread_count": n}
 
 
 @api.delete("/notifications/all")
 async def notification_delete_all(uid: str = Depends(get_current_user_id)):
-    r = await db.notifications.delete_many({"user_id": uid})
-    return {"ok": True, "deleted": r.deleted_count}
+    r = await db.notifications.delete_many({
+        "user_id": uid,
+        "$or": [
+            {"requires_confirmation": {"$ne": True}},
+            {"read": True},
+        ],
+    })
+    n = await db.notifications.count_documents({"user_id": uid, "read": False})
+    return {"ok": True, "deleted": r.deleted_count, "unread_count": n}
 
 
 @api.get("/notifications/stream")
@@ -16289,7 +16314,7 @@ async def _push_audience_counts(selection: PushAudienceSelection) -> tuple[int, 
 
 async def _push_campaign_device_records(
     selection: PushAudienceSelection,
-) -> tuple[int, list[dict]]:
+) -> tuple[int, list[dict], list[str]]:
     query = _push_audience_query(selection)
     user_count = await db.users.count_documents(query)
     if user_count > PUSH_MAX_AUDIENCE_USERS:
@@ -16298,7 +16323,7 @@ async def _push_campaign_device_records(
         .limit(PUSH_MAX_AUDIENCE_USERS + 1).to_list(PUSH_MAX_AUDIENCE_USERS + 1)
     user_ids = [user["id"] for user in users if user.get("id")]
     if not user_ids:
-        return user_count, []
+        return user_count, [], []
     devices = await db.push_devices.find(
         {"user_id": {"$in": user_ids}, "active": True},
         {"_id": 0, "id": 1, "token": 1},
@@ -16307,7 +16332,86 @@ async def _push_campaign_device_records(
     )
     if len(devices) > PUSH_MAX_CAMPAIGN_DEVICES:
         raise RuntimeError("Push audience exceeds the configured device limit")
-    return user_count, devices
+    return user_count, devices, user_ids
+
+
+def _campaign_notification_id(campaign_id: str, user_id: str) -> str:
+    key = f"admin-push:{campaign_id}:{user_id}"
+    return f"push-{hashlib.sha256(key.encode('utf-8')).hexdigest()}"
+
+
+async def _persist_push_campaign_notifications(
+    campaign: dict, user_ids: list[str],
+) -> None:
+    """Save one unread in-app copy per audience member, whether online or push-enabled."""
+    created_at = campaign.get("created_at") or now_iso()
+    notifications = [{
+        "_id": _campaign_notification_id(campaign["id"], user_id),
+        "id": _campaign_notification_id(campaign["id"], user_id),
+        "user_id": user_id,
+        "type": "admin_push",
+        "title": campaign["title"],
+        "body": campaign["body"],
+        "data": {
+            "url": campaign.get("url") or "/dashboard",
+            "campaign_id": campaign["id"],
+        },
+        "read": False,
+        "requires_confirmation": True,
+        "source": "admin_push_campaign",
+        "campaign_id": campaign["id"],
+        "created_at": created_at,
+    } for user_id in user_ids]
+
+    for offset in range(0, len(notifications), 250):
+        batch = notifications[offset:offset + 250]
+        inserted_ids = set()
+        try:
+            insert_many = getattr(db.notifications, "insert_many", None)
+            if insert_many:
+                try:
+                    result = await insert_many(batch, ordered=False)
+                    inserted_ids = {
+                        str(value) for value in result.inserted_ids
+                    }
+                except BulkWriteError as exc:
+                    details = exc.details or {}
+                    write_errors = details.get("writeErrors") or []
+                    if not write_errors or any(
+                        error.get("code") != 11000 for error in write_errors
+                    ):
+                        raise
+                    duplicate_indices = {
+                        error.get("index") for error in write_errors
+                    }
+                    inserted_ids = {
+                        doc["id"] for index, doc in enumerate(batch)
+                        if index not in duplicate_indices
+                    }
+            else:
+                # Compatibility for small test adapters which only implement
+                # the original collection API.
+                for doc in batch:
+                    try:
+                        await db.notifications.insert_one(doc)
+                        inserted_ids.add(doc["id"])
+                    except DuplicateKeyError:
+                        continue
+        except Exception:
+            logger.warning(
+                "Persistent push notification batch failed for %s",
+                campaign.get("id", ""),
+            )
+            raise
+
+        for doc in batch:
+            if doc["id"] not in inserted_ids:
+                continue
+            for queue in list(_sse_subscribers.get(doc["user_id"], [])):
+                try:
+                    queue.put_nowait(doc)
+                except Exception:
+                    pass
 
 
 def _push_click_path(raw_path: Optional[str]) -> str:
@@ -16411,7 +16515,14 @@ async def _deliver_push_campaign(campaign_id: str) -> None:
     failure_codes: Counter = Counter()
     try:
         selection = PushAudienceSelection(**campaign["audience"])
-        user_count, devices = await _push_campaign_device_records(selection)
+        user_count, devices, user_ids = await _push_campaign_device_records(selection)
+        if campaign.get("persistent_notification"):
+            try:
+                await _persist_push_campaign_notifications(campaign, user_ids)
+            except Exception:
+                # Keep the existing push delivery path available even if the
+                # additional in-app copy cannot be saved.
+                pass
         project_id, bearer_token = await asyncio.to_thread(
             _firebase_access_token_sync
         )
@@ -16751,6 +16862,7 @@ async def admin_send_push_campaign(
         "title": title,
         "body": body,
         "url": click_path,
+        "persistent_notification": True,
         "audience": req.model_dump(
             include={
                 "audience", "user_id", "account_type", "country", "kyc_status"
