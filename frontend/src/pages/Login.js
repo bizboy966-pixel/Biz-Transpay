@@ -24,6 +24,9 @@ export default function Login() {
   const [securityMethods, setSecurityMethods] = useState(['totp']);
   const [securityMethod, setSecurityMethod] = useState('totp');
   const [pin, setPin] = useState('');
+  const [pinConfirmation, setPinConfirmation] = useState('');
+  const [userPinToken, setUserPinToken] = useState('');
+  const [userPinSetupToken, setUserPinSetupToken] = useState('');
   const [setup, setSetup] = useState(null);
   const [setupCode, setSetupCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState([]);
@@ -70,6 +73,19 @@ export default function Login() {
       toast.success('Configurez la double authentification obligatoire');
       return;
     }
+    if (data.user_pin_setup_required) {
+      setUserPinSetupToken(data.pin_setup_token || '');
+      setPin('');
+      setPinConfirmation('');
+      setStep('user-pin-offer');
+      return;
+    }
+    if (data.user_pin_required) {
+      setUserPinToken(data.user_pin_token || '');
+      setPin('');
+      setStep('user-pin');
+      return;
+    }
     const u = data.user;
     toast.success('Connexion réussie');
     const role = u?.role || u?.user?.role;
@@ -94,10 +110,25 @@ export default function Login() {
     }
   };
 
+  const restartPasswordLogin = () => {
+    setStep('password');
+    setPin('');
+    setPinConfirmation('');
+    setUserPinToken('');
+    setUserPinSetupToken('');
+    setChallenge(null);
+    setChallengeSolution('');
+    setTurnstileToken('');
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (step === 'password' && (!turnstile.enabled || !turnstileToken)) {
       toast.error('Veuillez terminer la vérification anti-bot.');
+      return;
+    }
+    if (step === 'user-pin-setup' && pin !== pinConfirmation) {
+      toast.error('Les deux codes PIN ne correspondent pas.');
       return;
     }
     setLoading(true);
@@ -110,6 +141,11 @@ export default function Login() {
       const data = await attemptLogin({
         otp: step === 'mfa' && securityMethod === 'totp' ? otp : undefined,
         pin: step === 'mfa' && securityMethod === 'pin' ? pin : undefined,
+        user_pin_token: step === 'user-pin' ? userPinToken : undefined,
+        pin_setup_token: step === 'user-pin-setup' ? userPinSetupToken : undefined,
+        pin_confirmation: step === 'user-pin-setup' ? pinConfirmation : undefined,
+        ...(step === 'user-pin' || step === 'user-pin-setup'
+          ? { pin } : {}),
         security_method: step === 'mfa' ? securityMethod : undefined,
         mfa_token: step === 'mfa' ? mfaToken : undefined,
         challenge_id: challenge?.id,
@@ -219,6 +255,55 @@ export default function Login() {
                <p className="mt-2 text-xs text-slate-500 text-center">Réservé aux administrateurs. Utilisez le code à 6 chiffres affiché actuellement dans Google Authenticator, Microsoft Authenticator ou une application compatible. Ce n’est pas un code fixe choisi par vous.</p>
               </>}
             </div>
+          ) : step === 'user-pin-offer' ? (
+            <div className="space-y-5 text-center" data-testid="user-pin-offer">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-2xl">🔐</div>
+              <div>
+                <h2 className="font-cabinet text-xl font-bold text-slate-900">Nouvelle fonctionnalité disponible</h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                  Activez votre code PIN à six chiffres pour sécuriser votre compte. Cette étape est obligatoire avant d’accéder à votre compte.
+                </p>
+              </div>
+              <button type="button" className="bt-button-primary w-full" disabled={loading || !userPinSetupToken}
+                onClick={() => setStep('user-pin-setup')}>
+                Activer le code PIN
+              </button>
+              <button type="button" onClick={restartPasswordLogin} className="w-full text-sm font-semibold text-slate-500 hover:text-slate-700">
+                Recommencer la connexion
+              </button>
+            </div>
+          ) : step === 'user-pin-setup' ? (
+            <div className="space-y-4" data-testid="user-pin-setup">
+              <h2 className="font-cabinet text-center text-xl font-bold text-slate-900">Définir votre code PIN</h2>
+              <p className="text-center text-sm text-slate-600">Choisissez un code personnel à six chiffres et confirmez-le.</p>
+              <label className="block text-sm font-semibold text-slate-700" htmlFor="user-pin-new">Nouveau code PIN</label>
+              <input id="user-pin-new" type="password" inputMode="numeric" autoComplete="new-password"
+                maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+              <label className="block text-sm font-semibold text-slate-700" htmlFor="user-pin-confirm">Confirmer le code PIN</label>
+              <input id="user-pin-confirm" type="password" inputMode="numeric" autoComplete="new-password"
+                maxLength={6} value={pinConfirmation} onChange={(e) => setPinConfirmation(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+              <button type="button" onClick={restartPasswordLogin} className="w-full text-sm font-semibold text-slate-500 hover:text-slate-700">
+                Recommencer la connexion
+              </button>
+            </div>
+          ) : step === 'user-pin' ? (
+            <div className="space-y-4 text-center" data-testid="user-pin-login">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-[#2563EB]">🔐</div>
+              <h2 className="font-cabinet text-xl font-bold text-slate-900">Entrez votre code PIN</h2>
+              <p className="text-sm text-slate-600">Saisissez votre code PIN à six chiffres pour accéder à votre compte.</p>
+              <input aria-label="Code PIN du compte" data-testid="input-user-pin" type="password"
+                inputMode="numeric" autoComplete="current-password" maxLength={6}
+                value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+              <Link to="/recover?mode=pin" className="inline-block text-sm font-semibold text-[#2563EB]">
+                Code PIN oublié ?
+              </Link>
+              <button type="button" onClick={restartPasswordLogin} className="block mx-auto text-sm font-semibold text-slate-500 hover:text-slate-700">
+                Recommencer la connexion
+              </button>
+            </div>
           ) : (
           <div>
             <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">{t('login.identifier')}</label>
@@ -254,7 +339,11 @@ export default function Login() {
             />
           )}
 
-          {(step === 'password' || step === 'mfa') && <button type="submit" disabled={loading || (step === 'mfa' && (securityMethod === 'pin' ? pin.length : otp.length) !== 6)} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
+          {(step === 'password' || step === 'mfa' || step === 'user-pin' || step === 'user-pin-setup') && <button type="submit" disabled={loading
+            || (step === 'mfa' && (securityMethod === 'pin' ? pin.length : otp.length) !== 6)
+            || (step === 'user-pin' && pin.length !== 6)
+            || (step === 'user-pin-setup' && (pin.length !== 6 || pinConfirmation.length !== 6 || pin !== pinConfirmation))}
+            data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
             {loading
               ? <><span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />Connexion…</>
               : <><LogInIcon className="w-5 h-5" /> {t('login.submit')}</>}

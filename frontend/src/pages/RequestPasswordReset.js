@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Mail, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '@/api';
@@ -7,6 +7,8 @@ import { Logo } from '@/components/Logo';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 
 export default function RequestPasswordReset() {
+  const location = useLocation();
+  const pinMode = new URLSearchParams(location.search).get('mode') === 'pin';
   const turnstile = useTurnstileConfig();
   const turnstileRef = useRef(null);
   const [email, setEmail] = useState('');
@@ -22,7 +24,8 @@ export default function RequestPasswordReset() {
     }
     setLoading(true);
     try {
-      const { data } = await api.post('/auth/password-reset/request', {
+      const { data } = await api.post(
+        pinMode ? '/auth/user-pin/reset/request' : '/auth/password-reset/request', {
         email,
         turnstile_token: turnstileToken,
       });
@@ -52,12 +55,14 @@ export default function RequestPasswordReset() {
               {sent ? <ShieldCheck className="w-6 h-6" /> : <Mail className="w-6 h-6" />}
             </div>
             <h1 className="mt-4 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900">
-              {sent ? 'Vérifiez votre boîte e-mail' : 'Réinitialiser le mot de passe'}
+              {sent ? 'Vérifiez votre boîte e-mail' : pinMode ? 'Réinitialiser le code PIN' : 'Réinitialiser le mot de passe'}
             </h1>
             <p className="mt-2 text-slate-600 text-sm">
               {sent
-                ? 'Si cette adresse est liée à un compte, un lien de réinitialisation sera envoyé.'
-                : 'Nous vous enverrons un lien à usage unique si un compte correspond à cette adresse.'}
+                ? 'Si cette adresse est liée à un compte, un lien à usage unique sera envoyé.'
+                : pinMode
+                  ? 'Nous enverrons un lien à usage unique à l’adresse e-mail du compte pour réinitialiser son code PIN.'
+                  : 'Nous vous enverrons un lien à usage unique si un compte correspond à cette adresse.'}
             </p>
           </div>
           {!sent && (
@@ -87,11 +92,18 @@ export default function RequestPasswordReset() {
                 disabled={loading}
                 className="bt-button-primary mt-7 w-full font-bold py-3.5"
               >
-                {loading ? 'Envoi de la demande…' : 'Recevoir un lien'}
+                {loading ? 'Envoi de la demande…' : pinMode ? 'Recevoir un lien de réinitialisation du PIN' : 'Recevoir un lien'}
               </button>
             </>
           )}
           <div className="mt-6 space-y-3 text-center text-sm">
+            {pinMode && (
+              <p className="text-slate-500">
+                <Link to="/recover" className="text-[#2563EB] font-semibold">
+                  Réinitialiser plutôt mon mot de passe
+                </Link>
+              </p>
+            )}
             <p className="text-slate-500">
               <Link to="/recover/mfa" className="text-[#2563EB] font-semibold">
                 Utiliser plutôt un code de récupération MFA

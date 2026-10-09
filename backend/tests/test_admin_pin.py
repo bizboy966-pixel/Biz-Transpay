@@ -73,7 +73,7 @@ def state(monkeypatch, hashes):
     async def totp(u, code):
         return code == "246810"
 
-    async def issue(uid, req, response, admin_auth_method="password"):
+    async def issue(uid, req, response, admin_auth_method="password", **kwargs):
         sessions.append(admin_auth_method)
 
     async def failure(*args):
@@ -186,8 +186,9 @@ async def test_pin_lock_expires_and_hash_is_account_bound(state):
 async def test_regular_user_login_and_admin_enrollment_remain_unchanged(state):
     state.user["role"] = "user"
     result = await server.login(payload(), request(), Response())
-    assert result["user"].admin_pin_enabled is False
-    assert state.sessions == ["password"]
+    assert result["user_pin_setup_required"] is True
+    assert result["pin_setup_token"]
+    assert state.sessions == []
     state.user["role"] = "super_admin"
     state.user["two_fa_enabled"] = False
     async def setup(user):
@@ -198,7 +199,7 @@ async def test_regular_user_login_and_admin_enrollment_remain_unchanged(state):
     try:
         result = await server.login(payload(security_method="pin", pin="049271"), request(), Response())
         assert result["mfa_setup_required"]
-        assert state.sessions == ["password"]
+        assert state.sessions == []
     finally:
         server._begin_mfa_enrollment = original
 

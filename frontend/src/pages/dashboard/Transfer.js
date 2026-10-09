@@ -13,6 +13,7 @@ import SelectionMenu from '@/components/SelectionMenu';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
 import DashboardPageLogo from '@/components/DashboardPageLogo';
 import TransferStatusModal from '@/components/TransferStatusModal';
+import UserPinPrompt from '@/components/UserPinPrompt';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -33,6 +34,28 @@ export default function Transfer() {
   const [type, setType] = useState(null);
   const [done, setDone] = useState(null);
   const [transferFeedback, setTransferFeedback] = useState(null);
+  const [pinPromptOpen, setPinPromptOpen] = useState(false);
+  const pinActionRef = useRef(null);
+
+  const requestUserPin = (action) => {
+    pinActionRef.current = action;
+    setPinPromptOpen(true);
+  };
+  const confirmUserPin = async (pin) => {
+    const result = await pinActionRef.current?.(pin);
+    if (result?.ok) {
+      pinActionRef.current = null;
+      setPinPromptOpen(false);
+    } else if (result?.close) {
+      pinActionRef.current = null;
+      setPinPromptOpen(false);
+    }
+    return result || { ok: false, message: 'Impossible de confirmer cette opération.' };
+  };
+  const cancelUserPin = () => {
+    pinActionRef.current = null;
+    setPinPromptOpen(false);
+  };
 
   const opts = useMemo(() => {
     // Mobile Money withdrawal requires an active operator backed by its
@@ -141,6 +164,7 @@ export default function Transfer() {
           walletCryptoEnabled={features?.wallet_crypto_enabled !== false}
           transferFeedback={transferFeedback}
           onTransferFeedback={setTransferFeedback}
+          onRequestPin={requestUserPin}
         />
       )}
       {step === 2 && type === 'biz_to_mobile' && (
@@ -151,6 +175,7 @@ export default function Transfer() {
           turnstile={turnstile}
           transferFeedback={transferFeedback}
           onTransferFeedback={setTransferFeedback}
+          onRequestPin={requestUserPin}
         />
       )}
       {step === 2 && type === 'biz_to_crypto' && (
@@ -161,6 +186,7 @@ export default function Transfer() {
           turnstile={turnstile}
           transferFeedback={transferFeedback}
           onTransferFeedback={setTransferFeedback}
+          onRequestPin={requestUserPin}
         />
       )}
 
@@ -197,6 +223,11 @@ export default function Transfer() {
           onClose={() => setTransferFeedback(null)}
         />
       )}
+      <UserPinPrompt
+        open={pinPromptOpen}
+        onConfirm={confirmUserPin}
+        onCancel={cancelUserPin}
+      />
     </div>
   );
 }
@@ -356,7 +387,8 @@ function WithdrawalEmailOtpPanel({
 
 // ------- BIZ TO BIZ -------
 function BizToBizForm({
-  onDone, balance, userId, turnstile, walletCryptoEnabled, transferFeedback, onTransferFeedback,
+  onDone, balance, userId, turnstile, walletCryptoEnabled, transferFeedback,
+  onTransferFeedback, onRequestPin,
 }) {
   const turnstileRef = useRef(null);
   const [username, setUsername] = useState('');
@@ -417,10 +449,9 @@ function BizToBizForm({
   ];
   const canSubmit = recipient && amt > 0 && amt <= bal && turnstileToken;
 
-  const submit = async () => {
+  const submit = async (pin) => {
     if (!turnstileToken) {
-      toast.error('Veuillez terminer la vérification anti-bot.');
-      return;
+      return { ok: false, close: true, message: 'Veuillez terminer la vérification anti-bot.' };
     }
     setPending(true);
     onTransferFeedback({ status: 'processing', transferType: 'biz_to_biz' });
@@ -428,6 +459,7 @@ function BizToBizForm({
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_biz', recipient: username || phone,
         recipient_phone: phone, amount: amt, currency, description,
+        pin,
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
@@ -435,14 +467,19 @@ function BizToBizForm({
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
+      return { ok: true };
     } catch (err) {
-      onTransferFeedback({
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : detail?.message || 'Erreur';
+      const pinFailure = ['USER_PIN_INVALID', 'USER_PIN_LOCKED'].includes(detail?.code);
+      onTransferFeedback(pinFailure ? null : {
         status: err.response ? 'failed' : 'pending',
         transferType: 'biz_to_biz',
       });
       setTurnstileToken('');
       turnstileRef.current?.reset();
-      toast.error(err.response?.data?.detail || 'Erreur');
+      if (!pinFailure) toast.error(message);
+      return { ok: false, close: !pinFailure, message };
     }
     finally { setPending(false); }
   };
@@ -536,7 +573,7 @@ function BizToBizForm({
           ['Frais', '0 (gratuit)', 'green'],
           ['Total débité', `${amt.toLocaleString()} ${currencyLabel}`, 'strong'],
           ['Le bénéficiaire reçoit', `${amt.toLocaleString()} ${currencyLabel}`, 'green'],
-        ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-b2b-confirm" />
+        ]} onConfirm={() => onRequestPin(submit)} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-b2b-confirm" />
       )}
     </div>
   );
@@ -545,6 +582,7 @@ function BizToBizForm({
 // ------- BIZ TO MOBILE -------
 function BizToMobileForm({
   config, onDone, balance, turnstile, transferFeedback, onTransferFeedback,
+  onRequestPin,
 }) {
   const turnstileRef = useRef(null);
   const operators = useMemo(
@@ -593,10 +631,9 @@ function BizToMobileForm({
   const canSubmit = op && currency && phone && amt >= min && amt <= max
     && recipientGets > 0 && totalDebit <= bal && turnstileToken;
 
-  const submit = async () => {
+  const submit = async (pin) => {
     if (!turnstileToken) {
-      toast.error('Veuillez terminer la vérification anti-bot.');
-      return;
+      return { ok: false, close: true, message: 'Veuillez terminer la vérification anti-bot.' };
     }
     setPending(true);
     onTransferFeedback({ status: 'processing', transferType: 'biz_to_mobile' });
@@ -605,6 +642,7 @@ function BizToMobileForm({
         transfer_type: 'biz_to_mobile', recipient: phone, country, operator,
         fee_bearer: feeBearer, amount: amt, currency, description,
         idempotency_key: idempotencyKey,
+        pin,
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
@@ -612,8 +650,12 @@ function BizToMobileForm({
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
+      return { ok: true };
     } catch (err) {
-      onTransferFeedback({
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : detail?.message || 'Erreur';
+      const pinFailure = ['USER_PIN_INVALID', 'USER_PIN_LOCKED'].includes(detail?.code);
+      onTransferFeedback(pinFailure ? null : {
         status: err.response ? 'failed' : 'pending',
         transferType: 'biz_to_mobile',
       });
@@ -624,7 +666,8 @@ function BizToMobileForm({
         setIdempotencyKey(window.crypto?.randomUUID?.()
           || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
       }
-      toast.error(err.response?.data?.detail || 'Erreur');
+      if (!pinFailure) toast.error(message);
+      return { ok: false, close: !pinFailure, message };
     }
     finally { setPending(false); }
   };
@@ -762,7 +805,7 @@ function BizToMobileForm({
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
           ['Total débité', `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency}`, 'green'],
-        ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-mm-confirm" />
+        ]} onConfirm={() => onRequestPin(submit)} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-mm-confirm" />
       )}
     </div>
   );
@@ -771,6 +814,7 @@ function BizToMobileForm({
 // ------- BIZ TO CRYPTO -------
 function BizToCryptoForm({
   config, onDone, balance, turnstile, transferFeedback, onTransferFeedback,
+  onRequestPin,
 }) {
   const turnstileRef = useRef(null);
   const idempotencyRef = useRef({ fingerprint: '', key: '' });
@@ -864,10 +908,9 @@ function BizToCryptoForm({
   if (!fullName) missing.push('nom complet');
   if (!email) missing.push('email');
 
-  const submit = async () => {
+  const submit = async (pin) => {
     if (!turnstileToken) {
-      toast.error('Veuillez terminer la vérification anti-bot.');
-      return;
+      return { ok: false, close: true, message: 'Veuillez terminer la vérification anti-bot.' };
     }
     const fingerprint = JSON.stringify([
       cryptoCode, networkCode, network?.asset_code, walletAddress.trim(),
@@ -893,6 +936,7 @@ function BizToCryptoForm({
         destination_memo: destinationMemo.trim() || undefined,
         fee_bearer: feeBearer, amount: amt, currency, description,
         idempotency_key: idempotencyRef.current.key,
+        pin,
         turnstile_token: turnstileToken,
       });
       if (needsEmailOtp) {
@@ -900,18 +944,23 @@ function BizToCryptoForm({
         setTurnstileToken('');
         turnstileRef.current?.reset();
       }
+      return { ok: true };
     } catch (err) {
-      onTransferFeedback({
+      const detail = err.response?.data?.detail;
+      const message = typeof detail === 'string' ? detail : detail?.message || 'Erreur';
+      const pinFailure = ['USER_PIN_INVALID', 'USER_PIN_LOCKED'].includes(detail?.code);
+      onTransferFeedback(pinFailure ? null : {
         status: err.response ? 'failed' : 'pending',
         transferType: 'biz_to_crypto',
       });
       setTurnstileToken('');
       turnstileRef.current?.reset();
-      toast.error(err.response?.data?.detail || 'Erreur');
+      if (!pinFailure) toast.error(message);
       if (err.response?.status && err.response.status < 500
           && err.response.status !== 409) {
         idempotencyRef.current = { fingerprint: '', key: '' };
       }
+      return { ok: false, close: !pinFailure, message };
     }
     finally { setPending(false); }
   };
@@ -1052,7 +1101,7 @@ function BizToCryptoForm({
           ['Frais payés par', feeBearer === 'sender' ? 'Vous' : 'Le bénéficiaire'],
           [`Total débité · ${networkCode}`, `${totalDebit.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${cryptoCode}`, 'strong'],
           ['Le bénéficiaire reçoit', `${recipientGets.toLocaleString(undefined, { maximumFractionDigits: 6 })} ${cryptoCode}`, 'green'],
-        ]} onConfirm={submit} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-crypto-confirm" />
+         ]} onConfirm={() => onRequestPin(submit)} pending={pending} canConfirm={Boolean(turnstileToken)} confirmTestId="btn-crypto-confirm" />
       )}
     </div>
   );

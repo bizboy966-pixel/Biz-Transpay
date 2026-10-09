@@ -50,7 +50,7 @@ from models import (  # noqa: E402
     TicketCreate, Ticket, new_id, now_iso,
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
     ReauthenticationRequest, PasswordResetRequest, PasswordResetConfirm,
-    AdminPinUpdateRequest,
+    AdminPinUpdateRequest, UserPinResetRequest, UserPinResetConfirm,
     TransactionEmailSettingsUpdate, TransferOtpCancelRequest,
     PushDeviceRequest, PushAudienceSelection, PushCampaignSendRequest,
 )
@@ -179,6 +179,25 @@ async def get_current_user_id(
     }, {"_id": 0})
     if not session:
         raise HTTPException(401, "Session révoquée")
+    if not getattr(request.state, "merchant_api", False):
+        pin_required = session.get("user_pin_required")
+        if pin_required is None:
+            # One-time migration for sessions that existed before mandatory
+            # user PIN enforcement was introduced.
+            account = await db.users.find_one(
+                {"id": payload.get("sub")}, {"_id": 0, "id": 1, "role": 1})
+            pin_required = not _is_admin_account(account or {})
+            await db.sessions.update_one(
+                {"id": session_id, "user_id": payload.get("sub")},
+                {"$set": {"user_pin_required": pin_required}},
+            )
+            session["user_pin_required"] = pin_required
+        if pin_required and not session.get("user_pin_authenticated"):
+            raise HTTPException(
+                428,
+                detail={"code": "USER_PIN_REQUIRED",
+                        "message": "Activez votre code PIN obligatoire puis reconnectez-vous."},
+            )
     expired = _as_utc(session["expires_at"]) <= now
     idle = _as_utc(session["last_activity_at"]) + timedelta(
         seconds=SESSION_IDLE_SECONDS) <= now
@@ -200,7 +219,9 @@ async def get_current_user_id(
 
 
 async def _issue_session(user_id: str, request: Request, response: Response,
-                         admin_auth_method: str = "password") -> None:
+                         admin_auth_method: str = "password",
+                         user_pin_required: bool = False,
+                         user_pin_authenticated: bool = False) -> None:
     now = datetime.now(timezone.utc)
     session_id = secrets.token_urlsafe(32)
     token = auth_security.create_token(user_id, session_id=session_id)
@@ -212,6 +233,8 @@ async def _issue_session(user_id: str, request: Request, response: Response,
         "last_activity_at": now,
         "last_auth_at": now,
         "admin_auth_method": admin_auth_method,
+        "user_pin_required": user_pin_required,
+        "user_pin_authenticated": user_pin_authenticated,
         "expires_at": now + timedelta(seconds=SESSION_MAX_AGE),
         "ip": _auth_ip(request),
         "user_agent": (request.headers.get("user-agent") or "")[:300],
@@ -255,6 +278,10 @@ async def _rotate_session(request: Request, response: Response, user_id: str) ->
         user_id, request, response,
         admin_auth_method=getattr(request.state, "session", {}).get(
             "admin_auth_method", "password"),
+        user_pin_required=getattr(request.state, "session", {}).get(
+            "user_pin_required", False),
+        user_pin_authenticated=getattr(request.state, "session", {}).get(
+            "user_pin_authenticated", False),
     )
 
 
@@ -582,6 +609,8 @@ def _global_rate_profile(path: str, method: str) -> str:
         "/api/auth/recover",
         "/api/auth/password-reset/request",
         "/api/auth/password-reset/confirm",
+        "/api/auth/user-pin/reset/request",
+        "/api/auth/user-pin/reset/confirm",
         "/api/settings/password",
     }:
         return "password_reset"
@@ -735,6 +764,7 @@ def _format_iso(dt) -> str:
 # ---------- helpers ----------
 _USER_ADMIN_VIEW_PROJECTION = {
     "_id": 0, "password_hash": 0, "admin_pin_hash": 0, "admin_pin_version": 0,
+    "user_pin_hash": 0, "user_pin_version": 0,
 }
 
 
@@ -760,6 +790,7 @@ def user_to_public(u: dict) -> UserPublic:
         created_at=u.get("created_at", now_iso()),
         two_fa_enabled=u.get("two_fa_enabled", False),
         admin_pin_enabled=bool(_is_admin_account(u) and u.get("admin_pin_hash")),
+        user_pin_enabled=bool(not _is_admin_account(u) and u.get("user_pin_hash")),
         language=u.get("language", "fr"),
         default_currency=u.get("default_currency", "XOF"),
         avatar_url=u.get("avatar_url"),
@@ -2472,6 +2503,7 @@ def _withdrawal_transfer_fingerprint(req: TransferRequest) -> str:
         "turnstile_token",
         "withdrawal_otp_challenge_id",
         "withdrawal_otp_code",
+        "pin",
     })
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -3769,7 +3801,7 @@ async def _allow_password_reset_request(email: str) -> bool:
     )).modified_count)
 
 
-async def _prepare_password_reset_email(email: str) -> None:
+async def _prepare_password_reset_email(email: str, purpose: str = "password") -> None:
     """Resolve accounts and send after the generic response has been returned."""
     try:
         settings = await _transaction_email_settings()
@@ -3778,9 +3810,15 @@ async def _prepare_password_reset_email(email: str) -> None:
         if not status["ready_to_send"] or not public_url:
             return
         user = await db.users.find_one(
-            {"email": email.strip().lower()}, {"_id": 0, "id": 1, "email": 1}
+            {"email": email.strip().lower()},
+            {"_id": 0, "id": 1, "email": 1, "role": 1, "user_pin_hash": 1},
         )
         if not user or not user.get("id") or not user.get("email"):
+            return
+        pin_reset = purpose == "user_pin"
+        if pin_reset and (
+            _is_admin_account(user) or not user.get("user_pin_hash")
+        ):
             return
 
         now = datetime.now(timezone.utc)
@@ -3793,11 +3831,26 @@ async def _prepare_password_reset_email(email: str) -> None:
             "id": new_id(),
             "user_id": user["id"],
             "token_hash": token_hash,
+            "purpose": purpose,
             "used": False,
             "created_at": now,
             "expires_at": now + PASSWORD_RESET_TOKEN_TTL,
         })
-        reset_link = f"{public_url}/reset-password#token={token}"
+        reset_link = (
+            f"{public_url}/reset-password#token={token}&mode=pin"
+            if pin_reset else f"{public_url}/reset-password#token={token}"
+        )
+        subject = (
+            "Réinitialisation de votre code PIN Biz-transPay"
+            if pin_reset else "Réinitialisation de votre mot de passe Biz-transPay"
+        )
+        text = (
+            "Une demande de réinitialisation du code PIN a été reçue. "
+            if pin_reset else
+            "Une demande de réinitialisation du mot de passe a été reçue. "
+        )
+        heading = "Réinitialiser votre code PIN" if pin_reset else "Réinitialiser votre mot de passe"
+        action = "Choisir un nouveau code PIN" if pin_reset else "Choisir un nouveau mot de passe"
         safe_link = html_escape(reset_link, quote=True)
         email_header = _email_brand_header_markup(
             public_url,
@@ -3808,23 +3861,22 @@ async def _prepare_password_reset_email(email: str) -> None:
             api_key=os.environ.get("RESEND_API_KEY", "").strip(),
             sender=status["sender_email"],
             recipient=user["email"],
-            subject="Réinitialisation de votre mot de passe Biz-transPay",
+            subject=subject,
             text=(
-                "Une demande de réinitialisation du mot de passe a été reçue. "
-                f"Utilisez ce lien dans les 30 minutes : {reset_link}\n"
+                f"{text}Utilisez ce lien dans les 30 minutes : {reset_link}\n"
                 "Si vous n'êtes pas à l'origine de cette demande, ignorez ce message."
             ),
             html=(
                 "<div style=\"font-family:Arial,sans-serif;color:#0f172a\">"
                 f"{email_header}"
-                "<h2>Réinitialiser votre mot de passe</h2>"
+                f"<h2>{heading}</h2>"
                 "<p>Ce lien à usage unique expire dans 30 minutes.</p>"
-                f"<p><a href=\"{safe_link}\">Choisir un nouveau mot de passe</a></p>"
+                f"<p><a href=\"{safe_link}\">{action}</a></p>"
                 "<p>Si vous n'êtes pas à l'origine de cette demande, ignorez ce message.</p>"
                 "</div>"
             ),
             idempotency_key=hashlib.sha256(
-                f"password-reset:{token_hash}".encode()
+                f"{purpose}:{token_hash}".encode()
             ).hexdigest(),
         )
     except Exception as exc:  # noqa: BLE001
@@ -3923,6 +3975,36 @@ async def _verify_user_totp(user: dict, code: str) -> bool:
 
 def _is_admin_account(user: dict) -> bool:
     return user.get("role") in ("admin", "super_admin")
+
+
+USER_PIN_SETUP_TTL_SECONDS = 300
+
+
+async def _create_user_pin_setup_challenge(user: dict) -> str:
+    if _is_admin_account(user):
+        raise HTTPException(403, "La configuration du PIN administrateur suit le parcours de sécurité des administrateurs.")
+    setup_id = new_id()
+    token = auth_security.create_mfa_token(
+        user["id"], "user_pin_setup", setup_id=setup_id,
+        pin_version=user.get("user_pin_version"),
+    )
+    expires = datetime.now(timezone.utc) + timedelta(
+        seconds=USER_PIN_SETUP_TTL_SECONDS)
+    result = await db.users.update_one(
+        {"id": user["id"], "user_pin_hash": {"$exists": False}},
+        {"$set": {
+            "user_pin_setup_id": setup_id,
+            "user_pin_setup_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "user_pin_setup_expires_at": expires,
+        }},
+    )
+    if not result.matched_count:
+        raise HTTPException(
+            409,
+            detail={"code": "USER_PIN_ALREADY_ENABLED",
+                    "message": "Le code PIN vient d’être activé. Reconnectez-vous."},
+        )
+    return token
 
 
 def _is_platform_owner_email(email: str) -> bool:
@@ -4139,15 +4221,19 @@ async def register(req: RegisterRequest, request: Request, response: Response):
         setup = await _begin_mfa_enrollment(user_doc)
         return {"mfa_setup_required": True, "mfa_setup": setup,
                 "user": user_to_public(user_doc)}
-    await _issue_session(uid, request, response)
-    return {"token": None, "user": user_to_public(user_doc)}
+    pin_setup_token = await _create_user_pin_setup_challenge(user_doc)
+    return {
+        "user_pin_setup_required": True,
+        "pin_setup_token": pin_setup_token,
+    }
 
 
 @api.post("/auth/login")
 async def login(req: LoginRequest, request: Request, response: Response):
     # The MFA continuation and a retry after the server-side proof-of-work
     # challenge already passed the initial browser bot check.
-    if not req.mfa_token and not (req.challenge_id and req.challenge_solution):
+    if (not req.mfa_token and not req.user_pin_token and not req.pin_setup_token
+            and not (req.challenge_id and req.challenge_solution)):
         await _require_turnstile(req.turnstile_token, request, "login")
     ident = req.email.lower().strip()
     await _check_login_security(
@@ -4195,6 +4281,80 @@ async def login(req: LoginRequest, request: Request, response: Response):
                 "Code 2FA invalide ou expiré. Utilisez le code à 6 chiffres "
                 "actuellement affiché dans votre application d’authentification.",
             )
+    user_pin_verified = False
+    if not is_admin:
+        if req.pin_setup_token:
+            try:
+                setup_payload = auth_security.decode_mfa_token(
+                    req.pin_setup_token, "user_pin_setup")
+            except HTTPException:
+                await _record_login_failure(ident, request)
+                raise
+            if (setup_payload.get("sub") != u["id"]
+                    or setup_payload.get("pin_version") != u.get("user_pin_version")
+                    or not req.pin
+                    or req.pin != req.pin_confirmation):
+                await _record_login_failure(ident, request)
+                raise HTTPException(
+                    401, "Jeton d’activation ou confirmation du PIN invalide.")
+            proof_hash = hashlib.sha256(req.pin_setup_token.encode()).hexdigest()
+            now = datetime.now(timezone.utc)
+            result = await db.users.update_one(
+                {
+                    "id": u["id"],
+                    "user_pin_hash": {"$exists": False},
+                    "user_pin_setup_id": setup_payload.get("setup_id"),
+                    "user_pin_setup_token_hash": proof_hash,
+                    "user_pin_setup_expires_at": {"$gt": now},
+                },
+                {"$set": {
+                    "user_pin_hash": await asyncio.to_thread(
+                        admin_pin.hash_pin, u["id"], req.pin, "user"),
+                    "user_pin_version": new_id(),
+                    "user_pin_failures": 0,
+                    "user_pin_enabled_at": now,
+                }, "$unset": {
+                    "user_pin_setup_id": "",
+                    "user_pin_setup_token_hash": "",
+                    "user_pin_setup_expires_at": "",
+                }},
+            )
+            if result.matched_count != 1:
+                raise HTTPException(
+                    409,
+                    detail={"code": "USER_PIN_SETUP_EXPIRED",
+                            "message": "Cette activation a expiré. Reconnectez-vous pour en commencer une nouvelle."},
+                )
+            u = await db.users.find_one({"id": u["id"]}, {"_id": 0})
+            user_pin_verified = True
+        elif not u.get("user_pin_hash"):
+            return {
+                "user_pin_setup_required": True,
+                "pin_setup_token": await _create_user_pin_setup_challenge(u),
+            }
+        else:
+            if not req.user_pin_token:
+                return {
+                    "user_pin_required": True,
+                    "user_pin_token": auth_security.create_mfa_token(
+                        u["id"], "user_login_pin",
+                        pin_version=u.get("user_pin_version")),
+                }
+            try:
+                pin_payload = auth_security.decode_mfa_token(
+                    req.user_pin_token, "user_login_pin")
+            except HTTPException:
+                await _record_login_failure(ident, request)
+                raise
+            user_pin_verified = (
+                pin_payload.get("sub") == u["id"]
+                and pin_payload.get("pin_version") == u.get("user_pin_version")
+                and await admin_pin.verify_pin(
+                    db, u, req.pin or "", field_prefix="user_pin")
+            )
+            if not user_pin_verified:
+                await _record_login_failure(ident, request)
+                raise HTTPException(401, "Code PIN incorrect ou non configuré.")
     await asyncio.gather(
         _clear_login_account_failures(ident),
         _complete_login(u, request),
@@ -4202,6 +4362,8 @@ async def login(req: LoginRequest, request: Request, response: Response):
     await _issue_session(
         u["id"], request, response,
         admin_auth_method=req.security_method if is_admin else "password",
+        user_pin_required=not is_admin,
+        user_pin_authenticated=user_pin_verified,
     )
     return {"token": None, "user": user_to_public(u)}
 
@@ -4446,6 +4608,20 @@ async def request_password_reset(
     return dict(PASSWORD_RESET_GENERIC_RESPONSE)
 
 
+@api.post("/auth/user-pin/reset/request")
+async def request_user_pin_reset(
+    req: UserPinResetRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    await _require_turnstile(req.turnstile_token, request, "password_reset")
+    email = str(req.email).strip().lower()
+    if await _allow_password_reset_request(email):
+        background_tasks.add_task(
+            _prepare_password_reset_email, email, "user_pin")
+    return dict(PASSWORD_RESET_GENERIC_RESPONSE)
+
+
 @api.post("/auth/password-reset/confirm")
 async def confirm_password_reset(
     req: PasswordResetConfirm, request: Request, response: Response
@@ -4461,6 +4637,7 @@ async def confirm_password_reset(
     if (
         not token_doc
         or not token_doc.get("user_id")
+        or token_doc.get("purpose", "password") != "password"
         or not token_doc.get("expires_at")
         or _as_utc(token_doc["expires_at"]) <= now
     ):
@@ -4524,6 +4701,76 @@ async def confirm_password_reset(
         "ok": True,
         "message": "Mot de passe réinitialisé. Connectez-vous de nouveau.",
     }
+
+
+@api.post("/auth/user-pin/reset/confirm")
+async def confirm_user_pin_reset(
+    req: UserPinResetConfirm, request: Request, response: Response,
+):
+    await _require_turnstile(
+        req.turnstile_token, request, "password_reset_confirm")
+    token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+    token_doc = await db.password_reset_tokens.find_one(
+        {"token_hash": token_hash, "purpose": "user_pin", "used": False},
+        {"_id": 0},
+    )
+    now = datetime.now(timezone.utc)
+    if (
+        not token_doc
+        or not token_doc.get("user_id")
+        or not token_doc.get("expires_at")
+        or _as_utc(token_doc["expires_at"]) <= now
+    ):
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+    user = await db.users.find_one({"id": token_doc["user_id"]}, {"_id": 0})
+    if not user or _is_admin_account(user) or not user.get("user_pin_hash"):
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+    if not await asyncio.to_thread(
+            verify_password, req.current_password, user.get("password_hash", "")):
+        await _record_login_failure(
+            str(user.get("email") or "").lower(), request)
+        raise HTTPException(401, "Mot de passe incorrect.")
+    claimed = await db.password_reset_tokens.update_one(
+        {
+            "id": token_doc["id"],
+            "user_id": user["id"],
+            "token_hash": token_hash,
+            "purpose": "user_pin",
+            "used": False,
+            "expires_at": {"$gt": now},
+        },
+        {"$set": {"used": True, "used_at": now}},
+    )
+    if claimed.modified_count != 1:
+        raise HTTPException(400, "Lien de réinitialisation invalide ou expiré.")
+    await _revoke_user_sessions(user["id"], "user_pin_reset")
+    updated = await db.users.update_one(
+        {
+            "id": user["id"],
+            "user_pin_hash": user["user_pin_hash"],
+            "user_pin_version": user.get("user_pin_version"),
+        },
+        {"$set": {
+            "user_pin_hash": await asyncio.to_thread(
+                admin_pin.hash_pin, user["id"], req.pin, "user"),
+            "user_pin_version": new_id(),
+            "user_pin_failures": 0,
+            "user_pin_enabled_at": now,
+        }, "$unset": {
+            "user_pin_locked_until": "",
+            "user_pin_setup_id": "",
+            "user_pin_setup_token_hash": "",
+            "user_pin_setup_expires_at": "",
+        }},
+    )
+    if updated.modified_count != 1:
+        raise HTTPException(400, "Le code PIN a changé. Demandez un nouveau lien.")
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_at": now}},
+    )
+    _clear_session_cookie(response)
+    return {"ok": True, "message": "Code PIN réinitialisé. Connectez-vous avec le nouveau code."}
 
 
 @api.get("/auth/me", response_model=UserPublic)
@@ -6413,6 +6660,20 @@ async def transfer(req: TransferRequest, request: Request,
         raise HTTPException(403, "Retraits bloqués pour votre compte")
     if not getattr(request.state, "merchant_api", False):
         await _require_turnstile(req.turnstile_token, request, "withdrawal")
+        if not _is_admin_account(u):
+            if not u.get("user_pin_hash"):
+                raise HTTPException(
+                    428,
+                    detail={"code": "USER_PIN_SETUP_REQUIRED",
+                            "message": "Activez votre code PIN avant de confirmer un transfert ou un retrait."},
+                )
+            if not await admin_pin.verify_pin(
+                    db, u, req.pin or "", field_prefix="user_pin"):
+                raise HTTPException(
+                    401,
+                    detail={"code": "USER_PIN_INVALID",
+                            "message": "Code PIN incorrect. Vérifiez-le avant de confirmer."},
+                )
 
     mobile_idempotency_key = ""
     mobile_request_fingerprint = ""

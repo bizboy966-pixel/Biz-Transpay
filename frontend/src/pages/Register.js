@@ -14,7 +14,7 @@ export default function Register() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const location = useLocation();
-  const { register } = useAuth();
+  const { register, login } = useAuth();
   const turnstile = useTurnstileConfig();
   const turnstileRef = useRef(null);
   const [form, setForm] = useState({
@@ -26,6 +26,9 @@ export default function Register() {
   const [showPwd, setShowPwd] = useState(false);
   const [showPwd2, setShowPwd2] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [pinSetupToken, setPinSetupToken] = useState('');
+  const [userPin, setUserPin] = useState('');
+  const [userPinConfirmation, setUserPinConfirmation] = useState('');
   const referralCode = new URLSearchParams(location.search).get('ref')?.trim() || '';
   const [referral, setReferral] = useState({ status: 'idle', username: '' });
 
@@ -110,7 +113,10 @@ export default function Register() {
         ...(referralCode ? { referral_code: referralCode } : {}),
       });
       toast.success('Compte créé avec succès !');
-      if (data?.mfa_setup_required) {
+      if (data?.user_pin_setup_required && data.pin_setup_token) {
+        setPinSetupToken(data.pin_setup_token);
+        toast.info('Activez votre PIN obligatoire pour terminer la création du compte.');
+      } else if (data?.mfa_setup_required) {
         toast.success('Compte créé. Connectez-vous pour activer la sécurité administrateur.');
         nav('/login');
       } else {
@@ -120,6 +126,35 @@ export default function Register() {
       setTurnstileToken('');
       turnstileRef.current?.reset();
       toast.error(err.response?.data?.detail || 'Erreur lors de la création du compte');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const activateUserPin = async () => {
+    if (!/^\d{6}$/.test(userPin) || userPin !== userPinConfirmation) {
+      toast.error('Saisissez le même code PIN à six chiffres dans les deux champs.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const data = await login(form.email, form.password, {
+        pin_setup_token: pinSetupToken,
+        pin: userPin,
+        pin_confirmation: userPinConfirmation,
+      });
+      if (!data?.user) {
+        throw new Error('La configuration du code PIN a expiré. Recommencez la connexion.');
+      }
+      toast.success('Code PIN activé. Votre compte est prêt.');
+      nav('/dashboard');
+    } catch (err) {
+      const detail = err.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : detail?.message || err.message || 'Impossible d’activer le code PIN.');
+      if ([401, 409].includes(err.response?.status)) {
+        setPinSetupToken('');
+        nav('/login');
+      }
     } finally {
       setLoading(false);
     }
@@ -152,6 +187,28 @@ export default function Register() {
 
           <div className="bt-auth-form-column">
         <form onSubmit={onSubmit} className="bt-auth-card bt-auth-card--wide max-w-2xl mx-auto p-7 sm:p-11" data-testid="register-form">
+          {pinSetupToken ? (
+            <section className="space-y-5 text-center" data-testid="register-pin-setup">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-2xl">🔐</div>
+              <div>
+                <h1 className="font-cabinet text-2xl font-extrabold tracking-tight text-slate-900">Nouvelle fonctionnalité disponible</h1>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600">Activez maintenant votre code PIN à six chiffres. Il est obligatoire pour terminer la création de votre compte.</p>
+              </div>
+              <label className="block text-left text-sm font-semibold text-slate-700" htmlFor="register-user-pin">Code PIN</label>
+              <input id="register-user-pin" type="password" inputMode="numeric" autoComplete="new-password"
+                maxLength={6} value={userPin} onChange={(e) => setUserPin(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+              <label className="block text-left text-sm font-semibold text-slate-700" htmlFor="register-user-pin-confirm">Confirmer le code PIN</label>
+              <input id="register-user-pin-confirm" type="password" inputMode="numeric" autoComplete="new-password"
+                maxLength={6} value={userPinConfirmation} onChange={(e) => setUserPinConfirmation(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+              <button type="button" onClick={activateUserPin}
+                disabled={loading || userPin.length !== 6 || userPinConfirmation.length !== 6 || userPin !== userPinConfirmation}
+                className="bt-button-primary w-full font-bold py-3.5 disabled:cursor-not-allowed">
+                {loading ? 'Activation…' : 'Activer le code PIN'}
+              </button>
+            </section>
+          ) : <>
           <div className="text-center mb-9">
             <div className="flex justify-center">
               <Logo />
@@ -276,6 +333,7 @@ export default function Register() {
           <p className="mt-6 text-center text-sm text-slate-500">
             {t('register.have_account')} <Link to="/login" className="text-[#2563EB] font-semibold hover:underline" data-testid="link-login">{t('register.login')}</Link>
           </p>
+          </>}
         </form>
           </div>
         </div>

@@ -32,6 +32,9 @@ class LoginRequest(BaseModel):
     otp: Optional[str] = None
     security_method: Literal["totp", "pin"] = "totp"
     pin: Optional[str] = Field(None, pattern=r"^[0-9]{6}$")
+    pin_confirmation: Optional[str] = Field(None, pattern=r"^[0-9]{6}$")
+    pin_setup_token: Optional[str] = Field(None, min_length=32, max_length=2048)
+    user_pin_token: Optional[str] = Field(None, min_length=32, max_length=2048)
     mfa_token: Optional[str] = None
     challenge_id: Optional[str] = None
     challenge_solution: Optional[str] = None
@@ -74,6 +77,18 @@ class PasswordResetRequest(BaseModel):
 class PasswordResetConfirm(BaseModel):
     token: str = Field(..., min_length=32, max_length=128)
     new_password: str = Field(..., min_length=1, max_length=72)
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
+
+
+class UserPinResetRequest(BaseModel):
+    email: EmailStr
+    turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
+
+
+class UserPinResetConfirm(BaseModel):
+    token: str = Field(..., min_length=32, max_length=128)
+    current_password: str = Field(..., min_length=1, max_length=72)
+    pin: str = Field(..., pattern=r"^[0-9]{6}$")
     turnstile_token: Optional[str] = Field(None, min_length=1, max_length=2048)
 
 
@@ -125,6 +140,7 @@ class UserPublic(BaseModel):
     created_at: str
     two_fa_enabled: bool = False
     admin_pin_enabled: bool = False
+    user_pin_enabled: bool = False
     language: str = "fr"
     default_currency: str = "XOF"
     avatar_url: Optional[str] = None
@@ -250,6 +266,7 @@ class TransferRequest(BaseModel):
     wallet_address: Optional[str] = None
     asset_code: Optional[str] = Field(None, min_length=1, max_length=32)
     destination_memo: Optional[str] = Field(None, max_length=120)
+    pin: Optional[str] = Field(None, pattern=r"^[0-9]{6}$")
 
 
 # ---------- Deposit (Stripe) ----------
