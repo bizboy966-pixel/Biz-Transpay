@@ -30,6 +30,8 @@ class LoginRequest(BaseModel):
     email: str  # accepts email or username
     password: str
     otp: Optional[str] = None
+    security_method: Literal["totp", "pin"] = "totp"
+    pin: Optional[str] = Field(None, pattern=r"^[0-9]{6}$")
     mfa_token: Optional[str] = None
     challenge_id: Optional[str] = None
     challenge_solution: Optional[str] = None
@@ -49,6 +51,12 @@ class TwoFactorCodeRequest(BaseModel):
 class TwoFactorDisableRequest(BaseModel):
     current_password: str
     code: str
+
+
+class AdminPinUpdateRequest(BaseModel):
+    current_password: str = Field(..., max_length=72)
+    code: str = Field(..., pattern=r"^[0-9]{6}$")
+    pin: Optional[str] = Field(..., pattern=r"^[0-9]{6}$")
 
 
 class PasswordRecoveryRequest(BaseModel):
@@ -116,6 +124,7 @@ class UserPublic(BaseModel):
     crypto_wallet_balances: dict[str, float] = Field(default_factory=dict)
     created_at: str
     two_fa_enabled: bool = False
+    admin_pin_enabled: bool = False
     language: str = "fr"
     default_currency: str = "XOF"
     avatar_url: Optional[str] = None

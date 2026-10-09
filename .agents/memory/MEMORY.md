@@ -15,7 +15,8 @@
 - [Mbiyo integration](mbiyo-integration.md) — Mbiyo remains isolated internally while public routes stay provider-neutral; catalog additions follow the official pay-in table.
 - [Authentication security boundary](security-auth.md) — harden account access without changing or blocking financial and commerce workflows.
 - [Session security boundary](session-security.md) — use revocable HttpOnly browser sessions, idle expiry, rotation, remote logout, and step-up authentication.
-- [Admin security boundary](admin-security-boundary.md) — admin access requires MFA and step-up; the platform owner is permanent and protected from destructive operations.
+- [Admin security boundary](admin-security-boundary.md) — MFA enrollment and sensitive-action step-up remain required; the platform owner is protected from destructive operations.
+- [Admin PIN boundary](admin-pin-security.md) — personal PINs are an optional check after the admin password; enrollment and sensitive actions still require real MFA.
 - [Global rate limiting](global-rate-limiting.md) — apply route-specific sliding-window limits across the API, with stricter buckets for auth and money movement.
 - [Edge protection boundary](edge-protection-boundary.md) — rely on Replit's published WAF/load balancing for volumetric defense and keep app-level edge guards as defense in depth.
 - [WAF boundary](waf-boundary.md) — Replit Auto-Protect supplies the published WAF; custom WAF rules are not currently exposed, so keep application controls complementary.

@@ -50,10 +50,12 @@ from models import (  # noqa: E402
     TicketCreate, Ticket, new_id, now_iso,
     TwoFactorCodeRequest, TwoFactorDisableRequest, PasswordRecoveryRequest,
     ReauthenticationRequest, PasswordResetRequest, PasswordResetConfirm,
+    AdminPinUpdateRequest,
     TransactionEmailSettingsUpdate, TransferOtpCancelRequest,
     PushDeviceRequest, PushAudienceSelection, PushCampaignSendRequest,
 )
 import auth as auth_security  # noqa: E402
+import admin_pin  # noqa: E402
 from auth import hash_password, verify_password, create_token  # noqa: E402
 from email_delivery import resend_is_configured, send_resend_email  # noqa: E402
 from postgres_document_store import create_database  # noqa: E402
@@ -197,7 +199,8 @@ async def get_current_user_id(
     return payload["sub"]
 
 
-async def _issue_session(user_id: str, request: Request, response: Response) -> None:
+async def _issue_session(user_id: str, request: Request, response: Response,
+                         admin_auth_method: str = "password") -> None:
     now = datetime.now(timezone.utc)
     session_id = secrets.token_urlsafe(32)
     token = auth_security.create_token(user_id, session_id=session_id)
@@ -208,6 +211,7 @@ async def _issue_session(user_id: str, request: Request, response: Response) -> 
         "created_at": now,
         "last_activity_at": now,
         "last_auth_at": now,
+        "admin_auth_method": admin_auth_method,
         "expires_at": now + timedelta(seconds=SESSION_MAX_AGE),
         "ip": _auth_ip(request),
         "user_agent": (request.headers.get("user-agent") or "")[:300],
@@ -247,7 +251,11 @@ async def _rotate_session(request: Request, response: Response, user_id: str) ->
             {"$set": {"revoked_at": datetime.now(timezone.utc),
                       "revocation_reason": "rotated"}},
         )
-    await _issue_session(user_id, request, response)
+    await _issue_session(
+        user_id, request, response,
+        admin_auth_method=getattr(request.state, "session", {}).get(
+            "admin_auth_method", "password"),
+    )
 
 
 async def require_recent_auth(
@@ -568,7 +576,7 @@ def _global_rate_profile(path: str, method: str) -> str:
         return "login"
     if p == "/api/auth/register":
         return "register"
-    if p == "/api/auth/2fa/confirm" or p == "/api/auth/2fa/disable":
+    if p in {"/api/auth/2fa/confirm", "/api/auth/2fa/disable", "/api/auth/admin-pin"}:
         return "otp"
     if p in {
         "/api/auth/recover",
@@ -725,6 +733,11 @@ def _format_iso(dt) -> str:
 
 
 # ---------- helpers ----------
+_USER_ADMIN_VIEW_PROJECTION = {
+    "_id": 0, "password_hash": 0, "admin_pin_hash": 0, "admin_pin_version": 0,
+}
+
+
 def user_to_public(u: dict) -> UserPublic:
     effective_role = _effective_role(u)
     return UserPublic(
@@ -746,6 +759,7 @@ def user_to_public(u: dict) -> UserPublic:
                             "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP")},
         created_at=u.get("created_at", now_iso()),
         two_fa_enabled=u.get("two_fa_enabled", False),
+        admin_pin_enabled=bool(_is_admin_account(u) and u.get("admin_pin_hash")),
         language=u.get("language", "fr"),
         default_currency=u.get("default_currency", "XOF"),
         avatar_url=u.get("avatar_url"),
@@ -4152,14 +4166,29 @@ async def login(req: LoginRequest, request: Request, response: Response):
         if not req.mfa_token:
             return {
                 "mfa_required": True,
-                "mfa_token": auth_security.create_mfa_token(u["id"], "login_mfa"),
+                "mfa_token": auth_security.create_mfa_token(
+                    u["id"], "login_mfa", pin_version=u.get("admin_pin_version")),
+                "security_methods": (
+                    ["totp", "pin"] if u.get("admin_pin_hash") else ["totp"]),
             }
         try:
             mfa_payload = auth_security.decode_mfa_token(req.mfa_token, "login_mfa")
         except HTTPException:
             await _record_login_failure(ident, request)
             raise
-        if mfa_payload.get("sub") != u["id"] or not await _verify_user_totp(u, req.otp or ""):
+        if mfa_payload.get("sub") != u["id"]:
+            await _record_login_failure(ident, request)
+            raise HTTPException(401, "Jeton de sécurité invalide")
+        if req.security_method == "pin":
+            pin_valid = (
+                bool(u.get("admin_pin_version"))
+                and mfa_payload.get("pin_version") == u.get("admin_pin_version")
+                and await admin_pin.verify_pin(db, u, req.pin or "")
+            )
+            if not pin_valid:
+                await _record_login_failure(ident, request)
+                raise HTTPException(401, "PIN invalide ou non configuré. Utilisez l’authentificateur si nécessaire.")
+        elif not await _verify_user_totp(u, req.otp or ""):
             await _record_login_failure(ident, request)
             raise HTTPException(
                 401,
@@ -4170,7 +4199,10 @@ async def login(req: LoginRequest, request: Request, response: Response):
         _clear_login_account_failures(ident),
         _complete_login(u, request),
     )
-    await _issue_session(u["id"], request, response)
+    await _issue_session(
+        u["id"], request, response,
+        admin_auth_method=req.security_method if is_admin else "password",
+    )
     return {"token": None, "user": user_to_public(u)}
 
 
@@ -4218,8 +4250,50 @@ async def reauthenticate(req: ReauthenticationRequest, request: Request,
         {"id": session_id, "user_id": uid, "revoked_at": {"$exists": False}},
         {"$set": {"last_auth_at": datetime.now(timezone.utc)}},
     )
+    if _is_admin_account(user):
+        request.state.session["admin_auth_method"] = "totp"
     await _rotate_session(request, response, uid)
     return {"ok": True, "expires_in": REAUTH_MAX_AGE_SECONDS}
+
+
+@api.post("/auth/admin-pin")
+async def configure_admin_pin(
+    req: AdminPinUpdateRequest, request: Request,
+    uid: str = Depends(get_current_user_id),
+):
+    user = await get_user(uid)
+    if not _is_admin_account(user) or not user.get("two_fa_enabled"):
+        raise HTTPException(403, "Le PIN est réservé aux administrateurs ayant activé la double authentification.")
+    if not await asyncio.to_thread(
+            verify_password, req.current_password, user.get("password_hash", "")):
+        raise HTTPException(401, "Mot de passe actuel incorrect")
+    if not await _verify_user_totp(user, req.code):
+        raise HTTPException(401, "Code de l’authentificateur invalide")
+    if req.pin is None:
+        update = {"$unset": {
+            "admin_pin_hash": "", "admin_pin_version": "",
+            "admin_pin_failures": "", "admin_pin_locked_until": "",
+        }}
+    else:
+        update = {
+            "$set": {
+                "admin_pin_hash": await asyncio.to_thread(admin_pin.hash_pin, uid, req.pin),
+                "admin_pin_version": new_id(),
+                "admin_pin_failures": 0,
+            },
+            "$unset": {"admin_pin_locked_until": ""},
+        }
+    await db.users.update_one({"id": uid}, update)
+    # Changing/removing a credential invalidates other logged-in devices.
+    session_id = getattr(request.state, "session_id", None)
+    await db.sessions.update_many(
+        {"user_id": uid, "id": {"$ne": session_id}, "revoked_at": {"$exists": False}},
+        {"$set": {"revoked_at": datetime.now(timezone.utc),
+                  "revocation_reason": "admin_pin_changed"}},
+    )
+    await audit(uid, user["username"], "admin_pin_updated",
+                details={"enabled": req.pin is not None})
+    return {"enabled": req.pin is not None}
 
 
 @api.post("/auth/2fa/setup")
@@ -15483,6 +15557,12 @@ async def require_admin_recent_auth(
                 "code": "ADMIN_MFA_REQUIRED",
             },
         )
+    if getattr(request.state, "session", {}).get("admin_auth_method") == "pin":
+        raise HTTPException(
+            428,
+            detail={"code": "REAUTH_REQUIRED",
+                    "message": "Confirmez cette action sensible avec votre mot de passe et l’authentificateur."},
+        )
     return uid
 
 
@@ -16989,13 +17069,13 @@ async def admin_list_users(admin=Depends(get_admin), q: Optional[str] = None,
         query["is_blocked"] = False
         query["is_banned"] = False
 
-    docs = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(limit)
+    docs = await db.users.find(query, _USER_ADMIN_VIEW_PROJECTION).sort("created_at", -1).to_list(limit)
     return docs
 
 
 @api.get("/admin/users/{user_id}")
 async def admin_get_user(user_id: str, admin=Depends(get_admin)):
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    u = await db.users.find_one({"id": user_id}, _USER_ADMIN_VIEW_PROJECTION)
     if not u:
         raise HTTPException(404, "Utilisateur introuvable")
     tx_count = await db.transactions.count_documents({"user_id": user_id})
@@ -17026,7 +17106,7 @@ async def admin_user_action(user_id: str, action: str,
     await audit(admin["id"], admin["username"], action,
                 target_user_id=user_id, target_username=target["username"],
                 details={"reason": req.reason})
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    u = await db.users.find_one({"id": user_id}, _USER_ADMIN_VIEW_PROJECTION)
     return {"ok": True, "user": u}
 
 
@@ -17143,7 +17223,7 @@ async def admin_update_user(
     await audit(admin["id"], admin["username"], "update_user",
                 target_user_id=user_id, target_username=target["username"],
                 details=updates)
-    u = await db.users.find_one({"id": user_id}, {"_id": 0, "password_hash": 0})
+    u = await db.users.find_one({"id": user_id}, _USER_ADMIN_VIEW_PROJECTION)
     return u
 
 
@@ -18095,7 +18175,7 @@ async def admin_logs(admin=Depends(get_admin), limit: int = Query(200, le=1000))
 @api.get("/admin/admins")
 async def admin_list_admins(admin=Depends(get_admin)):
     docs = await db.users.find({"role": {"$in": ["admin", "super_admin"]}},
-                                {"_id": 0, "password_hash": 0}).to_list(200)
+                                _USER_ADMIN_VIEW_PROJECTION).to_list(200)
     for doc in docs:
         if doc.get("role") == "admin" and not doc.get("admin_role"):
             doc["admin_role"] = "general"

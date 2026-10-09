@@ -21,6 +21,9 @@ export default function Login() {
   const [step, setStep] = useState('password');
   const [otp, setOtp] = useState('');
   const [mfaToken, setMfaToken] = useState('');
+  const [securityMethods, setSecurityMethods] = useState(['totp']);
+  const [securityMethod, setSecurityMethod] = useState('totp');
+  const [pin, setPin] = useState('');
   const [setup, setSetup] = useState(null);
   const [setupCode, setSetupCode] = useState('');
   const [recoveryCodes, setRecoveryCodes] = useState([]);
@@ -51,10 +54,14 @@ export default function Login() {
   const completeLogin = (data) => {
     if (data.mfa_required) {
       setMfaToken(data.mfa_token);
+      setSecurityMethods(data.security_methods || ['totp']);
+      setSecurityMethod('totp');
+      setOtp('');
+      setPin('');
       setStep('mfa');
       setChallenge(null);
       setChallengeSolution('');
-      toast.success('Entrez le code actuel de votre application d’authentification');
+      toast.success('Choisissez votre méthode de vérification');
       return;
     }
     if (data.mfa_setup_required) {
@@ -101,7 +108,9 @@ export default function Login() {
         setChallengeSolution(solved);
       }
       const data = await attemptLogin({
-        otp: step === 'mfa' ? otp : undefined,
+        otp: step === 'mfa' && securityMethod === 'totp' ? otp : undefined,
+        pin: step === 'mfa' && securityMethod === 'pin' ? pin : undefined,
+        security_method: step === 'mfa' ? securityMethod : undefined,
         mfa_token: step === 'mfa' ? mfaToken : undefined,
         challenge_id: challenge?.id,
         challenge_solution: solved || undefined,
@@ -183,9 +192,32 @@ export default function Login() {
             </div>
           ) : step === 'mfa' ? (
             <div>
+              <h2 className="font-cabinet font-bold text-lg text-slate-900 text-center mb-4">Vérification de sécurité</h2>
+              <div className="grid grid-cols-2 gap-2 mb-4" role="group" aria-label="Méthode de connexion administrateur">
+                <button type="button" aria-pressed={securityMethod === 'totp'} disabled={loading}
+                  onClick={() => { setSecurityMethod('totp'); setPin(''); setOtp(''); }}
+                  className={`rounded-xl border px-3 py-3 text-sm font-semibold ${securityMethod === 'totp' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'}`}>
+                  Authentificateur
+                </button>
+                <button type="button" aria-pressed={securityMethod === 'pin'} disabled={loading || !securityMethods.includes('pin')}
+                  onClick={() => { setSecurityMethod('pin'); setOtp(''); setPin(''); }}
+                  data-testid="login-method-pin"
+                  className={`rounded-xl border px-3 py-3 text-sm font-semibold disabled:opacity-40 ${securityMethod === 'pin' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'}`}>
+                  Code PIN
+                </button>
+              </div>
+              {!securityMethods.includes('pin') && <p className="mb-4 text-xs text-slate-500 text-center">Pour utiliser le PIN, configurez-le dans Profil → Sécurité après votre connexion avec l’authentificateur.</p>}
+              {securityMethod === 'pin' ? <>
+                <label htmlFor="admin-login-pin" className="text-sm font-semibold text-slate-700 mb-2 block text-center">Votre PIN personnel à six chiffres</label>
+                <input id="admin-login-pin" data-testid="input-login-pin" type="password" inputMode="numeric" autoComplete="off"
+                  maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
+                  placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
+                <p className="mt-2 text-xs text-slate-500 text-center">Saisissez le PIN que vous avez défini. L’authentificateur reste obligatoire pour les actions sensibles.</p>
+              </> : <>
                <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">Code 2FA de l’application d’authentification</label>
               <input data-testid="input-login-otp" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
                <p className="mt-2 text-xs text-slate-500 text-center">Réservé aux administrateurs. Utilisez le code à 6 chiffres affiché actuellement dans Google Authenticator, Microsoft Authenticator ou une application compatible. Ce n’est pas un code fixe choisi par vous.</p>
+              </>}
             </div>
           ) : (
           <div>
@@ -222,7 +254,7 @@ export default function Login() {
             />
           )}
 
-          {(step === 'password' || step === 'mfa') && <button type="submit" disabled={loading || (step === 'mfa' && otp.length !== 6)} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
+          {(step === 'password' || step === 'mfa') && <button type="submit" disabled={loading || (step === 'mfa' && (securityMethod === 'pin' ? pin.length : otp.length) !== 6)} data-testid="btn-login" className="bt-button-primary mt-7 w-full font-bold py-3.5 inline-flex items-center justify-center gap-2">
             {loading
               ? <><span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />Connexion…</>
               : <><LogInIcon className="w-5 h-5" /> {t('login.submit')}</>}

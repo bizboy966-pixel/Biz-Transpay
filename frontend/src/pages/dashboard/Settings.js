@@ -6,6 +6,7 @@ import api from '@/api';
 import { useAuth } from '@/context/AuthContext';
 import i18n from '@/i18n';
 import { enableBrowserPush, disableBrowserPush, currentPushToken } from '@/lib/pushNotifications';
+import AdminPinSettings from '@/components/AdminPinSettings';
 
 export default function Settings({ embedded = false }) {
   const { t } = useTranslation();
@@ -82,7 +83,7 @@ export default function Settings({ embedded = false }) {
             <Shield className="w-5 h-5 text-[#2563EB]" />
             <div className="flex-1">
               <div className="font-semibold text-slate-800">{t('settings.two_fa')}</div>
-              <div className="text-xs text-slate-500">{user?.two_fa_enabled ? 'Activée : les codes sont demandés à chaque connexion.' : 'Ajoutez une protection supplémentaire à votre compte.'}</div>
+              <div className="text-xs text-slate-500">{user?.two_fa_enabled ? 'Activée : utilisez l’authentificateur ou votre PIN configuré à la connexion.' : 'Ajoutez une protection supplémentaire à votre compte.'}</div>
             </div>
             {!user?.two_fa_enabled && <button type="button" onClick={async () => {
               try { const { data } = await api.post('/auth/2fa/setup'); setMfaSetup(data); }
@@ -111,6 +112,7 @@ export default function Settings({ embedded = false }) {
             <div className="grid grid-cols-2 gap-1 font-mono text-xs">{recoveryCodes.map((code) => <span key={code}>{code}</span>)}</div>
           </div>}
         </div>}
+        {isAdmin && user?.two_fa_enabled && <AdminPinSettings enabled={Boolean(user.admin_pin_enabled)} onSaved={refresh} />}
       </Section>
 
       <Section icon={Globe} title={t('settings.preferences')}>
