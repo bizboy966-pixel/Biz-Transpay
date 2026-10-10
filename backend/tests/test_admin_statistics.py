@@ -158,3 +158,288 @@ def test_statistics_history_endpoint_never_waits_on_live_provider_reads(
     assert result["period"] == "24h"
     assert result["summary"]["transaction_count"] == 0
     assert result["provider_liquidity"] == []
+
+
+def test_monthly_country_ranking_uses_transaction_count_and_xof_volume(
+        monkeypatch):
+    monkeypatch.setattr(server, "_ADMIN_STATISTICS_COUNTRY_LABELS_CACHE", {
+        "TG": "Togo", "CI": "Côte d’Ivoire",
+    })
+    rows = [
+        {"transaction_document": {
+            "type": "deposit", "status": "completed", "amount": 500,
+            "currency": "XOF", "country_code": "TG",
+        }},
+        {"transaction_document": {
+            "type": "transfer", "status": "completed", "amount": 100,
+            "currency": "XAF", "country_code": "TG",
+            "metadata": {"transfer_type": "biz_to_mobile"},
+        }},
+        {"transaction_document": {
+            "type": "exchange", "status": "pending", "amount": 800,
+            "currency": "XOF", "country_code": "TG",
+        }},
+        {"transaction_document": {
+            "type": "payment", "status": "completed", "amount": 1,
+            "currency": "USDT", "country_code": "CI",
+        }},
+        {"transaction_document": {
+            "type": "deposit", "status": "failed", "amount": 999,
+            "currency": "XOF", "country_code": "CI",
+        }},
+        {"transaction_document": {
+            "type": "transfer", "direction": "in", "status": "completed",
+            "amount": 200, "currency": "XOF", "country_code": "TG",
+            "metadata": {"transfer_type": "biz_to_biz"},
+        }},
+    ]
+    extra_country_codes = ["AA", "AB", "AC", "AD", "AE", "AF", "AG", "AH", "AI"]
+    rows.extend({
+        "transaction_document": {
+            "type": "deposit", "status": "pending", "amount": 1,
+            "currency": "XOF", "country_code": extra_country_codes[index],
+        },
+    } for index in range(9))
+
+    result = server._aggregate_admin_statistics_top_countries(
+        rows,
+        {"XAF_XOF": 1, "USDT_XOF": 600},
+    )
+
+    assert len(result) == 8
+    assert result[0] == {
+        "country_code": "TG",
+        "country": "Togo",
+        "transaction_count": 3,
+        "volume_xof": 600.0,
+        "unconverted_volume_by_currency": [],
+    }
+    assert result[1]["country_code"] == "CI"
+    assert result[1]["transaction_count"] == 2
+    assert result[1]["volume_xof"] == 600
+
+
+def test_monthly_margins_are_split_by_operation_and_payment_channel():
+    rows = [
+        {"transaction_document": {
+            "type": "deposit", "status": "completed", "amount": 500,
+            "currency": "XOF", "metadata": {"platform_fee": 15},
+        }},
+        {"transaction_document": {
+            "type": "deposit", "status": "completed", "amount": .01,
+            "currency": "BTC.BTC",
+            "metadata": {
+                "coin": "BTC", "platform_fee": .01,
+                "platform_fee_usdt": .5,
+            },
+        }},
+        {"transaction_document": {
+            "type": "withdrawal", "status": "completed", "amount": 100,
+            "currency": "XAF", "metadata": {"platform_fee": 4},
+        }},
+        {"transaction_document": {
+            "type": "transfer", "status": "completed", "amount": 100,
+            "currency": "XOF",
+            "metadata": {
+                "transfer_type": "biz_to_mobile", "platform_fee": 5,
+            },
+        }},
+        {"transaction_document": {
+            "type": "transfer", "status": "completed", "amount": .5,
+            "currency": "USDT",
+            "metadata": {
+                "transfer_type": "biz_to_crypto", "platform_fee": .3,
+            },
+        }},
+        {"transaction_document": {
+            "type": "link_payment", "status": "paid", "amount": 2,
+            "currency": "USDT",
+            "metadata": {"coin": "BTC", "platform_fee": .2},
+        }},
+        {"transaction_document": {
+            "type": "deposit", "status": "completed", "amount": 1,
+            "currency": "XAF",
+            "metadata": {
+                "source": "link_payment", "platform_fee": 3,
+            },
+        }},
+        {"transaction_document": {
+            "type": "withdrawal", "status": "completed", "amount": .01,
+            "currency": "ETH.ETH",
+            "metadata": {
+                "coin": "ETH", "platform_fee": .01,
+                "platform_fee_usdt": .1,
+            },
+        }},
+        {"transaction_document": {
+            "type": "payment", "status": "completed", "amount": 200,
+            "currency": "XOF", "metadata": {"platform_fee": 6},
+        }},
+        {"transaction_document": {
+            "type": "payment", "status": "completed", "amount": 1,
+            "currency": "USDT", "metadata": {"platform_fee": .4},
+        }},
+        {"transaction_document": {
+            "type": "deposit", "status": "completed", "amount": 100,
+            "currency": "XOF",
+            "metadata": {
+                "integration_reference": "store-order-1",
+                "platform_fee": 7,
+            },
+        }},
+        {"transaction_document": {
+            "type": "deposit", "status": "completed", "amount": .02,
+            "currency": "ETH.ETH",
+            "metadata": {
+                "idempotency_key": "btpi_crypto-deposit",
+                "coin": "ETH", "platform_fee": .02,
+                "platform_fee_usdt": .8,
+            },
+        }},
+        {"transaction_document": {
+            "type": "exchange", "status": "completed", "amount": 1,
+            "currency": "XAF", "metadata": {"platform_fee": 2},
+        }},
+        {"transaction_document": {
+            "type": "deposit", "status": "failed", "amount": 500,
+            "currency": "XOF", "metadata": {"platform_fee": 100},
+        }},
+    ]
+
+    result = server._aggregate_admin_statistics_margins(rows)
+    categories = result["categories"]
+
+    assert categories["deposit_mobile_money"]["amounts"] == [
+        {"currency": "XOF", "amount": 15.0},
+    ]
+    assert categories["deposit_crypto"]["amounts"] == [
+        {"currency": "USDT", "amount": .5},
+    ]
+    assert categories["withdrawal_mobile_money"]["amounts"] == [
+        {"currency": "XAF", "amount": 4.0},
+    ]
+    assert categories["transfer_mobile_money"]["amounts"] == [
+        {"currency": "XOF", "amount": 5.0},
+    ]
+    assert categories["transfer_crypto"]["amounts"] == [
+        {"currency": "USDT", "amount": .3},
+    ]
+    assert categories["link_payment_crypto"]["amounts"] == [
+        {"currency": "USDT", "amount": .2},
+    ]
+    assert categories["link_payment_mobile_money"]["amounts"] == [
+        {"currency": "XAF", "amount": 3.0},
+    ]
+    assert categories["withdrawal_crypto"]["amounts"] == [
+        {"currency": "USDT", "amount": .1},
+    ]
+    assert categories["api_payment_mobile_money"]["amounts"] == [
+        {"currency": "XOF", "amount": 13.0},
+    ]
+    assert categories["api_payment_crypto"]["amounts"] == [
+        {"currency": "USDT", "amount": 1.2},
+    ]
+    assert categories["conversion"]["amounts"] == [
+        {"currency": "XAF", "amount": 2.0},
+    ]
+    assert result["total_by_currency"] == [
+        {"currency": "USDT", "amount": 2.3},
+        {"currency": "XAF", "amount": 9.0},
+        {"currency": "XOF", "amount": 33.0},
+    ]
+
+
+def test_customer_wallet_totals_convert_fiat_and_crypto_to_xof():
+    btc_field = server._crypto_wallet_field("BTC.BTC")
+    totals = {
+        "balance_xof": Decimal("10"),
+        "balance_xaf": Decimal("20"),
+        "balance_usdt": Decimal("1"),
+        btc_field: Decimal("0.1"),
+    }
+
+    result = server._build_admin_statistics_wallet_balances(
+        totals,
+        {
+            "conversion_rates": {"XAF_XOF": 0.5, "USDT_XOF": 600},
+            "crypto_usdt_rates": {"BTC": 50000, "USDT": 1},
+        },
+        "2026-10-01T00:00:00+00:00",
+    )
+
+    assert result["total_xof_equivalent"] == 3000620
+    assert result["crypto_xof_equivalent"] == 3000600
+    assert result["conversion_complete"] is True
+    assert {wallet["currency"]: wallet["xof_equivalent"]
+            for wallet in result["wallets"]} == {
+        "XOF": 10, "XAF": 10, "USDT": 600, "BTC.BTC": 3000000,
+    }
+
+
+def test_customer_wallet_totals_mark_unpriced_crypto_as_partial():
+    eth_field = server._crypto_wallet_field("ETH.ETH")
+    result = server._build_admin_statistics_wallet_balances(
+        {"balance_xof": 100, eth_field: 1},
+        {
+            "conversion_rates": {"USDT_XOF": 600},
+            "crypto_usdt_rates": {"USDT": 1},
+        },
+    )
+
+    assert result["total_xof_equivalent"] == 100
+    assert result["conversion_complete"] is False
+    assert result["missing_rates"] == [{
+        "currency": "ETH.ETH", "coin": "ETH", "network": "ETH",
+    }]
+
+
+def test_new_statistics_routes_require_finance_read_permission():
+    def build_request(path):
+        return Request({
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": path,
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
+            "server": ("test", 443),
+            "client": ("test", 1),
+        })
+
+    assert server._admin_permission_for_request(
+        build_request("/api/admin/statistics/dashboard")) == "finance:read"
+    assert server._admin_permission_for_request(
+        build_request("/api/admin/statistics/wallet-balances")) \
+        == "finance:read"
+
+
+def test_monthly_dashboard_route_returns_country_and_margin_sections(
+        monkeypatch):
+    async def transaction_rows(start, end):
+        assert start.day == 1
+        assert start <= end
+        return [
+            {"transaction_document": {
+                "type": "deposit", "status": "completed", "amount": 500,
+                "currency": "XOF", "country_code": "TG",
+                "metadata": {"platform_fee": 5},
+            }},
+        ]
+
+    async def platform_config():
+        return {"conversion_rates": {"USDT_XOF": 600}}
+
+    monkeypatch.setattr(
+        server, "_admin_statistics_transaction_rows", transaction_rows)
+    monkeypatch.setattr(server, "get_platform_config", platform_config)
+
+    result = asyncio.run(
+        server.admin_statistics_dashboard(admin={"role": "admin"}))
+
+    assert result["period"] == "month"
+    assert result["top_countries"][0]["country_code"] == "TG"
+    assert result["top_countries"][0]["volume_xof"] == 500
+    assert result["margins"]["categories"]["deposit_mobile_money"]["amounts"] \
+        == [{"currency": "XOF", "amount": 5.0}]

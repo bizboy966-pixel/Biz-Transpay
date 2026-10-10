@@ -15073,6 +15073,9 @@ _ADMIN_STATISTICS_PERIOD_DAYS = {
 _ADMIN_STATISTICS_PROVIDER_CACHE = {"expires_at": 0.0, "snapshot": None}
 _ADMIN_STATISTICS_PROVIDER_CACHE_LOCK = asyncio.Lock()
 _ADMIN_STATISTICS_PROVIDER_CACHE_SECONDS = 60
+_ADMIN_STATISTICS_WALLET_CACHE = {"expires_at": 0.0, "snapshot": None}
+_ADMIN_STATISTICS_WALLET_CACHE_LOCK = asyncio.Lock()
+_ADMIN_STATISTICS_WALLET_CACHE_SECONDS = 60
 _ADMIN_STATISTICS_OPERATION_TYPES = ("deposits", "withdrawals", "exchanges")
 _ADMIN_STATISTICS_COUNTRY_LABELS_CACHE = None
 
@@ -15800,6 +15803,543 @@ async def admin_statistics_provider_liquidity(admin=Depends(get_admin)):
         "provider_liquidity": await _cached_admin_statistics_provider_liquidity(),
         "generated_at": now_iso(),
     }
+
+
+_ADMIN_STATISTICS_SUCCESS_STATUSES = frozenset({
+    "completed", "success", "succeeded", "confirmed", "paid", "approved",
+})
+_ADMIN_STATISTICS_FIAT_CURRENCIES = frozenset({
+    "XOF", "XAF", "CDF", "USD", "GNF", "GMD", "UGX", "TZS", "KES",
+    "RWF", "GHS", "NGN", "ZAR", "ZMW", "EGP",
+})
+_ADMIN_STATISTICS_MARGIN_CATEGORY_ORDER = (
+    "deposit_mobile_money",
+    "deposit_crypto",
+    "withdrawal_mobile_money",
+    "withdrawal_crypto",
+    "transfer_mobile_money",
+    "transfer_crypto",
+    "link_payment_mobile_money",
+    "link_payment_crypto",
+    "api_payment_mobile_money",
+    "api_payment_crypto",
+    "conversion",
+)
+_ADMIN_STATISTICS_MARGIN_CATEGORY_LABELS = {
+    "deposit_mobile_money": "Dépôts · Mobile Money",
+    "deposit_crypto": "Dépôts · Crypto",
+    "withdrawal_mobile_money": "Retraits · Mobile Money",
+    "withdrawal_crypto": "Retraits · Crypto",
+    "transfer_mobile_money": "Transferts · Mobile Money",
+    "transfer_crypto": "Transferts · Crypto",
+    "link_payment_mobile_money": "Liens de paiement · Mobile Money",
+    "link_payment_crypto": "Liens de paiement · Crypto",
+    "api_payment_mobile_money": "Paiements API · Mobile Money",
+    "api_payment_crypto": "Paiements API · Crypto",
+    "conversion": "Conversions",
+}
+
+
+def _admin_statistics_transaction_document(row: dict) -> Optional[dict]:
+    transaction = row.get("transaction_document", row)
+    if isinstance(transaction, str):
+        try:
+            transaction = json.loads(transaction)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(transaction, dict):
+        return None
+    metadata = transaction.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            transaction["metadata"] = json.loads(metadata)
+        except (TypeError, ValueError):
+            transaction["metadata"] = {}
+    return transaction
+
+
+def _admin_statistics_metadata(transaction: dict) -> dict:
+    metadata = transaction.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = None
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _admin_statistics_crypto_transaction(
+        transaction: dict, metadata: Optional[dict] = None) -> bool:
+    metadata = metadata if isinstance(metadata, dict) else {}
+    currency = str(transaction.get("currency") or "").strip().upper()
+    return currency not in _ADMIN_STATISTICS_FIAT_CURRENCIES or any(
+        metadata.get(key)
+        for key in (
+            "catalog_asset_id", "asset_code", "coin", "crypto", "network",
+        )
+    )
+
+
+def _admin_statistics_currency_xof_rate(
+        currency: str, conversion_rates: dict) -> Optional[Decimal]:
+    code = str(currency or "").strip().upper()
+    if code == "XOF":
+        return Decimal("1")
+    try:
+        direct = Decimal(str(conversion_rates.get(f"{code}_XOF")))
+    except (InvalidOperation, TypeError, ValueError):
+        direct = Decimal("0")
+    if direct.is_finite() and direct > 0:
+        return direct
+    try:
+        reverse = Decimal(str(conversion_rates.get(f"XOF_{code}")))
+    except (InvalidOperation, TypeError, ValueError):
+        reverse = Decimal("0")
+    if reverse.is_finite() and reverse > 0:
+        return Decimal("1") / reverse
+    return None
+
+
+def _admin_statistics_volume_in_xof(
+        transaction: dict, conversion_rates: dict) -> tuple:
+    metadata = _admin_statistics_metadata(transaction)
+    currency = str(
+        transaction.get("currency") or metadata.get("currency") or ""
+    ).strip().upper()
+    amount_value = transaction.get("amount")
+    try:
+        amount = abs(_admin_statistics_decimal(amount_value))
+    except ValueError:
+        return None, currency or "INCONNUE"
+
+    if str(transaction.get("type") or "").strip().lower() == "exchange":
+        destination = str(metadata.get("to_currency") or "").strip().upper()
+        if destination:
+            try:
+                received = abs(_admin_statistics_decimal(metadata.get("received")))
+            except ValueError:
+                received = amount
+            amount, currency = received, destination
+
+    if currency in _ADMIN_STATISTICS_FIAT_CURRENCIES or currency == "USDT":
+        rate = _admin_statistics_currency_xof_rate(currency, conversion_rates)
+        return (amount * rate, currency) if rate is not None else (None, currency)
+
+    # Crypto ledger rows retain the settlement-time USDT equivalent. Prefer
+    # that snapshot; never infer historical transaction values from a live
+    # crypto market price.
+    usdt_amount = None
+    for key in (
+        "amount_net_usdt", "total_debit_usdt", "amount_gross_usdt",
+        "amount_usdt",
+    ):
+        if metadata.get(key) is None:
+            continue
+        try:
+            usdt_amount = abs(_admin_statistics_decimal(metadata[key]))
+            break
+        except ValueError:
+            continue
+    if usdt_amount is None:
+        try:
+            usdt_rate = _admin_statistics_decimal(metadata.get("usdt_rate"))
+            if usdt_rate > 0:
+                usdt_amount = amount * usdt_rate
+        except ValueError:
+            pass
+    xof_rate = _admin_statistics_currency_xof_rate(
+        "USDT", conversion_rates)
+    if usdt_amount is not None and xof_rate is not None:
+        return usdt_amount * xof_rate, "USDT"
+    return None, currency or "INCONNUE"
+
+
+def _aggregate_admin_statistics_top_countries(
+        rows: list, conversion_rates: dict, limit: int = 8) -> list:
+    """Rank this month's transaction activity and report volumes in XOF."""
+    supported_types = {
+        "deposit", "deposit_in", "payin", "withdrawal", "payout",
+        "transfer", "exchange", "link_payment", "payment",
+    }
+    totals = {}
+    for row in rows:
+        transaction = _admin_statistics_transaction_document(row)
+        if not transaction:
+            continue
+        transaction_type = str(
+            transaction.get("type") or "").strip().lower()
+        if transaction_type not in supported_types:
+            continue
+        metadata = _admin_statistics_metadata(transaction)
+        direction = str(transaction.get("direction") or "").lower()
+        transfer_type = str(
+            metadata.get("transfer_type")
+            or transaction.get("transfer_type") or ""
+        ).lower()
+        if transaction_type == "transfer" and transfer_type == "biz_to_biz" \
+                and direction in {"in", "credit"}:
+            # Count a wallet-to-wallet transfer once, not once per ledger leg.
+            continue
+
+        country_code, country_label = _admin_statistics_transaction_country(
+            transaction, row.get("account_country"))
+        country = totals.setdefault(country_code, {
+            "country_code": country_code,
+            "country": country_label,
+            "transaction_count": 0,
+            "_volume_xof": Decimal("0"),
+            "_unconverted": {},
+        })
+        country["transaction_count"] += 1
+
+        status = str(transaction.get("status") or "").strip().lower()
+        if status not in _ADMIN_STATISTICS_SUCCESS_STATUSES:
+            continue
+        volume_xof, source_currency = _admin_statistics_volume_in_xof(
+            transaction, conversion_rates)
+        if volume_xof is None:
+            try:
+                native_amount = abs(_admin_statistics_decimal(
+                    transaction.get("amount")))
+            except ValueError:
+                native_amount = Decimal("0")
+            if native_amount:
+                country["_unconverted"][source_currency] = (
+                    country["_unconverted"].get(
+                        source_currency, Decimal("0")) + native_amount)
+            continue
+        country["_volume_xof"] += volume_xof
+
+    ordered = sorted(
+        totals.values(),
+        key=lambda row: (-row["transaction_count"], row["country_code"]),
+    )[:max(0, min(int(limit), 8))]
+    return [{
+        "country_code": row["country_code"],
+        "country": row["country"],
+        "transaction_count": row["transaction_count"],
+        "volume_xof": float(row["_volume_xof"]),
+        "unconverted_volume_by_currency": [
+            {"currency": currency, "volume": float(amount)}
+            for currency, amount in sorted(row["_unconverted"].items())
+        ],
+    } for row in ordered]
+
+
+def _admin_statistics_margin_category(transaction: dict) -> Optional[str]:
+    metadata = _admin_statistics_metadata(transaction)
+    transaction_type = str(
+        transaction.get("type") or "").strip().lower()
+    crypto = _admin_statistics_crypto_transaction(transaction, metadata)
+
+    if transaction_type == "exchange":
+        return "conversion"
+    if transaction_type in {"deposit", "deposit_in", "payin"}:
+        source = str(metadata.get("source") or "").strip().lower()
+        if (source in {"link_payment", "payment_link"}
+                or metadata.get("link_id") or metadata.get("link_payment_id")):
+            return "link_payment_crypto" if crypto else "link_payment_mobile_money"
+        is_api = (
+            source in {"merchant_api", "integration_api"}
+            or bool(metadata.get("merchant_payment_id"))
+            or str(metadata.get("idempotency_key") or "").startswith("btpi_")
+            or bool(metadata.get("integration_reference"))
+        )
+        if is_api:
+            return "api_payment_crypto" if crypto else "api_payment_mobile_money"
+        return "deposit_crypto" if crypto else "deposit_mobile_money"
+    if transaction_type in {"withdrawal", "payout"}:
+        return "withdrawal_crypto" if crypto else "withdrawal_mobile_money"
+    if transaction_type == "transfer":
+        transfer_type = str(
+            metadata.get("transfer_type")
+            or transaction.get("transfer_type") or ""
+        ).strip().lower()
+        if transfer_type == "biz_to_crypto":
+            return "transfer_crypto"
+        if transfer_type == "biz_to_mobile":
+            return "transfer_mobile_money"
+    if transaction_type == "link_payment":
+        return "link_payment_crypto" if crypto else "link_payment_mobile_money"
+    if transaction_type == "payment":
+        return "api_payment_crypto" if crypto else "api_payment_mobile_money"
+    return None
+
+
+def _admin_statistics_margin_value(transaction: dict) -> tuple:
+    metadata = _admin_statistics_metadata(transaction)
+    currency = str(transaction.get("currency") or "").strip().upper()
+    try:
+        platform_fee = _admin_statistics_decimal(metadata.get("platform_fee"))
+    except ValueError:
+        return None, None
+
+    if currency not in _ADMIN_STATISTICS_FIAT_CURRENCIES | {"USDT"}:
+        if metadata.get("platform_fee_usdt") is not None:
+            try:
+                return (
+                    "USDT",
+                    _admin_statistics_decimal(metadata["platform_fee_usdt"]),
+                )
+            except ValueError:
+                pass
+        try:
+            usdt_rate = _admin_statistics_decimal(metadata.get("usdt_rate"))
+            if usdt_rate > 0:
+                return "USDT", platform_fee * usdt_rate
+        except ValueError:
+            pass
+        # No settlement-rate snapshot: retain the native fee rather than
+        # silently converting it using today's crypto rate.
+        return currency or "INCONNUE", platform_fee
+    return currency or "INCONNUE", platform_fee
+
+
+def _aggregate_admin_statistics_margins(rows: list) -> dict:
+    categories = {
+        key: {"count": 0, "_amounts": {}}
+        for key in _ADMIN_STATISTICS_MARGIN_CATEGORY_ORDER
+    }
+    total_by_currency = {}
+    for row in rows:
+        transaction = _admin_statistics_transaction_document(row)
+        if not transaction or str(
+                transaction.get("status") or "").strip().lower() \
+                not in {"completed", "paid"}:
+            continue
+        metadata = _admin_statistics_metadata(transaction)
+        if metadata.get("platform_fee") is None:
+            continue
+        category_key = _admin_statistics_margin_category(transaction)
+        if not category_key:
+            continue
+        currency, amount = _admin_statistics_margin_value(transaction)
+        if currency is None or amount is None or amount == 0:
+            continue
+        category = categories[category_key]
+        category["count"] += 1
+        category["_amounts"][currency] = (
+            category["_amounts"].get(currency, Decimal("0")) + amount)
+        total_by_currency[currency] = (
+            total_by_currency.get(currency, Decimal("0")) + amount)
+
+    return {
+        "categories": {
+            key: {
+                "label": _ADMIN_STATISTICS_MARGIN_CATEGORY_LABELS[key],
+                "count": value["count"],
+                "amounts": [
+                    {"currency": currency, "amount": float(amount)}
+                    for currency, amount in sorted(value["_amounts"].items())
+                ],
+            }
+            for key, value in categories.items()
+        },
+        "total_by_currency": [
+            {"currency": currency, "amount": float(amount)}
+            for currency, amount in sorted(total_by_currency.items())
+        ],
+    }
+
+
+def _admin_statistics_wallet_fields() -> dict:
+    fields = {
+        "balance_xof": {"kind": "fiat", "currency": "XOF"},
+        "balance_xaf": {"kind": "fiat", "currency": "XAF"},
+        "balance_usdt": {
+            "kind": "crypto", "currency": "USDT",
+            "coin": "USDT", "network": None,
+        },
+    }
+    for spec in EASY_CHANGE_ASSET_SPECS:
+        field = _crypto_wallet_field(spec)
+        if field:
+            fields[field] = {
+                "kind": "crypto",
+                "currency": spec["id"],
+                "coin": spec["coin"],
+                "network": spec["network_code"],
+            }
+    return fields
+
+
+async def _admin_statistics_user_wallet_totals() -> dict:
+    fields = _admin_statistics_wallet_fields()
+    collection = db.users
+    store = getattr(collection, "store", None)
+    pool = getattr(store, "pool", None)
+    totals = {field: Decimal("0") for field in fields}
+    if pool is not None:
+        expressions = []
+        numeric_pattern = (
+            r"^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$"
+        )
+        for field in fields:
+            if not re.fullmatch(r"[a-z0-9_]+", field):
+                raise ValueError("Invalid wallet balance field")
+            value = f"document ->> '{field}'"
+            expressions.append(
+                f"""COALESCE(SUM(CASE
+                    WHEN {value} ~ '{numeric_pattern}'
+                    THEN ({value})::numeric
+                    ELSE 0::numeric
+                END), 0) AS "{field}" """
+            )
+        sql = (
+            "SELECT " + ", ".join(expressions)
+            + " FROM document_store WHERE collection = $1"
+        )
+        row = await pool.fetchrow(sql, "users")
+        if row:
+            totals = {
+                field: _admin_statistics_decimal(row[field] or 0)
+                for field in fields
+            }
+        return totals
+
+    projection = {"_id": 0, **{field: 1 for field in fields}}
+    async for user in collection.find({}, projection):
+        if not isinstance(user, dict):
+            continue
+        for field in fields:
+            try:
+                totals[field] += _admin_statistics_decimal(
+                    user.get(field, 0) or 0)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid user wallet balance in statistics")
+    return totals
+
+
+def _build_admin_statistics_wallet_balances(
+        totals: dict, platform_config: dict, updated_at: Optional[str] = None) -> dict:
+    conversion_rates = platform_config.get("conversion_rates") or {}
+    crypto_rates = platform_config.get("crypto_usdt_rates") or {}
+    fields = _admin_statistics_wallet_fields()
+    wallet_rows = []
+    missing_rates = []
+    total_xof = Decimal("0")
+    crypto_xof = Decimal("0")
+
+    for field, description in fields.items():
+        balance = _admin_statistics_decimal(totals.get(field, 0) or 0)
+        if balance == 0:
+            continue
+        if description["kind"] == "fiat":
+            rate = _admin_statistics_currency_xof_rate(
+                description["currency"], conversion_rates)
+            equivalent = balance * rate if rate is not None else None
+        else:
+            configured_rate = _configured_crypto_usdt_rate(
+                platform_config, description["coin"])
+            coin_rate = (
+                Decimal(str(configured_rate))
+                if configured_rate is not None else Decimal("0"))
+            xof_rate = _admin_statistics_currency_xof_rate(
+                "USDT", conversion_rates)
+            rate = coin_rate * xof_rate if coin_rate > 0 and xof_rate else None
+            equivalent = balance * rate if rate is not None else None
+
+        if equivalent is None:
+            missing_rates.append({
+                "currency": description["currency"],
+                "coin": description.get("coin"),
+                "network": description.get("network"),
+            })
+        else:
+            total_xof += equivalent
+            if description["kind"] == "crypto":
+                crypto_xof += equivalent
+        wallet_rows.append({
+            **description,
+            "balance": float(balance),
+            "xof_equivalent": (
+                float(equivalent) if equivalent is not None else None),
+        })
+
+    return {
+        "total_xof_equivalent": float(total_xof),
+        "crypto_xof_equivalent": float(crypto_xof),
+        "conversion_complete": not missing_rates,
+        "missing_rates": missing_rates,
+        "wallets": wallet_rows,
+        "updated_at": updated_at or now_iso(),
+        "refresh_seconds": _ADMIN_STATISTICS_WALLET_CACHE_SECONDS,
+    }
+
+
+async def _cached_admin_statistics_wallet_balances(
+        force_refresh: bool = False) -> dict:
+    now = datetime.now(timezone.utc).timestamp()
+    if (not force_refresh
+            and _ADMIN_STATISTICS_WALLET_CACHE["expires_at"] > now):
+        return copy.deepcopy(
+            _ADMIN_STATISTICS_WALLET_CACHE["snapshot"] or {})
+    async with _ADMIN_STATISTICS_WALLET_CACHE_LOCK:
+        now = datetime.now(timezone.utc).timestamp()
+        if (not force_refresh
+                and _ADMIN_STATISTICS_WALLET_CACHE["expires_at"] > now):
+            return copy.deepcopy(
+                _ADMIN_STATISTICS_WALLET_CACHE["snapshot"] or {})
+        try:
+            totals, platform_config = await asyncio.gather(
+                _admin_statistics_user_wallet_totals(),
+                get_platform_config(),
+            )
+            snapshot = _build_admin_statistics_wallet_balances(
+                totals, platform_config, now_iso())
+        except Exception as exc:
+            logger.error(
+                "Unable to aggregate customer wallet statistics (%s)",
+                type(exc).__name__)
+            raise HTTPException(
+                503, "Les soldes des wallets sont temporairement indisponibles.")
+        _ADMIN_STATISTICS_WALLET_CACHE["snapshot"] = snapshot
+        _ADMIN_STATISTICS_WALLET_CACHE["expires_at"] = (
+            datetime.now(timezone.utc).timestamp()
+            + _ADMIN_STATISTICS_WALLET_CACHE_SECONDS)
+        return copy.deepcopy(snapshot)
+
+
+@api.get("/admin/statistics/dashboard")
+async def admin_statistics_dashboard(admin=Depends(get_admin)):
+    """Return the current month's country activity and platform margins."""
+    end = datetime.now(timezone.utc)
+    start = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    try:
+        transaction_rows, platform_config = await asyncio.gather(
+            _admin_statistics_transaction_rows(start, end),
+            get_platform_config(),
+        )
+        conversion_rates = platform_config.get("conversion_rates") or {}
+        countries = _aggregate_admin_statistics_top_countries(
+            transaction_rows, conversion_rates)
+        margins = _aggregate_admin_statistics_margins(transaction_rows)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Unable to aggregate monthly admin statistics (%s)",
+            type(exc).__name__)
+        raise HTTPException(
+            503, "Les statistiques mensuelles sont temporairement indisponibles.")
+    return {
+        "period": "month",
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "generated_at": now_iso(),
+        "top_countries": countries,
+        "margins": margins,
+    }
+
+
+@api.get("/admin/statistics/wallet-balances")
+async def admin_statistics_wallet_balances(
+        refresh: bool = Query(False),
+        admin=Depends(get_admin)):
+    """Return all customers' fiat and crypto wallet balances in XOF."""
+    return await _cached_admin_statistics_wallet_balances(
+        force_refresh=refresh)
 
 
 async def require_admin_recent_auth(

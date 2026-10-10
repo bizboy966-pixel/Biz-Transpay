@@ -3,8 +3,10 @@ name: Provider treasury by country
 description: Defines the balance source and currency grouping for admin country-level treasury reporting.
 ---
 
-In Biz-transPay, “available balance” by country means the combined treasury balances actually reported by payment providers in that country, not customer wallet balances. Show each currency separately; do not add or rank amounts across currencies without an explicit conversion rate. Make missing providers and estimated amounts visible.
+For dedicated provider-liquidity and country-treasury views, “available balance” means the combined treasury balances actually reported by payment providers in that country, not customer wallet balances. Keep currencies separate unless a conversion rate is explicitly configured, and make missing providers or estimates visible.
 
-**Why:** The user specified provider treasury as the source. Provider availability varies, so silently substituting customer funds or implying complete, exact balances would misrepresent liquidity.
+The Admin Statistics dashboard's “Solde total disponible — Tous les comptes utilisateurs” is an explicit exception: it totals customer XOF, XAF, and crypto wallets across all accounts and presents their equivalent in XOF using configured conversion rates. If a held asset has no configured rate, show the calculable subtotal as partial and identify the missing rate; never substitute provider treasury.
 
-**How to apply:** For country-level admin statistics and liquidity views, use only live provider balance data, group totals by currency, rank within each currency, and state when provider coverage is incomplete or estimated.
+**Why:** The user first selected provider treasury for country-level liquidity, then specified that this dashboard card must instead represent every user's own wallet balances. Mixing the two would misstate both provider liquidity and customer funds.
+
+**How to apply:** Keep provider treasury data in provider-specific liquidity views. For the all-user Statistics card, aggregate customer wallets, convert to XOF only with configured rates, refresh at the requested cadence, and state when the result is partial.
