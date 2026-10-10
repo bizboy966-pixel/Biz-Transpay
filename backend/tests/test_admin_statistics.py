@@ -315,9 +315,8 @@ def test_monthly_margins_are_split_by_operation_and_payment_channel():
     assert categories["deposit_crypto"]["amounts"] == [
         {"currency": "USDT", "amount": .5},
     ]
-    assert categories["withdrawal_mobile_money"]["amounts"] == [
-        {"currency": "XAF", "amount": 4.0},
-    ]
+    assert "withdrawal_mobile_money" not in categories
+    assert "withdrawal_crypto" not in categories
     assert categories["transfer_mobile_money"]["amounts"] == [
         {"currency": "XOF", "amount": 5.0},
     ]
@@ -330,9 +329,6 @@ def test_monthly_margins_are_split_by_operation_and_payment_channel():
     assert categories["link_payment_mobile_money"]["amounts"] == [
         {"currency": "XAF", "amount": 3.0},
     ]
-    assert categories["withdrawal_crypto"]["amounts"] == [
-        {"currency": "USDT", "amount": .1},
-    ]
     assert categories["api_payment_mobile_money"]["amounts"] == [
         {"currency": "XOF", "amount": 13.0},
     ]
@@ -343,9 +339,59 @@ def test_monthly_margins_are_split_by_operation_and_payment_channel():
         {"currency": "XAF", "amount": 2.0},
     ]
     assert result["total_by_currency"] == [
-        {"currency": "USDT", "amount": 2.3},
-        {"currency": "XAF", "amount": 9.0},
+        {"currency": "USDT", "amount": 2.2},
+        {"currency": "XAF", "amount": 5.0},
         {"currency": "XOF", "amount": 33.0},
+    ]
+
+
+def test_api_tagged_mobile_money_deposit_is_counted_as_api_margin():
+    result = server._aggregate_admin_statistics_margins([{
+        "transaction_document": {
+            "type": "deposit", "status": "completed", "amount": 500,
+            "currency": "XOF",
+            "metadata": {
+                "payment_source": "integration_api",
+                "platform_fee": 8,
+            },
+        },
+    }])
+
+    assert result["categories"]["api_payment_mobile_money"]["amounts"] == [
+        {"currency": "XOF", "amount": 8.0},
+    ]
+    assert result["categories"]["deposit_mobile_money"]["amounts"] == []
+
+
+def test_legacy_api_deposit_rows_are_reclassified_for_margin_statistics():
+    rows = [
+        {"transaction_document": {
+            "id": "mbiyo-deposit-legacy-api",
+            "type": "deposit", "status": "completed", "amount": 500,
+            "currency": "XOF", "metadata": {"platform_fee": 6},
+        }},
+        {"transaction_document": {
+            "id": "izipay-deposit-legacy-api",
+            "type": "deposit", "status": "completed", "amount": .01,
+            "currency": "ETH.ETH",
+            "metadata": {
+                "operation_id": "izipay:deposit:legacy-crypto-api",
+                "platform_fee": .01, "platform_fee_usdt": .4,
+            },
+        }},
+    ]
+
+    server._mark_integration_api_statistics_rows(rows, {
+        "transaction_ids": {"mbiyo-deposit-legacy-api"},
+        "operation_ids": {"izipay:deposit:legacy-crypto-api"},
+    })
+    result = server._aggregate_admin_statistics_margins(rows)
+
+    assert result["categories"]["api_payment_mobile_money"]["amounts"] == [
+        {"currency": "XOF", "amount": 6.0},
+    ]
+    assert result["categories"]["api_payment_crypto"]["amounts"] == [
+        {"currency": "USDT", "amount": .4},
     ]
 
 
@@ -431,9 +477,14 @@ def test_monthly_dashboard_route_returns_country_and_margin_sections(
     async def platform_config():
         return {"conversion_rates": {"USDT_XOF": 600}}
 
+    async def api_payment_markers(**_kwargs):
+        return {"transaction_ids": set(), "operation_ids": set()}
+
     monkeypatch.setattr(
         server, "_admin_statistics_transaction_rows", transaction_rows)
     monkeypatch.setattr(server, "get_platform_config", platform_config)
+    monkeypatch.setattr(
+        server, "_integration_api_payment_ledger_markers", api_payment_markers)
 
     result = asyncio.run(
         server.admin_statistics_dashboard(admin={"role": "admin"}))

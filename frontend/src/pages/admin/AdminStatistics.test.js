@@ -94,6 +94,8 @@ describe('AdminStatistics', () => {
     expect(container.textContent).toContain('Paiements API · Mobile Money');
     expect(container.textContent).toContain('Paiements API · Crypto');
     expect(container.textContent).toContain('Conversions');
+    expect(container.textContent).not.toContain('Retraits · Mobile Money');
+    expect(container.textContent).not.toContain('Retraits · Crypto');
     expect(container.textContent).not.toContain('Tendances des opérations');
     expect(container.textContent).not.toContain('Soldes et activité par pays');
     expect(container.textContent).not.toContain('Prestataires disponibles');

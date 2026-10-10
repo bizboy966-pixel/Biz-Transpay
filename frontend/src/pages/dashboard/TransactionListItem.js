@@ -32,6 +32,19 @@ export function dateLabel(value) {
 }
 
 export function typeLabel(tx) {
+  const metadata = tx.metadata || {};
+  const source = String(
+    metadata.payment_source || metadata.source || '',
+  ).trim().toLowerCase();
+  if (
+    tx.history_type === 'payment'
+    || (['deposit', 'deposit_in', 'payin'].includes(String(tx.type).toLowerCase())
+      && (
+        ['api', 'integration_api', 'merchant_api'].includes(source)
+        || String(metadata.idempotency_key || '').startsWith('btpi_')
+        || Boolean(metadata.integration_reference || metadata.merchant_payment_id)
+      ))
+  ) return TYPE_LABELS.payment;
   if (tx.type === 'deposit' && tx.direction === 'in') return 'Dépôt reçu';
   if (tx.type === 'withdrawal' && tx.direction === 'out') return 'Retrait envoyé';
   if (tx.type === 'transfer') return tx.direction === 'out' ? 'Transfert envoyé' : 'Transfert reçu';

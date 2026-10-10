@@ -22,6 +22,10 @@ def _matches(document, query):
             if not any(_matches(document, term) for term in expected):
                 return False
             continue
+        if key == "$and":
+            if not all(_matches(document, term) for term in expected):
+                return False
+            continue
         if key == "$nor":
             if any(_matches(document, term) for term in expected):
                 return False
@@ -33,6 +37,22 @@ def _matches(document, query):
                 return False
         elif isinstance(expected, dict) and "$ne" in expected:
             if actual == expected["$ne"]:
+                return False
+        elif isinstance(expected, dict) and "$in" in expected:
+            if actual not in expected["$in"]:
+                return False
+        elif isinstance(expected, dict) and "$nin" in expected:
+            if actual in expected["$nin"]:
+                return False
+        elif isinstance(expected, dict) and "$exists" in expected:
+            if (actual is not None) != expected["$exists"]:
+                return False
+        elif isinstance(expected, dict) and ("$gte" in expected or "$lte" in expected):
+            if actual is None:
+                return False
+            if "$gte" in expected and actual < expected["$gte"]:
+                return False
+            if "$lte" in expected and actual > expected["$lte"]:
                 return False
         elif actual != expected:
             return False
@@ -132,6 +152,7 @@ class _Database:
                 "created_at": "2026-09-25T14:00:00Z",
             },
         ])
+        self.crypto_deposits = _Collection([])
         self.users = _Collection([{
             "id": "owner-1", "email": "owner@example.test",
             "phone": "+22890000000",
@@ -180,6 +201,73 @@ def _list(monkeypatch, **params):
     defaults = {"uid": "owner-1", "type": None, "status": None, "q": None, "limit": 50}
     defaults.update(params)
     return asyncio.run(server.list_transactions(**defaults))
+
+
+def test_payment_filter_separates_api_payins_from_direct_deposits(monkeypatch):
+    database = _Database()
+    database.transactions.documents.extend([
+        {
+            "id": "mbiyo-deposit-api-momo-1", "user_id": "owner-1",
+            "type": "deposit", "direction": "in", "status": "completed",
+            "amount": 500, "currency": "XOF",
+            "created_at": "2026-09-27T12:00:00Z", "metadata": {},
+        },
+        {
+            "id": "crypto-api-deposit-1", "user_id": "owner-1",
+            "type": "deposit", "direction": "in", "status": "completed",
+            "amount": .01, "currency": "ETH.ETH",
+            "created_at": "2026-09-27T11:00:00Z",
+            "metadata": {
+                "operation_id": "izipay:deposit:crypto-api-1",
+                "coin": "ETH", "network": "ERC20",
+            },
+        },
+        {
+            "id": "payment-api-type-1", "user_id": "owner-1",
+            "type": "payment", "direction": "in", "status": "completed",
+            "amount": 750, "currency": "XOF",
+            "created_at": "2026-09-27T10:00:00Z", "metadata": {},
+        },
+    ])
+    database.momo_deposits.documents.append({
+        "id": "api-momo-1", "user_id": "owner-1", "provider": "mbiyo",
+        "status": "approved", "idempotency_key": "btpi_mobile-money-1",
+        "created_at": "2026-09-27T12:00:00Z",
+    })
+    database.crypto_deposits.documents.append({
+        "id": "crypto-api-1", "user_id": "owner-1",
+        "idempotency_key": "btpi_crypto-deposit-1",
+        "created_at": "2026-09-27T11:00:00Z",
+    })
+    monkeypatch.setattr(server, "db", database)
+
+    def list_for(kind):
+        return asyncio.run(server.list_transactions(
+            uid="owner-1", type=kind, status=None, q=None, limit=50,
+        ))
+
+    api_rows = list_for("payment")
+    direct_deposits = list_for("deposit")
+    all_rows = list_for(None)
+    searched_api_rows = asyncio.run(server.list_transactions(
+        uid="owner-1", type="payment", status=None, q="api-momo-1", limit=50,
+    ))
+
+    assert {row["id"] for row in api_rows} == {
+        "mbiyo-deposit-api-momo-1",
+        "crypto-api-deposit-1",
+        "payment-api-type-1",
+    }
+    assert {row["id"] for row in direct_deposits} == {"valid-incoming"}
+    assert [row["id"] for row in searched_api_rows] == [
+        "mbiyo-deposit-api-momo-1",
+    ]
+    assert next(row for row in api_rows if row["id"] == "mbiyo-deposit-api-momo-1")[
+        "history_type"
+    ] == "payment"
+    assert next(row for row in all_rows if row["id"] == "crypto-api-deposit-1")[
+        "history_type"
+    ] == "payment"
 
 
 def test_default_history_hides_incoming_deposits_without_completion(monkeypatch):

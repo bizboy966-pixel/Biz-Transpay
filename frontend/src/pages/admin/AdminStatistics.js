@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowLeftRight,
-  ArrowUpFromLine,
   BarChart3,
   Coins,
   CreditCard,
@@ -18,12 +17,10 @@ const REFRESH_INTERVAL = 60_000;
 
 const MARGIN_CATEGORIES = [
   { key: 'deposit_mobile_money', label: 'Dépôts · Mobile Money', icon: ArrowDownToLine, tone: 'green' },
-  { key: 'withdrawal_mobile_money', label: 'Retraits · Mobile Money', icon: ArrowUpFromLine, tone: 'orange' },
   { key: 'transfer_mobile_money', label: 'Transferts · Mobile Money', icon: ArrowLeftRight, tone: 'blue' },
   { key: 'link_payment_mobile_money', label: 'Liens de paiement · Mobile Money', icon: Link2, tone: 'purple' },
   { key: 'api_payment_mobile_money', label: 'Paiements API · Mobile Money', icon: CreditCard, tone: 'teal' },
   { key: 'deposit_crypto', label: 'Dépôts · Crypto', icon: Coins, tone: 'green' },
-  { key: 'withdrawal_crypto', label: 'Retraits · Crypto', icon: ArrowUpFromLine, tone: 'orange' },
   { key: 'transfer_crypto', label: 'Transferts · Crypto', icon: ArrowLeftRight, tone: 'blue' },
   { key: 'link_payment_crypto', label: 'Liens de paiement · Crypto', icon: Link2, tone: 'purple' },
   { key: 'api_payment_crypto', label: 'Paiements API · Crypto', icon: CreditCard, tone: 'teal' },

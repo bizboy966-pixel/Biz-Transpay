@@ -10106,6 +10106,10 @@ async def _credit_momo_deposit(d: dict) -> None:
         "amount_net": net, "method": "mobile_money",
         "receipt_url": d.get("receipt_url"),
     }
+    if (str(d.get("idempotency_key") or "").startswith("btpi_")
+            or str(d.get("source") or "").strip().lower()
+            in {"merchant_api", "integration_api"}):
+        metadata["payment_source"] = "integration_api"
     if d.get("source") != "link_payment":
         await _upsert_momo_ledger(
             d, amount=net, currency=currency,
@@ -11854,6 +11858,9 @@ async def _settle_izipay_payment(
                 "amount_net_currency": wallet_spec["id"],
                 "amount_net_usdt": round(net * rate, 6),
                 "source": source,
+                **({"payment_source": "integration_api"}
+                   if str(d.get("idempotency_key") or "").startswith("btpi_")
+                   else {}),
             },
             operation_id=operation_id,
         )
@@ -14028,6 +14035,130 @@ def _failed_momo_deposit_history_row(deposit: dict) -> dict:
     }
 
 
+_API_PAYMENT_DEPOSIT_TYPES = ("deposit", "deposit_in", "payin")
+_API_PAYMENT_SOURCE_VALUES = ("api", "integration_api", "merchant_api")
+
+
+def _api_payment_deposit_marker_terms(
+        transaction_ids=None, operation_ids=None) -> list:
+    deposit_type = {"type": {"$in": list(_API_PAYMENT_DEPOSIT_TYPES)}}
+    terms = [
+        {**deposit_type, "metadata.payment_source": {"$in": list(
+            _API_PAYMENT_SOURCE_VALUES)}},
+        {**deposit_type, "metadata.source": {"$in": list(
+            _API_PAYMENT_SOURCE_VALUES)}},
+        {**deposit_type, "metadata.idempotency_key": {"$regex": "^btpi_"}},
+        {**deposit_type, "metadata.integration_reference": {"$exists": True}},
+        {**deposit_type, "metadata.merchant_payment_id": {"$exists": True}},
+    ]
+    if transaction_ids:
+        terms.append({**deposit_type, "id": {"$in": list(transaction_ids)}})
+    if operation_ids:
+        terms.append({
+            **deposit_type, "metadata.operation_id": {"$in": list(operation_ids)},
+        })
+    return terms
+
+
+def _is_api_payment_transaction(transaction: dict) -> bool:
+    transaction_type = str(transaction.get("type") or "").strip().lower()
+    if transaction_type == "payment":
+        return True
+    if transaction_type not in _API_PAYMENT_DEPOSIT_TYPES:
+        return False
+    metadata = transaction.get("metadata")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    if not isinstance(metadata, dict):
+        return False
+    source = str(
+        metadata.get("payment_source") or metadata.get("source") or ""
+    ).strip().lower()
+    return (
+        source in _API_PAYMENT_SOURCE_VALUES
+        or str(metadata.get("idempotency_key") or "").startswith("btpi_")
+        or bool(metadata.get("integration_reference"))
+        or bool(metadata.get("merchant_payment_id"))
+    )
+
+
+async def _integration_api_payment_ledger_markers(
+        user_id: Optional[str] = None, start: Optional[datetime] = None,
+        end: Optional[datetime] = None, limit: Optional[int] = None) -> dict:
+    """Resolve API pay-ins to ledger rows, including historical untagged rows."""
+    query: dict = {}
+    if user_id:
+        query["user_id"] = user_id
+    if start or end:
+        created_range = {}
+        if start:
+            created_range["$gte"] = start.isoformat()
+        if end:
+            created_range["$lte"] = end.isoformat()
+        query["created_at"] = created_range
+
+    momo_query = {
+        **query,
+        "$or": [
+            {"idempotency_key": {"$regex": "^btpi_"}},
+            {"source": {"$in": list(_API_PAYMENT_SOURCE_VALUES)}},
+        ],
+    }
+    momo_cursor = db.momo_deposits.find(momo_query, {
+        "_id": 0, "id": 1, "provider": 1, "source": 1,
+        "idempotency_key": 1, "created_at": 1,
+    })
+    crypto_cursor = db.crypto_deposits.find({
+        **query, "idempotency_key": {"$regex": "^btpi_"},
+    }, {"_id": 0, "id": 1, "created_at": 1})
+    if limit is not None:
+        momo_cursor = momo_cursor.sort("created_at", -1)
+        crypto_cursor = crypto_cursor.sort("created_at", -1)
+    momo_docs, crypto_docs = await asyncio.gather(
+        momo_cursor.to_list(limit), crypto_cursor.to_list(limit))
+
+    transaction_ids = set()
+    operation_ids = set()
+    for deposit in momo_docs:
+        deposit_id = str(deposit.get("id") or "")
+        source = str(deposit.get("source") or "").strip().lower()
+        is_api = (
+            str(deposit.get("idempotency_key") or "").startswith("btpi_")
+            or source in _API_PAYMENT_SOURCE_VALUES
+        )
+        if not deposit_id or not is_api or source in {"link_payment", "payment_link"}:
+            continue
+        provider = str(deposit.get("provider") or "paydunya").strip().lower()
+        transaction_ids.add(f"{provider}-deposit-{deposit_id}")
+
+    for deposit in crypto_docs:
+        deposit_id = str(deposit.get("id") or "")
+        if deposit_id:
+            operation_ids.add(f"izipay:deposit:{deposit_id}")
+    return {
+        "transaction_ids": transaction_ids,
+        "operation_ids": operation_ids,
+    }
+
+
+def _mark_integration_api_statistics_rows(rows: list, markers: dict) -> None:
+    transaction_ids = markers.get("transaction_ids") or set()
+    operation_ids = markers.get("operation_ids") or set()
+    for row in rows:
+        transaction = _admin_statistics_transaction_document(row)
+        if not transaction:
+            continue
+        metadata = _admin_statistics_metadata(transaction)
+        if (transaction.get("id") in transaction_ids
+                or metadata.get("operation_id") in operation_ids):
+            transaction["metadata"] = {
+                **metadata, "payment_source": "integration_api",
+            }
+
+
 @api.get("/transactions")
 async def list_transactions(
     uid: str = Depends(get_current_user_id),
@@ -14045,8 +14176,24 @@ async def list_transactions(
             "status": {"$ne": "completed"},
         }],
     }
-    if type:
-        query["type"] = type
+    filters = []
+    api_payment_markers = {"transaction_ids": set(), "operation_ids": set()}
+    if type in (None, "deposit", "payment"):
+        api_payment_markers = await _integration_api_payment_ledger_markers(
+            user_id=uid, limit=max(1, min(int(limit), 1000)))
+    api_payment_terms = _api_payment_deposit_marker_terms(
+        api_payment_markers["transaction_ids"],
+        api_payment_markers["operation_ids"],
+    )
+    if type == "payment":
+        filters.append({"$or": [{"type": "payment"}, *api_payment_terms]})
+    elif type == "deposit":
+        filters.extend([
+            {"type": "deposit"},
+            {"$nor": api_payment_terms},
+        ])
+    elif type:
+        filters.append({"type": type})
     if status:
         query["status"] = status
     needle = str(q or "").strip()
@@ -14114,11 +14261,27 @@ async def list_transactions(
         owner_matches = any(needle.lower() in value for value in owner_values)
         if owner_matches:
             search_terms.insert(0, {"user_id": uid})
-        query["$or"] = search_terms
+        filters.append({"$or": search_terms})
         failed_search_terms = _failed_incoming_deposit_search_terms(needle, rx)
         if owner_matches:
             failed_search_terms.append({"user_id": uid})
+    if filters:
+        query["$and"] = filters
     docs = await db.transactions.find(query, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    api_payment_ids = api_payment_markers["transaction_ids"]
+    api_payment_operations = api_payment_markers["operation_ids"]
+    for doc in docs:
+        metadata = doc.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (TypeError, ValueError):
+                metadata = {}
+        if (_is_api_payment_transaction(doc)
+                or doc.get("id") in api_payment_ids
+                or (isinstance(metadata, dict)
+                    and metadata.get("operation_id") in api_payment_operations)):
+            doc["history_type"] = "payment"
     # Raw Mobile Money deposit attempts are kept separately from the credited
     # ledger. Include failed attempts only when a supported search identifies
     # them; never let a status/type filter alone expose them in the default list.
@@ -15815,8 +15978,6 @@ _ADMIN_STATISTICS_FIAT_CURRENCIES = frozenset({
 _ADMIN_STATISTICS_MARGIN_CATEGORY_ORDER = (
     "deposit_mobile_money",
     "deposit_crypto",
-    "withdrawal_mobile_money",
-    "withdrawal_crypto",
     "transfer_mobile_money",
     "transfer_crypto",
     "link_payment_mobile_money",
@@ -15828,8 +15989,6 @@ _ADMIN_STATISTICS_MARGIN_CATEGORY_ORDER = (
 _ADMIN_STATISTICS_MARGIN_CATEGORY_LABELS = {
     "deposit_mobile_money": "Dépôts · Mobile Money",
     "deposit_crypto": "Dépôts · Crypto",
-    "withdrawal_mobile_money": "Retraits · Mobile Money",
-    "withdrawal_crypto": "Retraits · Crypto",
     "transfer_mobile_money": "Transferts · Mobile Money",
     "transfer_crypto": "Transferts · Crypto",
     "link_payment_mobile_money": "Liens de paiement · Mobile Money",
@@ -16041,6 +16200,8 @@ def _admin_statistics_margin_category(transaction: dict) -> Optional[str]:
             return "link_payment_crypto" if crypto else "link_payment_mobile_money"
         is_api = (
             source in {"merchant_api", "integration_api"}
+            or str(metadata.get("payment_source") or "").strip().lower()
+            in {"api", "merchant_api", "integration_api"}
             or bool(metadata.get("merchant_payment_id"))
             or str(metadata.get("idempotency_key") or "").startswith("btpi_")
             or bool(metadata.get("integration_reference"))
@@ -16048,8 +16209,6 @@ def _admin_statistics_margin_category(transaction: dict) -> Optional[str]:
         if is_api:
             return "api_payment_crypto" if crypto else "api_payment_mobile_money"
         return "deposit_crypto" if crypto else "deposit_mobile_money"
-    if transaction_type in {"withdrawal", "payout"}:
-        return "withdrawal_crypto" if crypto else "withdrawal_mobile_money"
     if transaction_type == "transfer":
         transfer_type = str(
             metadata.get("transfer_type")
@@ -16307,10 +16466,13 @@ async def admin_statistics_dashboard(admin=Depends(get_admin)):
     end = datetime.now(timezone.utc)
     start = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     try:
-        transaction_rows, platform_config = await asyncio.gather(
+        transaction_rows, platform_config, api_payment_markers = await asyncio.gather(
             _admin_statistics_transaction_rows(start, end),
             get_platform_config(),
+            _integration_api_payment_ledger_markers(start=start, end=end),
         )
+        _mark_integration_api_statistics_rows(
+            transaction_rows, api_payment_markers)
         conversion_rates = platform_config.get("conversion_rates") or {}
         countries = _aggregate_admin_statistics_top_countries(
             transaction_rows, conversion_rates)
