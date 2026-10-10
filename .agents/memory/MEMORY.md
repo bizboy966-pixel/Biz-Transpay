@@ -46,5 +46,6 @@
 - [Crypto benefit accounting](crypto-benefit-accounting.md) — report crypto platform fees in USDT using the transaction's stored settlement rate, never a live rate.
 - [PWA installation eligibility](pwa-installability.md) — Chromium needs a meaningful navigation fetch handler for its in-app install prompt; preserve the offline fallback.
 - [FCM delivery errors](firebase-delivery-errors.md) — preserve sanitized per-token FCM codes; remove only registrations marked permanently invalid.
+- [Push subscription lifecycle](push-subscription-lifecycle.md) — an opted-in browser stays registered across logout so push works while signed out and activation is not prompted again.
 - [Client query cache boundaries](client-query-cache-boundaries.md) — scope authenticated cached data by account and invalidate financial views after mutations.
 - [Local dependency mitigations](local-dependency-mitigations.md) — retain truthful package metadata when upstream has no fix; source guards do not clear version-only scans.

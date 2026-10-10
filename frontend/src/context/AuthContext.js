@@ -3,10 +3,9 @@ import api, { refreshBrowserSession } from '../api';
 import { ACTIVE_MOMO_DEPOSIT_KEY } from '../constants/payment';
 import {
   currentPushToken,
-  disableBrowserPush,
   PUSH_OPT_IN_DISMISSED_KEY,
   startBrowserPush,
-} from '@/lib/pushNotifications';
+} from '../lib/pushNotifications';
 
 const AuthCtx = createContext(null);
 
@@ -56,8 +55,8 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
-    // Best effort: remove only this browser's token, never other devices.
-    await disableBrowserPush().catch(() => {});
+    // Keep the opted-in browser registered so push notifications still work
+    // while the user is signed out and do not need to be enabled again.
     await api.post('/auth/logout').catch(() => {});
     sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
     sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
