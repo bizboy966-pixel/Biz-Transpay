@@ -25,7 +25,11 @@ def test_moov_burkina_instructions_are_post_submission_ussd():
 
 
 @pytest.mark.parametrize("outcome", ["accepted", "rejected", "insufficient"])
-def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatch, outcome):
+@pytest.mark.parametrize("phone_number", [
+    "51765664", "+226 51 76 56 64", "00226 51 76 56 64",
+])
+def test_direct_deposit_sends_documented_payload_and_checks_rejection(
+        monkeypatch, outcome, phone_number):
     accepted = outcome == "accepted"
     config = {
         "mode": "live", "enabled": True,
@@ -55,7 +59,7 @@ def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatc
     monkeypatch.setattr(server.paydunya, "_request", provider_request)
     payload = server.MobileMoneyDepositRequest(
         amount=500, currency="XOF", country="BF", operator="moov_bf",
-        phone_number="51765664", full_name="Test Buyer", email="buyer@example.test",
+        phone_number=phone_number, full_name="Test Buyer", email="buyer@example.test",
     )
     request = Request({
         "type": "http", "method": "POST", "scheme": "https",
@@ -86,6 +90,23 @@ def test_direct_deposit_sends_documented_payload_and_checks_rejection(monkeypatc
         "moov_burkina_faso_phone_number": "51765664",
         "moov_burkina_faso_payment_token": "test-invoice",
     }
+    assert collection.insert_one.await_args.args[0]["phone_number"] == "51765664"
+
+
+@pytest.mark.parametrize(("phone_number", "expected"), [
+    ("51765664", "51765664"),
+    ("+226 51 76 56 64", "51765664"),
+    ("00226-51-76-56-64", "51765664"),
+])
+def test_burkina_softpay_accepts_international_or_local_phone(phone_number, expected):
+    assert server.paydunya.normalize_softpay_phone(
+        phone_number, "BF", "moov-burkina") == expected
+
+
+def test_burkina_softpay_rejects_invalid_phone_length_before_provider_call():
+    with pytest.raises(ValueError, match="8 chiffres locaux"):
+        server.paydunya.normalize_softpay_phone(
+            "+226 517 656 6", "BF", "moov-burkina")
 
 
 def test_existing_pending_direct_deposit_gets_corrected_instructions():
@@ -102,6 +123,7 @@ def test_existing_pending_direct_deposit_gets_corrected_instructions():
     (403, "FAILED: Solde client insuffisant", "solde Mobile Money du payeur est insuffisant"),
     (400, "Solde client insuffisant", "solde Mobile Money du payeur est insuffisant"),
     (403, "FAILED: SOLDE  CLIENT\nINSUFFISANT", "solde Mobile Money du payeur est insuffisant"),
+    (403, "Désolé, vous devez fournir un numéro valide du Burkina Faso", "8 chiffres locaux"),
     (403, "Forbidden", "temporairement mal configuré"),
     (401, "Unauthorized", "temporairement mal configuré"),
     (503, "PayDunya credentials are not configured", "temporairement mal configuré"),

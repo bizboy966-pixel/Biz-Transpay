@@ -370,6 +370,80 @@ async def test_public_link_payment_accepts_active_configured_operator(
     assert len(db.link_payments.docs) == 1
 
 
+@pytest.mark.parametrize("phone_number", [
+    "+226 51 76 56 64", "00226 51 76 56 64",
+])
+@run_async
+async def test_public_link_moov_burkina_sends_local_paydunya_phone(
+        monkeypatch, phone_number):
+    db = MemoryDB()
+    db.payment_links.docs.append({
+        "id": "link-bf", "slug": "bf-link", "active": True,
+        "amount": 1000, "amount_type": "fixed", "currency": "XOF",
+        "user_id": "merchant-1", "title": "Test", "fee_bearer": "customer",
+    })
+    monkeypatch.setattr(server, "db", db)
+    operator = {
+        "country": "BF", "code": "moov_bf", "currency": "XOF",
+        "name": "Moov Money Burkina Faso", "active": True,
+        "min": 100, "max": 500000, "endpoint_slug": "moov-burkina",
+    }
+    cfg = {
+        "enabled": True, "mode": "live",
+        "modes": {"softpay_direct": {"enabled": True}},
+        "catalog": [operator],
+    }
+
+    async def value(payload):
+        return payload
+
+    async def no_turnstile(*args):
+        return None
+
+    async def resolve_paydunya(*args, **kwargs):
+        return "paydunya"
+
+    async def no_notify(*args):
+        return None
+
+    async def create_invoice(*args, **kwargs):
+        return {"token": "invoice-bf"}
+
+    submitted_phones = []
+
+    async def softpay(*args, **kwargs):
+        submitted_phones.append(kwargs["phone"])
+        return {"response_code": "00", "reference": "provider-bf"}
+
+    monkeypatch.setattr(server, "_require_turnstile", no_turnstile)
+    monkeypatch.setattr(server, "_resolve_deposit_provider", resolve_paydunya)
+    monkeypatch.setattr(server, "get_paydunya_config",
+                        lambda decrypt=False: value(cfg))
+    monkeypatch.setattr(server, "get_mbiyo_config",
+                        lambda decrypt=False: value({"enabled": False, "catalog": []}))
+    monkeypatch.setattr(server, "get_afribapay_config", disabled_afribapay_config)
+    monkeypatch.setattr(server.paydunya, "create_invoice", create_invoice)
+    monkeypatch.setattr(server.paydunya, "softpay_payment", softpay)
+    monkeypatch.setattr(server, "_notify_integration_link_payment", no_notify)
+
+    request = Request({
+        "type": "http", "method": "POST",
+        "path": "/api/links/pay/mobile-money", "scheme": "https",
+        "headers": [(b"host", b"example.test")], "query_string": b"",
+        "server": ("example.test", 443),
+    })
+    payload = server.LinkPayMoMoRequest(
+        slug="bf-link", full_name="Test Buyer", email="buyer@example.test",
+        country="BF", operator="moov_bf", phone_number=phone_number,
+    )
+
+    result = await server.start_link_payment_momo(payload, request)
+
+    assert result["status"] == "pending"
+    assert submitted_phones == ["51765664"]
+    assert db.momo_deposits.docs[0]["phone_number"] == "51765664"
+
+
 @pytest.mark.parametrize("restriction", ["active", "archived", "hidden"])
 @run_async
 async def test_public_link_payment_keeps_tmoney_restrictions(monkeypatch, restriction):

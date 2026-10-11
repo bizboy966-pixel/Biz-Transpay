@@ -312,6 +312,26 @@ def normalize_togo_phone(phone: str) -> str:
     return digits
 
 
+def normalize_softpay_phone(phone: str, country: str, endpoint_slug: str) -> str:
+    """Normalize Burkina SoftPay MSISDNs to PayDunya's documented local form."""
+    country = str(country or "").strip().upper()
+    endpoint_slug = str(endpoint_slug or "").strip().lower()
+    if country != "BF" or endpoint_slug not in {
+            "moov-burkina", "orange-money-burkina"}:
+        return phone
+    digits = "".join(ch for ch in str(phone or "") if ch in "0123456789")
+    if digits.startswith("00"):
+        digits = digits[2:]
+    dial_code = COUNTRY_DIAL_CODES["BF"]
+    if digits.startswith(dial_code):
+        digits = digits[len(dial_code):]
+    if len(digits) != 8:
+        raise ValueError(
+            "Le numéro Mobile Money du Burkina Faso doit comporter "
+            "8 chiffres locaux, sans le préfixe +226.")
+    return digits
+
+
 def normalize_disbursement_account_alias(phone: str, country: str) -> str:
     """Return the local Mobile Money number expected by PayDunya PUSH."""
     digits = "".join(ch for ch in (phone or "") if ch.isdigit())

@@ -8377,7 +8377,15 @@ def _paydunya_operation_error(exc: paydunya.PayDunyaError) -> str:
     """Map provider failures to actionable, secret-free customer messages."""
     message = str(exc.message or "").strip()
     lowered = message.lower()
-    if "solde client insuffisant" in re.sub(r"\s+", " ", lowered):
+    normalized = re.sub(r"\s+", " ", lowered)
+    if ("burkina" in normalized
+            and (("numéro" in normalized and "valide" in normalized)
+                 or ("phone" in normalized and "valid" in normalized))):
+        return (
+            "Le numéro Mobile Money du Burkina Faso doit être valide et "
+            "comporter 8 chiffres locaux, sans le préfixe +226."
+        )
+    if "solde client insuffisant" in normalized:
         # PayDunya also uses HTTP 403 for this business refusal. It is not
         # evidence that the platform's API credentials are misconfigured.
         return (
@@ -9043,6 +9051,11 @@ async def create_mobile_money_deposit(req: MobileMoneyDepositRequest,
     bearer = "merchant" if req.fee_bearer in ("merchant", "receiver") else "client"
     fees = paydunya.calculate_fees(req.amount, admin_op, bearer)
     phone = req.phone_number
+    try:
+        phone = paydunya.normalize_softpay_phone(
+            phone, req.country, admin_op.get("endpoint_slug"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     if req.country.upper() == "TG":
         try:
             phone = paydunya.normalize_togo_phone(phone)
@@ -9321,6 +9334,11 @@ async def _create_paydunya_invoice_deposit(req: PayDunyaInvoiceRequest,
     bearer = "merchant" if req.fee_bearer in ("merchant", "receiver") else "client"
     fees = paydunya.calculate_fees(req.amount, tariff, bearer)
     phone = req.phone_number
+    try:
+        phone = paydunya.normalize_softpay_phone(
+            phone, req.country, selected.get("endpoint_slug") if selected else "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     if phone and (req.country or "").upper() == "TG":
         try:
             phone = paydunya.normalize_togo_phone(phone)
@@ -12821,6 +12839,11 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
     bearer = "merchant" if link.get("fee_bearer") == "owner" else "client"
     fees = paydunya.calculate_fees(amount, admin_op, bearer)
     phone = req.phone_number
+    try:
+        phone = paydunya.normalize_softpay_phone(
+            phone, req.country, admin_op.get("endpoint_slug"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     if req.country.upper() == "TG":
         try:
             phone = paydunya.normalize_togo_phone(phone)
@@ -12851,8 +12874,9 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
             raise paydunya.PayDunyaError(502, "PayDunya did not return an invoice token")
     except paydunya.PayDunyaError as exc:
         await _release_single_use_link(link["id"], single_use_claim)
-        raise HTTPException(400 if exc.status < 500 else 502,
-            "La passerelle Mobile Money a refusé la demande.")
+        raise HTTPException(
+            400 if exc.status < 500 else 502,
+            _paydunya_operation_error(exc))
     ref = invoice.get("reference") or invoice.get("invoice_id")
     checkout_url = paydunya.checkout_url(invoice)
 
@@ -12976,8 +13000,9 @@ async def start_link_payment_momo(req: LinkPayMoMoRequest, request: Request):
             {"$set": {"status": "failed", "prompt_error": safe_error}})
         await _notify_integration_link_payment(
             link["user_id"], link["id"], lp_id, "failed")
-        raise HTTPException(400 if exc.status < 500 else 502,
-                            "La passerelle Mobile Money a refusé la demande.")
+        raise HTTPException(
+            400 if exc.status < 500 else 502,
+            _paydunya_operation_error(exc))
     except Exception as exc:
         await db.momo_deposits.update_one(
             {"id": dep_id, "status": "pending"},
