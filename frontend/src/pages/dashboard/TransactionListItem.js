@@ -1,5 +1,7 @@
 import { ArrowDownLeft, ArrowUpRight } from 'lucide-react';
-import { CountryBadge, findCountry, OperatorLogo } from '@/components/PaymentBrand';
+import {
+  CountryBadge, CryptoLogo, findCountry, isCryptoTransaction, OperatorLogo,
+} from '../../components/PaymentBrand';
 
 export const TYPE_LABELS = {
   deposit: 'Dépôt',
@@ -98,11 +100,22 @@ export default function TransactionListItem({ tx, onClick, hidden = false, testI
     : operatorValue;
   const countryCode = meta.country_code || meta.country;
   const country = findCountry(countryCode);
+  const isCrypto = isCryptoTransaction(tx);
+  const cryptoAssetCode = meta.asset_code || meta.crypto || tx.currency;
+  const cryptoCoin = meta.coin || meta.crypto || cryptoAssetCode;
+  const cryptoNetwork = meta.network_name || meta.network;
   const row = (
     <>
       <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${incoming ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
-        {operator
-          ? <OperatorLogo
+        {isCrypto
+          ? <CryptoLogo
+              assetCode={cryptoAssetCode}
+              coin={cryptoCoin}
+              network={cryptoNetwork}
+              size="md"
+            />
+          : operator
+            ? <OperatorLogo
               operator={operatorCode}
               name={operator}
               country={countryCode}

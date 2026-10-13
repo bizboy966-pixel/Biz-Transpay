@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { COUNTRIES } from '@/constants/countries';
+import { COUNTRIES } from '../constants/countries';
 
 const BRANDS = [
   // PayDunya supplies identifiers and names, not stable logo URLs. Keep all
@@ -27,8 +27,55 @@ const BRANDS = [
   { key: 'wizall', aliases: ['wizall'], src: '/operator-logos/wizall.svg', label: 'Wizall', mark: 'W', color: '#059669' },
 ];
 
+const CRYPTO_BRANDS = {
+  USDT: { src: '/crypto-logos/usdt.svg', label: 'Tether (USDT)' },
+  USDC: { src: '/crypto-logos/usdc.svg', label: 'USD Coin (USDC)' },
+  BNB: { src: '/crypto-logos/bnb.svg', label: 'BNB' },
+  BTC: { src: '/crypto-logos/btc.svg', label: 'Bitcoin (BTC)' },
+  SOL: { src: '/crypto-logos/sol.svg', label: 'Solana (SOL)' },
+  TON: { src: '/crypto-logos/ton.svg', label: 'Toncoin (TON)' },
+  TRX: { src: '/crypto-logos/trx.svg', label: 'TRON (TRX)' },
+  ETH: { src: '/crypto-logos/eth.svg', label: 'Ethereum (ETH)' },
+};
+
+const CRYPTO_ALIASES = {
+  BITCOIN: 'BTC',
+  BINANCECOIN: 'BNB',
+  ETHEREUM: 'ETH',
+  SOLANA: 'SOL',
+  TETHER: 'USDT',
+  TETHERUSD: 'USDT',
+  TONCOIN: 'TON',
+  TRON: 'TRX',
+  USDCOIN: 'USDC',
+  XBT: 'BTC',
+};
+
 function normalized(value) {
   return String(value || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function cryptoSymbol(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) return '';
+  const compact = raw.replace(/[^A-Z0-9]/g, '');
+  if (CRYPTO_ALIASES[compact]) return CRYPTO_ALIASES[compact];
+  const base = raw.split(/[._\s/:|-]/, 1)[0];
+  return CRYPTO_ALIASES[base] || base;
+}
+
+export function findCryptoBrand(value) {
+  return CRYPTO_BRANDS[cryptoSymbol(value)] || null;
+}
+
+export function isCryptoTransaction(tx) {
+  const meta = tx?.metadata || {};
+  const currency = String(tx?.currency || '').toUpperCase();
+  return Boolean(
+    meta.coin || meta.crypto || meta.asset_code
+    || meta.tx_hash || meta.txid
+    || /^(USDT|USDC|BNB|BTC|SOL|TON|TRX|ETH)(?:[._-]|$)/.test(currency)
+  );
 }
 
 export function findCountry(value) {
@@ -108,6 +155,35 @@ export function OperatorLogo({ operator, name, country, logoUrl, size = 'md', cl
       aria-label={name || brand?.label || text}
     >
        {fallbackMark}
+    </span>
+  );
+}
+
+export function CryptoLogo({
+  assetCode, coin, network, size = 'md', className = '',
+}) {
+  const value = coin || assetCode;
+  const brand = findCryptoBrand(value);
+  const symbol = cryptoSymbol(value) || 'CRYPTO';
+  const networkLabel = network || String(assetCode || '').split(/[._]/)[1] || '';
+  const label = `${brand?.label || `${symbol} (crypto)`}${networkLabel ? ` · ${networkLabel}` : ''}`;
+  const sizes = {
+    sm: 'h-7 w-7 rounded-lg',
+    md: 'h-9 w-9 rounded-xl',
+    lg: 'h-12 w-12 rounded-2xl',
+  };
+  return (
+    <span
+      className={`inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white shadow-sm ${sizes[size] || sizes.md} ${className}`}
+      title={label}
+      aria-label={label}
+      data-testid={`crypto-logo-${symbol.toLowerCase()}`}
+    >
+      <img
+        src={brand?.src || '/crypto-logos/generic.svg'}
+        alt=""
+        className="h-full w-full object-contain"
+      />
     </span>
   );
 }
