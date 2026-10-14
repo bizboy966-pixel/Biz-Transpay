@@ -18564,14 +18564,40 @@ async def admin_list_users(admin=Depends(get_admin), q: Optional[str] = None,
                            kyc: Optional[str] = None, status: Optional[str] = None,
                            limit: int = Query(200, le=1000)):
     query: dict = {}
-    if q:
-        safe_q = _literal_regex_term(q, field_name="Recherche")
-        query["$or"] = [
+    if q and str(q).strip():
+        search_text = str(q).strip()
+        safe_q = _literal_regex_term(search_text, field_name="Recherche")
+        username_query = search_text.lstrip("@").strip()
+        search_terms = [
+            {"id": {"$regex": safe_q, "$options": "i"}},
             {"full_name": {"$regex": safe_q, "$options": "i"}},
             {"email": {"$regex": safe_q, "$options": "i"}},
             {"username": {"$regex": safe_q, "$options": "i"}},
-            {"phone": {"$regex": safe_q, "$options": "i"}},
         ]
+        if username_query and username_query != search_text:
+            search_terms.append({
+                "username": {
+                    "$regex": _literal_regex_term(
+                        username_query, field_name="Recherche"),
+                    "$options": "i",
+                }
+            })
+        phone_digits = re.sub(r"\D", "", search_text)
+        if phone_digits:
+            search_terms.append({
+                "phone": {"$regex": safe_q, "$options": "i"}
+            })
+            if len(phone_digits) >= 6:
+                flexible_phone = r"\D*".join(
+                    re.escape(digit) for digit in phone_digits)
+                search_terms.append({
+                    "phone": {"$regex": flexible_phone, "$options": "i"}
+                })
+        else:
+            search_terms.append({
+                "phone": {"$regex": safe_q, "$options": "i"}
+            })
+        query["$or"] = search_terms
     if kyc:
         query["kyc_status"] = kyc
     if status == "blocked":

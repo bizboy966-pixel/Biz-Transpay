@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Search, Filter, Download, MoreHorizontal,
@@ -16,16 +16,44 @@ export default function AdminUsers() {
   const [q, setQ] = useState('');
   const [kyc, setKyc] = useState('');
   const [status, setStatus] = useState('');
+  const [loading, setLoading] = useState(true);
+  const requestSequence = useRef(0);
+  const searchTimer = useRef(null);
   const nav = useNavigate();
 
-  const load = () => {
+  const load = useCallback(() => {
+    const requestId = ++requestSequence.current;
     const p = {};
-    if (q) p.q = q; if (kyc) p.kyc = kyc; if (status) p.status = status;
-    api.get('/admin/users', { params: p }).then(({ data }) => setUsers(data)).catch(() => {});
+    if (q.trim()) p.q = q.trim();
+    if (kyc) p.kyc = kyc;
+    if (status) p.status = status;
+    setLoading(true);
+    api.get('/admin/users', { params: p })
+      .then(({ data }) => {
+        if (requestId === requestSequence.current) {
+          setUsers(Array.isArray(data) ? data : []);
+        }
+      })
+      .catch(() => {
+        if (requestId === requestSequence.current) setUsers([]);
+      })
+      .finally(() => {
+        if (requestId === requestSequence.current) setLoading(false);
+      });
+  }, [q, kyc, status]);
+
+  useEffect(() => {
+    searchTimer.current = setTimeout(load, q.trim() ? 250 : 0);
+    return () => {
+      clearTimeout(searchTimer.current);
+      requestSequence.current += 1;
+    };
+  }, [load, q]);
+
+  const searchImmediately = () => {
+    clearTimeout(searchTimer.current);
+    load();
   };
-  // `load` is intentionally recreated with the active filters.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load(); }, [kyc, status]);
 
   const exportCsv = () => {
     const rows = [['ID', 'Name', 'Username', 'Email', 'Phone', 'Country', 'KYC', 'XOF', 'XAF', 'USDT', 'Status', 'Created']];
@@ -40,7 +68,7 @@ export default function AdminUsers() {
       <div className="bg-white border border-slate-100 rounded-2xl p-4 flex flex-wrap items-center gap-3">
         <div className="flex-1 min-w-[200px] flex items-center gap-2 px-3 border border-slate-200 rounded-xl">
           <Search className="w-4 h-4 text-slate-400" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} data-testid="user-search" placeholder="Rechercher par nom, email, téléphone…" className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && searchImmediately()} data-testid="user-search" placeholder="Rechercher par nom, email, téléphone ou identifiant…" className="flex-1 py-2.5 outline-none text-sm bg-transparent" />
         </div>
         <select value={kyc} onChange={(e) => setKyc(e.target.value)} data-testid="filter-kyc" className="px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold">
           <option value="">Tous KYC</option><option value="verified">Vérifié</option><option value="pending">En attente</option><option value="rejected">Rejeté</option><option value="not_started">Non commencé</option>
@@ -100,7 +128,7 @@ export default function AdminUsers() {
                 </tr>
               ))}
               {users.length === 0 && (
-                <tr><td colSpan={8} className="p-10 text-center text-slate-400 text-sm">Aucun utilisateur</td></tr>
+                <tr><td colSpan={8} className="p-10 text-center text-slate-400 text-sm">{loading ? 'Recherche en cours…' : 'Aucun utilisateur'}</td></tr>
               )}
             </tbody>
           </table>
