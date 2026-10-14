@@ -74,9 +74,14 @@ class _Connection:
         await asyncio.sleep(0)
         self.pool.fetch_calls.append((query, (collection, *args)))
         candidate_filter = json.loads(args[0]) if "jsonb_each" in query else {}
+        candidate_ids = (
+            set(args[0]) if "doc_id=ANY" in query and args else None
+        )
         rows = []
-        for (name, _), value in list(self.pool.documents.items()):
+        for (name, document_id), value in list(self.pool.documents.items()):
             if name != collection:
+                continue
+            if candidate_ids is not None and document_id not in candidate_ids:
                 continue
             document = json.loads(value)
             if any(
@@ -157,6 +162,95 @@ def test_concurrent_conditional_wallet_debits_and_idempotency_upserts():
         assert len(markers) == 1
         assert markers[0]["status"] == "claimed"
         assert sum(result.upserted_id is not None for result in marker_results) == 1
+
+    asyncio.run(scenario())
+
+
+def test_wallet_operation_credit_and_provider_alias_are_atomic_and_snapshotted():
+    async def scenario():
+        pool = FakePostgres({
+            "users": [
+                {"id": "user-a", "balance_xof": 100,
+                 "wallet_credit_operation_ids": []},
+                {"id": "user-b", "balance_xof": 0,
+                 "wallet_credit_operation_ids": []},
+            ],
+            "wallet_operations": [],
+        })
+        first = PostgresDocumentStore("unused")
+        second = PostgresDocumentStore("unused")
+        first.pool = second.pool = pool
+
+        calls = [
+            first.apply_wallet_operation(
+                user_id="user-a", operation_id="provider-deposit:local-1",
+                increments={"balance_xof": 50}, direction="credit",
+                primary_field="balance_xof", aliases=["provider-a:event-91"]),
+            second.apply_wallet_operation(
+                user_id="user-a", operation_id="provider-deposit:local-1",
+                increments={"balance_xof": 50}, direction="credit",
+                primary_field="balance_xof", aliases=["provider-a:event-91"]),
+        ]
+        results = await asyncio.gather(*calls)
+        assert {result["state"] for result in results} == {"applied", "already"}
+        assert {result["snapshot"]["balance_before"] for result in results} == {100}
+        assert {result["snapshot"]["balance_after"] for result in results} == {150}
+        user = await first.users.find_one({"id": "user-a"})
+        assert user["balance_xof"] == 150
+
+        duplicate = await second.apply_wallet_operation(
+            user_id="user-b", operation_id="provider-deposit:local-2",
+            increments={"balance_xof": 50}, direction="credit",
+            primary_field="balance_xof", aliases=["provider-a:event-91"])
+        assert duplicate["state"] == "duplicate_event"
+        assert (await second.users.find_one({"id": "user-b"}))["balance_xof"] == 0
+
+        conflicting_retry = await second.apply_wallet_operation(
+            user_id="user-a", operation_id="provider-deposit:local-1",
+            increments={"balance_xof": 51}, direction="credit",
+            primary_field="balance_xof", aliases=["provider-a:event-91"])
+        assert conflicting_retry["state"] == "idempotency_conflict"
+        assert (await second.users.find_one({"id": "user-a"}))["balance_xof"] == 150
+
+        snapshot = await first.get_wallet_operation_snapshot(
+            "user-a", "provider-deposit:local-1")
+        assert snapshot["balance_before"] == 100
+        assert snapshot["balance_after"] == 150
+
+    asyncio.run(scenario())
+
+
+def test_wallet_operation_debit_checks_funds_and_records_exchange_legs():
+    async def scenario():
+        pool = FakePostgres({
+            "users": [{
+                "id": "user-a", "balance_xof": 100, "balance_usdt": 5,
+                "wallet_debit_operation_ids": [],
+                "wallet_credit_operation_ids": [],
+            }],
+            "wallet_operations": [],
+        })
+        store = PostgresDocumentStore("unused")
+        store.pool = pool
+        rejected = await store.apply_wallet_operation(
+            user_id="user-a", operation_id="debit-too-large",
+            increments={"balance_xof": -101}, direction="debit",
+            primary_field="balance_xof", required_balance_field="balance_xof",
+            required_balance_amount=101)
+        assert rejected["state"] == "insufficient"
+
+        exchange = await store.apply_wallet_operation(
+            user_id="user-a", operation_id="exchange:sample",
+            increments={"balance_xof": -20, "balance_usdt": 2},
+            direction="exchange", primary_field="balance_xof",
+            required_balance_field="balance_xof", required_balance_amount=20)
+        assert exchange["state"] == "applied"
+        assert exchange["snapshot"]["wallet_balances_before"] == {
+            "balance_xof": 100, "balance_usdt": 5,
+        }
+        assert exchange["snapshot"]["wallet_balances_after"] == {
+            "balance_xof": 80, "balance_usdt": 7,
+        }
 
     asyncio.run(scenario())
 

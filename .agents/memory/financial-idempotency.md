@@ -3,11 +3,11 @@ name: Financial idempotency barriers
 description: Durable rule for preventing duplicate wallet mutations across webhooks, polling, retries, and concurrent requests.
 ---
 
-Every financial wallet mutation must carry a stable operation identifier and use a MongoDB conditional update as its idempotency barrier. Credits and refunds use an atomic increment plus an operation marker; debits also require an atomic balance floor check. Multi-currency exchanges should update both legs in one MongoDB update whenever both balances belong to the same user.
+Every financial wallet mutation must carry a stable operation identifier and use the active database adapter's atomic transaction as its idempotency barrier. Persist the wallet change, before/after balance snapshot, local operation claim, and any trusted provider-event identity claims together. Credits and refunds use an atomic increment plus a marker; debits also require an atomic balance floor check. Exchanges update both wallet legs atomically.
 
-**Why:** Webhooks, reconciliation jobs, browser polling, and provider retries can execute concurrently. A status check followed by a balance increment is not safe and can duplicate value or overdraw a wallet.
+**Why:** Webhooks, reconciliation jobs, browser polling, and provider retries can execute concurrently. A status check followed by a balance increment is not safe and can duplicate value or overdraw a wallet; separate history rows can also duplicate while the wallet marker prevents a second credit.
 
-**How to apply:** Derive the operation id from the provider event, local transaction/payout id, or client idempotency key. Keep the ledger write deterministic and retryable after a process crash; never treat a generic database error as a duplicate delivery.
+**How to apply:** Derive the operation id from the local operation or client idempotency key, and bind trusted provider event aliases to that operation atomically. Keep ledger writes deterministic and retryable after a process crash; never treat a generic database error as a duplicate delivery. Show historical before/after balances only when an authoritative persisted snapshot exists.
 
 Withdrawals queued for manual fulfilment must reserve funds from the exact source wallet immediately, including the selected crypto/network wallet. Store that wallet identity and the reserved native amount on the transaction; rejection refunds that same wallet exactly once.
 

@@ -146,6 +146,9 @@ class _Database:
                 "email": "payer@example.test",
             },
         ])
+        self.crypto_deposits = _Collection([])
+        self.link_payments = _Collection([])
+        self.merchant_payments = _Collection([])
 
 
 def _install_db(monkeypatch):
@@ -191,6 +194,50 @@ def test_search_routes_exchange_and_checkout_transactions(monkeypatch):
     assert any(row["record"]["id"] == "exchange-3" for row in exchange)
     assert any(row["record"]["id"] == "public-payment-4" for row in checkout)
     assert asyncio.run(server._telegram_search_records("depot", "x" * 101)) == []
+
+
+def test_search_crypto_address_and_keeps_multiple_same_phone_matches(monkeypatch):
+    database = _install_db(monkeypatch)
+    database.crypto_deposits.rows.append({
+        "id": "crypto-deposit-1", "user_id": "user-1",
+        "status": "completed", "amount": 12, "currency": "USDT",
+        "deposit_address": "0x1234567890abcdef1234567890abcdef12345678",
+        "created_at": "2026-09-25T15:00:00Z",
+    })
+    database.transactions.rows.extend([
+        {
+            "id": "phone-deposit-1", "user_id": "user-2",
+            "type": "deposit", "direction": "in", "status": "completed",
+            "amount": 500, "currency": "XOF", "provider_reference": "SAME-REF",
+            "created_at": "2026-09-25T16:00:00Z",
+            "metadata": {"customer_phone": "+22890002222"},
+        },
+        {
+            "id": "phone-deposit-2", "user_id": "user-2",
+            "type": "deposit", "direction": "in", "status": "pending",
+            "amount": 800, "currency": "XOF", "provider_reference": "SAME-REF",
+            "created_at": "2026-09-25T17:00:00Z",
+            "metadata": {"customer_phone": "+22890002222"},
+        },
+    ])
+
+    address_results = asyncio.run(server._telegram_search_records(
+        "depot", "0x1234567890abcdef1234567890abcdef12345678"))
+    phone_results = asyncio.run(server._telegram_search_records(
+        "depot", "+22890002222"))
+
+    assert any(row["record"]["id"] == "crypto-deposit-1" for row in address_results)
+    assert {row["record"]["id"] for row in phone_results
+            if row["source"] == "transaction"} >= {
+                "phone-deposit-1", "phone-deposit-2",
+            }
+    crypto_result = next(
+        row for row in address_results
+        if row["record"]["id"] == "crypto-deposit-1")
+    rendered = asyncio.run(server._telegram_record_text("depot", crypto_result))
+    assert "Dépôt crypto" in rendered
+    assert "Adresse crypto" in rendered
+    assert "0x1234567890abcdef1234567890abcdef12345678" not in rendered
 
 
 def test_result_format_masks_contacts_and_omits_raw_provider_payload(monkeypatch):

@@ -7,11 +7,13 @@ the ``document_store`` table is provisioned by the deployment database schema.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
+from datetime import timezone
 from typing import Any, AsyncIterator
 
 import asyncpg
@@ -597,6 +599,219 @@ class PostgresDocumentStore:
         if self.pool is not None:
             await self.pool.close()
             self.pool = None
+
+    @staticmethod
+    def _wallet_operation_id(identity_type: str, value: str) -> str:
+        return hashlib.sha256(
+            f"biztranspay:{identity_type}:{value}".encode("utf-8")
+        ).hexdigest()
+
+    async def apply_wallet_operation(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        increments: dict[str, float],
+        direction: str,
+        primary_field: str,
+        required_balance_field: str | None = None,
+        required_balance_amount: float = 0,
+        aliases: list[str] | None = None,
+        legacy_markers: list[tuple[str, str]] | None = None,
+    ) -> dict:
+        """Atomically mutate a wallet and persist its balance snapshot/idempotency claims."""
+        user_id, operation_id = str(user_id), str(operation_id or "")
+        if not user_id or not operation_id or direction not in {
+            "credit", "debit", "exchange"
+        } or not increments:
+            return {"state": "invalid"}
+
+        normalized_increments = {
+            str(field): float(amount) for field, amount in increments.items()
+        }
+        if any(not field or amount == 0 for field, amount in normalized_increments.items()):
+            return {"state": "invalid"}
+
+        primary_id = self._wallet_operation_id(
+            "operation", f"{user_id}:{operation_id}"
+        )
+        alias_ids = {
+            self._wallet_operation_id("provider_event", str(alias))
+            for alias in aliases or [] if str(alias).strip()
+        }
+        identity_ids = [primary_id, *sorted(alias_ids)]
+        marker_fields = {
+            "credit": ["wallet_credit_operation_ids"],
+            "debit": ["wallet_debit_operation_ids"],
+            "exchange": [
+                "wallet_debit_operation_ids",
+                "wallet_credit_operation_ids",
+            ],
+        }[direction]
+        markers = [(field, operation_id) for field in marker_fields]
+        markers.extend(
+            (str(field), str(value))
+            for field, value in legacy_markers or []
+            if field and value
+        )
+        signature = hashlib.sha256(json.dumps({
+            "user_id": user_id,
+            "direction": direction,
+            "increments": normalized_increments,
+            "required_balance_field": required_balance_field,
+            "required_balance_amount": float(required_balance_amount or 0),
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # All callers take locks in this fixed order. Existing collection
+                # updates already serialize user-wallet mutations through users.
+                await self.users._lock_mutations(conn)
+                await self.wallet_operations._lock_mutations(conn)
+
+                user_rows = await self.users._rows(
+                    conn, candidate_filter={"id": user_id}
+                )
+                user = next(
+                    (row for row in user_rows if str(row.get("id") or "") == user_id),
+                    None,
+                )
+                if not user:
+                    return {"state": "missing_user"}
+
+                claim_rows = await conn.fetch(
+                    """SELECT document FROM document_store
+                       WHERE collection=$1 AND doc_id=ANY($2::text[]) FOR UPDATE""",
+                    self.wallet_operations.name, identity_ids,
+                )
+                claims = {}
+                for row in claim_rows:
+                    document = row["document"]
+                    if isinstance(document, str):
+                        document = json.loads(document)
+                    claims[str(document.get("id") or "")] = dict(document)
+
+                primary_claim = claims.get(primary_id)
+                for alias_id in alias_ids:
+                    claim = claims.get(alias_id)
+                    if claim:
+                        if claim.get("primary_operation_id") != primary_id:
+                            return {"state": "duplicate_event"}
+                        if claim.get("signature") != signature:
+                            return {"state": "idempotency_conflict"}
+
+                if primary_claim:
+                    if primary_claim.get("signature") != signature:
+                        return {"state": "idempotency_conflict"}
+                    snapshot = primary_claim.get("snapshot")
+                    state = "already"
+                else:
+                    user_marker_fields = {
+                        field: user.get(field) or [] for field in marker_fields
+                    }
+                    operation_already_applied = any(
+                        operation_id in values
+                        for values in user_marker_fields.values()
+                    )
+                    legacy_already_applied = any(
+                        str(value) in (user.get(str(field)) or [])
+                        for field, value in legacy_markers or []
+                    )
+                    if (operation_already_applied or legacy_already_applied
+                            or any(claims.get(alias_id) for alias_id in alias_ids)):
+                        state = "already"
+                        same_claim = next(
+                            (claims.get(alias_id) for alias_id in alias_ids
+                             if claims.get(alias_id)), None
+                        )
+                        snapshot = (
+                            same_claim.get("snapshot")
+                            if same_claim and same_claim.get("primary_operation_id") == primary_id
+                            else None
+                        )
+                    else:
+                        current_required = float(
+                            user.get(required_balance_field, 0) or 0
+                        ) if required_balance_field else None
+                        if (required_balance_field and current_required is not None
+                                and current_required < float(required_balance_amount)):
+                            return {"state": "insufficient"}
+                        before = {
+                            field: float(user.get(field, 0) or 0)
+                            for field in normalized_increments
+                        }
+                        after = {
+                            field: before[field] + amount
+                            for field, amount in normalized_increments.items()
+                        }
+                        update = {
+                            "$inc": normalized_increments,
+                            "$addToSet": {
+                                field: value for field, value in markers
+                            },
+                        }
+                        updated_user = _apply_update(user, update)
+                        doc_id = str(user.get("id") or user.get("_id"))
+                        await conn.execute(
+                            """UPDATE document_store
+                               SET document=$3::jsonb, updated_at=now()
+                               WHERE collection=$1 AND doc_id=$2""",
+                            self.users.name, doc_id, self.encode(updated_user),
+                        )
+                        snapshot = {
+                            "wallet_field": primary_field,
+                            "balance_before": before.get(primary_field),
+                            "balance_after": after.get(primary_field),
+                            "wallet_balances_before": before,
+                            "wallet_balances_after": after,
+                            "direction": direction,
+                            "amount": abs(float(normalized_increments.get(
+                                primary_field, 0
+                            ))),
+                        }
+                        state = "applied"
+
+                # Legacy wallet markers are imported into the claim collection
+                # without changing a balance, so replays stay blocked and old
+                # balances are never guessed.
+                identities = [(primary_id, "operation"), *(
+                    (alias_id, "provider_event") for alias_id in sorted(alias_ids)
+                )]
+                created_at = datetime.now(timezone.utc).isoformat()
+                for identity_id, identity_type in identities:
+                    if identity_id in claims:
+                        continue
+                    claim = {
+                        "id": identity_id,
+                        "identity_type": identity_type,
+                        "primary_operation_id": primary_id,
+                        "user_id": user_id,
+                        "signature": signature,
+                        "snapshot": snapshot,
+                        "snapshot_available": snapshot is not None,
+                        "created_at": created_at,
+                    }
+                    await conn.execute(
+                        """INSERT INTO document_store(collection, doc_id, document)
+                           VALUES($1,$2,$3::jsonb)""",
+                        self.wallet_operations.name, identity_id,
+                        self.encode(claim),
+                    )
+
+                return {"state": state, "snapshot": snapshot}
+
+    async def get_wallet_operation_snapshot(
+        self, user_id: str, operation_id: str
+    ) -> dict | None:
+        if not self.pool or not operation_id:
+            return None
+        identity_id = self._wallet_operation_id(
+            "operation", f"{str(user_id)}:{str(operation_id)}"
+        )
+        claim = await self.wallet_operations.find_one({"id": identity_id})
+        if not claim or str(claim.get("user_id") or "") != str(user_id):
+            return None
+        return claim.get("snapshot") if isinstance(claim.get("snapshot"), dict) else None
 
     def __getattr__(self, name: str) -> Collection:
         return Collection(self, name)

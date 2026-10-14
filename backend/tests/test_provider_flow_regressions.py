@@ -1,9 +1,11 @@
 """Regression tests for ordinary provider payment and payout handling."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 import sys
+from pymongo.errors import DuplicateKeyError
 from types import SimpleNamespace
 
 import pytest
@@ -42,20 +44,46 @@ class MemoryCollection:
     @classmethod
     def _matches(cls, doc, query):
         for key, expected in query.items():
+            if key == "$or":
+                if not any(cls._matches(doc, part) for part in expected):
+                    return False
+                continue
+            if key == "$and":
+                if not all(cls._matches(doc, part) for part in expected):
+                    return False
+                continue
             actual = cls._value(doc, key)
             if not isinstance(expected, dict):
                 if actual != expected:
                     return False
                 continue
-            if "$in" in expected and actual not in expected["$in"]:
+            if "$in" in expected and not (
+                    actual in expected["$in"]
+                    or (isinstance(actual, list)
+                        and any(value in expected["$in"] for value in actual))):
                 return False
-            if "$nin" in expected and actual in expected["$nin"]:
+            if "$nin" in expected and (
+                    actual in expected["$nin"]
+                    or (isinstance(actual, list)
+                        and any(value in expected["$nin"] for value in actual))):
                 return False
-            if "$ne" in expected and actual == expected["$ne"]:
+            if "$ne" in expected and (
+                    actual == expected["$ne"]
+                    or (isinstance(actual, list) and expected["$ne"] in actual)):
                 return False
             if "$gte" in expected and (
                     actual is None or actual < expected["$gte"]):
                 return False
+            if "$lte" in expected:
+                compare_actual, compare_expected = actual, expected["$lte"]
+                if isinstance(compare_actual, str) and isinstance(compare_expected, datetime):
+                    try:
+                        compare_actual = datetime.fromisoformat(
+                            compare_actual.replace("Z", "+00:00"))
+                    except ValueError:
+                        pass
+                if compare_actual is None or compare_actual > compare_expected:
+                    return False
             if "$exists" in expected and (actual is not None) != expected["$exists"]:
                 return False
         return True
@@ -119,6 +147,239 @@ class MemoryDB:
         self.merchant_payouts = MemoryCollection()
         self.users = MemoryCollection()
         self.transactions = MemoryCollection()
+
+
+@run_async
+async def test_concurrent_izipay_claim_allows_only_one_active_settlement(monkeypatch):
+    fake = MemoryDB()
+    fake.crypto_deposits.docs.append({
+        "id": "claim-deposit", "status": "pending",
+        "user_id": "user-a", "izipay_intent_id": "intent-claim",
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    claims = await asyncio.gather(*[
+        server._claim_izipay_payment_settlement(
+            fake.crypto_deposits, "claim-deposit", "intent-claim")
+        for _ in range(2)
+    ])
+
+    assert sum(claim is not None for claim in claims) == 1
+    assert fake.crypto_deposits.docs[0]["status"] == "settling"
+
+
+@run_async
+async def test_izipay_claim_rejects_mismatched_intent_and_recovers_stale_lease(
+        monkeypatch):
+    fake = MemoryDB()
+    fake.crypto_deposits.docs.append({
+        "id": "claim-deposit", "status": "pending",
+        "user_id": "user-a", "izipay_intent_id": "intent-expected",
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    assert await server._claim_izipay_payment_settlement(
+        fake.crypto_deposits, "claim-deposit", "intent-other") is None
+    assert fake.crypto_deposits.docs[0]["status"] == "pending"
+    assert fake.crypto_deposits.docs[0]["izipay_intent_id"] == "intent-expected"
+
+    fake.crypto_deposits.docs[0].update({
+        "status": "settling",
+        "settlement_claim_id": "stale-claim",
+        "settlement_claimed_at": (
+            datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat(),
+    })
+    reclaimed = await server._claim_izipay_payment_settlement(
+        fake.crypto_deposits, "claim-deposit", "intent-expected")
+    assert reclaimed and reclaimed["status"] == "settling"
+    assert reclaimed["settlement_claim_id"] != "stale-claim"
+
+
+@run_async
+async def test_record_tx_concurrent_operation_id_creates_one_ledger_row(monkeypatch):
+    class UniqueTransactions(MemoryCollection):
+        def __init__(self):
+            super().__init__()
+            self.lock = asyncio.Lock()
+
+        async def find_one(self, query, projection=None, **kwargs):
+            await asyncio.sleep(0)
+            return await super().find_one(query, projection, **kwargs)
+
+        async def insert_one(self, doc):
+            async with self.lock:
+                if any(existing.get("id") == doc.get("id") for existing in self.docs):
+                    raise DuplicateKeyError("duplicate transaction id")
+                self.docs.append(dict(doc))
+            return SimpleNamespace(inserted_id=doc.get("id"))
+
+    database = SimpleNamespace(transactions=UniqueTransactions())
+    monkeypatch.setattr(server, "db", database)
+
+    async def no_referral(_tx):
+        return None
+
+    monkeypatch.setattr(server, "_process_referral_transaction", no_referral)
+    rows = await asyncio.gather(*[
+        server.record_tx(
+            "user-a", "deposit", "in", 25, "XOF",
+            operation_id="provider-event:stable-1",
+        )
+        for _ in range(2)
+    ])
+
+    assert len(database.transactions.docs) == 1
+    assert rows[0].id == rows[1].id
+    assert database.transactions.docs[0]["metadata"]["operation_id"] == "provider-event:stable-1"
+
+
+@run_async
+async def test_mobile_money_deposit_credit_is_once_per_local_and_provider_id(monkeypatch):
+    fake = MemoryDB()
+    fake.users.docs.append({
+        "id": "user-a", "balance_xof": 100,
+        "wallet_credit_operation_ids": [],
+        "wallet_debit_operation_ids": [],
+        "credited_deposit_ids": [],
+    })
+    monkeypatch.setattr(server, "db", fake)
+
+    async def no_side_effect(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "_upsert_momo_ledger", no_side_effect)
+    monkeypatch.setattr(server, "_notify_integration_business_transition", no_side_effect)
+    monkeypatch.setattr(server, "notify", no_side_effect)
+    monkeypatch.setattr(server, "_process_referral_transaction", no_side_effect)
+
+    first = {
+        "id": "momo-deposit-1", "user_id": "user-a", "provider": "paydunya",
+        "status": "pending", "amount": 50, "requested_amount": 50,
+        "wallet_credit_amount": 48, "currency": "XOF", "country": "TG",
+        "paydunya_token": "provider-payment-unique-1",
+    }
+    duplicate_local_row = {
+        **first, "id": "momo-deposit-2",
+    }
+    fake.momo_deposits.docs.extend([
+        dict(first), dict(duplicate_local_row),
+    ])
+    assert await server._credit_momo_deposit(first) is True
+    assert await server._credit_momo_deposit(first) is True
+    assert fake.users.docs[0]["balance_xof"] == 148
+
+    assert await server._credit_momo_deposit(duplicate_local_row) is False
+    assert fake.users.docs[0]["balance_xof"] == 148
+    assert fake.momo_deposits.docs[-1]["status"] == "quarantined"
+
+
+@run_async
+async def test_stripe_webhook_repairs_ledger_for_already_paid_payment(monkeypatch):
+    fake = MemoryDB()
+    fake.users.docs.append({
+        "id": "user-a", "balance_xof": 0,
+        "wallet_credit_operation_ids": [],
+        "wallet_debit_operation_ids": [],
+    })
+    fake.payment_transactions = MemoryCollection()
+    fake.payment_transactions.docs.append({
+        "id": "payment-1", "session_id": "stripe-session-1",
+        "user_id": "user-a", "payment_status": "paid", "status": "completed",
+        "amount": 75, "currency": "XOF",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    ledger_attempts = []
+    credit_operations = set()
+
+    class VerifiedEvent:
+        payment_status = "paid"
+        session_id = "stripe-session-1"
+
+    class Checkout:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def handle_webhook(self, *_args):
+            return VerifiedEvent()
+
+    class Request:
+        headers = {"Stripe-Signature": "verified-test-signature"}
+        base_url = "https://example.test/"
+
+        async def body(self):
+            return b"verified test payload"
+
+    async def record(*args, **kwargs):
+        ledger_attempts.append(kwargs.get("operation_id"))
+
+    async def credit(_user_id, _field, _amount, operation_id):
+        credit_operations.add(operation_id)
+        return True
+
+    monkeypatch.setattr(server, "StripeCheckout", Checkout)
+    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    monkeypatch.setattr(server, "record_tx", record)
+
+    await server.stripe_webhook(Request())
+    await server.stripe_webhook(Request())
+
+    assert credit_operations == {"stripe:deposit:stripe-session-1"}
+    assert ledger_attempts == [
+        "stripe:deposit:stripe-session-1",
+        "stripe:deposit:stripe-session-1",
+    ]
+
+
+@run_async
+async def test_merchant_api_payment_replay_uses_same_wallet_and_ledger_operation(
+        monkeypatch):
+    fake = MemoryDB()
+    fake.merchant_payments = MemoryCollection()
+    fake.merchant_payments.docs.append({
+        "id": "merchant-payment-1", "merchant_id": "merchant-user",
+        "status": "pending", "coin": "USDT", "usdt_rate": 1,
+        "amount_gross_usdt": 10, "amount_net_usdt": 9.5,
+        "fee": 0.5, "gateway_fee": 0.3, "platform_fee": 0.2,
+        "fee_currency": "USDT", "izipay_intent_id": "merchant-intent-1",
+        "reference": "merchant-reference-1",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    applied_operations, ledger_operations = set(), set()
+    attempts = []
+
+    async def apply(_user_id, _increments, operation_id, _direction, **kwargs):
+        attempts.append((operation_id, kwargs.get("aliases")))
+        if operation_id in applied_operations:
+            return {"state": "already"}
+        applied_operations.add(operation_id)
+        return {"state": "applied"}
+
+    async def record(*_args, **kwargs):
+        operation_id = kwargs.get("operation_id")
+        ledger_operations.add(operation_id)
+        return SimpleNamespace(id="merchant-ledger-1")
+
+    async def no_side_effect(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(server, "_apply_wallet_operation_once", apply)
+    monkeypatch.setattr(server, "record_tx", record)
+    monkeypatch.setattr(server, "notify", no_side_effect)
+
+    assert await server._settle_izipay_payment(
+        "merchant-payment-1", "merchant-intent-1", "chain-hash-1", "webhook")
+    assert await server._settle_izipay_payment(
+        "merchant-payment-1", "merchant-intent-1", "chain-hash-1", "reconcile")
+
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
+    assert attempts[0][0] == "izipay:merchant-payment:merchant-payment-1"
+    assert attempts[0][1] == [
+        "izipay:intent:merchant-intent-1", "izipay:tx:chain-hash-1",
+    ]
+    assert applied_operations == {"izipay:merchant-payment:merchant-payment-1"}
+    assert ledger_operations == {"izipay:merchant-payment:merchant-payment-1"}
+    assert fake.merchant_payments.docs[0]["status"] == "paid"
 
 
 @pytest.mark.parametrize(
@@ -1094,13 +1355,25 @@ async def test_non_usdt_provider_deposit_settlement_credits_once(monkeypatch):
     credits, transactions = [], []
 
     async def credit(user_id, field, amount, operation_id):
+        key = (user_id, operation_id)
+        if key in applied:
+            return {"state": "already"}
+        applied.add(key)
         credits.append((user_id, field, amount, operation_id))
-        return True
+        return {"state": "applied"}
+
+    async def apply(user_id, increments, operation_id, direction, **kwargs):
+        field, amount = next(iter(increments.items()))
+        return await credit(user_id, field, abs(amount), operation_id)
 
     async def record(*args, **kwargs):
-        transactions.append((args, kwargs))
+        operation_id = kwargs.get("operation_id")
+        if operation_id not in recorded:
+            recorded.add(operation_id)
+            transactions.append((args, kwargs))
 
-    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    applied, recorded = set(), set()
+    monkeypatch.setattr(server, "_apply_wallet_operation_once", apply)
     monkeypatch.setattr(server, "record_tx", record)
 
     assert await server._settle_izipay_payment(
@@ -1144,12 +1417,25 @@ async def test_link_payment_provider_settlement_credits_and_consumes_once(
     credits, transactions = [], []
 
     async def credit(user_id, field, amount, operation_id):
+        key = (user_id, operation_id)
+        if key in applied:
+            return {"state": "already"}
+        applied.add(key)
         credits.append((user_id, field, amount, operation_id))
+        return {"state": "applied"}
+
+    async def apply(user_id, increments, operation_id, direction, **kwargs):
+        field, amount = next(iter(increments.items()))
+        return await credit(user_id, field, abs(amount), operation_id)
 
     async def record(*args, **kwargs):
-        transactions.append((args, kwargs))
+        operation_id = kwargs.get("operation_id")
+        if operation_id not in recorded:
+            recorded.add(operation_id)
+            transactions.append((args, kwargs))
 
-    monkeypatch.setattr(server, "_credit_wallet_once", credit)
+    applied, recorded = set(), set()
+    monkeypatch.setattr(server, "_apply_wallet_operation_once", apply)
     monkeypatch.setattr(server, "record_tx", record)
 
     await server._settle_izipay_payment(

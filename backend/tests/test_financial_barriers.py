@@ -44,6 +44,11 @@ class _AtomicUsers:
                     self.doc[field].append(value)
             return _Result(1)
 
+    async def find_one(self, query, projection=None):
+        if self.doc.get("id") != query.get("id"):
+            return None
+        return dict(self.doc)
+
 
 class _AtomicLinkPayments:
     async def find_one(self, query, projection=None):

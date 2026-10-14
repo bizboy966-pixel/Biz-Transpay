@@ -6,6 +6,7 @@ import {
   ExternalLink, ShieldAlert, AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import api from '@/api';
+import WalletBalanceSnapshot from '@/components/WalletBalanceSnapshot';
 
 /* Compact key/value row used inside the modal to display any detail. */
 function KV({ icon: I, label, value, mono, copyable, testid }) {
@@ -244,6 +245,9 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                     <KV icon={Clock} label="Heure" value={dateObj.toLocaleTimeString('fr-FR')} testid="kv-time" />
                   </>
                 )}
+              </div>
+              <div className="md:col-span-2">
+                <WalletBalanceSnapshot transaction={tx} />
               </div>
 
               {/* Additional info spanning full width */}

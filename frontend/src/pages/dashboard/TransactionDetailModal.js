@@ -5,6 +5,7 @@ import {
   UserRound, WalletCards, X,
 } from 'lucide-react';
 import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
+import WalletBalanceSnapshot from '@/components/WalletBalanceSnapshot';
 
 const EXPLORER = {
   TRC20: 'https://tronscan.org/#/transaction/',
@@ -258,6 +259,7 @@ export default function TransactionDetailModal({ tx, onClose }) {
             {meta.rate !== undefined && <InfoRow icon={Receipt} label="Taux de conversion" value={String(meta.rate)} />}
             <InfoRow icon={WalletCards} label="Devise" value={currency} />
           </div>
+          <WalletBalanceSnapshot transaction={tx} />
 
           <div className="mt-3 rounded-2xl border border-slate-100 bg-white px-4">
             <h3 className="pt-4 text-sm font-extrabold text-slate-900">Références de rapprochement</h3>
