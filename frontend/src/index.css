@@ -505,6 +505,48 @@ select {
   height: 20px;
   width: 20px;
 }
+.bt-referral-banner {
+  display: flex;
+  flex: 0 0 auto;
+  overflow: hidden;
+  color: #1D4ED8;
+  text-decoration: none;
+}
+.bt-referral-banner__viewport {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.bt-referral-banner__track {
+  display: flex;
+  width: max-content;
+  height: 100%;
+  align-items: center;
+  animation: bt-referral-marquee 24s linear infinite;
+  will-change: transform;
+}
+.bt-referral-banner__message {
+  display: block;
+  flex: 0 0 auto;
+  width: max-content;
+  padding-right: 24px;
+  color: #1D4ED8;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+.bt-referral-banner:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+@keyframes bt-referral-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
 @media (max-width: 639px) {
   .bt-social-banner {
     width: 100%;
@@ -516,6 +558,37 @@ select {
   .bt-social-banner__viewport { flex-basis: 125px; }
   .bt-social-banner__slide { font-size: 10px; }
   .bt-social-banner__icon { height: 18px; width: 18px; }
+  .bt-referral-banner__message { font-size: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bt-referral-banner__track {
+    width: 100%;
+    animation: none;
+    transform: none;
+  }
+  .bt-referral-banner__message {
+    display: none;
+    flex: 0 0 100%;
+    width: 100%;
+    padding-right: 0;
+    overflow: visible;
+    white-space: normal;
+  }
+  .bt-referral-banner__message:first-child {
+    display: block;
+  }
+  .bt-referral-banner__viewport {
+    height: auto;
+    overflow: visible;
+  }
+  .bt-referral-banner {
+    height: auto;
+    min-height: 38px;
+    padding-block: 6px;
+  }
+}
+@media (max-width: 639px) and (prefers-reduced-motion: reduce) {
+  .bt-referral-banner { min-height: 36px; }
 }
 .bt-social-banner__progress {
   position: absolute;

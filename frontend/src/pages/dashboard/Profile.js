@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { BadgeCheck, BriefcaseBusiness, Copy, Globe2, ImagePlus, Mail, Phone, Share2, ShieldCheck, Trash2, UserRound, Users, WalletCards } from 'lucide-react';
 import { toast } from 'sonner';
@@ -10,6 +11,13 @@ import Settings from './Settings';
 
 export default function Profile() {
   const { user, refresh } = useAuth();
+  const { hash } = useLocation();
+  const referralSectionRef = useRef(null);
+  useEffect(() => {
+    if (hash === '#referral') {
+      referralSectionRef.current?.scrollIntoView({ block: 'start' });
+    }
+  }, [hash]);
   const fileRef = useRef(null);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const {
@@ -160,7 +168,7 @@ export default function Profile() {
         </div>
       </div>
 
-      <section className="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_4px_20px_rgba(15,23,42,0.04)]" aria-labelledby="referral-title" data-testid="profile-referral">
+      <section id="referral" ref={referralSectionRef} className="scroll-mt-24 overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_4px_20px_rgba(15,23,42,0.04)]" aria-labelledby="referral-title" data-testid="profile-referral">
         <div className="border-b border-blue-100 bg-blue-50/60 px-5 py-5 sm:px-6">
           <div className="flex items-start gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#2563EB] text-white">

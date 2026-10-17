@@ -8,6 +8,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useFeatures } from '@/hooks/useFeatures';
 import { prefetchPageForRoute } from '@/pageLoaders';
 import DigiShopQuickAction from '@/components/DigiShopQuickAction';
+import ReferralBanner from '@/components/ReferralBanner';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem from './TransactionListItem';
 import walletReferenceCard from '@/assets/wallet-reference-card.jpg';
@@ -252,6 +253,8 @@ export default function DashboardHome() {
           ))}
         </div>
       </div>
+
+      <ReferralBanner />
 
       {/* Search */}
       <div className="bg-white border border-slate-100 rounded-2xl p-2.5 sm:p-3 flex items-center gap-2 sm:gap-3 shadow-[0_4px_20px_rgba(15,23,42,0.04)]">
