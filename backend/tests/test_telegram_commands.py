@@ -5,6 +5,8 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import paydunya
 import server
@@ -171,6 +173,64 @@ def test_search_matches_email_phone_provider_reference_and_internal_id(monkeypat
     assert any(row["record"]["id"] == "withdrawal-2" for row in by_transaction_id)
 
 
+@pytest.mark.parametrize("kind,expected_id,reference,provider_id,phone", [
+    ("depot", "deposit-ledger-1", "BTP-PD-0123456789abcdef",
+     "PD-INV-77", "+228 90-00 11 11"),
+    ("retrait", "withdrawal-2", "BTP-WD-00002",
+     "AF-PAYOUT-22", "+228 90-00 22 22"),
+    ("echange", "exchange-3", "BTP-EX-00003",
+     "IZI-INTENT-33", "+228 90-00 11 11"),
+    ("total", "deposit-ledger-1", "BTP-PD-0123456789abcdef",
+     "PD-INV-77", "+228 90-00 11 11"),
+])
+@pytest.mark.parametrize("lookup", [
+    "internal_id", "reference", "provider_id", "phone",
+    "email", "username", "handle", "full_name",
+])
+def test_all_commands_accept_references_and_user_identity(
+        monkeypatch, kind, expected_id, reference, provider_id, phone, lookup):
+    _install_db(monkeypatch)
+    values = {
+        "internal_id": expected_id, "reference": reference,
+        "provider_id": provider_id, "phone": phone,
+        "email": "PAYER@EXAMPLE.TEST", "username": "client-test",
+        "handle": "@CLIENT-TEST", "full_name": "Client Test",
+    }
+    results = asyncio.run(server._telegram_search_records(kind, values[lookup]))
+    assert expected_id in {row["record"]["id"] for row in results}
+
+
+def test_total_identity_search_includes_all_types_and_raw_payment_sources(monkeypatch):
+    database = _install_db(monkeypatch)
+    database.merchant_payments.rows.append({
+        "id": "api-payment-1", "merchant_id": "user-1",
+        "status": "pending", "created_at": "2026-09-26T10:00:00Z",
+    })
+    results = asyncio.run(server._telegram_search_records("total", "Client Test"))
+    assert {row["record"]["id"] for row in results} >= {
+        "deposit-ledger-1", "withdrawal-2", "exchange-3",
+        "failed-momo-01234567", "public-payment-4", "api-payment-1",
+    }
+    deposit = next(row for row in results if row["record"]["id"] == "deposit-ledger-1")
+    rendered = asyncio.run(server._telegram_record_text("total", deposit))
+    assert "<b>Dépôt —" in rendered
+
+
+def test_search_matches_external_payer_name_and_username_without_user_account(monkeypatch):
+    database = _install_db(monkeypatch)
+    database.link_payments.rows.append({
+        "id": "external-payer-1", "user_id": "user-2", "status": "paid",
+        "metadata": {"payer_name": "External Payer", "payer_username": "external-handle"},
+        "created_at": "2026-09-26T10:00:00Z",
+    })
+    for query in ("External Payer", "@external-handle"):
+        for kind in ("depot", "total"):
+            results = asyncio.run(server._telegram_search_records(kind, query))
+            assert "external-payer-1" in {row["record"]["id"] for row in results}
+    assert asyncio.run(server._telegram_search_records("total", ".*")) == []
+    assert asyncio.run(server._telegram_search_records("total", "not-a-real-reference")) == []
+
+
 def test_search_matches_biztranspay_reference_for_ledger_and_raw_deposit(monkeypatch):
     _install_db(monkeypatch)
     ledger = asyncio.run(server._telegram_search_records(
@@ -293,11 +353,19 @@ def test_telegram_command_aliases_and_chat_allowlist(monkeypatch):
         "chat": {"id": "another-chat"}, "text": "/retrait value",
     }))
     assert sent == []
+    assert searches == []
+    for command in ("/dépôt Client Test", "/échange @client-test", "/total Client Test"):
+        asyncio.run(server._telegram_handle_command({
+            "chat": {"id": "another-chat"}, "text": command,
+        }))
+    assert sent == [] and searches == []
 
     for command, expected in (
         ("/dépôt payer@example.test", ("depot", "payer@example.test")),
         ("/retrait +22890002222", ("retrait", "+22890002222")),
         ("/échange IZI-INTENT-33", ("echange", "IZI-INTENT-33")),
+        ("/total Client Test", ("total", "Client Test")),
+        ("/dépôt@BizBot @client-test", ("depot", "@client-test")),
     ):
         asyncio.run(server._telegram_handle_command({
             "chat": {"id": "chat-1"}, "text": command,
@@ -309,6 +377,30 @@ def test_telegram_command_aliases_and_chat_allowlist(monkeypatch):
         "chat": {"id": "chat-1"}, "text": "/total",
     }))
     assert sent[-1] == ("chat-1", "solde-report")
+
+    asyncio.run(server._telegram_handle_command({
+        "chat": {"id": "chat-1"}, "text": "/total " + "x" * 101,
+    }))
+    assert "100 caractères maximum" in sent[-1][1]
+
+
+def test_total_command_no_match_is_clear_and_does_not_fetch_balances(monkeypatch):
+    _install_db(monkeypatch)
+    sent = []
+
+    async def send(chat_id, text):
+        sent.append((chat_id, text))
+
+    async def unexpected_balances():
+        raise AssertionError("/total with a search must not fetch provider balances")
+
+    monkeypatch.setattr(server, "_telegram_config", lambda: ("fixture-token", "chat-1"))
+    monkeypatch.setattr(server, "_send_telegram_message", send)
+    monkeypatch.setattr(server, "_telegram_provider_totals_text", unexpected_balances)
+    asyncio.run(server._telegram_handle_command({
+        "chat": {"id": "chat-1"}, "text": "/total no-such-reference",
+    }))
+    assert sent == [("chat-1", "Aucune transaction trouvée pour cette recherche.")]
 
 
 def test_paydunya_balance_parser_aggregates_currency_and_rejects_bad_payload():

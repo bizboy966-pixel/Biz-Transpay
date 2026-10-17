@@ -1604,6 +1604,12 @@ def _telegram_command_parts(text: str) -> tuple[str, str]:
 
 _TELEGRAM_SEARCH_CONTACT_FIELDS = (
     "email", "customer_email", "payer_email", "phone", "phone_number",
+    "username", "full_name", "name", "customer_name", "payer_name",
+    "sender_name", "recipient_name", "customer_username", "payer_username",
+    "metadata.username", "metadata.full_name", "metadata.name",
+    "metadata.customer_name", "metadata.payer_name",
+    "metadata.sender_name", "metadata.recipient_name",
+    "metadata.customer_username", "metadata.payer_username",
     "customer_phone", "payer_phone", "recipient_phone", "sender_phone",
     "mobile_money_phone", "metadata.email",
     "metadata.customer_email", "metadata.payer_email", "metadata.phone",
@@ -1643,6 +1649,27 @@ _TELEGRAM_SEARCH_REFERENCE_FIELDS = (
 )
 
 
+def _telegram_search_predicates(query: str, fields: tuple) -> list[dict]:
+    """Literal identity/reference search, tolerating phone formatting and @handles."""
+    rx = {"$regex": _literal_regex_term(query, field_name="Identifiant"),
+          "$options": "i"}
+    clauses = [{field: rx} for field in fields]
+    if query.startswith("@") and query[1:].strip():
+        username_rx = {
+            "$regex": _literal_regex_term(query[1:].strip(), field_name="Identifiant"),
+            "$options": "i",
+        }
+        clauses.extend({field: username_rx} for field in fields
+                       if field.rsplit(".", 1)[-1].endswith("username"))
+    if re.fullmatch(r"[+\d\s().-]+", query):
+        digits = re.sub(r"\D", "", query)
+        if len(digits) >= 6:
+            phone_rx = {"$regex": r"\D*".join(re.escape(d) for d in digits),
+                        "$options": "i"}
+            clauses.extend({field: phone_rx} for field in fields if "phone" in field)
+    return clauses
+
+
 async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     query = str(query or "").strip()
     if not query or len(query) > 100:
@@ -1651,9 +1678,10 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     rx = {"$regex": needle, "$options": "i"}
     user_ids: list[str] = []
     users = await db.users.find(
-        {"$or": [{"email": rx}, {"phone": rx}]},
+        {"$or": _telegram_search_predicates(
+            query, ("id", "email", "phone", "username", "full_name"))},
         {"_id": 0, "id": 1},
-    ).to_list(20)
+    ).to_list(1000)
     user_ids.extend(str(user["id"]) for user in users if user.get("id"))
 
     matches: list[dict] = []
@@ -1673,17 +1701,15 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
         {"id": rx},
         {"reference": rx},
     ]
-    tx_or.extend(
-        {field: rx}
-        for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
-                      *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
-    )
+    tx_or.extend(_telegram_search_predicates(
+        query, (*_TELEGRAM_SEARCH_CONTACT_FIELDS, *_TELEGRAM_SEARCH_REFERENCE_FIELDS)))
     if user_ids:
         tx_or.append({"user_id": {"$in": user_ids}})
     tx_query = {
-        "type": {"$in": tx_types},
         "$or": tx_or,
     }
+    if kind != "total":
+        tx_query["type"] = {"$in": tx_types}
     if kind == "retrait":
         tx_query["direction"] = "out"
     elif kind == "depot":
@@ -1693,18 +1719,15 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
     ).sort("created_at", -1).limit(20).to_list(20)
     matches.extend({"source": "transaction", "record": doc} for doc in tx_docs)
 
-    if kind == "depot":
+    if kind in {"depot", "total"}:
         deposit_or = [
             {"id": query},
             {"id": rx},
             {"reference": query},
             {"reference": rx},
         ]
-        deposit_or.extend(
-            {field: rx}
-            for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
-                          *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
-        )
+        deposit_or.extend(_telegram_search_predicates(
+            query, (*_TELEGRAM_SEARCH_CONTACT_FIELDS, *_TELEGRAM_SEARCH_REFERENCE_FIELDS)))
         deposit_ref_marker = "BTP-PD-"
         ref_marker_at = query.lower().find(deposit_ref_marker.lower())
         if ref_marker_at >= 0:
@@ -1728,11 +1751,8 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
             {"id": rx},
             {"reference": rx},
         ]
-        payment_or.extend(
-            {field: rx}
-            for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
-                          *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
-        )
+        payment_or.extend(_telegram_search_predicates(
+            query, (*_TELEGRAM_SEARCH_CONTACT_FIELDS, *_TELEGRAM_SEARCH_REFERENCE_FIELDS)))
         if user_ids:
             payment_or.append({"user_id": {"$in": user_ids}})
         payment_docs = await db.payment_transactions.find(
@@ -1755,11 +1775,8 @@ async def _telegram_search_records(kind: str, query: str) -> list[dict]:
                 {"id": query}, {"id": rx}, {"reference": query},
                 {"reference": rx},
             ]
-            source_or.extend(
-                {field: rx}
-                for field in (*_TELEGRAM_SEARCH_CONTACT_FIELDS,
-                              *_TELEGRAM_SEARCH_REFERENCE_FIELDS)
-            )
+            source_or.extend(_telegram_search_predicates(
+                query, (*_TELEGRAM_SEARCH_CONTACT_FIELDS, *_TELEGRAM_SEARCH_REFERENCE_FIELDS)))
             if user_ids:
                 source_or.extend(
                     {field: {"$in": user_ids}} for field in owner_fields
@@ -1882,7 +1899,15 @@ async def _telegram_record_text(kind: str, match: dict) -> str:
     kind_label = kind_labels.get(kind, kind.title())
     if source == "transaction":
         record = await _enrich_transaction_wallet_snapshot(record)
+        if kind == "total":
+            kind_label = {
+                "deposit": "Dépôt", "withdrawal": "Retrait",
+                "exchange": "Échange", "transfer": "Transfert",
+                "referral_commission": "Commission de parrainage",
+            }.get(record.get("type"), "Transaction")
         metadata = record.get("metadata") or {}
+        if record.get("type") == "deposit":
+            kind_label = "Dépôt"
         if record.get("type") == "exchange":
             kind_label = "Échange"
         elif record.get("type") in {"payment", "api_payment", "payment_api",
@@ -2208,30 +2233,31 @@ async def _telegram_handle_command(message: dict) -> None:
         await _send_telegram_message(
             chat_id,
             "Commandes disponibles :\n"
-            "/depot ou /dépôt <email, téléphone, référence ou ID>\n"
-            "/retrait <email, téléphone, référence ou ID>\n"
-            "/echange ou /échange <email, téléphone, référence ou ID>\n"
-            "/total",
+            "/depot ou /dépôt <référence, ID, téléphone, email, @pseudo ou nom complet>\n"
+            "/retrait <référence, ID, téléphone, email, @pseudo ou nom complet>\n"
+            "/echange ou /échange <référence, ID, téléphone, email, @pseudo ou nom complet>\n"
+            "/total <identifiant> : rechercher tous les types de transactions\n"
+            "/total : soldes des prestataires",
         )
         return
     kind = aliases.get(command)
     if not kind:
         return
-    if kind == "total":
-        if query:
-            await _send_telegram_message(chat_id, "Utilisation : /total")
-            return
+    if kind == "total" and not query:
         await _send_telegram_message(chat_id, await _telegram_provider_totals_text())
         return
     if not query:
         await _send_telegram_message(
             chat_id,
-            f"Utilisation : /{command} <email, téléphone, référence ou ID>",
+            f"Utilisation : /{command} <référence, ID, téléphone, email, @pseudo ou nom complet>",
         )
+        return
+    if len(query) > 100:
+        await _send_telegram_message(chat_id, "Recherche trop longue : 100 caractères maximum.")
         return
     matches = await _telegram_search_records(kind, query)
     if not matches:
-        await _send_telegram_message(chat_id, f"Aucun {kind} trouvé pour cette recherche.")
+        await _send_telegram_message(chat_id, "Aucune transaction trouvée pour cette recherche.")
         return
     blocks = [
         (await _telegram_record_text(kind, match))[:3000]
