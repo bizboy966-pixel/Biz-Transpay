@@ -296,7 +296,7 @@ def test_crypto_deposit_settlement_queues_one_final_notification(monkeypatch):
         return dict(deposit)
 
     async def credit_once(*_args, **_kwargs):
-        return True
+        return {"state": "applied"}
 
     async def record(*_args, **_kwargs):
         return SimpleNamespace(id="crypto-ledger-1", reference="BTP-CRYPTO-1")
@@ -312,7 +312,7 @@ def test_crypto_deposit_settlement_queues_one_final_notification(monkeypatch):
         lambda **_kwargs: {"id": "USDT.TRC20"},
     )
     monkeypatch.setattr(server, "_crypto_wallet_field", lambda _spec: "balance_usdt")
-    monkeypatch.setattr(server, "_credit_wallet_once", credit_once)
+    monkeypatch.setattr(server, "_apply_wallet_operation_once", credit_once)
     monkeypatch.setattr(server, "record_tx", record)
     monkeypatch.setattr(server, "notify", notify)
 

@@ -159,6 +159,19 @@ def _install_db(monkeypatch):
     return database
 
 
+def test_outgoing_search_accepts_historical_paydunya_payout_identifiers(monkeypatch):
+    database = _install_db(monkeypatch)
+    for index, field in enumerate(("paydunya_disbursement_id", "paydunya_invoice_token")):
+        database.transactions.rows.append({
+            "id": f"historical-payout-{index}", "user_id": "user-1",
+            "type": "transfer", "direction": "out", "status": "completed",
+            "reference": f"BTP-PAYOUT-{index}",
+            "metadata": {field: f"PAYOUT-SEARCH-{index}", "transfer_type": "biz_to_mobile"},
+        })
+        results = asyncio.run(server._telegram_search_records("retrait", f"PAYOUT-SEARCH-{index}"))
+        assert f"historical-payout-{index}" in {row["record"]["id"] for row in results}
+
+
 def test_search_matches_email_phone_provider_reference_and_internal_id(monkeypatch):
     _install_db(monkeypatch)
     by_phone = asyncio.run(server._telegram_search_records("retrait", "+22890002222"))

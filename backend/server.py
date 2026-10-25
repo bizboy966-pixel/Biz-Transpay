@@ -651,27 +651,47 @@ async def _persist_transaction_wallet_snapshot(
     return fields
 
 
+_PROVIDER_REFERENCE_KEYS = (
+    "provider_reference", "paydunya_disbursement_id", "paydunya_reference",
+    "paydunya_disbursement_token", "paydunya_invoice_token", "paydunya_token",
+    "afribapay_transaction_id", "afribapay_order_id", "mbiyo_transaction_id",
+    "fedapay_payout_id", "fedapay_reference", "fedapay_id",
+    "izipay_payout_id", "izipay_intent_id", "provider_id",
+    "provider_transaction_id", "transaction_id",
+)
+
+
+def _transaction_provider_reference(record: dict) -> Optional[str]:
+    metadata = record.get("metadata") or {}
+    for key in _PROVIDER_REFERENCE_KEYS:
+        value = record.get(key) or metadata.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
 async def _enrich_transaction_wallet_snapshot(transaction: dict) -> dict:
     if not transaction:
         return transaction
     metadata = dict(transaction.get("metadata") or {})
     operation_id = metadata.get("wallet_operation_id") or metadata.get("operation_id")
-    if not operation_id:
-        return transaction
-    fields = await _wallet_snapshot_metadata(
-        str(transaction.get("user_id") or ""),
-        str(transaction.get("currency") or ""),
-        str(operation_id),
-    )
+    fields = {}
+    provider_reference = _transaction_provider_reference(transaction)
+    if provider_reference and not metadata.get("provider_reference"):
+        fields["provider_reference"] = provider_reference
+    if operation_id:
+        fields.update(await _wallet_snapshot_metadata(
+            str(transaction.get("user_id") or ""),
+            str(transaction.get("currency") or ""),
+            str(operation_id),
+        ))
     if not fields:
         return transaction
     merged = {**metadata, **fields}
     if merged != metadata:
-        await db.transactions.update_one(
-            {"id": transaction.get("id"), "user_id": transaction.get("user_id")},
-            {"$set": {"metadata": merged}},
-        )
-        transaction["metadata"] = merged
+        # Historical detail enrichment is read-only: the authoritative snapshot
+        # remains in the financial operation store, not reconstructed balances.
+        transaction = {**transaction, "metadata": merged}
     return transaction
 
 
@@ -1154,7 +1174,9 @@ def _telegram_display_amount(value: Any, currency: str) -> str:
         amount = Decimal(str(value))
         if not amount.is_finite():
             raise InvalidOperation
-        digits = 6 if str(currency).upper() in {"USDT", "BTC", "ETH"} else 2
+        asset = str(currency).upper().split(".", 1)[0]
+        crypto_coins = {spec["coin"] for spec in EASY_CHANGE_ASSET_SPECS}
+        digits = 8 if asset == "BTC" else 6 if asset in crypto_coins else 2
         rendered = f"{amount:,.{digits}f}"
         if digits == 2 and rendered.endswith(".00"):
             rendered = rendered[:-3]
@@ -1356,6 +1378,69 @@ async def _telegram_transaction_context(
     return transaction, deposit
 
 
+async def _telegram_balance_record(record: dict, source: str = "transaction") -> dict:
+    if source == "transaction":
+        return await _enrich_transaction_wallet_snapshot(record)
+    metadata = dict(record.get("metadata") or {})
+    identifier = (record.get("session_id") or record.get("id")
+                  if source == "payment" else record.get("id"))
+    prefixes = {
+        "deposit": f"{record.get('provider') or 'paydunya'}:deposit",
+        "crypto_deposit": "izipay:deposit", "link_payment": "izipay:link",
+        "merchant_payment": "izipay:merchant-payment", "payment": "stripe:deposit",
+    }
+    operation_id = metadata.get("wallet_operation_id") or metadata.get("operation_id")
+    if not operation_id and identifier and source in prefixes:
+        operation_id = f"{prefixes[source]}:{identifier}"
+    owner_id = record.get("merchant_id") or record.get("user_id")
+    if operation_id and owner_id:
+        metadata.update(await _wallet_snapshot_metadata(
+            str(owner_id), str(record.get("currency") or record.get("coin") or "USDT"),
+            operation_id))
+    return {**record, "metadata": metadata}
+
+
+def _telegram_wallet_balance_lines(record: dict) -> list[str]:
+    """Only persisted financial snapshots; never infer a historical balance."""
+    meta = record.get("metadata") or {}
+    rows = []
+    before, after = meta.get("wallet_balance_before"), meta.get("wallet_balance_after")
+    currency = str(meta.get("wallet_balance_currency") or record.get("currency") or "")
+    if before is not None and after is not None:
+        rows.append((currency, before, after))
+    else:
+        before_map = meta.get("wallet_balances_before") or {}
+        after_map = meta.get("wallet_balances_after") or {}
+        for field, value in before_map.items():
+            if field not in after_map:
+                continue
+            label = {"balance_xof": "XOF", "balance_xaf": "XAF",
+                     "balance_usdt": "USDT (historique)"}.get(field)
+            if not label:
+                label = next((spec["id"] for spec in EASY_CHANGE_ASSET_SPECS
+                              if _crypto_wallet_field(spec) == field), field)
+            rows.append((label, value, after_map[field]))
+    lines = ["━━━━━━━━━━━━━━━━━━━━"]
+    if not rows:
+        lines.append("Soldes avant / après : non enregistrés pour cette opération.")
+    for label, start, end in rows:
+        lines.extend([
+            f"SOLDE AVANT · {html_escape(label)}",
+            f"<b>{html_escape(_telegram_display_amount(start, label))}</b>",
+            f"SOLDE APRÈS · {html_escape(label)}",
+            f"<b>{html_escape(_telegram_display_amount(end, label))}</b>",
+        ])
+    refund = meta.get("refund_wallet_snapshot") or {}
+    if refund.get("wallet_balance_before") is not None and refund.get("wallet_balance_after") is not None:
+        label = str(refund.get("wallet_balance_currency") or currency)
+        lines.extend([
+            "REMBOURSEMENT · SOLDE AVANT / APRÈS",
+            f"<b>{html_escape(_telegram_display_amount(refund['wallet_balance_before'], label))}"
+            f" → {html_escape(_telegram_display_amount(refund['wallet_balance_after'], label))}</b>",
+        ])
+    return lines
+
+
 async def _telegram_notification_text(
     user_id: str,
     ntype: str,
@@ -1370,6 +1455,10 @@ async def _telegram_notification_text(
             user_id, ntype, title, body, data
         )
     transaction, deposit = await _telegram_transaction_context(data)
+    if transaction:
+        transaction = await _telegram_balance_record(transaction)
+    if deposit:
+        deposit = await _telegram_balance_record(deposit, "deposit")
     record = deposit or transaction or {}
     meta = (transaction or {}).get("metadata") or {}
     title_by_type = {
@@ -1448,11 +1537,7 @@ async def _telegram_notification_text(
             deposit.get("operator_name") or deposit.get("operator")
             or deposit.get("network") or "—"
         )
-        provider_reference = (
-            deposit.get("provider_reference") or deposit.get("paydunya_reference")
-            or deposit.get("fedapay_reference") or deposit.get("mbiyo_transaction_id")
-            or deposit.get("izipay_intent_id") or deposit.get("izipay_payout_id")
-        )
+        provider_reference = _transaction_provider_reference(deposit)
         internal_reference = deposit.get("reference") or deposit.get("id")
         event_time = deposit.get("approved_at") or deposit.get("updated_at") or deposit.get("created_at")
         source_labels = {
@@ -1485,11 +1570,7 @@ async def _telegram_notification_text(
             if incoming else meta.get("recipient_gets", record.get("amount"))
         )
         operator = meta.get("operator_name") or meta.get("operator") or meta.get("network") or "—"
-        provider_reference = (
-            meta.get("provider_reference") or meta.get("mbiyo_transaction_id")
-            or meta.get("fedapay_payout_id") or meta.get("paydunya_disbursement_id")
-            or meta.get("izipay_intent_id") or meta.get("izipay_payout_id")
-        )
+        provider_reference = _transaction_provider_reference(record)
         internal_reference = record.get("reference") or record.get("id")
         event_time = meta.get("completed_at") or record.get("updated_at") or record.get("created_at")
         lines = [
@@ -1505,6 +1586,7 @@ async def _telegram_notification_text(
             *crypto_lines,
             f"🕘 Heure : <b>{html_escape(_telegram_display_time(event_time))}</b>",
         ]
+    lines.extend(_telegram_wallet_balance_lines(transaction or deposit or {}))
     lines.extend(await _telegram_party_lines(transaction, deposit))
     return "\n".join(lines)[:TELEGRAM_MAX_MESSAGE_LENGTH]
 
@@ -1623,6 +1705,7 @@ _TELEGRAM_SEARCH_REFERENCE_FIELDS = (
     "transaction_reference", "payment_reference", "biztranspay_reference",
     "external_id", "operation_id", "idempotency_key",
     "paydunya_reference", "paydunya_token", "paydunya_disbursement_token",
+    "paydunya_disbursement_id", "paydunya_invoice_token",
     "mbiyo_transaction_id", "afribapay_transaction_id", "afribapay_order_id",
     "fedapay_id", "fedapay_reference", "fedapay_payout_id",
     "izipay_intent_id", "izipay_payout_id",
@@ -1637,6 +1720,7 @@ _TELEGRAM_SEARCH_REFERENCE_FIELDS = (
     "metadata.operation_id", "metadata.idempotency_key",
     "metadata.merchant_reference", "metadata.paydunya_reference",
     "metadata.paydunya_token", "metadata.paydunya_disbursement_token",
+    "metadata.paydunya_disbursement_id", "metadata.paydunya_invoice_token",
     "metadata.mbiyo_transaction_id",
     "metadata.afribapay_transaction_id", "metadata.afribapay_order_id",
     "metadata.fedapay_id", "metadata.fedapay_reference",
@@ -1876,29 +1960,15 @@ def _telegram_record_provider(record: dict) -> Optional[str]:
 
 
 def _telegram_provider_reference(record: dict) -> Optional[str]:
-    metadata = record.get("metadata") or {}
-    for key in (
-        "provider_reference", "paydunya_reference", "paydunya_token",
-        "paydunya_disbursement_token",
-        "afribapay_transaction_id", "afribapay_order_id",
-        "mbiyo_transaction_id", "fedapay_reference", "fedapay_id",
-        "fedapay_payout_id",
-        "izipay_intent_id", "izipay_payout_id", "provider_id",
-        "provider_transaction_id", "transaction_id",
-    ):
-        value = record.get(key) or metadata.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return None
+    return _transaction_provider_reference(record)
 
 
 async def _telegram_record_text(kind: str, match: dict) -> str:
     source = match["source"]
-    record = match["record"]
+    record = await _telegram_balance_record(match["record"], source)
     kind_labels = {"depot": "Dépôt", "retrait": "Retrait", "echange": "Échange"}
     kind_label = kind_labels.get(kind, kind.title())
     if source == "transaction":
-        record = await _enrich_transaction_wallet_snapshot(record)
         if kind == "total":
             kind_label = {
                 "deposit": "Dépôt", "withdrawal": "Retrait",
@@ -1961,11 +2031,7 @@ async def _telegram_record_text(kind: str, match: dict) -> str:
             f"Email compte : <code>{html_escape(owner.get('email', '—'))}</code>",
             *party_lines,
         ]
-        if meta.get("wallet_balance_before") is not None:
-            lines.extend([
-                f"Solde avant : <b>{html_escape(str(meta.get('wallet_balance_before')))} {html_escape(str(meta.get('wallet_balance_currency') or record.get('currency') or ''))}</b>",
-                f"Solde après : <b>{html_escape(str(meta.get('wallet_balance_after')))} {html_escape(str(meta.get('wallet_balance_currency') or record.get('currency') or ''))}</b>",
-            ])
+        lines.extend(_telegram_wallet_balance_lines(record))
         crypto_address = (
             meta.get("deposit_address") or meta.get("wallet_address")
             or meta.get("destination_address")
@@ -2027,6 +2093,7 @@ async def _telegram_record_text(kind: str, match: dict) -> str:
             lines.append(
                 f"Adresse crypto : <code>{html_escape(_telegram_mask_crypto_address(address))}</code>"
             )
+        lines.extend(_telegram_wallet_balance_lines(record))
         return "\n".join(lines)
 
     if source in {"link_payment", "merchant_payment"}:
@@ -2067,6 +2134,7 @@ async def _telegram_record_text(kind: str, match: dict) -> str:
             lines.append(
                 f"Adresse crypto : <code>{html_escape(_telegram_mask_crypto_address(address))}</code>"
             )
+        lines.extend(_telegram_wallet_balance_lines(record))
         return "\n".join(lines)
 
     owner = await _telegram_user_summary(record.get("user_id"))
@@ -2096,6 +2164,7 @@ async def _telegram_record_text(kind: str, match: dict) -> str:
         f"Email destinataire : <code>{html_escape(owner.get('email', '—'))}</code>",
         f"Email payeur : <code>{html_escape(_telegram_mask_email(payer_email) or '—')}</code>",
         f"Téléphone payeur : <code>{html_escape(_telegram_mask_phone(payer_phone) or '—')}</code>",
+        *_telegram_wallet_balance_lines(record),
     ])
 
 
@@ -17421,8 +17490,9 @@ class AdminUserAction(BaseModel):
 class AdminBalanceAction(BaseModel):
     # The product labels the dollar-denominated wallet as USDT. Accept USD as
     # an admin API alias as well, but persist it consistently as USDT.
-    currency: Literal["XOF", "XAF", "USDT", "USD"]
-    amount: float = Field(..., gt=0)
+    currency: str = Field(..., min_length=3, max_length=32)
+    asset_id: Optional[str] = Field(None, max_length=64)
+    amount: float = Field(..., gt=0, allow_inf_nan=False)
     reason: Optional[str] = ""
     confirmation: Optional[str] = None
     action_id: Optional[str] = Field(None, min_length=8, max_length=120)
@@ -18675,6 +18745,56 @@ async def admin_user_action(user_id: str, action: str,
     return {"ok": True, "user": u}
 
 
+async def _admin_balance_wallet(req: AdminBalanceAction) -> tuple[str, str, dict]:
+    currency = req.currency.strip().upper()
+    if req.asset_id:
+        assets = await _active_exchange_crypto_assets()
+        asset_id = req.asset_id.strip().upper()
+        asset = assets.get(asset_id)
+        spec = _crypto_wallet_spec(asset_id=asset_id)
+        if not asset or not spec:
+            raise HTTPException(400, "Actif crypto ou réseau indisponible")
+        if currency not in {spec["coin"], spec["id"]}:
+            raise HTTPException(422, "La devise ne correspond pas à l'actif sélectionné")
+        return spec["id"], _crypto_wallet_field(spec), {
+            "asset_id": spec["id"], "asset_code": spec["id"],
+            "coin": spec["coin"], "network": spec["network_code"],
+            "wallet_field": _crypto_wallet_field(spec),
+        }
+    # Retain the historical API contract without assigning a network to funds
+    # that never had one. The admin UI only offers explicit crypto asset IDs.
+    currency = "USDT" if currency == "USD" else currency
+    field = {"XOF": "balance_xof", "XAF": "balance_xaf",
+             "USDT": "balance_usdt"}.get(currency)
+    if not field:
+        raise HTTPException(422, "Sélectionnez un portefeuille crypto et son réseau")
+    return currency, field, {}
+
+
+@api.get("/admin/users/{user_id}/balance-wallets")
+async def admin_user_balance_wallets(user_id: str, admin=Depends(get_admin)):
+    user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "Utilisateur introuvable")
+    assets = await _active_exchange_crypto_assets()
+    wallets = [
+        {"id": code, "currency": code, "balance": float(user.get(field, 0) or 0)}
+        for code, field in (("XOF", "balance_xof"), ("XAF", "balance_xaf"))
+    ]
+    for asset_id, asset in assets.items():
+        spec = _crypto_wallet_spec(asset_id=asset_id)
+        if not spec:
+            continue
+        wallets.append({
+            "id": spec["id"], "asset_id": spec["id"], "currency": spec["coin"],
+            "coin": spec["coin"], "network": spec["network_code"],
+            "network_name": spec["network_name"],
+            "balance": float(user.get(_crypto_wallet_field(spec), 0) or 0),
+        })
+    return {"wallets": wallets,
+            "legacy_usdt_balance": float(user.get("balance_usdt", 0) or 0)}
+
+
 @api.post("/admin/users/{user_id}/credit")
 async def admin_credit(
     user_id: str,
@@ -18686,21 +18806,22 @@ async def admin_credit(
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    currency = "USDT" if req.currency in ("USDT", "USD") else req.currency
-    field = {
-        "XOF": "balance_xof",
-        "XAF": "balance_xaf",
-        "USDT": "balance_usdt",
-    }[currency]
+    currency, field, wallet_metadata = await _admin_balance_wallet(req)
     operation_id = f"admin-balance:{req.action_id or new_id()}"
-    credited = await _credit_wallet_once(user_id, field, req.amount, operation_id)
+    result = await _apply_wallet_operation_once(
+        user_id, {field: float(req.amount)}, operation_id, "credit", primary_field=field)
+    if result.get("state") not in {"applied", "already"}:
+        raise HTTPException(409, "Le crédit n'a pas été confirmé ; vérifiez l'identifiant de l'action")
+    credited = result["state"] == "applied"
     await record_tx(user_id, "deposit", "in", req.amount, currency,
                     description=f"Crédit administrateur ({req.reason or 'manuel'})",
-                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]},
+                    metadata={"admin_id": admin["id"], "admin_username": admin["username"],
+                              **wallet_metadata},
                     operation_id=operation_id)
     await audit(admin["id"], admin["username"], "credit",
                 target_user_id=user_id, target_username=target["username"],
-                details={"amount": req.amount, "currency": currency, "reason": req.reason})
+                details={"amount": req.amount, "currency": currency, "reason": req.reason,
+                         **wallet_metadata})
     return {"ok": True, "applied": credited}
 
 
@@ -18715,28 +18836,26 @@ async def admin_debit(
     target = await db.users.find_one({"id": user_id}, {"_id": 0})
     if not target:
         raise HTTPException(404, "Utilisateur introuvable")
-    currency = "USDT" if req.currency in ("USDT", "USD") else req.currency
-    field = {
-        "XOF": "balance_xof",
-        "XAF": "balance_xaf",
-        "USDT": "balance_usdt",
-    }[currency]
+    currency, field, wallet_metadata = await _admin_balance_wallet(req)
     operation_id = f"admin-balance:{req.action_id or new_id()}"
-    debited = await _debit_wallet_once(user_id, field, req.amount, operation_id)
-    if not debited:
-        # A replay of an already-applied action is safe and should remain
-        # idempotent; a new action with no funds is rejected.
-        existing = await db.transactions.find_one(
-            {"user_id": user_id, "metadata.operation_id": operation_id}, {"_id": 0})
-        if not existing:
-            raise HTTPException(400, "Solde utilisateur insuffisant")
+    result = await _apply_wallet_operation_once(
+        user_id, {field: -float(req.amount)}, operation_id, "debit",
+        primary_field=field, required_balance_field=field,
+        required_balance_amount=float(req.amount))
+    if result.get("state") == "insufficient":
+        raise HTTPException(400, "Solde utilisateur insuffisant")
+    if result.get("state") not in {"applied", "already"}:
+        raise HTTPException(409, "Le débit n'a pas été confirmé ; vérifiez l'identifiant de l'action")
+    debited = result["state"] == "applied"
     await record_tx(user_id, "withdrawal", "out", req.amount, currency,
                     description=f"Débit administrateur ({req.reason or 'manuel'})",
-                    metadata={"admin_id": admin["id"], "admin_username": admin["username"]},
+                    metadata={"admin_id": admin["id"], "admin_username": admin["username"],
+                              **wallet_metadata},
                     operation_id=operation_id)
     await audit(admin["id"], admin["username"], "debit",
                 target_user_id=user_id, target_username=target["username"],
-                details={"amount": req.amount, "currency": currency, "reason": req.reason})
+                details={"amount": req.amount, "currency": currency, "reason": req.reason,
+                         **wallet_metadata})
     return {"ok": True, "applied": debited}
 
 

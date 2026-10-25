@@ -15,11 +15,11 @@ Withdrawals queued for manual fulfilment must reserve funds from the exact sourc
 
 **How to apply:** Follow the same debit and refund idempotency barriers for automated and manually queued withdrawals. Do not move or infer balances from the legacy unassigned USDT field.
 
-Exchange crypto availability follows the active, locally enabled deposit asset/network catalog, not payout activation settings. Keep provider-active and configured crypto-to-USDT rate checks, and retain network-specific wallet fields.
+Exchange crypto availability follows the active, locally enabled deposit asset/network catalog, not payout activation settings. Admin wallet adjustments use this same catalog for exact coin/network selection. Keep provider-active and configured crypto-to-USDT rate checks, and retain network-specific wallet fields.
 
-**Why:** Exchange moves value between internal wallets; coupling its asset list to payout controls can hide assets that are enabled for deposits and conversion even when external withdrawals are configured separately.
+**Why:** Exchange and admin adjustments move internal wallet value, independently of external payout activation. The user explicitly requires admins to choose the appropriate crypto asset/network, not a generic USDT wallet.
 
-**How to apply:** Use the deposit-enabled catalog for Exchange selector and mutation validation. Keep withdrawal eligibility and fees on the transfer configuration path, and continue excluding the legacy unassigned USDT balance from Exchange.
+**How to apply:** Use the deposit-enabled catalog for Exchange and admin wallet selectors and mutation validation. Keep withdrawal eligibility and fees on the transfer configuration path. Never assign legacy unassigned USDT funds to a network.
 
 The historical unassigned `balance_usdt` is not an Exchange currency. Exchange selectors and mutations must use active catalog asset/network IDs only; keep the legacy balance unchanged and separate.
 

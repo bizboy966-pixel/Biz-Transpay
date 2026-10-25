@@ -6,6 +6,8 @@ import {
 } from 'lucide-react';
 import { CountryBadge, OperatorLogo } from '@/components/PaymentBrand';
 import WalletBalanceSnapshot from '@/components/WalletBalanceSnapshot';
+import { getProviderReference } from '../../utils/transactionReferences';
+import api from '@/api';
 
 const EXPLORER = {
   TRC20: 'https://tronscan.org/#/transaction/',
@@ -119,9 +121,29 @@ function InfoRow({ icon: Icon, label, value, content, copyable = false, external
   );
 }
 
-export default function TransactionDetailModal({ tx, onClose }) {
+export default function TransactionDetailModal({ tx: initialTx, onClose }) {
+  const [tx, setTx] = useState(initialTx);
+  const [detailsLoading, setDetailsLoading] = useState(true);
+  const [detailsError, setDetailsError] = useState(false);
   const [copied, setCopied] = useState('');
   const meta = tx?.metadata || {};
+
+  useEffect(() => {
+    let active = true;
+    setTx(initialTx);
+    setDetailsLoading(true);
+    setDetailsError(false);
+    api.get(`/transactions/${encodeURIComponent(initialTx.id)}`)
+      .then(({ data }) => {
+        if (active) setTx({
+          ...initialTx, ...data,
+          metadata: { ...initialTx.metadata, ...data.metadata },
+        });
+      })
+      .catch(() => { if (active) setDetailsError(true); })
+      .finally(() => { if (active) setDetailsLoading(false); });
+    return () => { active = false; };
+  }, [initialTx]);
 
   useEffect(() => {
     const onKeyDown = (event) => event.key === 'Escape' && onClose();
@@ -152,9 +174,7 @@ export default function TransactionDetailModal({ tx, onClose }) {
     const net = incoming
       ? tx.amount
       : first(meta, ['recipient_gets', 'amount_net']) ?? tx.amount;
-    const providerReference = first(meta, [
-      'provider_reference', 'paydunya_reference', 'izipay_payout_id', 'provider_id',
-    ]);
+    const providerReference = getProviderReference(tx);
     const externalReference = first(meta, [
       'external_id', 'external_reference', 'merchant_payment_id',
       'link_payment_id', 'payment_id', 'izipay_intent_id',
@@ -260,12 +280,14 @@ export default function TransactionDetailModal({ tx, onClose }) {
             <InfoRow icon={WalletCards} label="Devise" value={currency} />
           </div>
           <WalletBalanceSnapshot transaction={tx} />
+          {detailsLoading && <p role="status" className="mt-2 text-xs text-slate-500">Vérification des détails enregistrés…</p>}
+          {detailsError && <p role="status" className="mt-2 text-xs text-amber-700">Les détails complémentaires sont indisponibles. Les informations de l’historique restent affichées.</p>}
 
           <div className="mt-3 rounded-2xl border border-slate-100 bg-white px-4">
             <h3 className="pt-4 text-sm font-extrabold text-slate-900">Références de rapprochement</h3>
             <InfoRow icon={Hash} label="Référence Biz-transPay" value={tx.reference || tx.id} copyable onCopy={copyValue} />
             <InfoRow icon={Hash} label="Identifiant externe" value={detail.externalReference} copyable onCopy={copyValue} />
-            <InfoRow icon={Hash} label="Référence prestataire" value={detail.providerReference || first(meta, ['paydunya_token'])} copyable onCopy={copyValue} />
+            <InfoRow icon={Hash} label="Référence prestataire" value={detail.providerReference || 'Non enregistrée'} copyable={Boolean(detail.providerReference)} onCopy={copyValue} />
             <InfoRow icon={Hash} label="TXID crypto" value={detail.txid} copyable external={detail.explorer} onCopy={copyValue} />
             <InfoRow icon={FileText} label="Description" value={tx.description} />
           </div>

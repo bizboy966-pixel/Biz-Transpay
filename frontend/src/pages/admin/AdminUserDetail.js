@@ -10,7 +10,11 @@ export default function AdminUserDetail() {
   const [data, setData] = useState(null);
   const [modal, setModal] = useState(null); // 'credit' | 'debit' | 'action' | 'reset'
   const [amount, setAmount] = useState('');
-  const [currency, setCurrency] = useState('XOF');
+  const [walletId, setWalletId] = useState('XOF');
+  const [wallets, setWallets] = useState([]);
+  const [walletsLoading, setWalletsLoading] = useState(false);
+  const [walletsError, setWalletsError] = useState(false);
+  const [walletRetry, setWalletRetry] = useState(0);
   const [reason, setReason] = useState('');
   const [newPwd, setNewPwd] = useState('');
   const [pending, setPending] = useState(false);
@@ -21,12 +25,46 @@ export default function AdminUserDetail() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [id]);
 
+  useEffect(() => {
+    if (modal?.type !== 'credit' && modal?.type !== 'debit') return undefined;
+    let active = true;
+    setWallets([]);
+    setWalletsLoading(true);
+    setWalletsError(false);
+    api.get(`/admin/users/${id}/balance-wallets`)
+      .then(({ data: walletData }) => {
+        if (!active) return;
+        setWallets(Array.isArray(walletData?.wallets) ? walletData.wallets : []);
+        setWalletsError(false);
+      })
+      .catch(() => {
+        if (active) setWalletsError(true);
+      })
+      .finally(() => {
+        if (active) setWalletsLoading(false);
+      });
+    return () => { active = false; };
+  }, [id, modal?.type, walletRetry]);
+
   const confirmCriticalAction = (label) => (
     window.prompt(`${label}\nSaisissez CONFIRMER pour continuer.`)?.trim().toUpperCase() === 'CONFIRMER'
   );
 
   if (!data) return <div className="text-slate-500 text-sm">Chargement…</div>;
   const u = data.user;
+  const fiatWallets = [
+    { id: 'XOF', currency: 'XOF', balance: wallets.find((wallet) => wallet.id === 'XOF')?.balance ?? u.balance_xof ?? 0 },
+    { id: 'XAF', currency: 'XAF', balance: wallets.find((wallet) => wallet.id === 'XAF')?.balance ?? u.balance_xaf ?? 0 },
+  ];
+  const cryptoWallets = wallets.filter((wallet) => wallet.asset_id && wallet.id && wallet.id !== 'XOF' && wallet.id !== 'XAF');
+  const walletOptions = [...fiatWallets, ...cryptoWallets];
+  const selectedWallet = walletOptions.find((wallet) => wallet.id === walletId) || fiatWallets[0];
+  const walletLabel = (wallet) => {
+    if (!wallet.asset_id) return wallet.currency;
+    const coin = wallet.coin || wallet.currency;
+    const network = wallet.network_name || wallet.network || wallet.id.split('.').slice(1).join('.');
+    return network ? `${coin} · ${network}` : coin;
+  };
 
   const doAction = async (action) => {
     setPending(true);
@@ -40,13 +78,17 @@ export default function AdminUserDetail() {
   };
 
   const doBalance = async (dir) => {
+    const selectedWallet = walletOptions.find((wallet) => wallet.id === walletId);
+    if (!selectedWallet || pending) return;
     if (!confirmCriticalAction(dir === 'credit' ? 'Confirmer le crédit administrateur ?' : 'Confirmer le débit administrateur ?')) return;
     setPending(true);
     try {
-      await api.post(`/admin/users/${id}/${dir}`, {
-        amount: parseFloat(amount), currency, reason,
+      const body = {
+        amount: parseFloat(amount), currency: selectedWallet.currency, reason,
         confirmation: 'CONFIRMER', action_id: balanceActionId,
-      });
+      };
+      if (selectedWallet.asset_id) body.asset_id = selectedWallet.asset_id;
+      await api.post(`/admin/users/${id}/${dir}`, body);
       toast.success(dir === 'credit' ? 'Compte crédité' : 'Compte débité');
       setModal(null); setAmount(''); setReason(''); setBalanceActionId(null);
       load();
@@ -104,7 +146,7 @@ export default function AdminUserDetail() {
 
       {/* Balances */}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {[{ c: 'XOF', v: u.balance_xof }, { c: 'XAF', v: u.balance_xaf }, { c: 'USDT', label: 'USD / USDT', v: u.balance_usdt }].map((b) => (
+        {[{ c: 'XOF', v: u.balance_xof }, { c: 'XAF', v: u.balance_xaf }, { c: 'USDT', label: 'USDT historique · sans réseau', v: u.balance_usdt }].map((b) => (
           <div key={b.c} className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#3B82F6] via-[#2563EB] to-[#1D4ED8] p-5 text-white">
             <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-white/10" />
             <div className="relative">
@@ -134,11 +176,11 @@ export default function AdminUserDetail() {
               <div className="text-xs font-semibold text-slate-800">{a.l}</div>
             </button>
           ))}
-           <button onClick={() => { setBalanceActionId(crypto.randomUUID()); setModal({ type: 'credit' }); }} data-testid="user-action-credit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
+            <button onClick={() => { setWalletId('XOF'); setBalanceActionId(crypto.randomUUID()); setModal({ type: 'credit' }); }} data-testid="user-action-credit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
             <div className="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center"><Plus className="w-4 h-4" /></div>
             <div className="text-xs font-semibold text-slate-800">Créditer le compte</div>
           </button>
-           <button onClick={() => { setBalanceActionId(crypto.randomUUID()); setModal({ type: 'debit' }); }} data-testid="user-action-debit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
+            <button onClick={() => { setWalletId('XOF'); setBalanceActionId(crypto.randomUUID()); setModal({ type: 'debit' }); }} data-testid="user-action-debit" className="flex items-center gap-2.5 p-3 border border-slate-200 rounded-xl hover:border-[#2563EB] hover:-translate-y-0.5 transition-transform text-left">
             <div className="w-9 h-9 rounded-lg bg-red-50 text-red-600 flex items-center justify-center"><Minus className="w-4 h-4" /></div>
             <div className="text-xs font-semibold text-slate-800">Débiter le compte</div>
           </button>
@@ -198,10 +240,21 @@ export default function AdminUserDetail() {
                 <div className="space-y-3">
                   <div className="grid grid-cols-[1fr_auto] gap-2">
                     <input type="number" data-testid="modal-amount" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Montant" className="px-3 py-2.5 border border-slate-200 rounded-xl outline-none" />
-                    <select value={currency} onChange={(e) => setCurrency(e.target.value)} data-testid="modal-currency" className="px-3 py-2.5 border border-slate-200 rounded-xl font-semibold text-sm">
-                      <option value="XOF">XOF</option><option value="XAF">XAF</option><option value="USDT">USD / USDT</option>
+                    <select value={walletId} onChange={(e) => setWalletId(e.target.value)} data-testid="modal-currency" className="px-3 py-2.5 border border-slate-200 rounded-xl font-semibold text-sm">
+                      {walletOptions.map((wallet) => <option key={wallet.id} value={wallet.id}>{walletLabel(wallet)}</option>)}
                     </select>
                   </div>
+                  <div className="flex items-center justify-between text-xs text-slate-500" data-testid="selected-wallet-balance">
+                    <span>Solde actuel · {walletLabel(selectedWallet)}</span>
+                    <span className="font-semibold text-slate-700">{Number(selectedWallet.balance || 0).toLocaleString()} {selectedWallet.currency}</span>
+                  </div>
+                  {walletsLoading && <p className="text-xs text-slate-500" role="status">Chargement des portefeuilles crypto…</p>}
+                  {walletsError && (
+                    <div className="flex items-center justify-between gap-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800" role="alert">
+                      <span>Portefeuilles crypto indisponibles. XOF et XAF restent disponibles.</span>
+                      <button type="button" onClick={() => setWalletRetry((retry) => retry + 1)} className="shrink-0 font-bold underline" data-testid="wallets-retry">Réessayer</button>
+                    </div>
+                  )}
                   <textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Raison" rows={3} className="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none" />
                 </div>
                 <div className="mt-4 flex gap-2 justify-end">

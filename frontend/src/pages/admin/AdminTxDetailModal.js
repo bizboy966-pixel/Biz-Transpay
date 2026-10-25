@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import api from '@/api';
 import WalletBalanceSnapshot from '@/components/WalletBalanceSnapshot';
+import { getProviderReference } from '../../utils/transactionReferences';
 
 /* Compact key/value row used inside the modal to display any detail. */
 function KV({ icon: I, label, value, mono, copyable, testid }) {
@@ -236,6 +237,7 @@ export default function AdminTxDetailModal({ txId, open, onClose, onUpdated }) {
                       testid="kv-net" />
                 )}
                 <KV icon={Hash} label="Identifiant interne" value={tx.id} mono copyable testid="kv-tx-id" />
+                <KV icon={Hash} label="Référence prestataire" value={getProviderReference(tx) || 'Non enregistrée'} mono copyable={Boolean(getProviderReference(tx))} testid="kv-provider-reference" />
                 {(meta.izipay_intent_id || meta.izipay_payout_id) && (
                   <KV icon={Hash} label="ID passerelle" value={meta.izipay_intent_id || meta.izipay_payout_id} mono copyable testid="kv-provider-id" />
                 )}
