@@ -6,6 +6,59 @@ const { createRequire } = require("node:module");
 const frontendRequire = createRequire(require("node:path").resolve(__dirname, "../frontend/package.json"));
 const braces = frontendRequire("braces");
 const micromatch = frontendRequire("micromatch");
+const fs = require("node:fs");
+const path = require("node:path");
+const minimumVersions = {
+  "body-parser": "1.20.9",
+  "fast-uri": "3.1.9",
+  "follow-redirects": "1.16.1",
+  "launch-editor": "2.14.2",
+  "serialize-javascript": "7.1.3",
+  zod: "4.6.6",
+};
+
+test("installed dependencies and both npm locks retain patched releases", () => {
+  const semver = frontendRequire("semver");
+  for (const [name, minimum] of Object.entries(minimumVersions)) {
+    assert.ok(semver.gte(frontendRequire(`${name}/package.json`).version, minimum), name);
+  }
+  for (const lockPath of ["../package-lock.json", "../frontend/package-lock.json"]) {
+    const lock = JSON.parse(fs.readFileSync(path.resolve(__dirname, lockPath), "utf8"));
+    for (const [location, entry] of Object.entries(lock.packages)) {
+      for (const [name, minimum] of Object.entries(minimumVersions)) {
+        if (location.endsWith(`node_modules/${name}`)) {
+          assert.ok(semver.gte(entry.version, minimum), `${lockPath}: ${location}`);
+        }
+      }
+    }
+  }
+});
+
+test("Zod 4 remains compatible with form validation for valid and invalid input", async () => {
+  const { z } = frontendRequire("zod");
+  const { zodResolver } = frontendRequire("@hookform/resolvers/zod");
+  const resolve = zodResolver(z.object({ amount: z.number().positive() }));
+  const options = { fields: {}, shouldUseNativeValidation: false };
+  const valid = await resolve({ amount: 100 }, {}, options);
+  assert.deepEqual(valid, { errors: {}, values: { amount: 100 } });
+  const invalid = await resolve({ amount: -1 }, {}, options);
+  assert.deepEqual(invalid.values, {});
+  assert.equal(invalid.errors.amount.type, "too_small");
+});
+
+test("patched build serializer escapes HTML and URI validation still compiles", () => {
+  const serialize = frontendRequire("serialize-javascript");
+  assert.ok(!serialize({ value: "</script>" }).includes("</script>"));
+  const Ajv = frontendRequire("ajv");
+  const validate = new Ajv().compile({
+    $id: "https://example.invalid/payment",
+    type: "object",
+    required: ["amount"],
+    properties: { amount: { type: "number", minimum: 1 } },
+  });
+  assert.equal(validate({ amount: 100 }), true);
+  assert.equal(validate({ amount: 0 }), false);
+});
 
 test("all string parsing APIs reject deep brace, parenthesis and mixed ASTs", () => {
   const patterns = [

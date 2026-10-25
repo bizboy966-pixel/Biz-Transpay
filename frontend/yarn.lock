@@ -1783,10 +1783,10 @@
     protobufjs "^7.5.5"
     yargs "^17.7.2"
 
-"@hookform/resolvers@5.0.1":
-  version "5.0.1"
-  resolved "http://package-firewall.replit.internal/npm/@hookform/resolvers/-/resolvers-5.0.1.tgz"
-  integrity sha512-u/+Jp83luQNx9AdyW2fIPGY6Y7NG68eN2ZW8FOJYL+M0i4s49+refdJdOp/A9n9HFQtQs3HIDHQvX3ZET2o7YA==
+"@hookform/resolvers@5.9.2":
+  version "5.9.2"
+  resolved "http://package-firewall.replit.internal/npm/@hookform/resolvers/-/resolvers-5.9.2.tgz"
+  integrity sha512-RtjTnZqsC38s4NKp2XO3fD8IA5uyN4tB7McQ5C6uiMPcV+WWO8F+wVa3e+BXUpH2ScgxghAlwFRMVqjT9WChAQ==
   dependencies:
     "@standard-schema/utils" "^0.3.0"
 
@@ -4523,10 +4523,10 @@ bluebird@^3.7.2:
   resolved "http://package-firewall.replit.internal/npm/bluebird/-/bluebird-3.7.2.tgz"
   integrity sha512-XpNj6GDQzdfW+r2Wnn7xiSAd7TM3jzkxGXBGTtWKuSXv1xUV+azxAm8jdWZN06QTQk+2N2XB9jRDkvbmQmcRtg==
 
-body-parser@~1.20.5:
-  version "1.20.8"
-  resolved "http://package-firewall.replit.internal/npm/body-parser/-/body-parser-1.20.8.tgz"
-  integrity sha512-JNcyFQ64OiijEkPzUBTCe+hyPXUD/3LEldGQ6iF5LR1w00mx9o7xtDWHXBY2iItjdCFGoilOLNQbH943ut7pHA==
+body-parser@1.20.9:
+  version "1.20.9"
+  resolved "http://package-firewall.replit.internal/npm/body-parser/-/body-parser-1.20.9.tgz"
+  integrity sha512-FISIQxV5u91Y9gvuFq3q/tA/qTqLJn3AhRcEvyozyhJTh5OBFFtv827AdHU7Rbyct4r+Ba1/99oFa1Y3yuFsdw==
   dependencies:
     bytes "~3.1.2"
     content-type "~1.0.5"
@@ -6306,10 +6306,10 @@ fast-levenshtein@^2.0.6:
   resolved "http://package-firewall.replit.internal/npm/fast-levenshtein/-/fast-levenshtein-2.0.6.tgz"
   integrity sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==
 
-fast-uri@3.1.8:
-  version "3.1.8"
-  resolved "http://package-firewall.replit.internal/npm/fast-uri/-/fast-uri-3.1.8.tgz"
-  integrity sha512-GZMtZUTNRpOVIECoXwLNZS5xUGE+mVNbTB8h/7Rwh2TFWcBQiPzTgyZi05BF9UMZKkLJv8XBRJTlU7zg8+ZfMg==
+fast-uri@3.1.9:
+  version "3.1.9"
+  resolved "http://package-firewall.replit.internal/npm/fast-uri/-/fast-uri-3.1.9.tgz"
+  integrity sha512-hS/0Wt3Ya043oKXs0sIxrMpKQITXhMLIrVAKKXi4gozGC9v7YRWVnXIZzjNPTO02M9BdxLCWqK1yRXgNziVyJQ==
 
 fastq@^1.6.0:
   version "1.20.3"
@@ -6492,10 +6492,10 @@ flatted@^3.2.9:
   resolved "http://package-firewall.replit.internal/npm/flatted/-/flatted-3.4.4.tgz"
   integrity sha512-5+ybhBZANEJxaH3X5evAFatUxLfEHSr7n6kYJ+1Qd0mUqr4eu9gIf6GDbWHf8RJijHrjjO8G+la14SlL2SeS1Q==
 
-follow-redirects@^1.0.0, follow-redirects@^1.16.0:
-  version "1.16.0"
-  resolved "http://package-firewall.replit.internal/npm/follow-redirects/-/follow-redirects-1.16.0.tgz"
-  integrity sha512-y5rN/uOsadFT/JfYwhxRS5R7Qce+g3zG97+JrtFZlC9klX/W5hD7iiLzScI4nZqUS7DNUdhPgw4xI8W2LuXlUw==
+follow-redirects@1.16.1:
+  version "1.16.1"
+  resolved "http://package-firewall.replit.internal/npm/follow-redirects/-/follow-redirects-1.16.1.tgz"
+  integrity sha512-FNvFGzoMLWmE6Yj9spb/zjd7yiNCHiAW9/Tg9CXrQ8wuu32HtlJOwWO11OJafl5FfY3DxTdQ0vj42zU1kvv5jg==
 
 for-each@^0.3.3, for-each@^0.3.5:
   version "0.3.5"
@@ -8190,13 +8190,13 @@ language-tags@^1.0.9:
   dependencies:
     language-subtag-registry "^0.3.20"
 
-launch-editor@^2.14.1:
-  version "2.14.1"
-  resolved "http://package-firewall.replit.internal/npm/launch-editor/-/launch-editor-2.14.1.tgz"
-  integrity sha512-QWBrQsMpH7gPr965dsKD/3cKWiNoTjpATQf++Xq63N6sKRGMwlVXz41O1IZTMfZQgBctD/K5Zt06+/I6pP6+HA==
+launch-editor@2.14.2:
+  version "2.14.2"
+  resolved "http://package-firewall.replit.internal/npm/launch-editor/-/launch-editor-2.14.2.tgz"
+  integrity sha512-NHJEb30MGBCkmZXLZwz25t37QR4aY03ZzPYUJXOJaOa92uWwExI9SBQUuIznBYc1xkD7cJNGX7oc3Nl3sq2kQQ==
   dependencies:
     picocolors "^1.1.1"
-    shell-quote "^1.8.4"
+    shell-quote "^1.10.0"
 
 leven@^3.1.0:
   version "3.1.0"
@@ -10397,10 +10397,10 @@ send@~0.19.0, send@~0.19.1:
     range-parser "~1.2.1"
     statuses "~2.0.2"
 
-serialize-javascript@7.0.5:
-  version "7.0.5"
-  resolved "http://package-firewall.replit.internal/npm/serialize-javascript/-/serialize-javascript-7.0.5.tgz"
-  integrity sha512-F4LcB0UqUl1zErq+1nYEEzSHJnIwb3AF2XWB94b+afhrekOUijwooAYqFyRbjYkm2PAKBabx6oYv/xDxNi8IBw==
+serialize-javascript@7.1.4:
+  version "7.1.4"
+  resolved "http://package-firewall.replit.internal/npm/serialize-javascript/-/serialize-javascript-7.1.4.tgz"
+  integrity sha512-FqlEuoTq/zRmA4Lg6aOqyH3lCHbUtCB0bmHCeFniX2GBdDqMJM3FwdvEhlE5Pim1dlt2FfBdVPmUNNiGhhKqpw==
 
 serve-index@^1.9.1:
   version "1.9.2"
@@ -12023,7 +12023,7 @@ yocto-queue@^0.1.0:
   resolved "http://package-firewall.replit.internal/npm/yocto-queue/-/yocto-queue-0.1.0.tgz"
   integrity sha512-rVksvsnNCdJ/ohGc6xgPwyN8eheCxsiLM8mxuE/t/mOVqJewPuO1miLpTHQiRgTKCLexL4MeAFVagts7HmNZ2Q==
 
-zod@3.24.4:
-  version "3.24.4"
-  resolved "http://package-firewall.replit.internal/npm/zod/-/zod-3.24.4.tgz"
-  integrity sha512-OdqJE9UDRPwWsrHjLN2F8bPxvwJBK22EHLWtanu0LSYr5YqzsaaW3RMgmjwr8Rypg5k+meEJdSPXJZXE/yqOMg==
+zod@4.6.7:
+  version "4.6.7"
+  resolved "http://package-firewall.replit.internal/npm/zod/-/zod-4.6.7.tgz"
+  integrity sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==
