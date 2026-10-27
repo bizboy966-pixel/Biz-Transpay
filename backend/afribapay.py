@@ -234,9 +234,12 @@ class AfriPayClient:
             f"{self.api_base_url}\0{self.api_user}\0{self.api_key}".encode()
         ).hexdigest()
 
-    async def _raw(self, method: str, url: str, **kwargs) -> dict:
+    async def _raw(self, method: str, url: str, *, client=None, **kwargs) -> dict:
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            if client is None:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.request(method, url, **kwargs)
+            else:
                 response = await client.request(method, url, **kwargs)
         except httpx.HTTPError as exc:
             raise AfriPayError(502, "AfribaPAY unreachable") from exc
@@ -249,13 +252,14 @@ class AfriPayClient:
             raise AfriPayError(response.status_code, str(message or "AfribaPAY request failed"), payload)
         return payload if isinstance(payload, dict) else {"data": payload}
 
-    async def token(self) -> str:
+    async def token(self, client=None) -> str:
         cached = self._token_cache.get(self._token_cache_key)
         if cached and time.monotonic() < cached[1] - 30:
             return cached[0]
         payload = await self._raw("POST", f"{self.api_base_url}/v1/token",
                                   auth=(self.api_user, self.api_key),
-                                  headers={"Content-Type": "application/json"})
+                                  headers={"Content-Type": "application/json"},
+                                  client=client)
         data = payload.get("data") or {}
         token = str(data.get("access_token") or "")
         if not token:
@@ -272,12 +276,21 @@ class AfriPayClient:
 
     async def _request(self, method: str, path: str, *, payout: bool = False,
                        params: Optional[dict] = None, body: Optional[dict] = None) -> dict:
-        token = await self.token()
-        return await self._raw(method, f"{self.payout_base_url if payout else self.api_base_url}{path}",
-                               params=params, json=body,
-                               headers={"Authorization": f"Bearer {token}",
-                                        "Content-Type": "application/json",
-                                        "Accept": "application/json"})
+        try:
+            # Reuse one connection for a cold token request and its payment call;
+            # on subsequent requests the cached token means only one round trip.
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                token = await self.token(client)
+                return await self._raw(
+                    method,
+                    f"{self.payout_base_url if payout else self.api_base_url}{path}",
+                    params=params, json=body,
+                    headers={"Authorization": f"Bearer {token}",
+                             "Content-Type": "application/json",
+                             "Accept": "application/json"},
+                    client=client)
+        except httpx.HTTPError as exc:
+            raise AfriPayError(502, "AfribaPAY unreachable") from exc
 
     async def payin(self, **data):
         if not self.merchant_key:

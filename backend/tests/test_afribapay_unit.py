@@ -50,7 +50,7 @@ def test_client_contract_and_token_cache(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def request(self, method, url, **kwargs):
-            calls.append((method, url, kwargs))
+            calls.append((self, method, url, kwargs))
             if url.endswith("/token"):
                 return httpx.Response(200, json={"data": {"access_token": "token", "expires_in": 90000}},
                                       request=httpx.Request(method, url))
@@ -65,10 +65,11 @@ def test_client_contract_and_token_cache(monkeypatch):
         return client, result
     client, result = asyncio.run(run())
     assert result["data"]["status"] == "PENDING"
-    assert len([call for call in calls if call[1].endswith("/token")]) == 1
-    assert calls[1][0:2] == ("POST", "https://api-sandbox.afribapay.com/v1/pay/payin")
-    assert calls[1][2]["headers"]["Authorization"] == "Bearer token"
-    assert "agent_id" not in calls[1][2]["json"]
+    assert len([call for call in calls if call[2].endswith("/token")]) == 1
+    assert calls[1][1:3] == ("POST", "https://api-sandbox.afribapay.com/v1/pay/payin")
+    assert calls[0][0] is calls[1][0]
+    assert calls[1][3]["headers"]["Authorization"] == "Bearer token"
+    assert "agent_id" not in calls[1][3]["json"]
     configured_client = afribapay.client_from_config({
         "mode": "sandbox", "_api_user": "u", "_api_key": "k",
         "_merchant_key": "m", "_agent_id": "agent-123",

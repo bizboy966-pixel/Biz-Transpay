@@ -9,6 +9,8 @@ The generic country-code list includes more destinations than the confirmed Mobi
 
 The published API schema identifies API User (Basic Auth username), API Key (Basic Auth password), and `merchant_key`, but does not define an Agent ID request field. The user confirmed Agent ID is admin-only metadata: keep it encrypted and never decrypt it into or send it through the API client.
 
-**Why:** Sandbox testing can move real funds, and generic country acceptance does not prove that a country has a supported Mobile Money route.
+AfribaPAY's pay-in response uses `amount` for the net amount after provider fees; reconcile the requested gross amount against `original_amount` or `amount_total`. Webhook POSTs use an `AFRIBAPAY_SIGN` HMAC-SHA256 hex signature over the exact raw body, keyed with the API Key. Treat the callback as a signal and confirm final status with the provider status API before settlement.
 
-**How to apply:** Keep live activation gated on provider-confirmed hosts and route availability. Use unit tests with mocked HTTP for integration behavior and assert that Agent ID is absent from outbound requests.
+**Why:** Sandbox testing can move real funds, generic country acceptance does not prove that a country has a supported Mobile Money route, and net-vs-gross amount confusion can quarantine legitimate confirmed deposits.
+
+**How to apply:** Keep live activation gated on provider-confirmed hosts and route availability. Use mocked HTTP for integration tests; verify callback signatures and reconcile order ID, gross amount, currency, and final provider status before crediting. Assert that Agent ID is absent from outbound requests.

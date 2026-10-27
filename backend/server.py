@@ -9217,9 +9217,10 @@ async def _create_afribapay_deposit(
     dep_id = new_id()
     created_at = now_iso()
     pending_expires_at = (
-        datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)
-    ).isoformat()
+        None if op.get("provider") == "afribapay" else
+        (datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+         + timedelta(minutes=MOMO_PENDING_TIMEOUT_MINUTES)).isoformat()
+    )
     callback_base = (
         os.environ.get("OFFICIAL_DOMAIN") or _paydunya_callback_base(request)
     ).rstrip("/")
@@ -9336,19 +9337,18 @@ async def _create_afribapay_deposit(
         "afribapay_submission_phase": (
             "provider_id_received" if provider_id else "response_without_provider_id"),
         "afribapay_response_received_at": now_iso(),
-        "next_reconcile_at": now_iso(),
+        "next_reconcile_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=15)).isoformat(),
     }
     if deposit.get("redirect_url"):
         patch["redirect_url"] = deposit["redirect_url"]
-    await db.momo_deposits.update_one({"id": dep_id}, {"$set": patch})
+    await db.momo_deposits.update_one(
+        {"id": dep_id, "status": "pending"}, {"$set": patch})
     deposit.update({key: value for key, value in patch.items() if value is not None})
-    if provider_status in afribapay.STATUS_VALUES:
-        try:
-            await _reconcile_afribapay_deposit(dep_id)
-            deposit = await db.momo_deposits.find_one(
-                {"id": dep_id}, {"_id": 0}) or deposit
-        except Exception:
-            logger.exception("AfribaPAY deposit verification failed for %s", dep_id)
+    # Return as soon as the provider accepts the instruction. Confirmation is
+    # handled by its signed webhook or the independent reconciliation worker.
+    deposit = await db.momo_deposits.find_one(
+        {"id": dep_id, "user_id": uid}, {"_id": 0}) or deposit
     return _public_momo_deposit(deposit)
 
 
@@ -9946,6 +9946,8 @@ async def get_paydunya_psr_token(deposit_id: str, capability: str):
 
 def _momo_pending_expiry(d: dict) -> Optional[datetime]:
     """Return the server-side deadline for an in-flight Mobile Money deposit."""
+    if d.get("provider") == "afribapay":
+        return None
     raw = d.get("pending_expires_at")
     if raw:
         try:
@@ -9988,6 +9990,10 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
     """Fail an unresolved payment once its ten-minute verification window ends."""
     if not d or d.get("status") != "pending":
         return False
+    if d.get("provider") == "afribapay":
+        # AfribaPAY documents asynchronous confirmations and warns against
+        # failing payments solely because the mobile operator is slow.
+        return False
     expiry = _momo_pending_expiry(d)
     if not expiry or expiry > datetime.now(timezone.utc):
         return False
@@ -10029,6 +10035,7 @@ async def _expire_momo_deposit_if_due(d: Optional[dict]) -> bool:
 
 
 _paydunya_confirmation_tasks: dict[str, asyncio.Task] = {}
+_afribapay_confirmation_tasks: dict[str, asyncio.Task] = {}
 MOMO_STATUS_WAIT_SECONDS = 2.0
 
 
@@ -10117,20 +10124,112 @@ def _afribapay_response_value(payload: dict, *keys: str):
     return None
 
 
-async def _reconcile_afribapay_deposit(dep_id: str) -> bool:
-    """Verify an AfribaPAY deposit by its merchant order ID before crediting."""
+def _afribapay_amount_matches(payload: dict, expected_amount: float) -> bool:
+    """Compare the request against gross fields, not AfribaPAY's net `amount`."""
+    gross = _afribapay_response_value(
+        payload, "original_amount", "amount_total", "gross_amount",
+        "requested_amount")
+    try:
+        expected = Decimal(str(expected_amount))
+        if not expected.is_finite():
+            return False
+        if gross not in (None, ""):
+            received = Decimal(str(gross))
+            return received.is_finite() and abs(received - expected) <= Decimal("0.005")
+        amount = _afribapay_response_value(
+            payload, "amount", "paid_amount", "transaction_amount")
+        if amount in (None, ""):
+            return False
+        received = Decimal(str(amount))
+        if not received.is_finite():
+            return False
+        # Some status responses expose only the net amount. When provider fees
+        # are included, test both the explicit amount and the documented
+        # amount + fees + taxes gross calculation against the request.
+        candidates = [received]
+        fees = _afribapay_response_value(payload, "fees", "fee")
+        taxes = _afribapay_response_value(payload, "taxes", "tax")
+        if fees not in (None, "") or taxes not in (None, ""):
+            fee_value = Decimal(str(fees or 0))
+            tax_value = Decimal(str(taxes or 0))
+            if fee_value.is_finite() and tax_value.is_finite():
+                candidates.append(received + fee_value + tax_value)
+        return any(abs(candidate - expected) <= Decimal("0.005")
+                   for candidate in candidates if candidate.is_finite())
+    except (InvalidOperation, TypeError, ValueError):
+        return False
+
+
+def _afribapay_retry_schedule(deposit: dict) -> dict:
+    attempts = int(deposit.get("afribapay_reconcile_attempts", 0)) + 1
+    delay = min(60 * (2 ** min(attempts - 1, 4)), 900)
+    return {
+        "afribapay_reconcile_attempts": attempts,
+        "next_reconcile_at": (
+            datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat(),
+    }
+
+
+def _schedule_afribapay_deposit_reconciliation(
+        dep_id: str, *, force: bool = False) -> asyncio.Task:
+    task = _afribapay_confirmation_tasks.get(dep_id)
+    if task is None or task.done():
+        task = asyncio.create_task(
+            _verify_afribapay_deposit(dep_id, force=force))
+        _afribapay_confirmation_tasks[dep_id] = task
+
+        def cleanup(finished):
+            if _afribapay_confirmation_tasks.get(dep_id) is finished:
+                _afribapay_confirmation_tasks.pop(dep_id, None)
+            if not finished.cancelled():
+                finished.exception()
+
+        task.add_done_callback(cleanup)
+    return task
+
+
+async def _reconcile_afribapay_deposit(dep_id: str, *, force: bool = False) -> bool:
+    task = _schedule_afribapay_deposit_reconciliation(dep_id, force=force)
+    return await asyncio.shield(task)
+
+
+async def _wait_for_afribapay_deposit_reconciliation(dep_id: str) -> bool:
+    try:
+        return await asyncio.wait_for(
+            _reconcile_afribapay_deposit(dep_id),
+            timeout=MOMO_STATUS_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        return False
+
+
+async def _verify_afribapay_deposit(dep_id: str, *, force: bool = False) -> bool:
+    """Verify provider status and gross request amount before one-time credit."""
     d = await db.momo_deposits.find_one({"id": dep_id}, {"_id": 0})
     if not d or d.get("provider") != "afribapay":
         return False
     if d.get("status") == "approved":
         return True
-    if d.get("status") != "pending" or await _expire_momo_deposit_if_due(d):
+    repairable_amount_quarantine = (
+        d.get("status") == "quarantined"
+        and d.get("reconciliation_mismatch") == "amount"
+    )
+    if d.get("status") != "pending" and not repairable_amount_quarantine:
+        return False
+    if d.get("status") == "pending" and await _expire_momo_deposit_if_due(d):
         return False
     if d.get("afribapay_submission_phase") in {
         "otp_requesting", "otp_sent", "otp_outcome_unknown",
     }:
         # The user must submit the one-time code before a payment exists.
         return False
+    if not force and d.get("next_reconcile_at"):
+        try:
+            if _as_utc(d["next_reconcile_at"]) > datetime.now(timezone.utc):
+                return False
+        except (TypeError, ValueError):
+            pass
+    current_status = d.get("status")
+    current_query = {"id": dep_id, "status": current_status}
     cfg = await get_afribapay_config(decrypt=True)
     response = await afribapay.client_from_config(cfg).status(
         order_id=str(d.get("afribapay_order_id") or d["id"]))
@@ -10140,58 +10239,68 @@ async def _reconcile_afribapay_deposit(dep_id: str) -> bool:
     expected_order_id = str(d.get("afribapay_order_id") or d["id"])
     expected_amount = float(d.get("provider_submitted_amount", d.get("amount", 0)))
     expected_currency = str(d.get("currency") or "").upper()
-    received_amount = _afribapay_response_value(
-        response, "amount", "paid_amount", "transaction_amount")
     received_currency = _afribapay_response_value(response, "currency")
+    received_country = _afribapay_response_value(
+        response, "country", "country_code")
 
     if order_id not in (None, "") and str(order_id) != expected_order_id:
         await db.momo_deposits.update_one(
-            {"id": dep_id, "status": "pending"},
+            current_query,
             {"$set": {"status": "quarantined",
-                      "reconciliation_mismatch": "order_id"}})
+                      "reconciliation_mismatch": "order_id",
+                      "provider_status": status or "pending",
+                      "afribapay_last_verified_at": now_iso(),
+                      **_afribapay_retry_schedule(d)}})
         return False
     if status in {"success", "failed"}:
         mismatch = None
         if str(order_id or "") != expected_order_id:
             mismatch = "missing_order_id"
-        elif received_amount in (None, ""):
-            mismatch = "missing_amount"
+        elif not _afribapay_amount_matches(response, expected_amount):
+            has_reported_amount = _afribapay_response_value(
+                response, "original_amount", "amount_total", "gross_amount",
+                "requested_amount", "amount", "paid_amount",
+                "transaction_amount") not in (None, "")
+            mismatch = "amount" if has_reported_amount else "missing_amount"
         elif received_currency in (None, ""):
             mismatch = "missing_currency"
-        else:
-            try:
-                if abs(float(received_amount) - expected_amount) > 1e-9:
-                    mismatch = "amount"
-            except (TypeError, ValueError):
-                mismatch = "amount"
-            if not mismatch and str(received_currency).upper() != expected_currency:
-                mismatch = "currency"
+        elif (received_country not in (None, "")
+              and str(received_country).upper()
+              != str(d.get("country") or "").upper()):
+            mismatch = "country"
+        elif str(received_currency).upper() != expected_currency:
+            mismatch = "currency"
         if mismatch:
             await db.momo_deposits.update_one(
-                {"id": dep_id, "status": "pending"},
+                current_query,
                 {"$set": {"status": "quarantined",
-                          "reconciliation_mismatch": mismatch}})
+                          "reconciliation_mismatch": mismatch,
+                          "provider_status": status,
+                          "afribapay_last_verified_at": now_iso(),
+                          **_afribapay_retry_schedule(d)}})
             return False
 
     await db.momo_deposits.update_one(
-        {"id": dep_id, "status": "pending"},
+        current_query,
         {"$set": {
             "provider_status": status or "pending",
             "afribapay_last_verified_at": now_iso(),
-            "next_reconcile_at": (
-                datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat(),
+            **(_afribapay_retry_schedule(d)
+               if status not in {"success", "failed"}
+               else {"afribapay_reconcile_attempts": 0}),
         }})
     if status == "success":
         fresh = await db.momo_deposits.find_one(
-            {"id": dep_id, "status": "pending"}, {"_id": 0})
+            current_query, {"_id": 0})
         if fresh:
             return await _credit_momo_deposit(fresh)
         return False
     if status == "failed":
         failed = await db.momo_deposits.update_one(
-            {"id": dep_id, "status": "pending"},
+            current_query,
             {"$set": {"status": "failed", "retryable": False,
-                      "failed_reason": "provider_failed"}})
+                      "failed_reason": "provider_failed"},
+             "$unset": {"reconciliation_mismatch": ""}})
         if failed.modified_count:
             await _notify_integration_business_transition(
                 d.get("user_id", ""), "deposit", dep_id, "failed")
@@ -10304,6 +10413,11 @@ async def _reconcile_momo_batch(deposits: list[dict]) -> None:
                 else:
                     await _reconcile_momo_deposit(deposit["id"])
             except Exception:
+                if deposit.get("provider") == "afribapay":
+                    await db.momo_deposits.update_one(
+                        {"id": deposit["id"],
+                         "status": {"$in": ["pending", "quarantined"]}},
+                        {"$set": _afribapay_retry_schedule(deposit)})
                 logger.exception(
                     "Mobile Money deposit reconciliation failed for %s",
                     deposit.get("id"),
@@ -10337,6 +10451,43 @@ async def _paydunya_reconcile_loop() -> None:
                 {"_id": 0, "id": 1, "provider": 1},
             ).sort("created_at", -1).limit(50)
             deposits = [deposit async for deposit in cursor]
+            # Recheck only the previously identified gross-vs-net quarantine
+            # class, using the provider's current authenticated status.
+            repair_cursor = db.momo_deposits.find(
+                {
+                    "provider": "afribapay", "status": "quarantined",
+                    "reconciliation_mismatch": "amount",
+                    "$or": [
+                        {"next_reconcile_at": {"$exists": False}},
+                        {"next_reconcile_at": {"$lte": now_iso()}},
+                    ],
+                },
+                {"_id": 0, "id": 1, "provider": 1, "status": 1,
+                 "afribapay_reconcile_attempts": 1},
+            ).sort("created_at", 1).limit(50)
+            known_ids = {str(row.get("id")) for row in deposits}
+            async for row in repair_cursor:
+                if str(row.get("id")) not in known_ids:
+                    deposits.append(row)
+                    known_ids.add(str(row.get("id")))
+            pending_afri_cursor = db.momo_deposits.find(
+                {
+                    "provider": "afribapay", "status": "pending",
+                    "afribapay_submission_phase": {"$nin": [
+                        "otp_requesting", "otp_sent", "otp_outcome_unknown",
+                    ]},
+                    "$or": [
+                        {"next_reconcile_at": {"$exists": False}},
+                        {"next_reconcile_at": {"$lte": now_iso()}},
+                    ],
+                },
+                {"_id": 0, "id": 1, "provider": 1, "status": 1,
+                 "afribapay_reconcile_attempts": 1},
+            ).sort("created_at", 1).limit(50)
+            async for row in pending_afri_cursor:
+                if str(row.get("id")) not in known_ids:
+                    deposits.append(row)
+                    known_ids.add(str(row.get("id")))
             await _reconcile_momo_batch(deposits)
             due = now_iso()
             tokenless_grace = (
@@ -10612,7 +10763,8 @@ async def _credit_momo_deposit(d: dict) -> bool:
         {"$set": {"status": "approved", "approved_at": now_iso(),
                   "amount_gross": gross, "fee": fee,
                   "gateway_fee": gateway_fee, "platform_fee": platform_fee,
-                  "amount_net": net}})
+                  "amount_net": net},
+         "$unset": {"reconciliation_mismatch": ""}})
     await _notify_integration_business_transition(uid, "deposit", dep_id, "approved")
 
     if await _claim_momo_flag(dep_id, "notification_claimed"):
@@ -10788,9 +10940,12 @@ async def get_momo_deposit(deposit_id: str, uid: str = Depends(get_current_user_
     d = await db.momo_deposits.find_one({"id": deposit_id, "user_id": uid}, {"_id": 0})
     if not d:
         raise HTTPException(404, "Not found")
-    if d.get("provider") == "afribapay" and d.get("status") == "pending":
+    if d.get("provider") == "afribapay" and (
+            d.get("status") == "pending"
+            or (d.get("status") == "quarantined"
+                and d.get("reconciliation_mismatch") == "amount")):
         try:
-            await _reconcile_afribapay_deposit(deposit_id)
+            await _wait_for_afribapay_deposit_reconciliation(deposit_id)
         except Exception:
             logger.exception("AfribaPAY deposit reconciliation failed for %s", deposit_id)
         d = await db.momo_deposits.find_one(
@@ -10896,7 +11051,8 @@ async def finalize_momo_deposit(
                 "provider_id_received" if provider_id
                 else "response_without_provider_id"),
             "afribapay_response_received_at": now_iso(),
-            "next_reconcile_at": now_iso(),
+            "next_reconcile_at": (
+                datetime.now(timezone.utc) + timedelta(seconds=15)).isoformat(),
         }
         if provider_id:
             updates["afribapay_transaction_id"] = str(provider_id)
@@ -10905,10 +11061,6 @@ async def finalize_momo_deposit(
             updates["redirect_url"] = str(provider_link)
         await db.momo_deposits.update_one(
             {"id": deposit_id, "status": "pending"}, {"$set": updates})
-        try:
-            await _reconcile_afribapay_deposit(deposit_id)
-        except Exception:
-            logger.exception("AfribaPAY OTP payment verification failed for %s", deposit_id)
         fresh = await db.momo_deposits.find_one(
             {"id": deposit_id}, {"_id": 0}) or d
         return _public_momo_deposit(fresh)
@@ -10979,17 +11131,29 @@ async def paydunya_payment_return(token: str = "", ref: str = ""):
 @api.get("/webhooks/afribapay")
 @api.post("/webhooks/afribapay")
 async def afribapay_webhook(request: Request, ref: str = Query("")):
-    """Treat the callback only as a hint; all settlement uses the status API."""
-    payload = {}
-    if request.method == "POST":
-        raw = await request.body()
-        if len(raw) > MAX_WEBHOOK_BYTES:
-            raise HTTPException(413, "Webhook payload too large")
-        try:
-            parsed = json.loads(raw or b"{}")
-            payload = parsed if isinstance(parsed, dict) else {}
-        except (ValueError, TypeError):
-            payload = {}
+    """Verify AfribaPAY's signed callback; settle only from its status API."""
+    if request.method != "POST":
+        return {"received": True}
+    raw = await request.body()
+    if len(raw) > MAX_WEBHOOK_BYTES:
+        raise HTTPException(413, "Webhook payload too large")
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Invalid AfribaPAY webhook JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid AfribaPAY webhook JSON")
+    cfg = await get_afribapay_config(decrypt=True)
+    api_key = str(cfg.get("_api_key") or "")
+    supplied_signature = str(
+        request.headers.get("AFRIBAPAY_SIGN") or "").strip().lower()
+    if not api_key:
+        raise HTTPException(503, "AfribaPAY webhook verification is unavailable")
+    expected_signature = hmac.new(
+        api_key.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    if (not re.fullmatch(r"[a-f0-9]{64}", supplied_signature)
+            or not hmac.compare_digest(expected_signature, supplied_signature)):
+        raise HTTPException(403, "Invalid AfribaPAY webhook signature")
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     candidate = str(
         ref or data.get("order_id") or data.get("orderId")
@@ -11004,7 +11168,8 @@ async def afribapay_webhook(request: Request, ref: str = Query("")):
             {"id": deposit["id"], "provider": "afribapay"},
             {"$set": {"afribapay_callback_received_at": now_iso()}})
         try:
-            await _reconcile_afribapay_deposit(deposit["id"])
+            _schedule_afribapay_deposit_reconciliation(
+                deposit["id"], force=True)
         except Exception:
             logger.exception(
                 "AfribaPAY callback status verification failed for %s",

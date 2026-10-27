@@ -1762,3 +1762,265 @@ async def test_mbiyo_status_poll_keeps_operator_rejection_terminal(monkeypatch):
     assert saved["retryable"] is False
     assert saved["instructions"].startswith("Si une notification")
     assert not fake.transactions.docs
+
+
+@pytest.mark.parametrize(
+    ("country", "currency"),
+    [
+        (country, currency)
+        for country, currencies in server.afribapay.COUNTRY_CURRENCIES.items()
+        for currency in currencies
+    ],
+)
+@run_async
+async def test_afribapay_gross_amount_settles_verified_deposit_once(
+        monkeypatch, country, currency):
+    fake = MemoryDB()
+    deposit = {
+        "id": f"afri-{country}", "user_id": "user-1",
+        "provider": "afribapay", "status": "pending",
+        "afribapay_order_id": f"order-{country}",
+        "afribapay_submission_phase": "provider_id_received",
+        "provider_submitted_amount": 2000, "requested_amount": 2000,
+        "amount": 2000, "currency": currency, "country": country,
+        "next_reconcile_at": "2000-01-01T00:00:00+00:00",
+    }
+    fake.momo_deposits.docs.append(deposit)
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_afribapay_confirmation_tasks", {})
+    monkeypatch.setattr(
+        server, "get_afribapay_config",
+        lambda **kwargs: asyncio.sleep(0, result={"_api_key": "test-only"}))
+
+    class FakeClient:
+        async def status(self, *, order_id):
+            assert order_id == f"order-{country}"
+            return {"data": {
+                "status": "SUCCESS", "order_id": order_id,
+                "original_amount": "2000", "amount": "1970",
+                "fees": "30", "amount_total": "2000",
+                "currency": currency, "country": country,
+            }}
+
+    monkeypatch.setattr(
+        server.afribapay, "client_from_config", lambda _cfg: FakeClient())
+    credits = []
+
+    async def credit_once(d):
+        credits.append(d["id"])
+        await fake.momo_deposits.update_one(
+            {"id": d["id"], "status": d["status"]},
+            {"$set": {"status": "approved"}})
+        return True
+
+    monkeypatch.setattr(server, "_credit_momo_deposit", credit_once)
+    assert await server._reconcile_afribapay_deposit(deposit["id"]) is True
+    assert await server._reconcile_afribapay_deposit(deposit["id"]) is True
+    assert credits == [deposit["id"]]
+    assert fake.momo_deposits.docs[0]["status"] == "approved"
+
+
+@run_async
+async def test_afribapay_repairs_amount_quarantine_only_after_provider_verification(
+        monkeypatch):
+    fake = MemoryDB()
+    deposit = {
+        "id": "afri-legacy", "user_id": "user-1", "provider": "afribapay",
+        "status": "quarantined", "reconciliation_mismatch": "amount",
+        "afribapay_order_id": "order-legacy",
+        "afribapay_submission_phase": "provider_id_received",
+        "provider_submitted_amount": 2000, "amount": 2000,
+        "currency": "XOF", "country": "CM",
+        "next_reconcile_at": "2000-01-01T00:00:00+00:00",
+    }
+    fake.momo_deposits.docs.append(deposit)
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_afribapay_confirmation_tasks", {})
+    monkeypatch.setattr(
+        server, "get_afribapay_config",
+        lambda **kwargs: asyncio.sleep(0, result={"_api_key": "test-only"}))
+
+    class FakeClient:
+        async def status(self, *, order_id):
+            return {"data": {
+                "status": "SUCCESS", "order_id": order_id,
+                "original_amount": "2000", "amount": "1970", "fees": "30",
+                "currency": "XOF", "country": "CM",
+            }}
+
+    monkeypatch.setattr(
+        server.afribapay, "client_from_config", lambda _cfg: FakeClient())
+    credited = []
+
+    async def credit_once(d):
+        credited.append(d["id"])
+        await fake.momo_deposits.update_one(
+            {"id": d["id"], "status": d["status"]},
+            {"$set": {"status": "approved"}})
+        return True
+
+    monkeypatch.setattr(server, "_credit_momo_deposit", credit_once)
+    assert await server._reconcile_afribapay_deposit(deposit["id"]) is True
+    assert credited == [deposit["id"]]
+    assert fake.momo_deposits.docs[0]["status"] == "approved"
+
+
+@run_async
+async def test_afribapay_pending_is_not_expired_or_credited(monkeypatch):
+    fake = MemoryDB()
+    deposit = {
+        "id": "afri-late", "user_id": "user-1", "provider": "afribapay",
+        "status": "pending", "afribapay_order_id": "order-late",
+        "afribapay_submission_phase": "provider_id_received",
+        "provider_submitted_amount": 2000, "amount": 2000,
+        "currency": "XOF", "country": "BF",
+        "pending_expires_at": "2000-01-01T00:00:00+00:00",
+        "next_reconcile_at": "2000-01-01T00:00:00+00:00",
+    }
+    fake.momo_deposits.docs.append(deposit)
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "_afribapay_confirmation_tasks", {})
+    monkeypatch.setattr(
+        server, "get_afribapay_config",
+        lambda **kwargs: asyncio.sleep(0, result={"_api_key": "test-only"}))
+
+    class FakeClient:
+        async def status(self, *, order_id):
+            return {"data": {"status": "PENDING", "order_id": order_id}}
+
+    monkeypatch.setattr(
+        server.afribapay, "client_from_config", lambda _cfg: FakeClient())
+    credited = []
+
+    async def never_credit(_deposit):
+        credited.append(True)
+        return True
+
+    monkeypatch.setattr(server, "_credit_momo_deposit", never_credit)
+    assert await server._reconcile_afribapay_deposit(deposit["id"]) is False
+    assert credited == []
+    assert fake.momo_deposits.docs[0]["status"] == "pending"
+    assert fake.momo_deposits.docs[0]["provider_status"] == "pending"
+
+
+@run_async
+async def test_afribapay_deposit_returns_after_payin_without_waiting_for_status(
+        monkeypatch):
+    fake = MemoryDB()
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(server, "new_id", lambda: "afri-fast")
+    monkeypatch.setattr(
+        server, "get_afribapay_config",
+        lambda **kwargs: asyncio.sleep(0, result={"_api_user": "test"}))
+    operator = {
+        "country": "BF", "operator": "moov", "code": "afribapay_moov_bf",
+        "name": "Moov Money", "min": 100, "max": 100000, "active": True,
+    }
+    monkeypatch.setattr(
+        server, "_afribapay_public_config",
+        lambda *_args, **_kwargs: {"mobile_money_enabled": True})
+    monkeypatch.setattr(server, "_afribapay_ready", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        server, "_active_afribapay_operator", lambda *_a, **_k: operator)
+    monkeypatch.setattr(
+        server, "_paydunya_callback_base", lambda _request: "https://example.test")
+    monkeypatch.setattr(
+        server.paydunya, "calculate_fees",
+        lambda amount, *_args: {
+            "charged_amount": amount, "wallet_credit_amount": amount,
+            "gateway_fee": 0, "platform_fee": 0, "total_fee": 0,
+            "fee_bearer": "client",
+        })
+    calls = []
+
+    class FakeClient:
+        async def payin(self, **_kwargs):
+            calls.append("payin")
+            return {"data": {"status": "PENDING", "transaction_id": "provider-1"}}
+
+        async def status(self, **_kwargs):
+            calls.append("status")
+            raise AssertionError("The initial deposit must not await status polling")
+
+    monkeypatch.setattr(
+        server.afribapay, "client_from_config", lambda _cfg: FakeClient())
+    request = Request({
+        "type": "http", "method": "POST", "scheme": "https",
+        "path": "/api/deposits/mobile-money/start",
+        "headers": [(b"host", b"example.test")],
+        "query_string": b"", "server": ("example.test", 443),
+    })
+    req = server.MobileMoneyDepositRequest(
+        amount=1000, currency="XOF", email="test@example.test",
+        full_name="Test User", country="BF", operator="moov_bf",
+        phone_number="70000000",
+    )
+
+    result = await server._create_afribapay_deposit(req, request, "user-1")
+
+    assert calls == ["payin"]
+    assert result["status"] == "pending"
+    assert fake.momo_deposits.docs[0]["afribapay_transaction_id"] == "provider-1"
+
+
+@run_async
+async def test_afribapay_callback_requires_signature_and_only_queues_verification(
+        monkeypatch):
+    import hashlib
+    import hmac
+    import json
+
+    fake = MemoryDB()
+    fake.momo_deposits.docs.append({
+        "id": "afri-webhook", "provider": "afribapay", "status": "pending",
+    })
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(
+        server, "get_afribapay_config",
+        lambda **kwargs: asyncio.sleep(0, result={"_api_key": "test-signing-key"}))
+    queued = []
+    monkeypatch.setattr(
+        server, "_schedule_afribapay_deposit_reconciliation",
+        lambda dep_id, *, force=False: queued.append((dep_id, force)))
+    raw = json.dumps(
+        {"order_id": "afri-webhook", "status": "SUCCESS"},
+        separators=(",", ":")).encode()
+    signature = hmac.new(
+        b"test-signing-key", raw, hashlib.sha256).hexdigest()
+
+    def make_request(method, body, sign=""):
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        headers = []
+        if sign:
+            headers.append((b"afribapay_sign", sign.encode()))
+        return Request({
+            "type": "http", "method": method, "path": "/api/webhooks/afribapay",
+            "query_string": b"", "headers": headers,
+        }, receive)
+
+    await server.afribapay_webhook(
+        make_request("POST", raw, signature), ref="")
+    assert queued == [("afri-webhook", True)]
+    assert fake.momo_deposits.docs[0].get("afribapay_callback_received_at")
+
+    queued.clear()
+    with pytest.raises(HTTPException) as error:
+        await server.afribapay_webhook(
+            make_request("POST", raw, "0" * 64), ref="")
+    assert error.value.status_code == 403
+    assert queued == []
+
+    await server.afribapay_webhook(make_request("GET", b""), ref="")
+    assert queued == []
+
+
+def test_afribapay_gross_amount_validation_uses_fees_when_needed():
+    assert server._afribapay_amount_matches(
+        {"original_amount": "2000", "amount": "1970", "fees": "30"},
+        2000)
+    assert server._afribapay_amount_matches(
+        {"amount": "1970", "fees": "25", "taxes": "5"}, 2000)
+    assert not server._afribapay_amount_matches(
+        {"original_amount": "1970", "amount": "1970", "fees": "30"}, 2000)
+    assert not server._afribapay_amount_matches({"amount": "1970"}, 2000)
