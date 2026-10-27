@@ -11751,6 +11751,64 @@ def _is_definitive_mbiyo_payout_rejection(error: Any) -> bool:
     return True
 
 
+def _afribapay_failure_diagnostics(payload: Any) -> dict:
+    """Extract short, redacted rejection details from an AfribaPAY reply."""
+    source = payload.raw if isinstance(payload, afribapay.AfriPayError) else payload
+    if not isinstance(source, dict):
+        source = {}
+    containers = [source]
+    for key in ("data", "error", "errors", "details", "result"):
+        child = source.get(key)
+        if isinstance(child, dict):
+            containers.append(child)
+        elif isinstance(child, list):
+            containers.extend(item for item in child if isinstance(item, dict))
+
+    def first_value(keys, *, fallback_to_error_message=False):
+        for container in containers:
+            for key in keys:
+                value = container.get(key)
+                if isinstance(value, (str, int, float)) and str(value).strip():
+                    return str(value).strip()
+        if (fallback_to_error_message
+                and isinstance(payload, afribapay.AfriPayError)):
+            return str(payload.message or "").strip()
+        return ""
+
+    code = first_value((
+        "error_code", "errorCode", "reason_code", "reasonCode", "code",
+    ))
+    reason = first_value((
+        "failure_reason", "failureReason", "reason", "error_description",
+        "errorDescription", "description", "message", "error",
+    ), fallback_to_error_message=True)
+
+    def safe_text(value: str) -> str:
+        value = re.sub(r"[\r\n\t]+", " ", value)
+        value = re.sub(
+            r"(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+",
+            "[adresse masquée]", value)
+        value = re.sub(
+            r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+            "[email masqué]", value, flags=re.IGNORECASE)
+        value = re.sub(
+            r"(?i)\b(?:bearer\s+|(?:api[_ -]?key|token|secret)\s*[:=]\s*)"
+            r"[A-Za-z0-9._~+/=-]{8,}",
+            "[credential masquée]", value)
+        value = re.sub(
+            r"(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)",
+            "[numéro masqué]", value)
+        return re.sub(r"\s+", " ", value).strip()[:180]
+
+    result = {}
+    if code and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", code):
+        result["metadata.afribapay_error_code"] = code
+    safe_reason = safe_text(reason) if reason else ""
+    if safe_reason:
+        result["metadata.afribapay_failure_reason"] = safe_reason
+    return result
+
+
 async def _hold_mobile_withdrawal_for_provider_funds(
     tx_id: str, provider: str, reason: str = ""
 ) -> Optional[dict]:
@@ -12082,6 +12140,12 @@ async def _reconcile_afribapay_withdrawal(tx: dict) -> str:
         return "completed"
 
     if status == "failed":
+        failure_diagnostics = _afribapay_failure_diagnostics(response)
+        if failure_diagnostics:
+            await db.transactions.update_one(
+                {"id": tx["id"], "status": "pending"},
+                {"$set": failure_diagnostics},
+            )
         if amount not in (None, ""):
             try:
                 if abs(float(amount) - float(expected_amount)) > 1e-9:
@@ -12157,6 +12221,12 @@ async def _submit_afribapay_payout(
     try:
         response = await afribapay.client_from_config(cfg).payout(**payload)
     except afribapay.AfriPayError as exc:
+        rejection_diagnostics = _afribapay_failure_diagnostics(exc)
+        rejection_diagnostics["metadata.afribapay_http_status"] = int(exc.status)
+        await db.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": rejection_diagnostics},
+        )
         if _is_provider_balance_insufficient(exc.message):
             latest = await _hold_mobile_withdrawal_for_provider_funds(
                 tx_id, provider="afribapay", reason=exc.message)

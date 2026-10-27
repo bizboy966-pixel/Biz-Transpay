@@ -2024,3 +2024,87 @@ def test_afribapay_gross_amount_validation_uses_fees_when_needed():
     assert not server._afribapay_amount_matches(
         {"original_amount": "1970", "amount": "1970", "fees": "30"}, 2000)
     assert not server._afribapay_amount_matches({"amount": "1970"}, 2000)
+
+
+def test_afribapay_failure_diagnostics_redact_private_values():
+    diagnostics = server._afribapay_failure_diagnostics({
+        "data": {
+            "error_code": "INVALID_BENEFICIARY",
+            "message": (
+                "Invalid recipient +237 699 123 456 for "
+                "customer@example.com"),
+        },
+    })
+
+    assert diagnostics["metadata.afribapay_error_code"] == "INVALID_BENEFICIARY"
+    reason = diagnostics["metadata.afribapay_failure_reason"]
+    assert "+237 699 123 456" not in reason
+    assert "customer@example.com" not in reason
+    assert "[numéro masqué]" in reason
+    assert "[email masqué]" in reason
+    http_error = server.afribapay.AfriPayError(400, "request rejected")
+    http_diagnostics = server._afribapay_failure_diagnostics(http_error)
+    assert "metadata.afribapay_error_code" not in http_diagnostics
+    assert http_diagnostics["metadata.afribapay_failure_reason"] == "request rejected"
+
+
+@run_async
+async def test_afribapay_failed_payout_records_reason_and_refunds_once(monkeypatch):
+    fake = MemoryDB()
+    tx = {
+        "id": "afri-failed-payout",
+        "type": "transfer",
+        "status": "pending",
+        "amount": 500,
+        "currency": "XAF",
+        "metadata": {
+            "provider": "afribapay",
+            "order_id": "afri-failed-payout",
+            "debit_applied": True,
+            "provider_payout_amount": 500,
+        },
+    }
+    fake.transactions.docs.append(tx)
+    monkeypatch.setattr(server, "db", fake)
+    monkeypatch.setattr(
+        server, "get_afribapay_config",
+        lambda **_kwargs: asyncio.sleep(0, result={"enabled": True}))
+
+    class FakeAfriPayClient:
+        async def status(self, **_kwargs):
+            return {
+                "data": {
+                    "status": "FAILED",
+                    "order_id": "afri-failed-payout",
+                    "amount": 500,
+                    "currency": "XAF",
+                    "error_code": "INVALID_BENEFICIARY",
+                    "message": (
+                        "Invalid recipient +237 699 123 456 for "
+                        "customer@example.com"),
+                },
+            }
+
+    monkeypatch.setattr(
+        server.afribapay, "client_from_config",
+        lambda _cfg: FakeAfriPayClient())
+    refunds = []
+
+    async def refund_once(tx_id, reason):
+        refunds.append((tx_id, reason))
+        await fake.transactions.update_one(
+            {"id": tx_id, "status": "pending"},
+            {"$set": {"status": "failed", "metadata.failure_reason": reason}},
+        )
+
+    monkeypatch.setattr(server, "_refund_mobile_withdrawal", refund_once)
+
+    assert await server._reconcile_afribapay_withdrawal(tx) == "failed"
+    assert await server._reconcile_afribapay_withdrawal(tx) == "failed"
+
+    assert refunds == [("afri-failed-payout", "afribapay_provider_failed")]
+    metadata = fake.transactions.docs[0]["metadata"]
+    assert metadata["afribapay_error_code"] == "INVALID_BENEFICIARY"
+    reason = metadata["afribapay_failure_reason"]
+    assert "+237 699 123 456" not in reason
+    assert "customer@example.com" not in reason
