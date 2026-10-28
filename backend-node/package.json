@@ -1,0 +1,19 @@
+{
+  "name": "biz-transpay-node-preview",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node app.js",
+    "test": "node --test test/*.test.cjs",
+    "inventory": "python3 scripts/inventory.py",
+    "check:parity": "node scripts/check-parity.cjs"
+  },
+  "dependencies": {
+    "bcryptjs": "3.0.3",
+    "decimal.js": "10.6.0",
+    "jsonwebtoken": "9.0.3",
+    "mysql2": "3.24.6"
+  }
+}
