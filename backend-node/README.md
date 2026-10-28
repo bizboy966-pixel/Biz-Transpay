@@ -19,7 +19,11 @@ separate production migration.
 - `src/security.cjs` contains cross-language bcrypt, PIN pepper, TOTP, JWT and
   Fernet primitives. Tests compare them with the existing Python implementation
   using synthetic test values, including decrypting Python Fernet data and having
-  Python decrypt a Node-created Fernet token.
+  Python decrypt a Node-created Fernet token. Password rules, session/MFA token
+  claims, and explicit integration-encryption keys are also covered by fixtures.
+- `src/session-service.cjs` ports the browser-session rules as an isolated service:
+  idle/absolute expiry, three active sessions, rotation, logout, step-up age,
+  CSRF/session cookies, and the required user-PIN gate.
 - `src/wallet.cjs` reproduces the existing Python idempotency identifiers and
   signatures and implements an atomic wallet-operation state machine against a
   transactional repository interface.
@@ -30,7 +34,8 @@ separate production migration.
   implemented or tested in Node.js.
 
 These modules are not yet connected to login, user, payment, API or admin routes.
-The memory-store wallet tests are not a substitute for a real MySQL/InnoDB test.
+Session tests use an in-memory adapter; they are not a substitute for a real
+MySQL/InnoDB test. No Node route has been marked verified.
 
 ## Tests and route inventory
 

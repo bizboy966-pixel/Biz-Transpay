@@ -206,13 +206,17 @@ class Cursor {
   async items() {
     let documents = await this.collection._all(simpleCandidate(this.query));
     documents = documents.filter(doc => matches(doc, this.query));
-    for (const [key, direction] of [...this.sortSpec].reverse()) {
+    if (this.sortSpec.length) {
       documents.sort((a, b) => {
+        for (const [key, direction] of this.sortSpec) {
         const av = firstPath(a, key); const bv = firstPath(b, key);
         const missing = (av === null || av === undefined ? 1 : 0)
           - (bv === null || bv === undefined ? 1 : 0);
-        return (direction < 0 ? -missing : missing)
+          const result = (direction < 0 ? -missing : missing)
           || compare(av, bv) * (direction < 0 ? -1 : 1);
+          if (result !== 0) return result;
+        }
+        return 0;
       });
     }
     documents = documents.slice(this.skipValue);

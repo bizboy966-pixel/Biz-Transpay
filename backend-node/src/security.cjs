@@ -72,7 +72,8 @@ function encryptFernet(plaintext, key, now = Math.floor(Date.now() / 1000)) {
     .replaceAll('+', '-').replaceAll('/', '_');
 }
 
-function integrationEncryptionKey(sessionSecret) {
+function integrationEncryptionKey(sessionSecret, explicitKey = process.env.SECRETS_ENCRYPTION_KEY) {
+  if (explicitKey) return decodeBase64Url(explicitKey);
   return crypto.createHash('sha256')
     .update(`biz-transpay:secrets-encryption:${requireSecret(sessionSecret)}`).digest();
 }
@@ -116,6 +117,54 @@ function verifyTotp(secret, code, lastCounter = null, now = Date.now() / 1000) {
   return null;
 }
 
+async function hashPin(userId, pin, purpose, sessionSecret) {
+  return bcrypt.hash(pinMaterial(userId, pin, purpose, sessionSecret), 12);
+}
+
+async function verifyPin(userId, pin, purpose, hash, sessionSecret) {
+  try {
+    return await verifyPassword(pinMaterial(userId, pin, purpose, sessionSecret), hash);
+  } catch { return false; }
+}
+
+function passwordPolicyErrors(password, admin = false) {
+  const value = String(password ?? '');
+  const length = [...value].length;
+  const errors = [];
+  if (length < 6) errors.push('au moins 6 caractères');
+  if (length > 72) errors.push('au maximum 72 caractères');
+  if (!/\p{Ll}/u.test(value)) errors.push('une lettre minuscule');
+  if (!/\p{Lu}/u.test(value)) errors.push('une lettre majuscule');
+  if (!/\p{N}/u.test(value)) errors.push('un chiffre');
+  if (!/[^\p{L}\p{N}\s]/u.test(value)) errors.push('un caractère spécial');
+  if (/\s/u.test(value)) errors.push('aucun espace');
+  if (new Set(['password123!', 'password123', 'azerty123!', 'azerty123',
+    'admin123!', '123456789012', 'qwerty123!']).has(value.toLowerCase())) {
+    errors.push('un mot de passe moins courant');
+  }
+  if (admin && length < 14) {
+    errors.push("un mot de passe administrateur d'au moins 14 caractères");
+  }
+  return [...new Set(errors)];
+}
+
+function createMfaToken(userId, purpose, extras, secret, now = Math.floor(Date.now() / 1000)) {
+  return jwt.sign({ sub: userId, purpose, ...extras, iat: now }, requireSecret(secret), {
+    algorithm: 'HS256', expiresIn: 300,
+  });
+}
+
+function createSessionToken(userId, sessionId, secret, now = Math.floor(Date.now() / 1000)) {
+  return jwt.sign({ sub: userId, sid: sessionId, typ: 'session', iat: now },
+    requireSecret(secret), { algorithm: 'HS256', expiresIn: 168 * 60 * 60 });
+}
+
+function decodeMfaToken(token, secret, purpose, now) {
+  const payload = decodeToken(token, secret, { purpose, now });
+  if (!payload.sub) throw new Error('Invalid MFA token');
+  return payload;
+}
+
 function decodeToken(token, secret, { purpose, now } = {}) {
   // Explicit allowlist; never accept algorithm selection from the token header.
   const payload = jwt.verify(token, requireSecret(secret), {
@@ -131,5 +180,6 @@ function decodeToken(token, secret, { purpose, now } = {}) {
 
 module.exports = {
   fernetKey, pinMaterial, verifyPassword, decryptFernet, encryptFernet,
-  integrationEncryptionKey, totpCode, verifyTotp, decodeToken,
+  integrationEncryptionKey, totpCode, verifyTotp, decodeToken, hashPin, verifyPin,
+  passwordPolicyErrors, createMfaToken, createSessionToken, decodeMfaToken,
 };
