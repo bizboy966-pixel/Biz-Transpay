@@ -67,6 +67,7 @@ agenthub/agents/youtube/db
 screenshots/
 
 # Archive files and large assets
+/generated-artifacts/
 **/*.zip
 **/*.tar.gz
 **/*.tar
