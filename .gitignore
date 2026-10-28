@@ -68,6 +68,7 @@ screenshots/
 
 # Archive files and large assets
 **/*.zip
+/generated-artifacts/
 **/*.tar.gz
 **/*.tar
 **/*.tgz
