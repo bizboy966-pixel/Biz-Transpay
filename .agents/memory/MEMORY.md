@@ -27,6 +27,7 @@
 - [RBAC permission model](rbac-permission-model.md) — normalize staff roles into effective roles and enforce permissions centrally on every admin route.
 - [Python environment manifests](python-environment-manifests.md) — package installation can rewrite project manifests; restore the requirements source of truth before restarting.
 - [PostgreSQL JSONB adapter behavior](postgres-jsonb-adapter.md) — asyncpg JSONB and stored datetimes may return as strings; decode and normalize them at the store boundary.
+- [Staged Plesk/MySQL migration](staged-plesk-mysql-migration.md) — migrate Preview first; keep production, apex DNS, and live provider callbacks untouched until validation and explicit approval.
 - [VM publish readiness](vm-publish-readiness.md) — production must serve the prebuilt frontend quickly on the public port; do not start CRA compilation in the VM run command.
 - [Financial idempotency and wallet routing](financial-idempotency.md) — keep wallet mutations atomic and crypto transfers bound to exact enabled networks.
 - [Provider liquidity review](provider-liquidity-review.md) — provider-fund failures keep the customer debit reserved for manual payout review; local wallet insufficiency remains a normal rejection.
