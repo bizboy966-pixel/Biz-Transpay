@@ -55,6 +55,7 @@ function equal(a, b) {
 }
 
 function compare(a, b) {
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
   if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
   if ((typeof a === 'number' || typeof a === 'bigint')
       && (typeof b === 'number' || typeof b === 'bigint')) return Number(a) - Number(b);

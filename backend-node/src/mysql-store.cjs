@@ -63,7 +63,7 @@ class MySqlStore {
             [collection, id, JSON.stringify(doc)]);
         },
       };
-      const result = await callback(repo);
+      const result = await callback(repo, connection);
       await connection.commit();
       return result;
     } catch (error) {
