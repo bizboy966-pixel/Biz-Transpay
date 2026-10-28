@@ -50,3 +50,17 @@ mtime_ms = 1790041441318
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/1ccdfffe-b863-4cfc-873a-d98f8d556284/9fd932f1-3e87-4457-83d9-158a9daf6e62"
 storage_version_token = "1790041535438144"
 content_type = "application/pdf"
+
+[[outputs]]
+id = "ot-1jmJXcC-ab16UgODJ8"
+uri = "file://generated-artifacts/production-mysql-export/biz-transpay-mysql-best-effort.zip"
+type = "unspecified"
+title = "Biz-transPay — SQL MySQL en ZIP (best-effort)"
+description = "ZIP vérifié contenant le SQL MySQL et 37 236 lignes exportées. Attention : 9 collections ne correspondent pas aux empreintes de production. Ce fichier n’est pas une sauvegarde garantie sans perte et ne doit pas servir de migration définitive sans vérification. Il contient des données sensibles."
+logical_id = "8f3a9d5e-a2fb-43e1-8532-6959d9b55733"
+content_hash = "sha256:4244354d7ac8e7f7957c9793c9bac7f4e2fa75524e00b8744e54ffaa78a72cb0"
+size = 26033136
+mtime_ms = 1793220353283
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/8f3a9d5e-a2fb-43e1-8532-6959d9b55733/9a0f192f-14c0-4424-80f1-0236c50306f1"
+storage_version_token = "1793220396525963"
+content_type = "application/octet-stream"
