@@ -1,0 +1,57 @@
+# Biz-transPay Node.js / MySQL Preview migration
+
+## Safety status
+
+This is an isolated migration workspace. It is **not a replacement backend**:
+
+- all route inventory entries remain `pending`;
+- the Node server serves only `/healthz`;
+- all other routes return `503 MIGRATION_INCOMPLETE`;
+- startup refuses to run unless `BIZTRANSPAY_MIGRATION_ENV=preview`;
+- the code never reads Replit production data, performs provider calls, or runs on the current Replit workflow.
+
+Do not connect a production database, route the live domain here, or enable payment
+callbacks. The user explicitly requested Preview-only work until they approve a
+separate production migration.
+
+## Current porting foundation
+
+- `src/security.cjs` contains cross-language bcrypt, PIN pepper, TOTP, JWT and
+  Fernet primitives. Tests compare them with the existing Python implementation
+  using synthetic test values, including decrypting Python Fernet data and having
+  Python decrypt a Node-created Fernet token.
+- `src/wallet.cjs` reproduces the existing Python idempotency identifiers and
+  signatures and implements an atomic wallet-operation state machine against a
+  transactional repository interface.
+- `src/mysql-store.cjs` has an InnoDB transaction/repository foundation.
+- `sql/preview-schema.sql` creates only the initial JSON document and lock tables.
+  It contains **no user, transaction, settings, or other exported data**.
+- `route-inventory.json` lists the Python routes. A `pending` entry is not
+  implemented or tested in Node.js.
+
+These modules are not yet connected to login, user, payment, API or admin routes.
+The memory-store wallet tests are not a substitute for a real MySQL/InnoDB test.
+
+## Tests and route inventory
+
+```sh
+npm test
+npm run inventory
+npm run check:parity
+```
+
+The parity command intentionally fails until every route is implemented and
+verified; additional end-to-end financial checks are required afterwards.
+
+## Preview-only setup rules
+
+- The source database is the **Replit development/Preview** database only.
+- Target MySQL credentials belong in Plesk's private environment configuration;
+  never commit them or paste them into chat.
+- `DATABASE_URL` for the existing Python application is PostgreSQL. A MySQL URL
+  cannot be substituted until the MySQL adapter and all collection semantics are
+  completed and validated.
+- Keep the existing React application unchanged. Its current build output is
+  `frontend/build`; it is not a Node API server.
+- Production database, live DNS, and provider callback settings remain untouched
+  until Preview is validated and the user explicitly authorizes that phase.

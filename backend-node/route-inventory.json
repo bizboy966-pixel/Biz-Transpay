@@ -1,0 +1,1412 @@
+{
+  "description": "Python route inventory; pending means NOT implemented in Node.js.",
+  "routes": [
+    {
+      "method": "GET",
+      "path": "/api/",
+      "source": "backend/server.py",
+      "handler": "root",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/admins",
+      "source": "backend/server.py",
+      "handler": "admin_list_admins",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/admins",
+      "source": "backend/server.py",
+      "handler": "admin_create_admin",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/benefits",
+      "source": "backend/server.py",
+      "handler": "admin_benefits",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/benefits/details",
+      "source": "backend/server.py",
+      "handler": "admin_benefits_details",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/conversion/config",
+      "source": "backend/server.py",
+      "handler": "admin_get_conversion_config",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/conversion/config",
+      "source": "backend/server.py",
+      "handler": "admin_update_conversion_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/conversions",
+      "source": "backend/server.py",
+      "handler": "admin_list_conversions",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/crypto/coins",
+      "source": "backend/server.py",
+      "handler": "admin_crypto_coins",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/deposit/config",
+      "source": "backend/server.py",
+      "handler": "admin_get_deposit_config",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/deposit/config",
+      "source": "backend/server.py",
+      "handler": "admin_update_deposit_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/email-notifications",
+      "source": "backend/server.py",
+      "handler": "admin_get_email_notifications",
+      "status": "pending"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/email-notifications",
+      "source": "backend/server.py",
+      "handler": "admin_update_email_notifications",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/funds",
+      "source": "backend/server.py",
+      "handler": "admin_funds",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/kyc",
+      "source": "backend/server.py",
+      "handler": "admin_list_kyc",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/kyc/{user_id}/decision",
+      "source": "backend/server.py",
+      "handler": "admin_kyc_decision",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/links",
+      "source": "backend/server.py",
+      "handler": "admin_list_links",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/links/{link_id}/action/{action}",
+      "source": "backend/server.py",
+      "handler": "admin_link_action",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/logs",
+      "source": "backend/server.py",
+      "handler": "admin_logs",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/maintenance/legacy-merchant-api",
+      "source": "backend/server.py",
+      "handler": "preview_legacy_merchant_cleanup",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/maintenance/legacy-merchant-api",
+      "source": "backend/server.py",
+      "handler": "execute_legacy_merchant_cleanup",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/payment-providers/afribapay",
+      "source": "backend/server.py",
+      "handler": "admin_get_afribapay",
+      "status": "pending"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/payment-providers/afribapay",
+      "source": "backend/server.py",
+      "handler": "admin_update_afribapay",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/payment-providers/izipay",
+      "source": "backend/server.py",
+      "handler": "admin_get_izipay",
+      "status": "pending"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/payment-providers/izipay",
+      "source": "backend/server.py",
+      "handler": "admin_update_izipay",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/payment-providers/mbiyo",
+      "source": "backend/server.py",
+      "handler": "admin_get_mbiyo",
+      "status": "pending"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/payment-providers/mbiyo",
+      "source": "backend/server.py",
+      "handler": "admin_update_mbiyo",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/payment-providers/paydunya",
+      "source": "backend/server.py",
+      "handler": "admin_get_paydunya",
+      "status": "pending"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/admin/payment-providers/paydunya",
+      "source": "backend/server.py",
+      "handler": "admin_update_paydunya",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/platform/config",
+      "source": "backend/server.py",
+      "handler": "admin_get_platform_config",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/platform/config",
+      "source": "backend/server.py",
+      "handler": "admin_update_platform_config",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/platform/reset",
+      "source": "backend/server.py",
+      "handler": "admin_platform_reset",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/push/audience-options",
+      "source": "backend/server.py",
+      "handler": "admin_push_audience_options",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/push/campaigns",
+      "source": "backend/server.py",
+      "handler": "admin_list_push_campaigns",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/push/preview",
+      "source": "backend/server.py",
+      "handler": "admin_push_preview",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/push/send",
+      "source": "backend/server.py",
+      "handler": "admin_send_push_campaign",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/push/users",
+      "source": "backend/server.py",
+      "handler": "admin_push_user_search",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/referrals/config",
+      "source": "backend/server.py",
+      "handler": "admin_get_referral_config",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/referrals/config",
+      "source": "backend/server.py",
+      "handler": "admin_set_referral_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/settings/features",
+      "source": "backend/server.py",
+      "handler": "admin_get_features",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/settings/features",
+      "source": "backend/server.py",
+      "handler": "admin_update_features",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/statistics",
+      "source": "backend/server.py",
+      "handler": "admin_statistics",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/statistics/dashboard",
+      "source": "backend/server.py",
+      "handler": "admin_statistics_dashboard",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/statistics/provider-liquidity",
+      "source": "backend/server.py",
+      "handler": "admin_statistics_provider_liquidity",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/statistics/wallet-balances",
+      "source": "backend/server.py",
+      "handler": "admin_statistics_wallet_balances",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/stats",
+      "source": "backend/server.py",
+      "handler": "admin_stats",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/support/config",
+      "source": "backend/server.py",
+      "handler": "admin_get_support_config",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/support/config",
+      "source": "backend/server.py",
+      "handler": "admin_update_support_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/support/conversations",
+      "source": "backend/server.py",
+      "handler": "admin_conversations",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/support/conversations/{user_id}/messages",
+      "source": "backend/server.py",
+      "handler": "admin_conversation_messages",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/support/conversations/{user_id}/messages",
+      "source": "backend/server.py",
+      "handler": "admin_reply",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/transactions",
+      "source": "backend/server.py",
+      "handler": "admin_transactions",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/transactions/{tx_id}",
+      "source": "backend/server.py",
+      "handler": "admin_transaction_detail",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/transactions/{tx_id}/approve",
+      "source": "backend/server.py",
+      "handler": "admin_approve_transaction",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/transactions/{tx_id}/refresh",
+      "source": "backend/server.py",
+      "handler": "admin_refresh_transaction",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/transactions/{tx_id}/reject",
+      "source": "backend/server.py",
+      "handler": "admin_reject_transaction",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/transfer/config",
+      "source": "backend/server.py",
+      "handler": "admin_get_transfer_config",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/transfer/config",
+      "source": "backend/server.py",
+      "handler": "admin_update_transfer_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/users",
+      "source": "backend/server.py",
+      "handler": "admin_list_users",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/users/cleanup-test-users",
+      "source": "backend/server.py",
+      "handler": "admin_cleanup_test_users",
+      "status": "pending"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/admin/users/{user_id}",
+      "source": "backend/server.py",
+      "handler": "admin_delete_user",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/users/{user_id}",
+      "source": "backend/server.py",
+      "handler": "admin_get_user",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/admin/users/{user_id}",
+      "source": "backend/server.py",
+      "handler": "admin_update_user",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/users/{user_id}/action/{action}",
+      "source": "backend/server.py",
+      "handler": "admin_user_action",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/admin/users/{user_id}/balance-wallets",
+      "source": "backend/server.py",
+      "handler": "admin_user_balance_wallets",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/users/{user_id}/credit",
+      "source": "backend/server.py",
+      "handler": "admin_credit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/users/{user_id}/debit",
+      "source": "backend/server.py",
+      "handler": "admin_debit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/admin/users/{user_id}/reset-password",
+      "source": "backend/server.py",
+      "handler": "admin_reset_password",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/2fa/confirm",
+      "source": "backend/server.py",
+      "handler": "confirm_two_factor",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/2fa/disable",
+      "source": "backend/server.py",
+      "handler": "disable_two_factor",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/2fa/setup",
+      "source": "backend/server.py",
+      "handler": "setup_two_factor",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/admin-pin",
+      "source": "backend/server.py",
+      "handler": "configure_admin_pin",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/csrf",
+      "source": "backend/server.py",
+      "handler": "csrf_token",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/login",
+      "source": "backend/server.py",
+      "handler": "login",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "source": "backend/server.py",
+      "handler": "logout",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/me",
+      "source": "backend/server.py",
+      "handler": "me",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/password-reset/confirm",
+      "source": "backend/server.py",
+      "handler": "confirm_password_reset",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/password-reset/request",
+      "source": "backend/server.py",
+      "handler": "request_password_reset",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/reauth",
+      "source": "backend/server.py",
+      "handler": "reauthenticate",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/recover",
+      "source": "backend/server.py",
+      "handler": "recover_account",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/register",
+      "source": "backend/server.py",
+      "handler": "register",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/session/refresh",
+      "source": "backend/server.py",
+      "handler": "refresh_session",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/user-pin/reset/confirm",
+      "source": "backend/server.py",
+      "handler": "confirm_user_pin_reset",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/user-pin/reset/request",
+      "source": "backend/server.py",
+      "handler": "request_user_pin_reset",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversion/config",
+      "source": "backend/server.py",
+      "handler": "public_conversion_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversion/crypto-wallets",
+      "source": "backend/server.py",
+      "handler": "public_conversion_crypto_wallets",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversion/quote",
+      "source": "backend/server.py",
+      "handler": "conversion_quote",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/crypto/assets",
+      "source": "backend/server.py",
+      "handler": "crypto_assets",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/crypto/coins",
+      "source": "backend/server.py",
+      "handler": "public_crypto_coins",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/checkout",
+      "source": "backend/server.py",
+      "handler": "create_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/deposits/config",
+      "source": "backend/server.py",
+      "handler": "deposits_config_public",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/crypto",
+      "source": "backend/server.py",
+      "handler": "create_crypto_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/deposits/crypto/{deposit_id}",
+      "source": "backend/server.py",
+      "handler": "get_crypto_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/mobile-money",
+      "source": "backend/server.py",
+      "handler": "create_mobile_money_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/mobile-money/par",
+      "source": "backend/server.py",
+      "handler": "create_paydunya_par",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/mobile-money/par-redirect",
+      "source": "backend/server.py",
+      "handler": "create_paydunya_par",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/deposits/mobile-money/pending",
+      "source": "backend/server.py",
+      "handler": "get_latest_pending_momo_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/mobile-money/psr",
+      "source": "backend/server.py",
+      "handler": "create_paydunya_psr",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/mobile-money/start",
+      "source": "backend/server.py",
+      "handler": "start_mobile_money_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/deposits/mobile-money/{deposit_id}",
+      "source": "backend/server.py",
+      "handler": "get_momo_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/mobile-money/{deposit_id}/finalize",
+      "source": "backend/server.py",
+      "handler": "finalize_momo_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/paydunya/par",
+      "source": "backend/server.py",
+      "handler": "create_paydunya_par",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/paydunya/par-redirect",
+      "source": "backend/server.py",
+      "handler": "create_paydunya_par",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/deposits/paydunya/psr",
+      "source": "backend/server.py",
+      "handler": "create_paydunya_psr",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/deposits/paydunya/psr/{deposit_id}/token/{capability}",
+      "source": "backend/server.py",
+      "handler": "get_paydunya_psr_token",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/deposits/paydunya/return",
+      "source": "backend/server.py",
+      "handler": "paydunya_payment_return",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/exchange",
+      "source": "backend/server.py",
+      "handler": "do_exchange",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/exchange/rate",
+      "source": "backend/server.py",
+      "handler": "get_rate",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fedapay/catalog",
+      "source": "backend/server.py",
+      "handler": "fedapay_catalog",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/fees/config",
+      "source": "backend/server.py",
+      "handler": "public_fees_config",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/credentials",
+      "source": "backend/integration_api.py",
+      "handler": "create_credentials",
+      "status": "pending"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/integration/credentials/{environment}",
+      "source": "backend/integration_api.py",
+      "handler": "delete_credentials",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/integration/credentials/{environment}",
+      "source": "backend/integration_api.py",
+      "handler": "set_credentials_active",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/credentials/{environment}/regenerate",
+      "source": "backend/integration_api.py",
+      "handler": "regenerate_credentials",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/documentation",
+      "source": "backend/integration_api.py",
+      "handler": "documentation",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/documentation.pdf",
+      "source": "backend/integration_api.py",
+      "handler": "documentation_pdf",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/settings",
+      "source": "backend/integration_api.py",
+      "handler": "integration_settings",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/crypto/assets",
+      "source": "backend/integration_api.py",
+      "handler": "crypto_asset_catalog",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/crypto/deposits",
+      "source": "backend/integration_api.py",
+      "handler": "list_integration_crypto_deposits",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/v1/crypto/deposits",
+      "source": "backend/integration_api.py",
+      "handler": "start_crypto_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/crypto/deposits/{deposit_id}",
+      "source": "backend/integration_api.py",
+      "handler": "get_integration_crypto_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/crypto/payouts",
+      "source": "backend/integration_api.py",
+      "handler": "list_integration_crypto_payouts",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/v1/crypto/payouts",
+      "source": "backend/integration_api.py",
+      "handler": "start_crypto_payout",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/crypto/payouts/{payout_id}",
+      "source": "backend/integration_api.py",
+      "handler": "get_integration_crypto_payout",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/deposits",
+      "source": "backend/integration_api.py",
+      "handler": "list_deposits",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/v1/deposits",
+      "source": "backend/integration_api.py",
+      "handler": "start_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/deposits/{deposit_id}",
+      "source": "backend/integration_api.py",
+      "handler": "get_deposit",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/exchanges",
+      "source": "backend/integration_api.py",
+      "handler": "list_exchanges",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/v1/exchanges",
+      "source": "backend/integration_api.py",
+      "handler": "execute_exchange",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/exchanges/quote",
+      "source": "backend/integration_api.py",
+      "handler": "exchange_quote",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/exchanges/{exchange_id}",
+      "source": "backend/integration_api.py",
+      "handler": "get_exchange",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/links",
+      "source": "backend/integration_api.py",
+      "handler": "list_payment_links",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/v1/links",
+      "source": "backend/integration_api.py",
+      "handler": "create_payment_link",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/links/{link_id}",
+      "source": "backend/integration_api.py",
+      "handler": "get_payment_link",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/links/{link_id}/payments",
+      "source": "backend/integration_api.py",
+      "handler": "link_payments",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/mobile-money/operators",
+      "source": "backend/integration_api.py",
+      "handler": "mobile_money_operators",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/payouts",
+      "source": "backend/integration_api.py",
+      "handler": "list_payouts",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/v1/payouts",
+      "source": "backend/integration_api.py",
+      "handler": "start_payout",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/payouts/{payout_id}",
+      "source": "backend/integration_api.py",
+      "handler": "get_payout",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/v1/transactions",
+      "source": "backend/integration_api.py",
+      "handler": "integration_transactions",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/webhooks/{environment}",
+      "source": "backend/integration_api.py",
+      "handler": "list_webhooks",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/webhooks/{environment}",
+      "source": "backend/integration_api.py",
+      "handler": "create_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/integration/webhooks/{environment}",
+      "source": "backend/integration_api.py",
+      "handler": "configure_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/integration/webhooks/{environment}/deliveries",
+      "source": "backend/integration_api.py",
+      "handler": "webhook_deliveries",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/webhooks/{environment}/regenerate-secret",
+      "source": "backend/integration_api.py",
+      "handler": "rotate_webhook_secret",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/webhooks/{environment}/test",
+      "source": "backend/integration_api.py",
+      "handler": "test_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/integration/webhooks/{environment}/{webhook_id}",
+      "source": "backend/integration_api.py",
+      "handler": "delete_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/integration/webhooks/{environment}/{webhook_id}",
+      "source": "backend/integration_api.py",
+      "handler": "update_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/webhooks/{environment}/{webhook_id}/regenerate-secret",
+      "source": "backend/integration_api.py",
+      "handler": "rotate_single_webhook_secret",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/integration/webhooks/{environment}/{webhook_id}/test",
+      "source": "backend/integration_api.py",
+      "handler": "test_single_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/kyc",
+      "source": "backend/server.py",
+      "handler": "get_kyc",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/kyc/submit",
+      "source": "backend/server.py",
+      "handler": "submit_kyc",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/links",
+      "source": "backend/server.py",
+      "handler": "list_links",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/links",
+      "source": "backend/server.py",
+      "handler": "create_link",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/links/pay",
+      "source": "backend/server.py",
+      "handler": "start_link_payment",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/links/pay/mobile-money",
+      "source": "backend/server.py",
+      "handler": "start_link_payment_momo",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/links/payments/{payment_id}",
+      "source": "backend/server.py",
+      "handler": "get_link_payment_status",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/links/payments/{payment_id}/finalize",
+      "source": "backend/server.py",
+      "handler": "finalize_link_payment",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/links/payments/{payment_id}/mobile-money/finalize",
+      "source": "backend/server.py",
+      "handler": "finalize_link_payment",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/links/public/{slug}",
+      "source": "backend/server.py",
+      "handler": "get_public_link",
+      "status": "pending"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/links/{link_id}",
+      "source": "backend/server.py",
+      "handler": "delete_link",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/links/{link_id}",
+      "source": "backend/server.py",
+      "handler": "update_link",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications",
+      "source": "backend/server.py",
+      "handler": "list_notifications",
+      "status": "pending"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/notifications/all",
+      "source": "backend/server.py",
+      "handler": "notification_delete_all",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications/pending-confirmation",
+      "source": "backend/server.py",
+      "handler": "pending_confirmation_notifications",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/read-all",
+      "source": "backend/server.py",
+      "handler": "notification_mark_all_read",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications/stream",
+      "source": "backend/server.py",
+      "handler": "notifications_stream",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/notifications/unread-count",
+      "source": "backend/server.py",
+      "handler": "unread_count",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/notifications/{nid}/read",
+      "source": "backend/server.py",
+      "handler": "notification_mark_read",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/payments/status/{session_id}",
+      "source": "backend/server.py",
+      "handler": "payment_status",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/push/config",
+      "source": "backend/server.py",
+      "handler": "push_client_config",
+      "status": "pending"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/push/devices",
+      "source": "backend/server.py",
+      "handler": "unregister_push_device",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/push/devices",
+      "source": "backend/server.py",
+      "handler": "register_push_device",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/referrals/invite/{code}",
+      "source": "backend/server.py",
+      "handler": "referral_invite",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/referrals/me",
+      "source": "backend/server.py",
+      "handler": "my_referrals",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/security/turnstile-config",
+      "source": "backend/server.py",
+      "handler": "turnstile_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/features",
+      "source": "backend/server.py",
+      "handler": "public_get_features",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/settings/password",
+      "source": "backend/server.py",
+      "handler": "change_password",
+      "status": "pending"
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/settings/profile",
+      "source": "backend/server.py",
+      "handler": "update_profile",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/stats/public",
+      "source": "backend/server.py",
+      "handler": "public_stats",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/support/config",
+      "source": "backend/server.py",
+      "handler": "support_config",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/support/messages",
+      "source": "backend/server.py",
+      "handler": "user_get_messages",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/support/messages",
+      "source": "backend/server.py",
+      "handler": "user_send_message",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/support/tickets",
+      "source": "backend/server.py",
+      "handler": "list_tickets",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/support/tickets",
+      "source": "backend/server.py",
+      "handler": "create_ticket",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/transactions",
+      "source": "backend/server.py",
+      "handler": "list_transactions",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/transactions/{tx_id}",
+      "source": "backend/server.py",
+      "handler": "get_transaction",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/transfer/config",
+      "source": "backend/server.py",
+      "handler": "transfer_config",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/transfers",
+      "source": "backend/server.py",
+      "handler": "transfer",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/transfers/email-otp/cancel",
+      "source": "backend/server.py",
+      "handler": "cancel_transfer_email_otp",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/lookup",
+      "source": "backend/server.py",
+      "handler": "lookup_user",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/wallet/summary",
+      "source": "backend/server.py",
+      "handler": "wallet_summary",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhook/stripe",
+      "source": "backend/server.py",
+      "handler": "stripe_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/afribapay",
+      "source": "backend/server.py",
+      "handler": "afribapay_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "HEAD",
+      "path": "/api/webhooks/afribapay",
+      "source": "backend/server.py",
+      "handler": "afribapay_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/afribapay",
+      "source": "backend/server.py",
+      "handler": "afribapay_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/fedapay",
+      "source": "backend/server.py",
+      "handler": "fedapay_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/paydunya",
+      "source": "backend/server.py",
+      "handler": "paydunya_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "GET",
+      "path": "/api/webhooks/paydunya/disbursement",
+      "source": "backend/server.py",
+      "handler": "paydunya_disbursement_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "HEAD",
+      "path": "/api/webhooks/paydunya/disbursement",
+      "source": "backend/server.py",
+      "handler": "paydunya_disbursement_webhook",
+      "status": "pending"
+    },
+    {
+      "method": "POST",
+      "path": "/api/webhooks/paydunya/disbursement",
+      "source": "backend/server.py",
+      "handler": "paydunya_disbursement_webhook",
+      "status": "pending"
+    }
+  ]
+}

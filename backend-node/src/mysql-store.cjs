@@ -36,14 +36,15 @@ class MySqlStore {
       const repo = {
         // InnoDB row locks are released with commit/rollback, unlike GET_LOCK().
         // Fixed collection order must be used by every future wallet writer.
+        lockCollection: async name => {
+          await connection.execute(
+            'INSERT INTO migration_locks (lock_name) VALUES (?) ON DUPLICATE KEY UPDATE lock_name=VALUES(lock_name)',
+            [name]);
+          await connection.execute(
+            'SELECT lock_name FROM migration_locks WHERE lock_name=? FOR UPDATE', [name]);
+        },
         lockWallets: async () => {
-          for (const name of ['users', 'wallet_operations']) {
-            await connection.execute(
-              'INSERT INTO migration_locks (lock_name) VALUES (?) ON DUPLICATE KEY UPDATE lock_name=VALUES(lock_name)',
-              [name]);
-            await connection.execute(
-              'SELECT lock_name FROM migration_locks WHERE lock_name=? FOR UPDATE', [name]);
-          }
+          for (const name of ['users', 'wallet_operations']) await repo.lockCollection(name);
         },
         get: async (collection, id) => {
           const [rows] = await connection.execute(
@@ -52,10 +53,9 @@ class MySqlStore {
           return rows.length ? decodeDocument(rows[0].document) : null;
         },
         replace: async (collection, id, doc) => {
-          const [result] = await connection.execute(
+          await connection.execute(
             'UPDATE document_store SET document=?, updated_at=UTC_TIMESTAMP(6) WHERE collection=? AND doc_id=?',
             [JSON.stringify(doc), collection, id]);
-          if (!result.affectedRows) throw new Error('Missing document');
         },
         insert: async (collection, id, doc) => {
           await connection.execute(
@@ -71,6 +71,13 @@ class MySqlStore {
       throw error;
     } finally { connection.release(); }
   }
+
+  collection(name) {
+    const { Collection } = require('./document-store.cjs');
+    return new Collection(this, name);
+  }
+
+  async close() { await this.pool.end(); }
 }
 
 module.exports = { MySqlStore, createPreviewPool };
