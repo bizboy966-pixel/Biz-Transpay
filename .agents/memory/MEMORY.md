@@ -50,3 +50,4 @@
 - [Push subscription lifecycle](push-subscription-lifecycle.md) — an opted-in browser stays registered across logout so push works while signed out and activation is not prompted again.
 - [Client query cache boundaries](client-query-cache-boundaries.md) — scope authenticated cached data by account and invalidate financial views after mutations.
 - [Local dependency mitigations](local-dependency-mitigations.md) — retain truthful package metadata when upstream has no fix; source guards do not clear version-only scans.
+- [Production export consistency](production-export-consistency.md) — never present paginated live production reads as a complete financial snapshot without matching row counts and fingerprints.
