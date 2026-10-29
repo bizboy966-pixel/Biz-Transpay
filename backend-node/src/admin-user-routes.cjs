@@ -1,6 +1,8 @@
 'use strict';
 
+const { randomUUID } = require('node:crypto');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
+const { readJson } = require('./auth-login.cjs');
 
 const SECRET_FIELDS = {
   _id: 0,
@@ -27,11 +29,149 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function createAdminUserRoutes({ db, sessionService, cryptoCatalog, env = process.env }) {
+function createAdminUserRoutes({
+  db, sessionService, cryptoCatalog, env = process.env,
+  notify = async () => {}, notifyAdminKyc = async () => {},
+}) {
+  async function handleKycRoute(req, res, url, decisionMatch) {
+    const list = !decisionMatch;
+    try {
+      const { admin } = await authorizeAdmin(req, {
+        db, sessionService, env,
+        permission: list ? 'kyc:read' : 'kyc:write',
+        action: list ? 'admin_list_kyc' : 'admin_kyc_decision',
+      });
+      if (list) {
+        const status = String(url.searchParams.get('status') || '').trim();
+        if (status.length > 32) {
+          reply(res, 422, { detail: 'Filtre KYC invalide' });
+          return true;
+        }
+        const query = status ? { status } : {};
+        const documents = await db.collection('kyc').find(query, { _id: 0 })
+          .sort('submitted_at', -1).to_list(500);
+        const userIds = [...new Set(documents.map(row => String(row.user_id || '')).filter(Boolean))];
+        const users = userIds.length
+          ? await db.collection('users').find({ id: { $in: userIds } }, {
+            _id: 0, id: 1, full_name: 1, username: 1, email: 1, country: 1,
+          }).to_list()
+          : [];
+        const byId = new Map(users.map(user => [String(user.id), user]));
+        reply(res, 200, documents.map(row => ({
+          ...row,
+          user: byId.get(String(row.user_id || '')) || null,
+        })));
+        return true;
+      }
+
+      let userId;
+      try { userId = decodeURIComponent(decisionMatch[1]); } catch {
+        reply(res, 400, { detail: 'Identifiant utilisateur invalide' });
+        return true;
+      }
+      const body = await readJson(req, 16 * 1024);
+      if (typeof body.approve !== 'boolean') {
+        reply(res, 422, { detail: 'La décision KYC est invalide' });
+        return true;
+      }
+      const reason = body.reason === undefined || body.reason === null ? '' : body.reason;
+      if (typeof reason !== 'string' || reason.length > 2000) {
+        reply(res, 422, { detail: 'Le motif ne peut pas dépasser 2 000 caractères' });
+        return true;
+      }
+      const target = await db.collection('users').find_one(
+        { id: userId }, { _id: 0, id: 1, username: 1 },
+      );
+      if (!target) {
+        reply(res, 404, { detail: 'Utilisateur introuvable' });
+        return true;
+      }
+
+      const reviewedAt = new Date().toISOString();
+      let action;
+      let notificationType;
+      let title;
+      let message;
+      let data;
+      let userStatus;
+      let kycStatus;
+      if (body.approve) {
+        action = 'kyc_approve';
+        notificationType = 'kyc_verified';
+        title = 'KYC vérifié ✓';
+        message = 'Votre identité a été vérifiée. Vous pouvez maintenant utiliser toutes les fonctionnalités (liens de paiement, API, retraits).';
+        userStatus = 'verified';
+        kycStatus = 'verified';
+        data = { status: 'verified', reviewed_at: reviewedAt };
+      } else if (body.request_resubmit === true) {
+        action = 'kyc_request_resubmit';
+        notificationType = 'kyc_resubmit_requested';
+        title = 'KYC — nouveaux documents demandés';
+        message = reason || 'Merci de renvoyer vos documents KYC.';
+        userStatus = 'not_started';
+        kycStatus = 'resubmit_requested';
+        data = { status: kycStatus, reason, reviewed_at: reviewedAt };
+      } else {
+        action = 'kyc_reject';
+        notificationType = 'kyc_rejected';
+        title = 'KYC rejeté';
+        message = reason || "Votre demande de KYC a été rejetée. Contactez le support pour plus d'informations.";
+        userStatus = 'rejected';
+        kycStatus = 'rejected';
+        data = { status: kycStatus, reason, reviewed_at: reviewedAt };
+      }
+
+      await db.collection('users').update_one(
+        { id: userId }, { $set: { kyc_status: userStatus } },
+      );
+      await db.collection('kyc').update_one(
+        { user_id: userId },
+        { $set: {
+          status: kycStatus,
+          reviewed_at: reviewedAt,
+          reject_reason: body.approve ? null : reason,
+          ...(body.approve ? { verified_at: reviewedAt } : {}),
+        } },
+      );
+
+      try { await notify(userId, notificationType, title, message, data); } catch { /* best effort */ }
+      try {
+        await notifyAdminKyc(
+          userId, notificationType, 'Décision KYC',
+          'Le statut de la vérification KYC a été mis à jour.', data,
+        );
+      } catch { /* best effort */ }
+      await db.collection('admin_logs').insert_one({
+        id: randomUUID(),
+        admin_id: admin.id,
+        admin_username: admin.username || null,
+        action,
+        target_user_id: userId,
+        target_username: target.username || null,
+        details: { reason },
+        ip: '',
+        created_at: reviewedAt,
+      });
+      reply(res, 200, { ok: true });
+    } catch (error) {
+      reply(res, error.status || 500, {
+        detail: error.code
+          ? { code: error.code, message: error.message }
+          : error.status ? error.message : 'Erreur interne.',
+      });
+    }
+    return true;
+  }
+
   async function handleRoute(req, res) {
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { return false; }
+    const kycList = req.method === 'GET' && url.pathname === '/api/admin/kyc';
+    const kycDecision = req.method === 'POST'
+      ? /^\/api\/admin\/kyc\/([^/]+)\/decision$/.exec(url.pathname)
+      : null;
+    if (kycList || kycDecision) return handleKycRoute(req, res, url, kycDecision);
     if (req.method !== 'GET') return false;
     const listUsers = url.pathname === '/api/admin/users';
     const balanceMatch = /^\/api\/admin\/users\/([^/]+)\/balance-wallets$/.exec(url.pathname);

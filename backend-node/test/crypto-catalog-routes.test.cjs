@@ -21,6 +21,7 @@ class Collection {
     this.rows[index] = applyUpdate(this.rows[index], update, false, query);
     return { matched_count: 1 };
   }
+  async insert_one(document) { this.rows.push(structuredClone(document)); }
 }
 
 function makeResponse() {
@@ -39,10 +40,13 @@ async function call(service, path, { authorization } = {}) {
   return { handled, status: res.status, body: res.body ? JSON.parse(res.body) : null };
 }
 
-function makeSetup({ settings = [], users = [], env = {}, providerAssets = [], fetchImpl } = {}) {
+function makeSetup({
+  settings = [], users = [], env = {}, providerAssets = [], fetchImpl,
+} = {}) {
   const collections = {
     settings: new Collection(settings),
     users: new Collection(users),
+    admin_logs: new Collection(),
   };
   let providerCalls = 0;
   const fetcher = fetchImpl || (async (url, options) => {
@@ -118,6 +122,42 @@ test('public crypto catalog uses encrypted provider credentials, live assets, lo
   assert.equal(JSON.stringify(result.body).includes('test-api-key'), false);
   await call(service, '/api/crypto/assets');
   assert.equal(getProviderCalls(), 1);
+});
+
+test('admin crypto asset catalogue is permission checked and does not expose provider credentials', async () => {
+  const { service } = makeSetup({
+    users: [{ id: 'user-1', username: 'owner', role: 'super_admin', two_fa_enabled: true }],
+    settings: [
+      providerSettings(),
+      { id: 'deposit_config', crypto: { enabled: true, fees: { 'USDT.TRC20': 2 } } },
+      { id: 'platform_config', crypto_usdt_rates: { USDT: 1 } },
+    ],
+    providerAssets: [
+      { assetCode: 'USDT.TRC20', isActive: true, minimum: 5, maximum: 5000 },
+    ],
+  });
+  const response = await call(service, '/api/admin/crypto/coins?direction=deposit', {
+    authorization: 'Bearer valid-session',
+  });
+  assert.equal(response.status, 200);
+  const usdt = response.body.find(asset => asset.asset_id === 'USDT.TRC20');
+  assert.equal(usdt.provider_available, true);
+  assert.equal(usdt.provider_active, true);
+  assert.equal(usdt.enabled, true);
+  assert.equal(usdt.fee_pct, 2);
+  assert.equal('api_key' in usdt, false);
+});
+
+test('admin crypto asset catalogue rejects invalid directions and unauthenticated requests', async () => {
+  const { service } = makeSetup({
+    users: [{ id: 'user-1', username: 'owner', role: 'super_admin', two_fa_enabled: true }],
+  });
+  const invalidDirection = await call(
+    service, '/api/admin/crypto/coins?direction=unknown', { authorization: 'Bearer valid-session' },
+  );
+  assert.equal(invalidDirection.status, 400);
+  const unauthenticated = await call(service, '/api/admin/crypto/coins');
+  assert.equal(unauthenticated.status, 401);
 });
 
 test('conversion crypto wallets require a session and only return active rate-configured assets', async () => {

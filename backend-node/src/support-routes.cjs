@@ -5,6 +5,7 @@ const path = require('node:path');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { readJson, reply } = require('./auth-login.cjs');
 const { validateRasterImage } = require('./kyc-routes.cjs');
+const { authorizeAdmin } = require('./admin-authorization.cjs');
 
 const SOCIAL_KEYS = ['facebook', 'tiktok', 'instagram', 'whatsapp'];
 const DEFAULT_SUPPORT_CONFIG = {
@@ -162,7 +163,7 @@ function sanitizeStoredAttachments(value) {
   return clean;
 }
 
-function createSupportRoutes({ db, sessionService }) {
+function createSupportRoutes({ db, sessionService, env = process.env }) {
   async function authenticate(req) {
     const session = await sessionService.authenticate(sessionToken(req));
     return session.userId;
@@ -171,6 +172,98 @@ function createSupportRoutes({ db, sessionService }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const routeKey = `${req.method} ${url.pathname}`;
+    const adminConfigRoute = routeKey === 'GET /api/admin/support/config'
+      || routeKey === 'PATCH /api/admin/support/config';
+    if (adminConfigRoute) {
+      const write = req.method === 'PATCH';
+      try {
+        const { admin } = await authorizeAdmin(req, {
+          db, sessionService, env,
+          permission: write ? 'settings:write' : 'settings:read',
+          action: write ? 'update_support_config' : 'read_support_config',
+        });
+        if (!write) {
+          await getSupportConfig(db);
+          const config = await db.collection('settings').find_one(
+            { id: 'support_config' }, { _id: 0 },
+          );
+          reply(res, 200, {
+            ...structuredClone(DEFAULT_SUPPORT_CONFIG),
+            ...(config || {}),
+            social_channels: normalizedSocialChannels(config?.social_channels),
+            faqs: Array.isArray(config?.faqs)
+              ? config.faqs : structuredClone(DEFAULT_SUPPORT_CONFIG.faqs),
+          });
+          return true;
+        }
+
+        const body = await readJson(req, 128 * 1024);
+        const updates = {};
+        for (const field of ['telegram_url', 'whatsapp_url', 'email']) {
+          if (body[field] === undefined) continue;
+          if (typeof body[field] !== 'string' || body[field].length > 500) {
+            throw routeError(422, `Valeur invalide pour ${field}`);
+          }
+          updates[field] = body[field].trim();
+        }
+        if (body.social_channels !== undefined) {
+          updates.social_channels = normalizedSocialChannels(body.social_channels);
+        }
+        if (body.faqs !== undefined) {
+          if (!Array.isArray(body.faqs) || body.faqs.length > 50) {
+            throw routeError(422, '50 questions fréquentes maximum');
+          }
+          updates.faqs = body.faqs.map(faq => {
+            if (!faq || typeof faq !== 'object' || Array.isArray(faq)) {
+              throw routeError(422, 'Chaque FAQ doit avoir une question et une réponse');
+            }
+            const question = String(faq.question || '').trim();
+            const answer = String(faq.answer || '').trim();
+            if (!question || !answer) {
+              throw routeError(422, 'Chaque FAQ doit avoir une question et une réponse');
+            }
+            return {
+              id: String(faq.id || randomUUID()),
+              question: question.slice(0, 240),
+              answer: answer.slice(0, 2000),
+              active: faq.active === undefined ? true : Boolean(faq.active),
+            };
+          });
+        }
+        if (!Object.keys(updates).length) throw routeError(400, 'Aucune modification');
+        await db.collection('settings').update_one(
+          { id: 'support_config' },
+          { $set: updates, $setOnInsert: { id: 'support_config' } },
+          true,
+        );
+        const now = new Date().toISOString();
+        await db.collection('admin_logs').insert_one({
+          id: randomUUID(),
+          admin_id: admin.id,
+          admin_username: admin.username || null,
+          action: 'update_support_config',
+          details: { changed_fields: Object.keys(updates) },
+          ip: '',
+          created_at: now,
+        });
+        await getSupportConfig(db);
+        const config = await db.collection('settings').find_one(
+          { id: 'support_config' }, { _id: 0 },
+        );
+        reply(res, 200, {
+          ...structuredClone(DEFAULT_SUPPORT_CONFIG),
+          ...(config || {}),
+          social_channels: normalizedSocialChannels(config?.social_channels),
+          faqs: Array.isArray(config?.faqs) ? config.faqs : [],
+        });
+        return true;
+      } catch (error) {
+        reply(res, error.status || 500, {
+          detail: error.status ? error.message : 'Erreur interne.',
+        });
+        return true;
+      }
+    }
     if (![
       'GET /api/support/config',
       'GET /api/support/messages',

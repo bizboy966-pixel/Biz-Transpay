@@ -5,6 +5,16 @@ const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
 const { createAdminSettingsRoutes } = require('../src/admin-settings-routes.cjs');
 
+function assignPath(target, key, value) {
+  const parts = key.split('.');
+  let current = target;
+  for (const part of parts.slice(0, -1)) {
+    if (!current[part] || typeof current[part] !== 'object') current[part] = {};
+    current = current[part];
+  }
+  current[parts.at(-1)] = structuredClone(value);
+}
+
 class Collection {
   constructor(rows = []) { this.rows = structuredClone(rows); }
   async find_one(query) {
@@ -14,18 +24,19 @@ class Collection {
   async update_one(query, update, upsert = false) {
     let row = this.rows.find(item => Object.entries(query).every(([key, value]) => item[key] === value));
     if (!row && upsert) {
-      row = { ...query, ...(update.$setOnInsert || {}), ...(update.$set || {}) };
+      row = { ...query, ...(update.$setOnInsert || {}) };
+      for (const [key, value] of Object.entries(update.$set || {})) assignPath(row, key, value);
       this.rows.push(row);
       return { matched_count: 0, upserted_id: row.id };
     }
     if (!row) return { matched_count: 0 };
-    Object.assign(row, update.$set || {});
+    for (const [key, value] of Object.entries(update.$set || {})) assignPath(row, key, value);
     return { matched_count: 1 };
   }
   async insert_one(document) { this.rows.push(structuredClone(document)); }
 }
 
-function setup({ user = {}, settings = [] } = {}) {
+function setup({ user = {}, settings = [], env = {} } = {}) {
   const collections = {
     users: new Collection([{
       id: 'admin-1', username: 'owner', role: 'super_admin',
@@ -33,16 +44,22 @@ function setup({ user = {}, settings = [] } = {}) {
     }]),
     settings: new Collection(settings),
     admin_logs: new Collection(),
+    referral_settings: new Collection(),
   };
   const db = { collection: name => collections[name] };
+  const authChecks = { recent: 0 };
   const sessionService = {
     authenticate: async token => {
       assert.equal(token, 'synthetic-admin-session');
       return { userId: 'admin-1', session: { admin_auth_method: 'totp' } };
     },
-    requireRecentAuth() {},
+    requireRecentAuth() { authChecks.recent += 1; },
   };
-  return { service: createAdminSettingsRoutes({ db, sessionService, env: {} }), collections };
+  return {
+    service: createAdminSettingsRoutes({ db, sessionService, env }),
+    collections,
+    authChecks,
+  };
 }
 
 async function call(service, method, path, body) {
@@ -129,4 +146,141 @@ test('admin settings are permission-checked and unsupported paths fall through',
   assert.equal(await service.handleRoute({
     method: 'DELETE', url: '/api/admin/settings/features', headers: {},
   }, { writeHead() {}, end() {} }), false);
+});
+
+test('admin email settings redact secrets, expose readiness, and require fresh auth to update', async () => {
+  const { service, collections, authChecks } = setup({
+    env: {
+      RESEND_API_KEY: 'test-resend-key',
+      PUBLIC_APP_URL: 'https://biz-transpay.example',
+    },
+    settings: [{
+      id: 'transaction_email_settings',
+      enabled: true,
+      withdrawal_otp_enabled: true,
+      sender_email: 'notifications@biz-transpay.example',
+      event_types: ['deposit_confirmed'],
+      content_fields: ['reference'],
+      api_key: 'must-not-be-returned',
+    }],
+  });
+  const get = await call(service, 'GET', '/api/admin/email-notifications');
+  assert.equal(get.status, 200);
+  assert.equal(get.body.active, true);
+  assert.equal(get.body.withdrawal_otp_active, true);
+  assert.equal(get.body.password_reset_ready, true);
+  assert.equal(get.body.api_key, undefined);
+
+  const update = await call(service, 'PUT', '/api/admin/email-notifications', {
+    enabled: true,
+    withdrawal_otp_enabled: true,
+    sender_email: 'alerts@biz-transpay.example',
+    event_types: ['deposit_confirmed', 'kyc_verified', 'deposit_confirmed'],
+    content_fields: ['reference', 'amount_currency'],
+  });
+  assert.equal(update.status, 200, JSON.stringify(update.body));
+  assert.deepEqual(update.body.event_types, ['deposit_confirmed', 'kyc_verified']);
+  assert.deepEqual(update.body.content_fields, ['reference', 'amount_currency']);
+  assert.equal(collections.settings.rows[0].sender_email, 'alerts@biz-transpay.example');
+  assert.equal(authChecks.recent, 1);
+  assert.equal(collections.admin_logs.rows.some(row =>
+    row.action === 'update_transaction_email_settings'), true);
+});
+
+test('admin email notifications cannot be activated without Resend and a valid sender', async () => {
+  const { service, collections } = setup();
+  const rejected = await call(service, 'PUT', '/api/admin/email-notifications', {
+    enabled: true,
+    sender_email: 'not-an-email',
+    event_types: ['deposit_confirmed'],
+    content_fields: ['event_status'],
+  });
+  assert.equal(rejected.status, 409);
+  assert.equal(collections.settings.rows.length, 0);
+});
+
+test('admin email settings reject unknown event or content fields without persisting', async () => {
+  const { service, collections } = setup({
+    env: { RESEND_API_KEY: 'test-resend-key' },
+  });
+  const rejected = await call(service, 'PUT', '/api/admin/email-notifications', {
+    enabled: false,
+    sender_email: '',
+    event_types: ['unknown_event'],
+    content_fields: ['reference'],
+  });
+  assert.equal(rejected.status, 422);
+  assert.equal(collections.settings.rows.length, 0);
+});
+
+test('admin deposit and transfer configs preserve partial nested updates', async () => {
+  const { service, collections } = setup({
+    settings: [{
+      id: 'transfer_config',
+      mobile_money: { enabled: true, operators: [{ code: 'orange-ci', country: 'CI' }] },
+      crypto: { enabled: true, fees: { USDT_TRC20: 3 } },
+    }],
+  });
+  const update = await call(service, 'PATCH', '/api/admin/transfer/config', {
+    crypto: { enabled: false, fees_gateway: { USDT_TRC20: 1.5 } },
+  });
+  assert.equal(update.status, 200, JSON.stringify(update.body));
+  assert.equal(update.body.crypto.enabled, false);
+  assert.equal(update.body.crypto.fees.USDT_TRC20, 3);
+  assert.equal(update.body.crypto.fees_gateway.USDT_TRC20, 1.5);
+  assert.equal(update.body.mobile_money.operators[0].code, 'orange-ci');
+
+  const deposit = await call(service, 'PATCH', '/api/admin/deposit/config', {
+    crypto: { disabled_assets: ['USDT_TRC20'] },
+  });
+  assert.equal(deposit.status, 200, JSON.stringify(deposit.body));
+  assert.deepEqual(deposit.body.crypto.disabled_assets, ['USDT_TRC20']);
+  assert.equal(collections.settings.rows.some(row => row.id === 'deposit_config'), true);
+});
+
+test('admin payout config rejects ambiguous active routes and invalid fee values', async () => {
+  const { service, collections } = setup();
+  const duplicate = await call(service, 'PATCH', '/api/admin/transfer/config', {
+    mobile_money: {
+      enabled: true,
+      operators: [
+        {
+          provider: 'paydunya', country: 'TG', currency: 'XOF',
+          code: 't-money-togo', withdraw_mode: 't-money-togo',
+        },
+        {
+          provider: 'mbiyo', country: 'TG', currency: 'XOF',
+          code: 'tmoney', network: 'tmoney',
+        },
+      ],
+    },
+  });
+  assert.equal(duplicate.status, 422);
+  assert.equal(collections.settings.rows.length, 0);
+
+  const invalidFee = await call(service, 'PATCH', '/api/admin/deposit/config', {
+    crypto: { fees_gateway: { USDT_TRC20: -1 } },
+  });
+  assert.equal(invalidFee.status, 422);
+  assert.equal(collections.settings.rows.length, 0);
+});
+
+test('admin referral rate preserves the allowed range and requires recent authentication', async () => {
+  const { service, collections, authChecks } = setup();
+  const getDefault = await call(service, 'GET', '/api/admin/referrals/config');
+  assert.equal(getDefault.status, 200);
+  assert.deepEqual(getDefault.body, { rate_percent: 2 });
+
+  const updated = await call(service, 'PATCH', '/api/admin/referrals/config', {
+    rate_percent: 2.5,
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual(updated.body, { rate_percent: 2.5 });
+  assert.equal(authChecks.recent, 1);
+
+  const invalid = await call(service, 'PATCH', '/api/admin/referrals/config', {
+    rate_percent: 2.6,
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(collections.referral_settings.rows[0].rate_percent, 2.5);
 });

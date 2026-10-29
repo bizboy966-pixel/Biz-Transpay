@@ -4,6 +4,7 @@ const { createHash } = require('node:crypto');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const security = require('./security.cjs');
 const { getPlatformConfig } = require('./public-config-routes.cjs');
+const { authorizeAdmin } = require('./admin-authorization.cjs');
 
 const ASSET_SPECS = [
   { id: 'USDC.POLYGON', coin: 'USDC', name: 'USD Coin', network: 'POLYGON', networkName: 'Polygon', aliases: ['POLYGON', 'MATIC'], addressRegex: '^0x[a-fA-F0-9]{40}$' },
@@ -314,6 +315,65 @@ function createCryptoCatalogRoutes({
 
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
+    if (req.method === 'GET' && url.pathname === '/api/admin/crypto/coins') {
+      try {
+        await authorizeAdmin(req, {
+          db, sessionService, env, permission: 'fees:read',
+          action: 'read_crypto_catalog',
+        });
+        const direction = String(url.searchParams.get('direction') || 'withdrawal');
+        if (!['deposit', 'withdrawal'].includes(direction)) {
+          throw httpError(400, 'Direction crypto invalide');
+        }
+        const section = direction === 'deposit'
+          ? await getDepositCryptoConfig() : await getTransferCryptoConfig();
+        let rows = [];
+        try {
+          const providerConfig = await credentials();
+          if (providerConfig.configured) {
+            rows = await providerAssets(providerConfig, {
+              force: ['true', '1'].includes(String(url.searchParams.get('refresh') || '').toLowerCase()),
+            }) || [];
+          }
+        } catch {
+          // Keep the admin catalogue visible with provider availability false;
+          // do not expose provider errors or credentials to the browser.
+        }
+        const catalog = catalogMap(rows);
+        const platform = await getPlatformConfig(db);
+        const result = ASSET_SPECS.map(spec => {
+          const asset = catalog.get(spec.id);
+          const { gateway, platform: platformPct } = feePercentSplit(section, spec.coin, spec.id);
+          const gatewayFixed = fixedFee(section, 'fees_gateway_fixed', spec);
+          const platformFixed = fixedFee(section, 'fees_platform_fixed', spec);
+          return {
+            asset_id: spec.id,
+            coin: spec.coin,
+            name: spec.name,
+            network: spec.networkName,
+            network_code: spec.network,
+            provider_asset_code: asset
+              ? String(asset.assetCode || '').trim().toUpperCase() : null,
+            provider_active: Boolean(asset?.isActive),
+            provider_available: Boolean(asset),
+            enabled: section.enabled !== false && assetEnabled(section, spec),
+            fee_pct: gateway + platformPct,
+            gateway_fee_pct: gateway,
+            platform_fee_pct: platformPct,
+            gateway_fee_fixed: gatewayFixed,
+            platform_fee_fixed: platformFixed,
+            usdt_rate: cryptoRate(platform, spec.coin),
+          };
+        });
+        reply(res, 200, result);
+      } catch (error) {
+        reply(res, error.status || 500, {
+          detail: error.message || 'Erreur interne.',
+        });
+      }
+      return true;
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/crypto/assets') {
       try {
         const crypto = await getDepositCryptoConfig();

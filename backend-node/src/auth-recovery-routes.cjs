@@ -71,6 +71,10 @@ function connectorConfig(env) {
   } catch { return null; }
 }
 
+function isResendConfigured(env = process.env) {
+  return Boolean(String(env.RESEND_API_KEY || '').trim() || connectorConfig(env));
+}
+
 async function sendResendEmail(env, { sender, recipient, subject, text, html, idempotencyKey }) {
   if (!sender || !recipient) throw new Error('Email sender not configured');
   const headers = {
@@ -451,4 +455,5 @@ module.exports = {
   publicAppUrl,
   resetEmailContent,
   sendResendEmail,
+  isResendConfigured,
 };

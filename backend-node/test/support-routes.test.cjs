@@ -68,6 +68,7 @@ function setup(seed = {}) {
     db,
     sessionService: {
       async authenticate(token) {
+        if (token === 'admin-session') return { userId: 'admin-1' };
         if (token !== 'support-session') {
           const error = new Error('Session requise');
           error.status = 401;
@@ -134,6 +135,43 @@ test('support config returns only active HTTP(S) social links and enabled FAQs',
   assert.deepEqual(result.body.faqs, [
     { id: 'visible', question: 'Question ?', answer: 'Réponse', active: true },
   ]);
+});
+
+test('admin support configuration retains editable social links and validates FAQ updates', async () => {
+  const { db, service } = setup({
+    users: [{ id: 'admin-1', username: 'owner', role: 'super_admin', two_fa_enabled: true }],
+    settings: [{
+      id: 'support_config',
+      telegram_url: 'https://t.me/support',
+      social_channels: {
+        facebook: { url: 'https://facebook.com/biz', active: true },
+        tiktok: { url: '', active: false },
+      },
+      faqs: [{ id: 'one', question: 'Question ?', answer: 'Réponse', active: true }],
+    }],
+  });
+  const current = await call(service, 'GET', '/api/admin/support/config', undefined, 'admin-session');
+  assert.equal(current.status, 200);
+  assert.equal(current.body.social_channels.facebook.url, 'https://facebook.com/biz');
+  assert.equal(current.body.social_channels.tiktok.active, false);
+  assert.equal(current.body.faqs.length, 1);
+
+  const saved = await call(service, 'PATCH', '/api/admin/support/config', {
+    social_channels: {
+      facebook: { url: 'https://facebook.com/updated', active: true },
+      whatsapp: { url: '', active: false },
+    },
+    faqs: [{ question: 'Nouvelle question ?', answer: 'Nouvelle réponse' }],
+  }, 'admin-session');
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.social_channels.facebook.url, 'https://facebook.com/updated');
+  assert.equal(saved.body.faqs[0].question, 'Nouvelle question ?');
+  assert.ok(db.collection('admin_logs').rows.some(row => row.action === 'update_support_config'));
+
+  const invalid = await call(service, 'PATCH', '/api/admin/support/config', {
+    social_channels: { facebook: { url: 'javascript:alert(1)', active: true } },
+  }, 'admin-session');
+  assert.equal(invalid.status, 422);
 });
 
 test('ticket listing is scoped to the signed-in user and newest first', async () => {

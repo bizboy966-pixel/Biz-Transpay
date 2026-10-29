@@ -20,6 +20,7 @@ const { createAdminUserRoutes } = require('./admin-user-routes.cjs');
 const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
 const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
 const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
+const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
 
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
@@ -53,7 +54,7 @@ function createServer({
   });
   const notifications = createNotificationsPushRoutes({ db, sessionService, env });
   const referrals = createReferralRoutes({ db, sessionService });
-  const support = createSupportRoutes({ db, sessionService });
+  const support = createSupportRoutes({ db, sessionService, env });
   const publicConfig = createPublicConfigRoutes({ db, env });
   const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env });
   const exchange = createExchangeRoutes({
@@ -63,7 +64,11 @@ function createServer({
     db, sessionService, sessionSecret, env, verifyBot, cryptoCatalog,
     notify: notifications.notify,
   });
-  const adminUserRoutes = createAdminUserRoutes({ db, sessionService, cryptoCatalog, env });
+  const adminUserRoutes = createAdminUserRoutes({
+    db, sessionService, cryptoCatalog, env,
+    notify: notifications.notify,
+    notifyAdminKyc: telegramNotifier.enqueueKycEvent,
+  });
   const adminBalanceRoutes = createAdminBalanceRoutes({
     db, sessionService, cryptoCatalog, env,
   });
@@ -71,6 +76,7 @@ function createServer({
     db, sessionService, env,
   });
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
+  const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
   // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -96,9 +102,12 @@ function createServer({
           'internal-biz-transfers',
           'conversion-exchange',
           'admin-user-list',
+           'admin-kyc',
           'admin-wallet-adjustment',
           'admin-transaction-read',
           'admin-settings',
+           'admin-statistics-dashboard',
+           'admin-statistics-summary',
         ],
       }));
       return;
@@ -153,6 +162,7 @@ function createServer({
       if (await adminBalanceRoutes.handleRoute(req, res)) return;
       if (await adminUserRoutes.handleRoute(req, res)) return;
       if (await adminSettingsRoutes.handleRoute(req, res)) return;
+      if (await adminStatisticsRoutes.handleRoute(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',
