@@ -77,6 +77,7 @@
   },
   "scripts": {
     "start": "node app.js",
+    "build": "npm run build:frontend",
     "build:frontend": "npm --prefix frontend install --no-audit --no-fund && BUILD_PATH=../generated-artifacts/frontend-build npm --prefix frontend run build",
     "test": "npm --prefix backend-node test",
     "check:parity": "npm --prefix backend-node run check:parity"

@@ -33,7 +33,7 @@ From the repository root in Plesk, run:
 
 ```sh
 npm install
-npm run build:frontend
+npm run build
 ```
 
 Then click **Restart App** in Plesk. The build is written to

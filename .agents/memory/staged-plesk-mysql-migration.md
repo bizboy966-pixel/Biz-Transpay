@@ -22,3 +22,9 @@ Plesk installs can also fail when a Replit-generated npm lockfile embeds `packag
 **Why:** The lockfile can preserve both Replit's internal host and its `/npm/` path prefix, even when npm is run outside Replit.
 
 **How to apply:** Normalize the lockfile tarball URLs to `https://registry.npmjs.org/<package>/-/<tarball>`, configure npm to use the public registry, and preserve direct vendor tarball hosts. Keep the Preview clone and app root separate from the production domain's document root.
+
+Plesk's Node.js build step runs `npm run build` from the application root. The root manifest must expose that command and delegate it to the frontend build. When strict npm resolution rejects the already-working dependency set, preserve the locked versions and use `legacy-peer-deps` rather than upgrading packages without compatibility checks.
+
+**Why:** Plesk fails before startup if the root build script is absent; strict peer checks can also reject the existing React dependency graph even though its production frontend build succeeds.
+
+**How to apply:** Verify the exact root `npm run build` command in Replit and on the Plesk host, and confirm the generated frontend directory matches what the Node server serves.
