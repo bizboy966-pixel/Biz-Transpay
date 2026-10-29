@@ -64,3 +64,17 @@ mtime_ms = 1793220353283
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/8f3a9d5e-a2fb-43e1-8532-6959d9b55733/9a0f192f-14c0-4424-80f1-0236c50306f1"
 storage_version_token = "1793220396525963"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "NvBYwQbtYl_iRI6UTE7l1"
+uri = "file://generated-artifacts/production-mysql-export/biz-transpay-mariadb-best-effort.zip"
+type = "unspecified"
+title = "Biz-transPay — ZIP SQL corrigé pour MariaDB"
+description = "Cette version supprime CAST(... AS JSON), stocke les documents JSON en LONGTEXT UTF-8 et valide les 37 236 documents. Archive vérifiée. Important : l’export reste non atomique et présente 9 écarts avec la production; il n’est pas garanti sans perte."
+logical_id = "b54de2d1-8a6e-4ca5-a03c-bbd62d949227"
+content_hash = "sha256:825b2ed30d8254cb7a92adbc32f478e67502297652ff492445260fed38f4c867"
+size = 26010287
+mtime_ms = 1793245128119
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/b54de2d1-8a6e-4ca5-a03c-bbd62d949227/bec1d290-ede9-41fe-8d4b-00807b6ddda6"
+storage_version_token = "1793245144217472"
+content_type = "application/octet-stream"
