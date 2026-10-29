@@ -17,7 +17,9 @@ class MemoryStore {
         get: async (c, id) => structuredClone(working.get(`${c}:${id}`) ?? null),
         replace: async (c, id, doc) => working.set(`${c}:${id}`, structuredClone(doc)),
         insert: async (c, id, doc) => {
-          if (this.failInsert) throw new Error('injected storage failure');
+          if (this.failInsert === true || this.failInsert === c) {
+            throw new Error('injected storage failure');
+          }
           if (working.has(`${c}:${id}`)) throw new Error('duplicate');
           working.set(`${c}:${id}`, structuredClone(doc));
         },
@@ -120,6 +122,26 @@ test('failed claim insertion rolls the wallet mutation back', async () => {
   await assert.rejects(applyWalletOperation(store, credit()), /injected storage failure/);
   assert.equal(store.user().balance_xof, 1000);
   assert.equal(store.docs.size, 1);
+});
+
+test('failed financial audit insertion rolls wallet, idempotency marker, and ledger back', async () => {
+  const store = new MemoryStore();
+  store.failInsert = 'admin_logs';
+  await assert.rejects(applyWalletOperation(store, credit({
+    operationId: 'admin-balance:action-0001',
+    ledger: {
+      id: 'transaction-1', user_id: 'alice',
+      metadata: { wallet_operation_id: 'admin-balance:action-0001' },
+    },
+    adminLog: {
+      id: 'audit-1', admin_id: 'staff-1', target_user_id: 'alice',
+      details: { operation_id: 'admin-balance:action-0001' },
+    },
+  })), /injected storage failure/);
+  assert.equal(store.user().balance_xof, 1000);
+  assert.equal([...store.docs.keys()].some(key => key.startsWith('wallet_operations:')), false);
+  assert.equal(store.docs.has('transactions:transaction-1'), false);
+  assert.equal(store.docs.has('admin_logs:audit-1'), false);
 });
 
 test('missing user and invalid amounts do not mutate wallets', async () => {

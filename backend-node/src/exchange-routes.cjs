@@ -27,7 +27,7 @@ async function readJson(req) {
   for await (const chunk of req) {
     size += chunk.length;
     if (size > MAX_BODY_BYTES) throw httpError(413, 'Requête trop volumineuse');
-    chunks.push(chunk);
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   try {
     const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));

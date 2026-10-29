@@ -16,6 +16,7 @@ class AtomicStore {
       settings: new Map(settings.map(item => [String(item.id), clone(item)])),
     };
     this.failLedgerInsert = failLedgerInsert;
+    this.transactionQueue = Promise.resolve();
   }
 
   collection(name) {
@@ -45,6 +46,10 @@ class AtomicStore {
   }
 
   async transaction(callback) {
+    const previous = this.transactionQueue;
+    let unlock;
+    this.transactionQueue = new Promise(resolve => { unlock = resolve; });
+    await previous;
     const draft = Object.fromEntries(Object.entries(this.docs)
       .map(([name, rows]) => [name, new Map([...rows].map(([id, doc]) => [id, clone(doc)]))]));
     const repo = {
@@ -70,9 +75,13 @@ class AtomicStore {
         draft[collection].set(String(id), clone(document));
       },
     };
-    const result = await callback(repo);
-    this.docs = draft;
-    return result;
+    try {
+      const result = await callback(repo);
+      this.docs = draft;
+      return result;
+    } finally {
+      unlock();
+    }
   }
 }
 
@@ -172,7 +181,7 @@ test('exchange commits both wallet legs and transaction history atomically, then
     idempotency_key: 'exchange-2026-01',
   };
   const first = await call(service, body);
-  assert.equal(first.status, 200);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
   assert.equal(first.body.fee, 2.5);
   assert.equal(first.body.received, 497.5);
   assert.equal(store.docs.users.get('user-1').balance_xof, 1500);
@@ -194,13 +203,28 @@ test('exchange commits both wallet legs and transaction history atomically, then
   assert.equal(notifications.length, 1);
 });
 
+test('concurrent retries with the same exchange key create one ledger row and one wallet mutation', async () => {
+  const { service, store, notifications } = setup();
+  const body = {
+    from_currency: 'XOF', to_currency: 'XAF', amount: 500,
+    idempotency_key: 'exchange-concurrent-01',
+  };
+  const results = await Promise.all(Array.from({ length: 8 }, () => call(service, body)));
+  assert.deepEqual(results.map(result => result.status), Array(8).fill(200));
+  assert.equal(store.docs.users.get('user-1').balance_xof, 1500);
+  assert.equal(store.docs.users.get('user-1').balance_xaf, 497.5);
+  assert.equal(store.docs.transactions.size, 1);
+  assert.equal(store.docs.wallet_operations.size, 1);
+  assert.equal(notifications.length, 1);
+});
+
 test('exchange rejects key reuse with different input and insufficient balance without changing wallets', async () => {
   const { service, store } = setup({ balanceXof: 600 });
   const first = await call(service, {
     from_currency: 'XOF', to_currency: 'XAF', amount: 500,
     idempotency_key: 'exchange-2026-02',
   });
-  assert.equal(first.status, 200);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
   const conflict = await call(service, {
     from_currency: 'XOF', to_currency: 'XAF', amount: 550,
     idempotency_key: 'exchange-2026-02',
@@ -221,7 +245,7 @@ test('exchange requires approved KYC and rolls back wallet claims when the ledge
   const requestBody = { from_currency: 'XOF', to_currency: 'XAF', amount: 500 };
   const kyc = setup({ kycStatus: 'pending' });
   const denied = await call(kyc.service, requestBody);
-  assert.equal(denied.status, 403);
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
   assert.equal(kyc.store.docs.users.get('user-1').balance_xof, 2000);
   assert.equal(kyc.store.docs.transactions.size, 0);
 

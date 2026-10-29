@@ -1,5 +1,5 @@
 {
-  "description": "Python route inventory; pending means NOT implemented in Node.js.",
+  "description": "Python route inventory. pending means not ported; implemented_unverified means a Node handler exists but parity/runtime validation is incomplete; verified requires end-to-end validation.",
   "routes": [
     {
       "method": "GET",
@@ -363,14 +363,14 @@
       "path": "/api/admin/transactions",
       "source": "backend/server.py",
       "handler": "admin_transactions",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/transactions/{tx_id}",
       "source": "backend/server.py",
       "handler": "admin_transaction_detail",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -412,7 +412,7 @@
       "path": "/api/admin/users",
       "source": "backend/server.py",
       "handler": "admin_list_users",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -433,7 +433,7 @@
       "path": "/api/admin/users/{user_id}",
       "source": "backend/server.py",
       "handler": "admin_get_user",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
@@ -454,21 +454,21 @@
       "path": "/api/admin/users/{user_id}/balance-wallets",
       "source": "backend/server.py",
       "handler": "admin_user_balance_wallets",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/admin/users/{user_id}/credit",
       "source": "backend/server.py",
       "handler": "admin_credit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/admin/users/{user_id}/debit",
       "source": "backend/server.py",
       "handler": "admin_debit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -594,35 +594,35 @@
       "path": "/api/conversion/config",
       "source": "backend/server.py",
       "handler": "public_conversion_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/conversion/crypto-wallets",
       "source": "backend/server.py",
       "handler": "public_conversion_crypto_wallets",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/conversion/quote",
       "source": "backend/server.py",
       "handler": "conversion_quote",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/crypto/assets",
       "source": "backend/server.py",
       "handler": "crypto_assets",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/crypto/coins",
       "source": "backend/server.py",
       "handler": "public_crypto_coins",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -748,14 +748,14 @@
       "path": "/api/exchange",
       "source": "backend/server.py",
       "handler": "do_exchange",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/exchange/rate",
       "source": "backend/server.py",
       "handler": "get_rate",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

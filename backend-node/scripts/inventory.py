@@ -34,8 +34,25 @@ for filename, prefixes in sources.items():
             })
 routes.sort(key=lambda row: (row["path"], row["method"]))
 target = root / "backend-node" / "route-inventory.json"
+existing_statuses = {}
+if target.exists():
+    try:
+        previous = json.loads(target.read_text())
+        existing_statuses = {
+            (row["method"], row["path"]): row.get("status", "pending")
+            for row in previous.get("routes", [])
+            if row.get("status") in {"implemented_unverified", "verified"}
+        }
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        existing_statuses = {}
+for route in routes:
+    route["status"] = existing_statuses.get((route["method"], route["path"]), "pending")
 target.write_text(json.dumps({
-    "description": "Python route inventory; pending means NOT implemented in Node.js.",
+    "description": (
+        "Python route inventory. pending means not ported; implemented_unverified "
+        "means a Node handler exists but parity/runtime validation is incomplete; "
+        "verified requires end-to-end validation."
+    ),
     "routes": routes,
 }, indent=2) + "\n")
 print(f"{len(routes)} routes inventoried. No application or database was accessed.")

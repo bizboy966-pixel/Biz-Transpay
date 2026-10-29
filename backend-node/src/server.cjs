@@ -15,6 +15,9 @@ const { createSupportRoutes } = require('./support-routes.cjs');
 const { createPublicConfigRoutes } = require('./public-config-routes.cjs');
 const { createCryptoCatalogRoutes } = require('./crypto-catalog-routes.cjs');
 const { createExchangeRoutes } = require('./exchange-routes.cjs');
+const { createAdminUserRoutes } = require('./admin-user-routes.cjs');
+const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
+const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
 
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
@@ -54,6 +57,13 @@ function createServer({
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
   });
+  const adminUserRoutes = createAdminUserRoutes({ db, sessionService, cryptoCatalog, env });
+  const adminBalanceRoutes = createAdminBalanceRoutes({
+    db, sessionService, cryptoCatalog, env,
+  });
+  const adminTransactionRoutes = createAdminTransactionRoutes({
+    db, sessionService, env,
+  });
   // Explicit fail-closed migration server. Never forward traffic to live Python/providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -77,6 +87,9 @@ function createServer({
           'public-config',
           'crypto-catalog',
           'conversion-exchange',
+          'admin-user-list',
+          'admin-wallet-adjustment',
+          'admin-transaction-read',
         ],
       }));
       return;
@@ -121,6 +134,9 @@ function createServer({
       if (await publicConfig.handleRoute(req, res)) return;
       if (await cryptoCatalog.handleRoute(req, res)) return;
       if (await exchange.handleRoute(req, res)) return;
+      if (await adminTransactionRoutes.handleRoute(req, res)) return;
+      if (await adminBalanceRoutes.handleRoute(req, res)) return;
+      if (await adminUserRoutes.handleRoute(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',

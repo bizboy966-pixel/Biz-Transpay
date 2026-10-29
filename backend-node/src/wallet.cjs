@@ -124,6 +124,14 @@ async function applyWalletOperation(store, input) {
       }
       await repo.insert('transactions', String(input.ledger.id), input.ledger);
     }
+    if (state === 'applied' && input.adminLog) {
+      if (!input.adminLog.id || !input.adminLog.admin_id
+          || String(input.adminLog.target_user_id || '') !== userId
+          || String(input.adminLog.details?.operation_id || '') !== operationId) {
+        throw new Error('Invalid atomic admin audit entry');
+      }
+      await repo.insert('admin_logs', String(input.adminLog.id), input.adminLog);
+    }
     return { state, snapshot };
   });
 }
