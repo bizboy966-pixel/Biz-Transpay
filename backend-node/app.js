@@ -21,21 +21,27 @@ async function start() {
     if (process.env.MYSQL_DATABASE_URL) {
       const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
       if (!jwtSecret) throw new Error('Preview session signing secret is not configured');
+      const sessionSecret = process.env.SESSION_SECRET || jwtSecret;
       const { createPreviewPool, MySqlStore } = require('./src/mysql-store.cjs');
       const { SessionService } = require('./src/session-service.cjs');
       store = new MySqlStore(createPreviewPool(process.env.MYSQL_DATABASE_URL));
       await Promise.all([
-        store.columnsForCollection('users'),
-        store.columnsForCollection('sessions'),
-      ]);
+        'users', 'sessions', 'auth_rate_limits', 'auth_challenges',
+        'auth_events', 'mfa_enrollments', 'platform_bootstrap', 'admin_logs',
+        'password_reset_limits', 'password_reset_tokens', 'settings',
+        'transactions', 'momo_deposits', 'crypto_deposits', 'wallet_operations',
+        'kyc', 'notifications', 'push_devices', 'referral_commissions',
+      ].map(collection => store.columnsForCollection(collection)));
       dependencies = {
         db: store,
         sessionService: new SessionService(store, { jwtSecret }),
+        jwtSecret,
+        sessionSecret,
       };
     }
     server = createServer(dependencies).listen(port, '0.0.0.0', () => {
       console.log(process.env.MYSQL_DATABASE_URL
-        ? `Preview Node server on port ${port}; only migrated auth session routes are enabled.`
+        ? `Preview Node server on port ${port}; only verified authentication routes are enabled.`
         : `Migration diagnostic server on port ${port}; business routes disabled.`);
     });
   } catch {

@@ -1,9 +1,49 @@
 'use strict';
 const http = require('node:http');
-const { createAuthSessionRoutes } = require('./auth-session-routes.cjs');
+const { createAuthSessionRoutes, verifyCsrf } = require('./auth-session-routes.cjs');
+const { createAuthLoginRoute } = require('./auth-login.cjs');
+const { createAuthRegisterRoute } = require('./auth-register.cjs');
+const { createAuthMfaRoutes } = require('./auth-mfa-routes.cjs');
+const { createAuthRecoveryRoutes } = require('./auth-recovery-routes.cjs');
+const { createUserDataRoutes } = require('./user-data-routes.cjs');
+const { createTelegramNotifier } = require('./telegram-notifications.cjs');
+const { createKycRoutes } = require('./kyc-routes.cjs');
+const { createUserSettingsRoutes } = require('./user-settings-routes.cjs');
+const { createNotificationsPushRoutes } = require('./notifications-push-routes.cjs');
+const { createReferralRoutes } = require('./referral-routes.cjs');
 
-function createServer({ db = null, sessionService = null, env = process.env } = {}) {
+function createServer({
+  db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
+  env = process.env, verifyBot, sendEmail, onAuthRecoveryError,
+  sendTelegramNotification,
+} = {}) {
+  const telegramNotifier = sendTelegramNotification
+    ? { enqueueAdminLogin: sendTelegramNotification }
+    : createTelegramNotifier({ db, env });
   const handleAuthSession = createAuthSessionRoutes({ db, sessionService, env });
+  const handleAuthRegister = createAuthRegisterRoute({
+    db, jwtSecret, sessionSecret, env, verifyBot,
+  });
+  const handleAuthLogin = createAuthLoginRoute({
+    db, sessionService, jwtSecret, sessionSecret, env, verifyBot,
+    onAdminLogin: telegramNotifier.enqueueAdminLogin,
+  });
+  const handleAuthMfa = createAuthMfaRoutes({
+    db, sessionService, jwtSecret, sessionSecret,
+  });
+  const handleAuthRecovery = createAuthRecoveryRoutes({
+    db, sessionService, jwtSecret, sessionSecret, env, verifyBot, sendEmail,
+    onError: onAuthRecoveryError,
+  });
+  const handleUserData = createUserDataRoutes({ db, sessionService });
+  const handleKyc = createKycRoutes({
+    db, sessionService, notifyAdminKyc: telegramNotifier.enqueueKycEvent,
+  });
+  const handleUserSettings = createUserSettingsRoutes({
+    db, sessionService, sessionSecret,
+  });
+  const notifications = createNotificationsPushRoutes({ db, sessionService, env });
+  const referrals = createReferralRoutes({ db, sessionService });
   // Explicit fail-closed migration server. Never forward traffic to live Python/providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -16,12 +56,53 @@ function createServer({ db = null, sessionService = null, env = process.env } = 
         service: 'biz-transpay-node-preview',
         ready: false,
         migration_complete: false,
-        implemented_groups: ['auth-session-read', 'auth-session-lifecycle'],
+        implemented_groups: [
+          'auth-login', 'auth-register', 'auth-session-lifecycle',
+          'auth-mfa', 'auth-recovery', 'user-wallet-summary', 'user-transactions',
+          'user-kyc',
+          'user-settings',
+          'user-notifications-push',
+          'user-referrals',
+        ],
       }));
       return;
     }
     try {
+      const path = new URL(req.url, 'http://localhost').pathname;
+      const method = String(req.method || 'GET').toUpperCase();
+      const csrfExempt = path === '/api/auth/login'
+        || path === '/api/auth/register'
+        || path === '/api/auth/recover'
+        || path === '/api/auth/password-reset/request'
+        || path === '/api/auth/password-reset/confirm'
+        || path === '/api/auth/user-pin/reset/request'
+        || path === '/api/auth/user-pin/reset/confirm'
+        || path === '/api/webhooks/afribapay'
+        || path === '/api/links/pay'
+        || path === '/api/links/pay/mobile-money'
+        || (path.startsWith('/api/links/payments/')
+          && (path.endsWith('/finalize') || path.endsWith('/mobile-money/finalize')));
+      if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS'
+          && path.startsWith('/api/') && !csrfExempt && !verifyCsrf(req, env)) {
+        res.statusCode = 403;
+        res.end(JSON.stringify({
+          detail: {
+            code: 'CSRF_TOKEN_INVALID',
+            message: 'Jeton CSRF absent ou invalide.',
+          },
+        }));
+        return;
+      }
+      if (await handleAuthRegister(req, res)) return;
+      if (await handleAuthLogin(req, res)) return;
+      if (await handleAuthMfa(req, res)) return;
+      if (await handleAuthRecovery(req, res)) return;
       if (await handleAuthSession(req, res)) return;
+      if (await handleUserData(req, res)) return;
+      if (await handleKyc(req, res)) return;
+      if (await handleUserSettings(req, res)) return;
+      if (await notifications.handleRoute(req, res)) return;
+      if (await referrals.handleRoute(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',

@@ -44,6 +44,46 @@ function unsetPath(document, path) {
   if (target && typeof target === 'object') delete target[parts.at(-1)];
 }
 
+function positionalMatch(document, path, query) {
+  const match = /^(.*?)\.\$\.(.+)$/.exec(path);
+  if (!match) return null;
+  const [, arrayPath, nestedPath] = match;
+  const array = firstPath(document, arrayPath, []);
+  if (!Array.isArray(array)) return { array, index: -1, nestedPath };
+  let filter = query?.[arrayPath]?.$elemMatch;
+  if (!filter) {
+    filter = {};
+    for (const [key, value] of Object.entries(query || {})) {
+      if (key.startsWith(`${arrayPath}.`)) {
+        setPath(filter, key.slice(arrayPath.length + 1), value);
+      }
+    }
+  }
+  return {
+    array,
+    index: array.findIndex(item => item && typeof item === 'object' && matches(item, filter)),
+    nestedPath,
+  };
+}
+
+function setPathFromUpdate(document, path, value, query) {
+  const position = positionalMatch(document, path, query);
+  if (!position) {
+    setPath(document, path, value);
+    return;
+  }
+  if (position.index >= 0) setPath(position.array[position.index], position.nestedPath, value);
+}
+
+function unsetPathFromUpdate(document, path, query) {
+  const position = positionalMatch(document, path, query);
+  if (!position) {
+    unsetPath(document, path);
+    return;
+  }
+  if (position.index >= 0) unsetPath(position.array[position.index], position.nestedPath);
+}
+
 function equal(a, b) {
   if (Array.isArray(a) && !Array.isArray(b)) return a.some(item => equal(item, b));
   if (a && b && typeof a === 'object' && typeof b === 'object') {
@@ -55,6 +95,8 @@ function equal(a, b) {
 }
 
 function compare(a, b) {
+  if (a instanceof Date) a = a.getTime();
+  if (b instanceof Date) b = b.getTime();
   if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b);
   if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
   if ((typeof a === 'number' || typeof a === 'bigint')
@@ -115,6 +157,7 @@ function matches(document, query = {}) {
   for (const [key, expected] of Object.entries(query)) {
     if (key === '$or' && !expected.some(part => matches(document, part))) return false;
     if (key === '$and' && !expected.every(part => matches(document, part))) return false;
+    if (key === '$nor' && expected.some(part => matches(document, part))) return false;
     if (key.startsWith('$')) continue;
     const values = pathValues(document, key);
     if (!condition(values, expected, values.length > 0)) return false;
@@ -122,16 +165,18 @@ function matches(document, query = {}) {
   return true;
 }
 
-function applyUpdate(document, update, inserting = false) {
+function applyUpdate(document, update, inserting = false, query = {}) {
   const result = structuredClone(document);
   if (!Object.keys(update).some(key => key.startsWith('$'))) {
     return { ...structuredClone(update), _id: update._id ?? result._id ?? randomUUID() };
   }
   for (const [operator, values] of Object.entries(update)) {
     if (operator === '$set' || (operator === '$setOnInsert' && inserting)) {
-      for (const [path, value] of Object.entries(values)) setPath(result, path, value);
+      for (const [path, value] of Object.entries(values)) {
+        setPathFromUpdate(result, path, value, query);
+      }
     } else if (operator === '$unset') {
-      for (const path of Object.keys(values)) unsetPath(result, path);
+      for (const path of Object.keys(values)) unsetPathFromUpdate(result, path, query);
     } else if (operator === '$inc') {
       for (const [path, amount] of Object.entries(values)) {
         setPath(result, path, (firstPath(result, path, 0) || 0) + amount);
@@ -203,6 +248,7 @@ const SPLIT_COLLECTIONS = new Set([
   'merchant_keys', 'merchant_webhooks', 'mfa_enrollments', 'momo_deposits',
   'notifications', 'password_reset_limits', 'password_reset_tokens',
   'payment_links', 'platform_bootstrap', 'push_campaigns', 'push_devices',
+  'referral_commissions',
   'sessions', 'settings', 'transactions', 'users', 'wallet_operations',
   'webhook_events', 'withdrawal_email_otp_limits', 'withdrawal_email_otps',
 ]);
@@ -374,7 +420,7 @@ class Collection {
       const chosen = many ? matchesList : matchesList.slice(0, 1);
       let modified = 0;
       for (const old of chosen) {
-        const next = applyUpdate(old, update);
+        const next = applyUpdate(old, update, false, query);
         const id = String(next.id ?? next._id);
         await this._updateDocument(id, id, next, connection);
         if (JSON.stringify(old) !== JSON.stringify(next)) modified++;
