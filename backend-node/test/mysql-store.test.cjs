@@ -6,6 +6,10 @@ const { Collection } = require('../src/document-store.cjs');
 
 function fakePool() {
   const calls = [];
+  const metadataRows = [
+    { COLUMN_NAME: 'doc_id' }, { COLUMN_NAME: 'raw_document' },
+    { COLUMN_NAME: 'field_id' }, { COLUMN_NAME: 'field__id' },
+  ];
   const connection = {
     beginTransaction: async () => calls.push('begin'),
     commit: async () => calls.push('commit'),
@@ -13,11 +17,26 @@ function fakePool() {
     release: () => calls.push('release'),
     execute: async (sql, params) => {
       calls.push({ sql, params });
-      return sql.startsWith('SELECT document') ? [[{ document: '{"id":"alice"}' }]]
+      if (sql.includes('information_schema.COLUMNS')) return [metadataRows];
+      return sql.startsWith('SELECT raw_document') ? [[{ raw_document: '{"id":"alice"}' }]]
         : [{ affectedRows: 1 }];
     },
   };
-  return { calls, getConnection: async () => connection };
+  return {
+    calls,
+    getConnection: async () => connection,
+    execute: async (sql, params) => {
+      calls.push({ sql, params });
+      if (sql.startsWith('CREATE TABLE IF NOT EXISTS migration_locks')) {
+        calls.push('ensure-lock-table');
+        return [{ affectedRows: 0 }];
+      }
+      if (sql.includes('information_schema.COLUMNS')) {
+        return [metadataRows];
+      }
+      throw new Error(`Unexpected pool SQL: ${sql}`);
+    },
+  };
 }
 
 test('MySQL transaction uses parameterized SQL, ordered locks and a single connection', async () => {
@@ -28,11 +47,12 @@ test('MySQL transaction uses parameterized SQL, ordered locks and a single conne
     await repo.replace('users', 'alice', { id: 'alice' });
     await repo.insert('wallet_operations', 'id', { id: 'id' });
   });
-  assert.equal(pool.calls[0], 'begin');
+  assert.equal(pool.calls.find(item => typeof item === 'string'), 'ensure-lock-table');
+  assert.ok(pool.calls.includes('begin'));
   assert.deepEqual(pool.calls.slice(-2), ['commit', 'release']);
-  const select = pool.calls.find(c => c.sql?.startsWith('SELECT document'));
+  const select = pool.calls.find(c => c.sql?.startsWith('SELECT raw_document'));
   assert.equal(select.sql.includes("' OR 1=1"), false);
-  assert.deepEqual(select.params, ['users', "' OR 1=1"]);
+  assert.deepEqual(select.params, ["' OR 1=1"]);
   assert.deepEqual(pool.calls.filter(c => c.sql?.startsWith('SELECT lock_name'))
     .map(c => c.params[0]), ['users', 'wallet_operations']);
 });
@@ -40,7 +60,8 @@ test('MySQL transaction uses parameterized SQL, ordered locks and a single conne
 test('MySQL failures roll back and release the connection', async () => {
   const pool = fakePool();
   await assert.rejects(new MySqlStore(pool).transaction(async () => { throw new Error('failure'); }));
-  assert.deepEqual(pool.calls, ['begin', 'rollback', 'release']);
+  assert.deepEqual(pool.calls.filter(item => typeof item === 'string'),
+    ['ensure-lock-table', 'begin', 'rollback', 'release']);
 });
 
 test('does not accept PostgreSQL URLs or a missing Preview database', () => {
@@ -52,19 +73,19 @@ test('does not accept PostgreSQL URLs or a missing Preview database', () => {
 function documentPool() {
   const rows = new Map();
   const locks = new Set();
-  const selectDocuments = params => {
-    const docs = [...rows.entries()].filter(([key]) => key.startsWith(`${params[0]}:`)).map(([, doc]) => doc);
-    const candidate = params.slice(1);
+  const selectDocuments = (table, params) => {
+    const docs = [...rows.entries()].filter(([key]) => key.startsWith(`${table}:`)).map(([, doc]) => doc);
+    const candidate = params;
     const filtered = !candidate.length ? docs : docs.filter(doc => {
       for (let i = 0; i < candidate.length; i += 4) {
-        const field = candidate[i].slice(2);
+        const field = candidate[i].slice(2).split('.').at(-1);
         const value = doc[field];
         if (value !== candidate[i + 1]
             && !(Array.isArray(value) && value.includes(candidate[i + 2]))) return false;
       }
       return true;
     });
-    return [filtered.map(document => ({ document }))];
+    return filtered;
   };
   const pool = {
     async getConnection() {
@@ -77,49 +98,64 @@ function documentPool() {
         async execute(sql, params = []) {
           if (sql.startsWith('INSERT INTO migration_locks')) { locks.add(params[0]); return [{ affectedRows: 1 }]; }
           if (sql.startsWith('SELECT lock_name')) return [[{ lock_name: params[0] }]];
-          if (sql.startsWith('INSERT INTO document_store')) {
-            const [collection, id, raw] = params;
-            const key = `${collection}:${id}`;
+          if (sql.startsWith('INSERT INTO `')) {
+            const table = sql.match(/^INSERT INTO `([^`]+)`/)[1];
+            const [id, raw] = params;
+            const key = `${table}:${id}`;
             if (rows.has(key)) { const error = new Error('duplicate'); error.code = 'ER_DUP_ENTRY'; throw error; }
             rows.set(key, JSON.parse(raw));
             return [{ affectedRows: 1 }];
           }
-          if (sql.startsWith('SELECT document FROM document_store WHERE collection=? AND doc_id=?')) {
-            const doc = rows.get(`${params[0]}:${params[1]}`);
-            return [doc ? [{ document: doc }] : []];
+          if (sql.startsWith('SELECT raw_document FROM `') && sql.includes('WHERE doc_id=?')) {
+            const table = sql.match(/^SELECT raw_document FROM `([^`]+)`/)[1];
+            const doc = rows.get(`${table}:${params[0]}`);
+            return [doc ? [{ raw_document: doc }] : []];
           }
-          if (sql.startsWith('SELECT document FROM document_store WHERE collection=?')) {
-            return selectDocuments(params);
+          if (sql.startsWith('SELECT raw_document FROM `')) {
+            const table = sql.match(/^SELECT raw_document FROM `([^`]+)`/)[1];
+            return [selectDocuments(table, params).map(raw_document => ({ raw_document }))];
           }
-          if (sql.startsWith('UPDATE document_store')) {
-            let collection; let oldId; let newId; let doc;
-            if (sql.includes('SET doc_id=?')) {
-              const [nextId, raw, collectionName, previousId] = params;
-              newId = nextId; oldId = previousId; collection = collectionName; doc = JSON.parse(raw);
-              rows.delete(`${collection}:${oldId}`); rows.set(`${collection}:${newId}`, doc);
-            } else if (sql.startsWith('UPDATE document_store SET document=')) {
-              const [raw, collectionName, previousId] = params;
-              collection = collectionName; oldId = previousId; doc = JSON.parse(raw);
-              rows.set(`${collection}:${oldId}`, doc);
-            } else { throw new Error(`Unexpected update: ${sql}`); }
+          if (sql.startsWith('UPDATE `')) {
+            const table = sql.match(/^UPDATE `([^`]+)`/)[1];
+            const oldId = params.at(-1);
+            const newId = params[0];
+            const doc = JSON.parse(params[1]);
+            if (oldId !== newId) rows.delete(`${table}:${oldId}`);
+            rows.set(`${table}:${newId}`, doc);
             return [{ affectedRows: 1 }];
           }
-          if (sql.startsWith('DELETE FROM document_store')) {
-            rows.delete(`${params[0]}:${params[1]}`); return [{ affectedRows: 1 }];
+          if (sql.startsWith('DELETE FROM `')) {
+            const table = sql.match(/^DELETE FROM `([^`]+)`/)[1];
+            rows.delete(`${table}:${params[0]}`); return [{ affectedRows: 1 }];
           }
           throw new Error(`Unexpected SQL: ${sql}`);
         },
       };
     },
     async execute(sql, params) {
-      if (sql.startsWith('SELECT document FROM document_store WHERE collection=?')) {
-        return selectDocuments(params);
+      if (sql.startsWith('CREATE TABLE IF NOT EXISTS migration_locks')) return [{ affectedRows: 0 }];
+      if (sql.includes('information_schema.COLUMNS')) {
+        return [[
+          { COLUMN_NAME: 'doc_id' }, { COLUMN_NAME: 'raw_document' },
+          { COLUMN_NAME: 'field__id' }, { COLUMN_NAME: 'field_balance_xof' },
+          { COLUMN_NAME: 'field_id' }, { COLUMN_NAME: 'field_tags' },
+          { COLUMN_NAME: 'field_username' },
+        ]];
       }
-      if (sql.startsWith('INSERT INTO document_store')) {
-        const [collection, id, raw] = params;
-        const key = `${collection}:${id}`;
+      if (sql.startsWith('INSERT INTO `')) {
+        const table = sql.match(/^INSERT INTO `([^`]+)`/)[1];
+        const [id, raw] = params;
+        const key = `${table}:${id}`;
         if (rows.has(key)) { const error = new Error('duplicate'); error.code = 'ER_DUP_ENTRY'; throw error; }
         rows.set(key, JSON.parse(raw)); return [{ affectedRows: 1 }];
+      }
+      if (sql.startsWith('SELECT raw_document FROM `')) {
+        const table = sql.match(/^SELECT raw_document FROM `([^`]+)`/)[1];
+        if (sql.includes('WHERE doc_id=?')) {
+          const doc = rows.get(`${table}:${params[0]}`);
+          return [doc ? [{ raw_document: doc }] : []];
+        }
+        return [selectDocuments(table, params).map(raw_document => ({ raw_document }))];
       }
       throw new Error(`Unexpected pool SQL: ${sql}`);
     },

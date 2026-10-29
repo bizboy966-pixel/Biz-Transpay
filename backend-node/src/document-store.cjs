@@ -186,10 +186,30 @@ function simpleCandidate(query) {
 }
 
 function safeCollection(name) {
-  if (typeof name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(name)) {
+  if (typeof name !== 'string' || !/^[a-zA-Z0-9_]{1,64}$/.test(name)
+      || !SPLIT_COLLECTIONS.has(name)) {
     throw new Error('Invalid collection name');
   }
   return name;
+}
+
+// These names match the dedicated tables in the MariaDB split-table export.
+const SPLIT_COLLECTIONS = new Set([
+  'admin_logs', 'api_keys', 'api_logs', 'auth_challenges', 'auth_events',
+  'auth_rate_limits', 'crypto_deposits', 'email_outbox', 'idempotency_keys',
+  'integration_credentials', 'integration_idempotency', 'integration_operations',
+  'integration_rate_limits', 'integration_webhook_deliveries',
+  'integration_webhook_events', 'integration_webhooks', 'kyc', 'link_payments',
+  'merchant_keys', 'merchant_webhooks', 'mfa_enrollments', 'momo_deposits',
+  'notifications', 'password_reset_limits', 'password_reset_tokens',
+  'payment_links', 'platform_bootstrap', 'push_campaigns', 'push_devices',
+  'sessions', 'settings', 'transactions', 'users', 'wallet_operations',
+  'webhook_events', 'withdrawal_email_otp_limits', 'withdrawal_email_otps',
+]);
+
+function fieldColumnValue(value) {
+  if (value === null || value === undefined) return null;
+  return typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
 class Cursor {
@@ -238,28 +258,69 @@ class Collection {
   }
   async _all(candidate = null, connection = null) {
     const executor = connection ?? this.store.pool;
-    const params = [this.name];
-    let sql = 'SELECT document FROM document_store WHERE collection=?';
+    const params = [];
+    let sql = `SELECT raw_document FROM \`${this.name}\` WHERE 1=1`;
     if (candidate) {
       const clauses = [];
       for (const [field, value] of Object.entries(candidate)) {
         const jsonPath = `$.${field}`;
-        clauses.push('(JSON_UNQUOTE(JSON_EXTRACT(document, ?)) = ? OR JSON_CONTAINS(document, JSON_QUOTE(?), ?))');
+        clauses.push('(JSON_UNQUOTE(JSON_EXTRACT(raw_document, ?)) = ? OR JSON_CONTAINS(raw_document, JSON_QUOTE(?), ?))');
         params.push(jsonPath, value, value, jsonPath);
       }
       sql += ` AND ${clauses.join(' AND ')}`;
     }
     const [rows] = await executor.execute(sql, params);
-    return rows.map(row => typeof row.document === 'string' ? JSON.parse(row.document) : row.document);
+    return rows.map(row => typeof row.raw_document === 'string'
+      ? JSON.parse(row.raw_document) : row.raw_document);
   }
-  async create_index() { return 'document_store_index'; }
+  async _columns(executor) {
+    return this.store.columnsForCollection(this.name, executor);
+  }
+  async _insertDocument(id, document, executor) {
+    const fields = await this._columns(executor);
+    const valuesByColumn = new Map(fields.map(column => [column, null]));
+    for (const [key, value] of Object.entries(document)) {
+      const column = `field_${key}`;
+      if (valuesByColumn.has(column)) valuesByColumn.set(column, fieldColumnValue(value));
+    }
+    const fieldNames = [...valuesByColumn.keys()];
+    const columns = ['doc_id', 'raw_document', 'created_at', 'updated_at', ...fieldNames];
+    const placeholders = ['?', '?', 'UTC_TIMESTAMP(6)', 'UTC_TIMESTAMP(6)', ...fieldNames.map(() => '?')];
+    const params = [id, JSON.stringify(document), ...fieldNames.map(column => valuesByColumn.get(column))];
+    await executor.execute(
+      `INSERT INTO \`${this.name}\` (${columns.map(column => `\`${column}\``).join(', ')}) VALUES (${placeholders.join(', ')})`,
+      params);
+  }
+  async _updateDocument(oldId, id, document, executor) {
+    const fields = await this._columns(executor);
+    const valuesByColumn = new Map(fields.map(column => [column, null]));
+    for (const [key, value] of Object.entries(document)) {
+      const column = `field_${key}`;
+      if (valuesByColumn.has(column)) valuesByColumn.set(column, fieldColumnValue(value));
+    }
+    const fieldNames = [...valuesByColumn.keys()];
+    const assignments = [
+      '`doc_id`=?', '`raw_document`=?', '`updated_at`=UTC_TIMESTAMP(6)',
+      ...fieldNames.map(column => `\`${column}\`=?`),
+    ];
+    const params = [id, JSON.stringify(document), ...fieldNames.map(column => valuesByColumn.get(column)), oldId];
+    await executor.execute(
+      `UPDATE \`${this.name}\` SET ${assignments.join(', ')} WHERE \`doc_id\`=?`,
+      params);
+  }
+  async _getById(id, executor, forUpdate = false) {
+    const [rows] = await executor.execute(
+      `SELECT raw_document FROM \`${this.name}\` WHERE doc_id=?${forUpdate ? ' FOR UPDATE' : ''}`, [id]);
+    if (!rows.length) return null;
+    return typeof rows[0].raw_document === 'string'
+      ? JSON.parse(rows[0].raw_document) : rows[0].raw_document;
+  }
+  async create_index() { return `${this.name}_doc_id_primary`; }
   async insert_one(document) {
     const doc = structuredClone(document);
     doc._id ??= randomUUID();
     const id = String(doc.id ?? doc._id);
-    await this.store.pool.execute(
-      'INSERT INTO document_store(collection, doc_id, document) VALUES (?, ?, ?)',
-      [this.name, id, JSON.stringify(doc)]);
+    await this._insertDocument(id, doc, this.store.pool);
     return { inserted_id: id };
   }
   async insert_many(documents, ordered = true) {
@@ -287,15 +348,12 @@ class Collection {
         if (!upsert) return { matched_count: 0, modified_count: 0 };
         const newDoc = structuredClone(replacement); newDoc._id ??= randomUUID();
         const id = String(newDoc.id ?? newDoc._id);
-        await connection.execute('INSERT INTO document_store(collection, doc_id, document) VALUES(?, ?, ?)',
-          [this.name, id, JSON.stringify(newDoc)]);
+        await this._insertDocument(id, newDoc, connection);
         return { matched_count: 0, modified_count: 0, upserted_id: id };
       }
       const newDoc = structuredClone(replacement); newDoc._id ??= found._id ?? randomUUID();
       const oldId = String(found.id ?? found._id); const newId = String(newDoc.id ?? oldId);
-      await connection.execute(
-        'UPDATE document_store SET doc_id=?, document=?, updated_at=UTC_TIMESTAMP(6) WHERE collection=? AND doc_id=?',
-        [newId, JSON.stringify(newDoc), this.name, oldId]);
+      await this._updateDocument(oldId, newId, newDoc, connection);
       return { matched_count: 1, modified_count: Number(JSON.stringify(newDoc) !== JSON.stringify(found)) };
     });
   }
@@ -310,8 +368,7 @@ class Collection {
           .filter(([key, value]) => !key.startsWith('$') && (!value || typeof value !== 'object')));
         const doc = applyUpdate(base, update, true); doc._id ??= randomUUID();
         const id = String(doc.id ?? doc._id);
-        await connection.execute('INSERT INTO document_store(collection, doc_id, document) VALUES(?, ?, ?)',
-          [this.name, id, JSON.stringify(doc)]);
+        await this._insertDocument(id, doc, connection);
         return { matched_count: 0, modified_count: 0, upserted_id: id };
       }
       const chosen = many ? matchesList : matchesList.slice(0, 1);
@@ -319,9 +376,7 @@ class Collection {
       for (const old of chosen) {
         const next = applyUpdate(old, update);
         const id = String(next.id ?? next._id);
-        await connection.execute(
-          'UPDATE document_store SET document=?, updated_at=UTC_TIMESTAMP(6) WHERE collection=? AND doc_id=?',
-          [JSON.stringify(next), this.name, id]);
+        await this._updateDocument(id, id, next, connection);
         if (JSON.stringify(old) !== JSON.stringify(next)) modified++;
       }
       return { matched_count: chosen.length, modified_count: modified };
@@ -334,8 +389,8 @@ class Collection {
       const rows = await this._all(simpleCandidate(query), connection);
       const chosen = rows.filter(doc => matches(doc, query)).slice(0, many ? undefined : 1);
       for (const doc of chosen) {
-        await connection.execute('DELETE FROM document_store WHERE collection=? AND doc_id=?',
-          [this.name, String(doc.id ?? doc._id)]);
+        await connection.execute(`DELETE FROM \`${this.name}\` WHERE doc_id=?`,
+          [String(doc.id ?? doc._id)]);
       }
       return { deleted_count: chosen.length };
     });
@@ -393,4 +448,5 @@ class AggregateCursor extends Cursor {
 
 module.exports = {
   Collection, Cursor, matches, applyUpdate, project, pathValues, firstPath,
+  safeCollection, SPLIT_COLLECTIONS,
 };

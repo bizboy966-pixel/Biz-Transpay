@@ -1,4 +1,5 @@
 'use strict';
+const { safeCollection } = require('./document-store.cjs');
 
 // Deliberately has no default DATABASE_URL: cannot accidentally use the existing app DB.
 function createPreviewPool(url) {
@@ -27,9 +28,50 @@ function decodeDocument(value) {
 }
 
 class MySqlStore {
-  constructor(pool) { this.pool = pool; }
+  constructor(pool) {
+    this.pool = pool;
+    this.columnCache = new Map();
+    this.lockTableReady = null;
+  }
+
+  async columnsForCollection(name, executor = this.pool) {
+    const collection = safeCollection(name);
+    if (!this.columnCache.has(collection)) {
+      const pending = executor.execute(
+        'SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?',
+        [collection],
+      ).then(([rows]) => {
+        const columns = new Set(rows.map(row => row.COLUMN_NAME ?? row.column_name));
+        if (!columns.has('doc_id') || !columns.has('raw_document')) {
+          throw new Error(`Split-table schema is missing required columns for ${collection}`);
+        }
+        return [...columns].filter(column => /^field_[A-Za-z0-9_]+$/.test(column)).sort();
+      }).catch(error => {
+        this.columnCache.delete(collection);
+        throw error;
+      });
+      this.columnCache.set(collection, pending);
+    }
+    return this.columnCache.get(collection);
+  }
+
+  async ensureLockTable() {
+    if (!this.lockTableReady) {
+      this.lockTableReady = this.pool.execute(
+        `CREATE TABLE IF NOT EXISTS migration_locks (
+          lock_name VARCHAR(191) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+          PRIMARY KEY (lock_name)
+        ) ENGINE=InnoDB`,
+      ).catch(error => {
+        this.lockTableReady = null;
+        throw error;
+      });
+    }
+    await this.lockTableReady;
+  }
 
   async transaction(callback) {
+    await this.ensureLockTable();
     const connection = await this.pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -37,6 +79,7 @@ class MySqlStore {
         // InnoDB row locks are released with commit/rollback, unlike GET_LOCK().
         // Fixed collection order must be used by every future wallet writer.
         lockCollection: async name => {
+          safeCollection(name);
           await connection.execute(
             'INSERT INTO migration_locks (lock_name) VALUES (?) ON DUPLICATE KEY UPDATE lock_name=VALUES(lock_name)',
             [name]);
@@ -47,20 +90,16 @@ class MySqlStore {
           for (const name of ['users', 'wallet_operations']) await repo.lockCollection(name);
         },
         get: async (collection, id) => {
-          const [rows] = await connection.execute(
-            'SELECT document FROM document_store WHERE collection=? AND doc_id=? FOR UPDATE',
-            [collection, id]);
-          return rows.length ? decodeDocument(rows[0].document) : null;
+          const { Collection } = require('./document-store.cjs');
+          return new Collection(this, collection)._getById(id, connection, true);
         },
         replace: async (collection, id, doc) => {
-          await connection.execute(
-            'UPDATE document_store SET document=?, updated_at=UTC_TIMESTAMP(6) WHERE collection=? AND doc_id=?',
-            [JSON.stringify(doc), collection, id]);
+          const { Collection } = require('./document-store.cjs');
+          return new Collection(this, collection)._updateDocument(id, id, doc, connection);
         },
         insert: async (collection, id, doc) => {
-          await connection.execute(
-            'INSERT INTO document_store (collection, doc_id, document) VALUES (?, ?, ?)',
-            [collection, id, JSON.stringify(doc)]);
+          const { Collection } = require('./document-store.cjs');
+          return new Collection(this, collection)._insertDocument(id, doc, connection);
         },
       };
       const result = await callback(repo, connection);
@@ -80,4 +119,4 @@ class MySqlStore {
   async close() { await this.pool.end(); }
 }
 
-module.exports = { MySqlStore, createPreviewPool };
+module.exports = { MySqlStore, createPreviewPool, decodeDocument };
