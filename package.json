@@ -76,7 +76,10 @@
     "@grpc/grpc-js": "1.14.5"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node app.js",
+    "build:frontend": "npm --prefix frontend install --no-audit --no-fund && BUILD_PATH=../generated-artifacts/frontend-build npm --prefix frontend run build",
+    "test": "npm --prefix backend-node test",
+    "check:parity": "npm --prefix backend-node run check:parity"
   },
   "keywords": [],
   "author": "",

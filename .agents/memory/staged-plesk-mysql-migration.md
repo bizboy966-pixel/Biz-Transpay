@@ -10,3 +10,9 @@ For the Node.js port, use the user's split-table ZIP layout as the MySQL target:
 **Why:** The user explicitly requires a Preview-first migration and says production must remain untouched until the new environment works and is approved. They also directed that Node.js routes be implemented before Python is removed.
 
 **How to apply:** Keep the Node adapter and its tests aligned with the split-table schema. Preserve Python until Node has route parity and passing regression tests; only then remove Python and update every build/start script. Initially use only Preview/development data and a temporary hostname. Do not access, export, modify, publish, or redirect production, DNS apex, or payment-provider callbacks during this phase. Ensure the Plesk build/start setup matches the app's actual generated frontend directory and has its Preview database and secrets configured. Only plan a separate production migration after Preview is validated and the user authorizes it.
+
+The user chose to test the Node app on Plesk. `localhost` in `MYSQL_DATABASE_URL` is local to the machine running Node: from Replit Preview it does not reach Plesk and produces `ECONNREFUSED`; on the Plesk host it can reach that host's MySQL service.
+
+**Why:** Replit Preview and Plesk are separate machines, and opening production MySQL to Replit would violate the user's Preview-first boundary.
+
+**How to apply:** Test on a temporary Plesk hostname with a dedicated Preview database and Plesk-local MySQL connection. Keep Replit Preview diagnostic-only if it cannot reach that database; never point either environment at production as a workaround.

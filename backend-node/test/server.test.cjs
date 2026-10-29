@@ -15,6 +15,14 @@ test('startup refuses unspecified or production data environment', () => {
   }
 });
 
+test('Plesk entrypoint refuses to start against production mode', () => {
+  const child = spawnSync(process.execPath, [path.join(__dirname, '../../app.js')], {
+    env: { BIZTRANSPAY_MIGRATION_ENV: 'production' }, encoding: 'utf8',
+  });
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /isolated Preview/);
+});
+
 test('API root is available while diagnostic mode rejects unported business routes', async () => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
