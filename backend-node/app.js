@@ -16,6 +16,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 async function start() {
   let store = null;
   let server;
+  let startupStage = 'session-configuration';
   try {
     let dependencies = {};
     if (process.env.MYSQL_DATABASE_URL) {
@@ -24,6 +25,7 @@ async function start() {
       const sessionSecret = process.env.SESSION_SECRET || jwtSecret;
       const { createPreviewPool, MySqlStore } = require('./src/mysql-store.cjs');
       const { SessionService } = require('./src/session-service.cjs');
+      startupStage = 'mysql-connect-and-schema-check';
       store = new MySqlStore(createPreviewPool(process.env.MYSQL_DATABASE_URL));
       await Promise.all([
         'users', 'sessions', 'auth_rate_limits', 'auth_challenges',
@@ -40,14 +42,17 @@ async function start() {
         sessionSecret,
       };
     }
+    startupStage = 'server-listen';
     server = createServer(dependencies).listen(port, '0.0.0.0', () => {
       console.log(process.env.MYSQL_DATABASE_URL
         ? `Preview Node server on port ${port}; only verified authentication routes are enabled.`
         : `Migration diagnostic server on port ${port}; business routes disabled.`);
     });
-  } catch {
+  } catch (error) {
     if (store) await store.close().catch(() => {});
-    console.error('Startup failed: Preview MySQL schema or Node session configuration is unavailable.');
+    const code = typeof error?.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code)
+      ? error.code : 'CHECK_FAILED';
+    console.error(`Startup failed at ${startupStage} (${code}); no database URL or error message logged.`);
     process.exitCode = 1;
     return;
   }
