@@ -46,9 +46,16 @@ lockfiles use canonical `registry.npmjs.org` tarball URLs (without Replit's
 
 The Node startup checks that the split-table data schema already exists.
 `backend-node/sql/preview-schema.sql` creates only `migration_locks`; it does
-not create the application data tables. If schema validation fails, startup
-stops. Do not import a schema or dump into the live database without checking
-its contents and taking a backup first.
+not create the application data tables. If MySQL configuration, connectivity,
+or schema validation fails, Node now stays in diagnostic-only mode: `/healthz`
+returns a sanitized status and business API requests return HTTP 503. The
+Turnstile public-config endpoint remains available because it does not require
+database access. Do not import a schema or dump into the live database without
+checking its contents and taking a backup first.
+
+The currently generated split-table export does not include every collection
+required by all Node routes. Missing collections must be reconciled against a
+verified database backup before enabling the affected features.
 
 ## Current migration limit
 

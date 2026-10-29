@@ -120,7 +120,10 @@ function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
   env = process.env, verifyBot, sendEmail, onAuthRecoveryError,
   sendTelegramNotification,
-} = {}, { staticRoot: configuredStaticRoot = '' } = {}) {
+} = {}, {
+  staticRoot: configuredStaticRoot = '',
+  healthState = null,
+} = {}) {
   const staticRoot = configuredStaticRoot ? path.resolve(configuredStaticRoot) : '';
   const telegramNotifier = sendTelegramNotification
     ? { enqueueAdminLogin: sendTelegramNotification }
@@ -184,19 +187,24 @@ function createServer({
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const health = req.method === 'GET' && new URL(req.url, 'http://localhost').pathname === '/healthz';
     if (health) {
-      let database = db ? 'unverified' : 'not_configured';
+      let database = healthState?.database || (db ? 'unverified' : 'not_configured');
+      let issue = healthState?.issue || null;
       if (db?.healthCheck) {
         try {
           await db.healthCheck();
           database = 'connected';
         } catch {
           database = 'unavailable';
+          issue = issue || 'mysql_ping_failed';
         }
       }
-      res.statusCode = database === 'unavailable' ? 503 : 200;
+      // This is a liveness/diagnostic endpoint: always return its JSON body if
+      // Node is listening. The database field reports readiness separately.
+      res.statusCode = 200;
       res.end(JSON.stringify({
         backend: 'ok',
         database,
+        ...(issue ? { issue } : {}),
         migration_complete: false,
       }));
       return;
@@ -204,6 +212,19 @@ function createServer({
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       const method = String(req.method || 'GET').toUpperCase();
+      if (healthState?.issue && path.startsWith('/api/')) {
+        if (path === '/api/security/turnstile-config'
+            && await publicConfig.handleRoute(req, res)) return;
+        res.statusCode = 503;
+        res.end(JSON.stringify({
+          detail: {
+            code: 'BACKEND_NOT_READY',
+            message: 'Le backend est en mode diagnostic; les opérations restent bloquées.',
+            issue: healthState.issue,
+          },
+        }));
+        return;
+      }
       if (await serveStatic(req, res, staticRoot)) return;
       if (method === 'GET' && path === '/api/') {
         res.statusCode = 200;

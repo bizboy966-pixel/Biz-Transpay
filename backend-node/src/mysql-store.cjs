@@ -43,7 +43,9 @@ class MySqlStore {
       ).then(([rows]) => {
         const columns = new Set(rows.map(row => row.COLUMN_NAME ?? row.column_name));
         if (!columns.has('doc_id') || !columns.has('raw_document')) {
-          throw new Error(`Split-table schema is missing required columns for ${collection}`);
+          const error = new Error(`Split-table schema is missing required columns for ${collection}`);
+          error.code = 'SPLIT_SCHEMA_MISSING';
+          throw error;
         }
         return [...columns].filter(column => /^field_[A-Za-z0-9_]+$/.test(column)).sort();
       }).catch(error => {

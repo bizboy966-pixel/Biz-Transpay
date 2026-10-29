@@ -82,6 +82,14 @@ test('MySQL health check executes a lightweight SELECT 1 ping', async () => {
   assert.deepEqual(calls, ['SELECT 1']);
 });
 
+test('missing split-table schema is classified without exposing its table name publicly', async () => {
+  const store = new MySqlStore({ execute: async () => [[]] });
+  await assert.rejects(
+    store.columnsForCollection('users'),
+    error => error.code === 'SPLIT_SCHEMA_MISSING',
+  );
+});
+
 function documentPool() {
   const rows = new Map();
   const locks = new Set();

@@ -13,9 +13,52 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   process.exit(1);
 }
 
+function startHttpServer(dependencies, healthState = null) {
+  const server = createServer(dependencies, {
+    staticRoot: process.env.STATIC_ROOT || '',
+    healthState,
+  }).listen(port, '0.0.0.0', () => {
+    console.log(healthState?.issue
+      ? `${migrationEnvironment} Node diagnostic server on port ${port}; business APIs are blocked.`
+      : `${migrationEnvironment} Node server on port ${port}; unverified routes remain disabled.`);
+  });
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      server.close(async () => {
+        if (dependencies.db) await dependencies.db.close().catch(() => {});
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(1), 5000).unref();
+    });
+  }
+  return server;
+}
+
+function diagnosticState(error, stage) {
+  if (error?.code === 'MYSQL_URL_REQUIRED') {
+    return { database: 'not_configured', issue: 'mysql_url_missing' };
+  }
+  if (error?.code === 'SESSION_SECRET_REQUIRED') {
+    return { database: 'not_checked', issue: 'session_secret_missing' };
+  }
+  if (error?.code === 'SPLIT_SCHEMA_MISSING') {
+    return { database: 'schema_incomplete', issue: 'required_tables_missing' };
+  }
+  if (stage === 'mysql-connect-and-schema-check') {
+    const connectionErrors = new Set([
+      'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH',
+      'ER_ACCESS_DENIED_ERROR', 'ER_BAD_DB_ERROR',
+    ]);
+    return {
+      database: 'unavailable',
+      issue: connectionErrors.has(error?.code) ? 'mysql_connection_failed' : 'mysql_check_failed',
+    };
+  }
+  return { database: 'unavailable', issue: 'startup_failed' };
+}
+
 async function start() {
   let store = null;
-  let server;
   let startupStage = 'session-configuration';
   try {
     let dependencies = {};
@@ -27,7 +70,11 @@ async function start() {
     }
     if (process.env.MYSQL_DATABASE_URL) {
       const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-      if (!jwtSecret) throw new Error('Session signing secret is not configured');
+      if (!jwtSecret) {
+        const error = new Error('Session signing secret is not configured');
+        error.code = 'SESSION_SECRET_REQUIRED';
+        throw error;
+      }
       const sessionSecret = process.env.SESSION_SECRET || jwtSecret;
       const { createPreviewPool, MySqlStore } = require('./src/mysql-store.cjs');
       const { SessionService } = require('./src/session-service.cjs');
@@ -49,29 +96,14 @@ async function start() {
       };
     }
     startupStage = 'server-listen';
-    server = createServer(dependencies, {
-      staticRoot: process.env.STATIC_ROOT || '',
-    }).listen(port, '0.0.0.0', () => {
-      console.log(process.env.MYSQL_DATABASE_URL
-        ? `${migrationEnvironment} Node server on port ${port}; unverified routes remain disabled.`
-        : `${migrationEnvironment} diagnostic server on port ${port}; business routes disabled.`);
-    });
+    startHttpServer(dependencies);
   } catch (error) {
     if (store) await store.close().catch(() => {});
     const code = typeof error?.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code)
       ? error.code : 'CHECK_FAILED';
-    console.error(`Startup failed at ${startupStage} (${code}); no database URL or error message logged.`);
-    process.exitCode = 1;
-    return;
-  }
-  for (const signal of ['SIGTERM', 'SIGINT']) {
-    process.once(signal, () => {
-      server.close(async () => {
-        if (store) await store.close().catch(() => {});
-        process.exit(0);
-      });
-      setTimeout(() => process.exit(1), 5000).unref();
-    });
+    const state = diagnosticState(error, startupStage);
+    console.error(`Startup degraded at ${startupStage} (${code}); business APIs are blocked.`);
+    startHttpServer({}, state);
   }
 }
 
