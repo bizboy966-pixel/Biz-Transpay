@@ -178,6 +178,11 @@ test('Biz-to-Biz transfer atomically updates both accounts and notifies once', a
   assert.equal(store.docs.users.get('recipient').balance_xof, 250);
   assert.equal(store.docs.transactions.size, 2);
   assert.equal(sentNotifications.length, 1);
+
+  const conflictingRetry = await call(service, transferBody({ amount: 250 }));
+  assert.equal(conflictingRetry.status, 409);
+  assert.equal(store.docs.users.get('sender').balance_xof, 800);
+  assert.equal(store.docs.users.get('recipient').balance_xof, 250);
 });
 
 test('transfer enforces KYC, PIN, and idempotency key before changing balances', async () => {
@@ -224,6 +229,15 @@ test('email OTP is sent, bound to the transfer, consumed once, and supports safe
   assert.equal(store.docs.users.get('sender').balance_xof, 1000);
 
   const code = sentEmails[0].text.match(/ : (\d{6})/)[1];
+  const wrongCode = code === '000000' ? '000001' : '000000';
+  const rejected = await call(service, {
+    ...request,
+    withdrawal_otp_challenge_id: challenge.body.challenge_id,
+    withdrawal_otp_code: wrongCode,
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(store.docs.users.get('sender').balance_xof, 1000);
+
   const confirmed = await call(service, {
     ...request,
     withdrawal_otp_challenge_id: challenge.body.challenge_id,

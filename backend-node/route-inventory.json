@@ -1323,7 +1323,7 @@
       "source": "backend/server.py",
       "handler": "transfer",
       "status": "implemented_unverified",
-      "scope_note": "Biz-to-Biz only; Mobile Money/crypto payouts and email OTP initiation remain pending."
+      "scope_note": "Biz-to-Biz + email OTP; Mobile Money/crypto payouts remain pending."
     },
     {
       "method": "POST",
@@ -1331,7 +1331,7 @@
       "source": "backend/server.py",
       "handler": "cancel_transfer_email_otp",
       "status": "implemented_unverified",
-      "scope_note": "Cancellation is ported; email OTP challenge creation and verification remain pending."
+      "scope_note": "Email OTP challenge cancellation is ported; runtime verification remains pending."
     },
     {
       "method": "GET",
