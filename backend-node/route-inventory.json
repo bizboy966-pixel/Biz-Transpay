@@ -6,7 +6,7 @@
       "path": "/api/",
       "source": "backend/server.py",
       "handler": "root",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -41,21 +41,21 @@
       "path": "/api/admin/conversion/config",
       "source": "backend/server.py",
       "handler": "admin_get_conversion_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/admin/conversion/config",
       "source": "backend/server.py",
       "handler": "admin_update_conversion_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/conversions",
       "source": "backend/server.py",
       "handler": "admin_list_conversions",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -209,14 +209,14 @@
       "path": "/api/admin/platform/config",
       "source": "backend/server.py",
       "handler": "admin_get_platform_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/admin/platform/config",
       "source": "backend/server.py",
       "handler": "admin_update_platform_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -279,14 +279,14 @@
       "path": "/api/admin/settings/features",
       "source": "backend/server.py",
       "handler": "admin_get_features",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/admin/settings/features",
       "source": "backend/server.py",
       "handler": "admin_update_features",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -482,112 +482,112 @@
       "path": "/api/auth/2fa/confirm",
       "source": "backend/server.py",
       "handler": "confirm_two_factor",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/2fa/disable",
       "source": "backend/server.py",
       "handler": "disable_two_factor",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/2fa/setup",
       "source": "backend/server.py",
       "handler": "setup_two_factor",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/admin-pin",
       "source": "backend/server.py",
       "handler": "configure_admin_pin",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/auth/csrf",
       "source": "backend/server.py",
       "handler": "csrf_token",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/login",
       "source": "backend/server.py",
       "handler": "login",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/logout",
       "source": "backend/server.py",
       "handler": "logout",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/auth/me",
       "source": "backend/server.py",
       "handler": "me",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/password-reset/confirm",
       "source": "backend/server.py",
       "handler": "confirm_password_reset",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/password-reset/request",
       "source": "backend/server.py",
       "handler": "request_password_reset",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/reauth",
       "source": "backend/server.py",
       "handler": "reauthenticate",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/recover",
       "source": "backend/server.py",
       "handler": "recover_account",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/register",
       "source": "backend/server.py",
       "handler": "register",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/session/refresh",
       "source": "backend/server.py",
       "handler": "refresh_session",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/user-pin/reset/confirm",
       "source": "backend/server.py",
       "handler": "confirm_user_pin_reset",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/auth/user-pin/reset/request",
       "source": "backend/server.py",
       "handler": "request_user_pin_reset",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1056,14 +1056,14 @@
       "path": "/api/kyc",
       "source": "backend/server.py",
       "handler": "get_kyc",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/kyc/submit",
       "source": "backend/server.py",
       "handler": "submit_kyc",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1140,49 +1140,49 @@
       "path": "/api/notifications",
       "source": "backend/server.py",
       "handler": "list_notifications",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "DELETE",
       "path": "/api/notifications/all",
       "source": "backend/server.py",
       "handler": "notification_delete_all",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/notifications/pending-confirmation",
       "source": "backend/server.py",
       "handler": "pending_confirmation_notifications",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/notifications/read-all",
       "source": "backend/server.py",
       "handler": "notification_mark_all_read",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/notifications/stream",
       "source": "backend/server.py",
       "handler": "notifications_stream",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/notifications/unread-count",
       "source": "backend/server.py",
       "handler": "unread_count",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/notifications/{nid}/read",
       "source": "backend/server.py",
       "handler": "notification_mark_read",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1196,63 +1196,63 @@
       "path": "/api/push/config",
       "source": "backend/server.py",
       "handler": "push_client_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "DELETE",
       "path": "/api/push/devices",
       "source": "backend/server.py",
       "handler": "unregister_push_device",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/push/devices",
       "source": "backend/server.py",
       "handler": "register_push_device",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/referrals/invite/{code}",
       "source": "backend/server.py",
       "handler": "referral_invite",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/referrals/me",
       "source": "backend/server.py",
       "handler": "my_referrals",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/security/turnstile-config",
       "source": "backend/server.py",
       "handler": "turnstile_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/settings/features",
       "source": "backend/server.py",
       "handler": "public_get_features",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/settings/password",
       "source": "backend/server.py",
       "handler": "change_password",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/settings/profile",
       "source": "backend/server.py",
       "handler": "update_profile",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1266,49 +1266,49 @@
       "path": "/api/support/config",
       "source": "backend/server.py",
       "handler": "support_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/support/messages",
       "source": "backend/server.py",
       "handler": "user_get_messages",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/support/messages",
       "source": "backend/server.py",
       "handler": "user_send_message",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/support/tickets",
       "source": "backend/server.py",
       "handler": "list_tickets",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/support/tickets",
       "source": "backend/server.py",
       "handler": "create_ticket",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/transactions",
       "source": "backend/server.py",
       "handler": "list_transactions",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/transactions/{tx_id}",
       "source": "backend/server.py",
       "handler": "get_transaction",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1343,7 +1343,7 @@
       "path": "/api/wallet/summary",
       "source": "backend/server.py",
       "handler": "wallet_summary",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",

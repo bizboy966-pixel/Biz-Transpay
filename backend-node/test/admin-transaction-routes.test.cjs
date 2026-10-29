@@ -17,6 +17,7 @@ function conditionMatches(value, condition) {
       return regex.test(String(value ?? ''));
     }
     if (condition.$in) return condition.$in.some(entry => String(value) === String(entry));
+    if (condition.$gte !== undefined) return String(value ?? '') >= String(condition.$gte);
   }
   return String(value ?? '') === String(condition ?? '');
 }
@@ -36,7 +37,7 @@ function projected(document, projection) {
 }
 
 class MemoryDb {
-  constructor() {
+  constructor({ includeExchanges = false } = {}) {
     const now = new Date().toISOString();
     this.rows = {
       users: [
@@ -71,6 +72,30 @@ class MemoryDb {
       wallet_operations: [],
       admin_logs: [],
     };
+    if (includeExchanges) {
+      this.rows.transactions.push(
+        {
+          id: 'EXCHANGE-001', user_id: 'user-1', type: 'exchange',
+          amount: 1000, currency: 'XOF', status: 'completed',
+          created_at: now, metadata: { from_currency: 'XOF', to_currency: 'XAF' },
+        },
+        {
+          id: 'EXCHANGE-002', user_id: 'user-2', type: 'exchange',
+          amount: 2, currency: 'USDT', status: 'completed',
+          created_at: now, metadata: { from_currency: 'USDT', to_currency: 'XOF' },
+        },
+        {
+          id: 'EXCHANGE-003', user_id: 'user-1', type: 'exchange',
+          amount: 500, currency: 'XAF', status: 'failed',
+          created_at: now, metadata: { from_currency: 'XAF', to_currency: 'XOF' },
+        },
+        {
+          id: 'EXCHANGE-004', user_id: 'user-2', type: 'exchange',
+          amount: 300, currency: 'XOF', status: 'pending',
+          created_at: now, metadata: { from_currency: 'XOF', to_currency: 'XAF' },
+        },
+      );
+    }
     this.rows.wallet_operations.push({
       id: operationIdentity('operation', 'user-1:deposit-op-1'),
       user_id: 'user-1',
@@ -101,6 +126,33 @@ class MemoryDb {
         };
         return cursor;
       },
+      count_documents: async query => this.rows[name].filter(row => matches(row, query)).length,
+      aggregate: pipeline => ({
+        to_list: async limit => {
+          let rows = [...this.rows[name]];
+          for (const stage of pipeline) {
+            if (stage.$match) rows = rows.filter(row => matches(row, stage.$match));
+            if (stage.$group) {
+              const groups = new Map();
+              for (const row of rows) {
+                const groupKey = stage.$group._id.startsWith('$')
+                  ? pathValue(row, stage.$group._id.slice(1))
+                  : stage.$group._id;
+                const group = groups.get(groupKey) || { _id: groupKey };
+                for (const [field, operation] of Object.entries(stage.$group)) {
+                  if (field !== '_id' && operation.$sum) {
+                    const source = operation.$sum.slice(1);
+                    group[field] = (group[field] || 0) + Number(pathValue(row, source) || 0);
+                  }
+                }
+                groups.set(groupKey, group);
+              }
+              rows = [...groups.values()];
+            }
+          }
+          return rows.slice(0, limit);
+        },
+      }),
       insert_one: async document => {
         this.rows[name].push(clone(document));
         return { inserted_id: document.id };
@@ -109,8 +161,8 @@ class MemoryDb {
   }
 }
 
-function setup() {
-  const db = new MemoryDb();
+function setup({ includeExchanges = false } = {}) {
+  const db = new MemoryDb({ includeExchanges });
   const sessionService = {
     async authenticate(token) {
       if (token !== 'admin-session') {
@@ -167,6 +219,22 @@ test('admin transaction detail adds persisted wallet snapshots and scoped user i
   assert.equal(detail.body.metadata.wallet_balance_before, 1000);
   assert.equal(detail.body.metadata.wallet_balance_after, 1500);
   assert.equal(detail.body.metadata.wallet_operation_direction, 'credit');
+});
+
+test('admin conversion route returns period rows, counts, and completed volume by currency', async () => {
+  const { routes, db } = setup({ includeExchanges: true });
+  const result = await call(routes, '/api/admin/conversions?period=month');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.data.length, 4);
+  assert.equal(result.body.data[0].user.username, 'awa');
+  assert.deepEqual(result.body.totals, {
+    all: 4, today: 4, validated: 2, rejected: 1,
+  });
+  assert.deepEqual(result.body.volume_by_currency, { USDT: 2, XOF: 1000, XAF: 0 });
+  assert.ok(db.rows.admin_logs.some(log => log.action === 'admin_conversions_list'));
+
+  const invalid = await call(routes, '/api/admin/conversions?limit=5000');
+  assert.equal(invalid.status, 422);
 });
 
 test('transaction read rejects unauthenticated access and invalid query bounds', async () => {

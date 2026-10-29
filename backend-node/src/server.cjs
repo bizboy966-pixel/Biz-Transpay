@@ -18,6 +18,7 @@ const { createExchangeRoutes } = require('./exchange-routes.cjs');
 const { createAdminUserRoutes } = require('./admin-user-routes.cjs');
 const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
 const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
+const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
@@ -64,6 +65,7 @@ function createServer({
   const adminTransactionRoutes = createAdminTransactionRoutes({
     db, sessionService, env,
   });
+  const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -90,6 +92,7 @@ function createServer({
           'admin-user-list',
           'admin-wallet-adjustment',
           'admin-transaction-read',
+          'admin-settings',
         ],
       }));
       return;
@@ -97,6 +100,11 @@ function createServer({
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       const method = String(req.method || 'GET').toUpperCase();
+      if (method === 'GET' && path === '/api/') {
+        res.statusCode = 200;
+        res.end(JSON.stringify({ message: 'Biz-transPay API', status: 'ok' }));
+        return;
+      }
       const csrfExempt = path === '/api/auth/login'
         || path === '/api/auth/register'
         || path === '/api/auth/recover'
@@ -137,6 +145,7 @@ function createServer({
       if (await adminTransactionRoutes.handleRoute(req, res)) return;
       if (await adminBalanceRoutes.handleRoute(req, res)) return;
       if (await adminUserRoutes.handleRoute(req, res)) return;
+      if (await adminSettingsRoutes.handleRoute(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',

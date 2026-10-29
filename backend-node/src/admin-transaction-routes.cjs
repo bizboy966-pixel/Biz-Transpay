@@ -38,18 +38,21 @@ function createAdminTransactionRoutes({ db, sessionService, env = process.env })
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { return false; }
+    const conversionsRoute = url.pathname === '/api/admin/conversions';
     const listRoute = url.pathname === '/api/admin/transactions';
     const detailMatch = /^\/api\/admin\/transactions\/([^/]+)$/.exec(url.pathname);
-    if (!((req.method === 'GET' && listRoute) || (req.method === 'GET' && detailMatch))) {
+    if (!((req.method === 'GET' && (listRoute || conversionsRoute))
+        || (req.method === 'GET' && detailMatch))) {
       return false;
     }
 
-    const action = detailMatch ? 'admin_transaction_detail' : 'admin_transactions_list';
+    const action = conversionsRoute ? 'admin_conversions_list'
+      : detailMatch ? 'admin_transaction_detail' : 'admin_transactions_list';
     let authorized;
     try {
       authorized = await authorizeAdmin(req, {
         db, sessionService, env,
-        permission: 'transactions:read',
+        permission: conversionsRoute ? 'finance:read' : 'transactions:read',
         action,
       });
     } catch (error) {
@@ -61,6 +64,74 @@ function createAdminTransactionRoutes({ db, sessionService, env = process.env })
     void authorized;
 
     try {
+      if (conversionsRoute) {
+        const now = new Date();
+        const period = String(url.searchParams.get('period') || 'month');
+        let since = null;
+        if (period === 'day') {
+          const startOfDay = new Date(now);
+          startOfDay.setUTCHours(0, 0, 0, 0);
+          since = startOfDay.toISOString();
+        } else if (period === 'week') {
+          since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        } else if (period === 'month') {
+          since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        }
+        const rawLimit = url.searchParams.get('limit');
+        const limit = rawLimit == null ? 200 : Number(rawLimit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 2000) {
+          reply(res, 422, { detail: 'Limite invalide (1–2000)' });
+          return true;
+        }
+        const query = { type: 'exchange' };
+        if (since) query.created_at = { $gte: since };
+        const transactions = db.collection('transactions');
+        const rows = await transactions.find(query, { _id: 0 })
+          .sort('created_at', -1).to_list(limit);
+        const userIds = [...new Set(rows.map(row => String(row.user_id || '')).filter(Boolean))];
+        const users = userIds.length
+          ? await db.collection('users').find({ id: { $in: userIds } }, {
+            _id: 0, id: 1, username: 1, full_name: 1, email: 1,
+          }).to_list(userIds.length)
+          : [];
+        const usersById = new Map(users.map(user => [String(user.id), user]));
+        const startOfToday = new Date(now);
+        startOfToday.setUTCHours(0, 0, 0, 0);
+        const [totalAll, totalToday, validated, rejected, groupedVolumes] = await Promise.all([
+          transactions.count_documents({ type: 'exchange' }),
+          transactions.count_documents({
+            type: 'exchange', created_at: { $gte: startOfToday.toISOString() },
+          }),
+          transactions.count_documents({ type: 'exchange', status: 'completed' }),
+          transactions.count_documents({ type: 'exchange', status: 'failed' }),
+          transactions.aggregate([
+            { $match: { type: 'exchange', status: 'completed' } },
+            { $group: { _id: '$currency', volume: { $sum: '$amount' } } },
+          ]).to_list(100),
+        ]);
+        const volumeByCurrency = { USDT: 0, XOF: 0, XAF: 0 };
+        for (const item of groupedVolumes) {
+          const currency = String(item._id || '').toUpperCase();
+          if (Object.hasOwn(volumeByCurrency, currency)) {
+            volumeByCurrency[currency] = Number(item.volume) || 0;
+          }
+        }
+        reply(res, 200, {
+          data: rows.map(row => ({
+            ...row,
+            user: usersById.get(String(row.user_id)) || {},
+          })),
+          totals: {
+            all: totalAll,
+            today: totalToday,
+            validated,
+            rejected,
+          },
+          volume_by_currency: volumeByCurrency,
+        });
+        return true;
+      }
+
       if (detailMatch) {
         let txId;
         try { txId = decodeURIComponent(detailMatch[1]); }

@@ -15,7 +15,7 @@ test('startup refuses unspecified or production data environment', () => {
   }
 });
 
-test('diagnostic server never accepts unported auth, payout or webhook requests', async () => {
+test('API root is available while diagnostic mode rejects unported business routes', async () => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
@@ -23,6 +23,9 @@ test('diagnostic server never accepts unported auth, payout or webhook requests'
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
     assert.equal((await health.json()).migration_complete, false);
+    const root = await fetch(`${base}/api/`);
+    assert.equal(root.status, 200);
+    assert.deepEqual(await root.json(), { message: 'Biz-transPay API', status: 'ok' });
     for (const route of ['/api/auth/login', '/api/transfers', '/api/webhook/afribapay', '/readyz']) {
       const result = await fetch(`${base}${route}`, { method: 'POST' });
       assert.equal(result.status, 503);
