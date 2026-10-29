@@ -247,3 +247,53 @@ test('support endpoints reject unauthenticated requests and unsafe attachment pa
   });
   assert.equal(invalid.status, 422);
 });
+
+test('admin support inbox aggregates unread messages and exposes linked user details', async () => {
+  const { service } = setup({
+    users: [
+      { id: 'admin-1', username: 'support', full_name: 'Support', role: 'admin', admin_role: 'support', two_fa_enabled: true },
+      { id: 'customer-1', username: 'awa', full_name: 'Awa', email: 'awa@example.test' },
+    ],
+    support_messages: [
+      { id: 'old-user', conversation_id: 'customer-1', sender: 'user', text: 'Ancien', created_at: '2026-01-01', read_by_admin: false },
+      { id: 'admin-reply', conversation_id: 'customer-1', sender: 'admin', text: 'Réponse', created_at: '2026-01-02', read_by_admin: true },
+      { id: 'new-user', conversation_id: 'customer-1', sender: 'user', text: 'Nouveau', created_at: '2026-01-03', read_by_admin: false },
+    ],
+  });
+  const result = await call(service, 'GET', '/api/admin/support/conversations', undefined, 'admin-session');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.length, 1);
+  assert.equal(result.body[0].user.username, 'awa');
+  assert.equal(result.body[0].last_message, 'Nouveau');
+  assert.equal(result.body[0].unread_count, 2);
+});
+
+test('admin support reads mark user messages read and replies persist as admin messages', async () => {
+  const { service, db } = setup({
+    users: [
+      { id: 'admin-1', username: 'support', full_name: 'Support', role: 'admin', admin_role: 'support', two_fa_enabled: true },
+      { id: 'customer-1', username: 'awa' },
+    ],
+    support_messages: [
+      { id: 'user-message', conversation_id: 'customer-1', sender: 'user', text: 'Besoin d’aide', created_at: '2026-01-01', read_by_admin: false },
+    ],
+  });
+  const listed = await call(
+    service, 'GET', '/api/admin/support/conversations/customer-1/messages',
+    undefined, 'admin-session',
+  );
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body[0].text, 'Besoin d’aide');
+  assert.equal(await db.collection('support_messages').find_one({
+    id: 'user-message', read_by_admin: true,
+  }) !== null, true);
+
+  const sent = await call(
+    service, 'POST', '/api/admin/support/conversations/customer-1/messages',
+    { text: 'Nous allons vous aider.' }, 'admin-session',
+  );
+  assert.equal(sent.status, 200);
+  assert.equal(sent.body.sender, 'admin');
+  assert.equal(sent.body.sender_id, 'admin-1');
+  assert.equal(sent.body.read_by_user, false);
+});

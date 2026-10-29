@@ -75,7 +75,7 @@ class AtomicStore {
 
 function setup({
   kycStatus = 'verified', validPin = true, withdrawalOtp = false,
-  emailSender = 'no-reply@example.test',
+  emailSender = 'no-reply@example.test', settingsExtra = [],
 } = {}) {
   const sentEmails = [];
   const store = new AtomicStore({
@@ -97,6 +97,7 @@ function setup({
         withdrawal_otp_enabled: withdrawalOtp,
         sender_email: emailSender,
       },
+      ...settingsExtra,
     ],
   });
   const sentNotifications = [];
@@ -122,9 +123,9 @@ function setup({
   return { store, service, sentNotifications, sentEmails };
 }
 
-function request(body, path = '/api/transfers') {
-  const req = Readable.from([JSON.stringify(body)]);
-  req.method = 'POST';
+function request(body, path = '/api/transfers', method = 'POST') {
+  const req = Readable.from(body === undefined ? [] : [JSON.stringify(body)]);
+  req.method = method;
   req.url = path;
   req.headers = { authorization: 'Bearer valid-session' };
   return req;
@@ -138,11 +139,45 @@ function response() {
   };
 }
 
-async function call(service, body, path) {
+async function call(service, body, path, method = 'POST') {
   const res = response();
-  const handled = await service.handleRoute(request(body, path), res);
+  const handled = await service.handleRoute(request(body, path, method), res);
   return { handled, status: res.status, body: res.body ? JSON.parse(res.body) : null };
 }
+
+test('transfer config requires a session and exposes only active, configured payout routes', async () => {
+  const { service } = setup({
+    settingsExtra: [
+      {
+        id: 'transfer_config',
+        mobile_money: {
+          enabled: true,
+          operators: [
+            { provider: 'paydunya', country: 'TG', code: 'moov_tg', name: 'Moov Togo', currency: 'XOF', min: 100, fee_pct: 1.5, active: true },
+            { provider: 'paydunya', country: 'TG', code: 'orange_tg', name: 'Orange Togo', currency: 'XOF', active: true },
+            { provider: 'mbiyo', country: 'BF', code: 'mbiyo_moov', name: 'Moov Burkina', currency: 'XOF', fee_pct: 2, active: true },
+            { provider: 'afribapay', country: 'BF', code: 'afribapay_moov', name: 'Duplicate route', currency: 'XOF', active: false },
+          ],
+        },
+      },
+      { id: 'payment_provider_paydunya', enabled: true, master_key_encrypted: 'encrypted' },
+      { id: 'payment_provider_mbiyo', enabled: true, secret_key_encrypted: 'encrypted' },
+    ],
+  });
+  const result = await call(service, undefined, '/api/transfer/config', 'GET');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.mobile_money.enabled, true);
+  assert.deepEqual(result.body.mobile_money.operators.map(item => item.code), [
+    'moov_tg', 'orange_tg', 'moov',
+  ]);
+  assert.equal(JSON.stringify(result.body).includes('encrypted'), false);
+
+  const unauthorized = await call(
+    { handleRoute: (req, res) => service.handleRoute({ ...req, headers: { authorization: 'Bearer bad' } }, res) },
+    undefined, '/api/transfer/config', 'GET',
+  );
+  assert.equal(unauthorized.status, 401);
+});
 
 function transferBody(overrides = {}) {
   return {

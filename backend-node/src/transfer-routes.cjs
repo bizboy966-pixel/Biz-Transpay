@@ -89,6 +89,26 @@ function isAdmin(user) {
     || user?.account_type === 'admin';
 }
 
+function configuredProvider(providerConfig, env, provider) {
+  if (!providerConfig?.enabled) return false;
+  const credentialFields = new Set([
+    'api_key_encrypted', 'secret_key_encrypted', 'client_secret_encrypted',
+    'master_key_encrypted', 'public_key_encrypted', 'private_key_encrypted',
+    'token_encrypted',
+  ]);
+  const encryptedCredential = Object.entries(providerConfig).some(([key, value]) => (
+    credentialFields.has(key.toLowerCase())
+      && typeof value === 'string' && value.length > 0
+  ));
+  const envCredentialNames = {
+    paydunya: ['PAYDUNYA_MASTER_KEY', 'PAYDUNYA_PUBLIC_KEY', 'PAYDUNYA_PRIVATE_KEY', 'PAYDUNYA_TOKEN'],
+    mbiyo: ['MBIYO_SECRET_KEY', 'MBIYO_API_KEY'],
+    afribapay: ['AFRIBAPAY_API_KEY', 'AFRIBAPAY_SECRET_KEY', 'AFRIBAPAY_CLIENT_ID'],
+  };
+  return encryptedCredential
+    || (envCredentialNames[provider] || []).some(name => Boolean(String(env[name] || '').trim()));
+}
+
 function createTransferRoutes({
   db, sessionService, sessionSecret = '', env = process.env,
   verifyBot = verifyTurnstile, verifyPinFn = verifyPin,
@@ -496,6 +516,71 @@ function createTransferRoutes({
 
   async function handleRoute(req, res) {
     const path = new URL(req.url || '/', 'http://localhost').pathname;
+    if (req.method === 'GET' && path === '/api/transfer/config') {
+      if (!db || !sessionService) {
+        reply(res, 503, { detail: 'Service indisponible.', code: 'MIGRATION_INCOMPLETE' });
+        return true;
+      }
+      try {
+        await sessionService.authenticate(sessionToken(req));
+        const settings = db.collection('settings');
+        const [saved, paydunya, mbiyo, afribapay] = await Promise.all([
+          settings.find_one({ id: 'transfer_config' }, { _id: 0 }),
+          settings.find_one({ id: 'payment_provider_paydunya' }, { _id: 0 }),
+          settings.find_one({ id: 'payment_provider_mbiyo' }, { _id: 0 }),
+          settings.find_one({ id: 'payment_provider_afribapay' }, { _id: 0 }),
+        ]);
+        const mm = saved?.mobile_money || {};
+        const providerReady = {
+          paydunya: configuredProvider(paydunya, env, 'paydunya'),
+          mbiyo: configuredProvider(mbiyo, env, 'mbiyo'),
+          afribapay: configuredProvider(afribapay, env, 'afribapay'),
+        };
+        const seen = new Set();
+        const operators = (Array.isArray(mm.operators) ? mm.operators : [])
+          .filter(operator => {
+            const provider = String(operator.provider || 'paydunya').toLowerCase();
+            if (!mm.enabled || !providerReady[provider]
+                || operator.active === false || operator.archived || operator.hidden
+                || !['paydunya', 'mbiyo', 'afribapay'].includes(provider)) return false;
+            const identity = [
+              String(operator.country || '').toUpperCase(),
+              String(operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
+              String(operator.currency || '').toUpperCase(),
+            ].join(':');
+            if (seen.has(identity)) return false;
+            seen.add(identity);
+            return true;
+          })
+          .map(operator => {
+            const gatewayPct = Number(operator.gateway_fee_pct || 0);
+            const platformPct = Number(operator.platform_fee_pct || 0);
+            const gatewayFixed = Number(operator.gateway_fee_fixed || 0);
+            const platformFixed = Number(operator.platform_fee_fixed || 0);
+            return {
+              country: operator.country,
+              country_label: operator.country_label || operator.country,
+              code: String(operator.public_code || operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
+              name: operator.name || operator.code,
+              currency: operator.currency || 'XOF',
+              min: Number(operator.min || 0),
+              max: Number(operator.max || 0) || null,
+              fee_pct: (gatewayPct || platformPct)
+                ? gatewayPct + platformPct : Number(operator.fee_pct || 0),
+              fee_fixed: (gatewayFixed || platformFixed)
+                ? gatewayFixed + platformFixed : Number(operator.fee_fixed || 0),
+              active: true,
+            };
+          });
+        reply(res, 200, { mobile_money: { enabled: Boolean(mm.enabled && operators.length), operators } });
+      } catch (error) {
+        reply(res, error.status || 500, {
+          detail: error.code ? { code: error.code, message: error.message }
+            : error.status ? error.message : 'Erreur interne.',
+        });
+      }
+      return true;
+    }
     if (req.method === 'POST' && path === '/api/transfers/email-otp/cancel') {
       return handleCancelOtp(req, res);
     }

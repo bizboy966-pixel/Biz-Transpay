@@ -172,6 +172,104 @@ function createSupportRoutes({ db, sessionService, env = process.env }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const routeKey = `${req.method} ${url.pathname}`;
+    const adminConversationList = routeKey === 'GET /api/admin/support/conversations';
+    const adminConversationMatch = /^\/api\/admin\/support\/conversations\/([^/]+)\/messages$/
+      .exec(url.pathname);
+    const adminConversationWrite = Boolean(adminConversationMatch && req.method === 'POST');
+    const adminConversationRead = Boolean(adminConversationMatch && req.method === 'GET');
+    if (adminConversationList || adminConversationRead || adminConversationWrite) {
+      const write = adminConversationWrite;
+      try {
+        const { admin } = await authorizeAdmin(req, {
+          db, sessionService, env,
+          permission: write ? 'support:write' : 'support:read',
+          action: adminConversationList ? 'admin_support_conversations'
+            : write ? 'admin_support_reply' : 'admin_support_conversation_messages',
+        });
+        const messages = db.collection('support_messages');
+        if (adminConversationList) {
+          const rows = await messages.find({}, { _id: 0 })
+            .sort('created_at', -1).to_list(10_000);
+          const conversations = new Map();
+          for (const message of rows) {
+            const id = String(message.conversation_id || '');
+            if (!id) continue;
+            if (!conversations.has(id)) {
+              conversations.set(id, {
+                conversation_id: id,
+                last_message: message.text || '',
+                last_sender: message.sender || '',
+                last_created: message.created_at || null,
+                unread_count: 0,
+              });
+            }
+            if (message.sender === 'user' && message.read_by_admin !== true) {
+              conversations.get(id).unread_count += 1;
+            }
+          }
+          const list = [...conversations.values()].slice(0, 500);
+          const userIds = list.map(row => row.conversation_id);
+          const users = userIds.length
+            ? await db.collection('users').find({ id: { $in: userIds } }, {
+              _id: 0, id: 1, full_name: 1, username: 1, email: 1,
+            }).to_list()
+            : [];
+          const byId = new Map(users.map(user => [String(user.id), user]));
+          reply(res, 200, list.map(row => ({
+            ...row,
+            user: byId.get(row.conversation_id) || null,
+          })));
+          return true;
+        }
+
+        let userId;
+        try { userId = decodeURIComponent(adminConversationMatch[1]); } catch {
+          throw routeError(400, 'Identifiant de conversation invalide');
+        }
+        if (adminConversationRead) {
+          const conversation = await messages.find(
+            { conversation_id: userId }, { _id: 0 },
+          ).sort('created_at', 1).to_list(1000);
+          await messages.update_many(
+            { conversation_id: userId, sender: 'user', read_by_admin: { $ne: true } },
+            { $set: { read_by_admin: true } },
+          );
+          reply(res, 200, conversation.map(message => ({
+            ...message,
+            attachments: sanitizeStoredAttachments(message.attachments),
+          })));
+          return true;
+        }
+
+        const body = await readJson(req, 22_000_000);
+        if (body.text !== undefined && body.text !== null
+            && (typeof body.text !== 'string' || body.text.length > 5000)) {
+          throw routeError(422, 'Le message ne peut pas dépasser 5 000 caractères.');
+        }
+        const attachments = validateAttachments(body.attachments);
+        const document = {
+          id: randomUUID(),
+          conversation_id: userId,
+          sender: 'admin',
+          sender_id: admin.id,
+          sender_name: admin.full_name || admin.username,
+          text: body.text || '',
+          attachments,
+          created_at: new Date().toISOString(),
+          read_by_user: false,
+          read_by_admin: true,
+          status: 'sent',
+        };
+        await messages.insert_one(document);
+        reply(res, 200, document);
+        return true;
+      } catch (error) {
+        reply(res, error.status || 500, {
+          detail: error.status ? error.message : 'Erreur interne.',
+        });
+        return true;
+      }
+    }
     const adminConfigRoute = routeKey === 'GET /api/admin/support/config'
       || routeKey === 'PATCH /api/admin/support/config';
     if (adminConfigRoute) {

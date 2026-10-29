@@ -342,21 +342,21 @@
       "path": "/api/admin/support/conversations",
       "source": "backend/server.py",
       "handler": "admin_conversations",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/support/conversations/{user_id}/messages",
       "source": "backend/server.py",
       "handler": "admin_conversation_messages",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/admin/support/conversations/{user_id}/messages",
       "source": "backend/server.py",
       "handler": "admin_reply",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -636,7 +636,7 @@
       "path": "/api/deposits/config",
       "source": "backend/server.py",
       "handler": "deposits_config_public",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -1315,7 +1315,7 @@
       "path": "/api/transfer/config",
       "source": "backend/server.py",
       "handler": "transfer_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
