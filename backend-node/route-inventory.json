@@ -762,7 +762,7 @@
       "path": "/api/fedapay/catalog",
       "source": "backend/server.py",
       "handler": "fedapay_catalog",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

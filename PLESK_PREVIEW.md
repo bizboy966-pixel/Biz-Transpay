@@ -59,7 +59,7 @@ verified database backup before enabling the affected features.
 
 ## Current migration limit
 
-The Node API is still incomplete: 98 routes are not ported and 103 are ported
-but unverified. Those routes intentionally return `MIGRATION_INCOMPLETE`, so
+The Node API is still incomplete: 97 routes are not ported and 104 are ported
+but unverified. Unported routes intentionally return `MIGRATION_INCOMPLETE`, so
 starting this build on the main domain will not provide full Biz-transPay
 functionality; payment and account flows may be unavailable.

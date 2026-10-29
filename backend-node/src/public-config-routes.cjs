@@ -53,6 +53,56 @@ const DEFAULT_PLATFORM_CONFIG = {
   auto_withdrawals_disabled: false,
 };
 
+const FEDAPAY_OPERATOR_CATALOG = {
+  BJ: [
+    { code: 'mtn_bj', label: 'MTN Bénin', mode: 'mtn_open', kind: 'both' },
+    { code: 'moov_bj', label: 'Moov Bénin', mode: 'moov', kind: 'both' },
+    { code: 'celtiis_bj', label: 'Celtiis Bénin', mode: 'celtiis_bj', kind: 'both' },
+  ],
+  CI: [
+    { code: 'mtn_ci', label: "MTN Côte d'Ivoire", mode: 'mtn_ci', kind: 'both' },
+    { code: 'moov_ci', label: "Moov Côte d'Ivoire", mode: 'moov_ci', kind: 'payout' },
+    { code: 'orange_ci', label: "Orange Côte d'Ivoire", mode: 'orange_ci', kind: 'payout' },
+    { code: 'wave_ci', label: "Wave Côte d'Ivoire", mode: 'wave_ci', kind: 'payout' },
+  ],
+  TG: [
+    { code: 'moov_tg', label: 'Moov Togo', mode: 'moov_tg', kind: 'both' },
+    { code: 'togocel_tg', label: 'TogoCom (T-Money)', mode: 'togocel', kind: 'both' },
+  ],
+  SN: [
+    { code: 'orange_sn', label: 'Orange Sénégal', mode: 'orange_sn', kind: 'both' },
+    { code: 'moov_sn', label: 'Moov Sénégal (Free)', mode: 'free_sn', kind: 'payout' },
+  ],
+  ML: [
+    { code: 'airtel_ml', label: 'Airtel Mali', mode: 'airtel_ml', kind: 'collect' },
+  ],
+  NE: [
+    { code: 'airtel_ne', label: 'Airtel Niger', mode: 'airtel_ne', kind: 'collect' },
+    { code: 'wave_ne', label: 'Wave Niger', mode: 'wave_ne', kind: 'both' },
+    { code: 'orange_ne', label: 'Orange Niger', mode: 'orange_ne', kind: 'both' },
+  ],
+  BF: [
+    { code: 'moov_bf', label: 'Moov Burkina Faso', mode: 'moov_bf', kind: 'both' },
+    { code: 'yas_bf', label: 'Mixx by Yas Burkina', mode: 'sbin', kind: 'collect' },
+  ],
+  GN: [
+    { code: 'mtn_gn', label: 'MTN Guinée', mode: 'mtn_open_gn', kind: 'both' },
+    { code: 'moov_gn', label: 'Moov Guinée', mode: 'moov_gn', kind: 'collect' },
+    { code: 'wave_gn', label: 'Wave Guinée', mode: 'wave_gn', kind: 'collect' },
+    { code: 'orange_gn', label: 'Orange Guinée', mode: 'orange_gn', kind: 'collect' },
+  ],
+};
+const FEDAPAY_COUNTRY_LABELS = {
+  BJ: 'Bénin',
+  CI: "Côte d'Ivoire",
+  TG: 'Togo',
+  SN: 'Sénégal',
+  ML: 'Mali',
+  NE: 'Niger',
+  BF: 'Burkina Faso',
+  GN: 'Guinée',
+};
+
 function reply(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
@@ -167,6 +217,14 @@ function createPublicConfigRoutes({ db, env = process.env }) {
     if (req.method !== 'GET') return false;
     const url = new URL(req.url || '/', 'http://localhost');
     const path = url.pathname;
+    if (path === '/api/fedapay/catalog') {
+      reply(res, 200, Object.entries(FEDAPAY_OPERATOR_CATALOG).map(([country, operators]) => ({
+        country,
+        country_label: FEDAPAY_COUNTRY_LABELS[country] || country,
+        operators: structuredClone(operators),
+      })));
+      return true;
+    }
     if (path === '/api/stats/public') {
       reply(res, 200, {
         users: 50000,

@@ -128,3 +128,21 @@ test('public statistics endpoint retains the existing response contract', async 
     uptime: 99.9,
   });
 });
+
+test('FedaPay catalog preserves the legacy public country and operator contract', async () => {
+  const { service } = setup();
+  const result = await call(service, '/api/fedapay/catalog');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.map(country => country.country), [
+    'BJ', 'CI', 'TG', 'SN', 'ML', 'NE', 'BF', 'GN',
+  ]);
+  assert.deepEqual(result.body.find(country => country.country === 'BF'), {
+    country: 'BF',
+    country_label: 'Burkina Faso',
+    operators: [
+      { code: 'moov_bf', label: 'Moov Burkina Faso', mode: 'moov_bf', kind: 'both' },
+      { code: 'yas_bf', label: 'Mixx by Yas Burkina', mode: 'sbin', kind: 'collect' },
+    ],
+  });
+  assert.equal(JSON.stringify(result.body).includes('FEDAPAY_SECRET_KEY'), false);
+});
