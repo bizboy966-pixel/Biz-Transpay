@@ -39,7 +39,9 @@ test('API root is available while diagnostic mode rejects unported business rout
     const base = `http://127.0.0.1:${server.address().port}`;
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
-    assert.equal((await health.json()).migration_complete, false);
+    assert.deepEqual(await health.json(), {
+      backend: 'ok', database: 'not_configured', migration_complete: false,
+    });
     const root = await fetch(`${base}/api/`);
     assert.equal(root.status, 200);
     assert.deepEqual(await root.json(), { message: 'Biz-transPay API', status: 'ok' });
@@ -51,5 +53,35 @@ test('API root is available while diagnostic mode rejects unported business rout
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('health endpoint checks MySQL and returns no connection details', async () => {
+  for (const scenario of [
+    {
+      healthCheck: async () => true,
+      status: 200,
+      database: 'connected',
+    },
+    {
+      healthCheck: async () => { throw new Error('private database failure detail'); },
+      status: 503,
+      database: 'unavailable',
+    },
+  ]) {
+    const server = createServer({ db: { healthCheck: scenario.healthCheck } });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
+      assert.equal(response.status, scenario.status);
+      const body = await response.json();
+      assert.deepEqual(body, {
+        backend: 'ok', database: scenario.database, migration_complete: false,
+      });
+      assert.doesNotMatch(JSON.stringify(body), /private database failure detail/);
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
   }
 });

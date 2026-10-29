@@ -55,6 +55,11 @@ class MySqlStore {
     return this.columnCache.get(collection);
   }
 
+  async healthCheck() {
+    await this.pool.execute('SELECT 1');
+    return true;
+  }
+
   async ensureLockTable() {
     if (!this.lockTableReady) {
       this.lockTableReady = this.pool.execute(

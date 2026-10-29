@@ -70,6 +70,18 @@ test('does not accept PostgreSQL URLs or a missing Preview database', () => {
   }
 });
 
+test('MySQL health check executes a lightweight SELECT 1 ping', async () => {
+  const calls = [];
+  const store = new MySqlStore({
+    execute: async sql => {
+      calls.push(sql);
+      return [[{ 1: 1 }]];
+    },
+  });
+  assert.equal(await store.healthCheck(), true);
+  assert.deepEqual(calls, ['SELECT 1']);
+});
+
 function documentPool() {
   const rows = new Map();
   const locks = new Set();

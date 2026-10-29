@@ -184,33 +184,20 @@ function createServer({
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     const health = req.method === 'GET' && new URL(req.url, 'http://localhost').pathname === '/healthz';
     if (health) {
-      res.statusCode = 200;
+      let database = db ? 'unverified' : 'not_configured';
+      if (db?.healthCheck) {
+        try {
+          await db.healthCheck();
+          database = 'connected';
+        } catch {
+          database = 'unavailable';
+        }
+      }
+      res.statusCode = database === 'unavailable' ? 503 : 200;
       res.end(JSON.stringify({
-        service: 'biz-transpay-node-preview',
-        ready: false,
+        backend: 'ok',
+        database,
         migration_complete: false,
-        implemented_groups: [
-          'auth-login', 'auth-register', 'auth-session-lifecycle',
-          'auth-mfa', 'auth-recovery', 'user-wallet-summary', 'user-transactions',
-          'user-kyc',
-          'user-settings',
-          'user-notifications-push',
-          'user-referrals',
-          'user-support',
-           'user-payment-links',
-          'public-config',
-          'crypto-catalog',
-          'internal-biz-transfers',
-          'conversion-exchange',
-          'admin-user-list',
-           'admin-kyc',
-          'admin-wallet-adjustment',
-          'admin-transaction-read',
-          'admin-settings',
-           'admin-statistics-dashboard',
-           'admin-statistics-summary',
-           'admin-push-audience-and-history',
-        ],
       }));
       return;
     }
