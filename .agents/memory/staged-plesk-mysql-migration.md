@@ -17,8 +17,8 @@ The user chose to test the Node app on Plesk. `localhost` in `MYSQL_DATABASE_URL
 
 **How to apply:** Test on a temporary Plesk hostname with a dedicated Preview database and Plesk-local MySQL connection. Keep Replit Preview diagnostic-only if it cannot reach that database; never point either environment at production as a workaround.
 
-Plesk installs can also fail when a Replit-generated npm lockfile embeds `package-firewall.replit.internal`, which Plesk cannot resolve.
+Plesk installs can also fail when a Replit-generated npm lockfile embeds `package-firewall.replit.internal/npm/`; replacing only the hostname creates invalid public registry paths such as `/npm/yargs-parser`.
 
-**Why:** The lockfile can preserve Replit's internal tarball host even when npm is run outside Replit.
+**Why:** The lockfile can preserve both Replit's internal host and its `/npm/` path prefix, even when npm is run outside Replit.
 
-**How to apply:** Configure npm to use `https://registry.npmjs.org/` and replace only the Replit firewall hostname, preserving direct package tarball hosts. Keep the Preview clone and app root separate from the production domain's document root.
+**How to apply:** Normalize the lockfile tarball URLs to `https://registry.npmjs.org/<package>/-/<tarball>`, configure npm to use the public registry, and preserve direct vendor tarball hosts. Keep the Preview clone and app root separate from the production domain's document root.

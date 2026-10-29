@@ -40,10 +40,9 @@ Then click **Restart App** in Plesk. The build is written to
 `generated-artifacts/frontend-build`; that directory is generated locally on
 Plesk and excluded from Git.
 
-The root and frontend `.npmrc` files select the public npm registry and tell
-npm to replace only `package-firewall.replit.internal` lockfile URLs. This is
-needed because Plesk cannot resolve that Replit-only host; direct tarball URLs
-from other providers remain unchanged.
+The root and frontend `.npmrc` files select the public npm registry. The npm
+lockfiles use canonical `registry.npmjs.org` tarball URLs (without Replit's
+`/npm/` path prefix); direct tarball URLs from other providers remain intact.
 
 The Node startup checks that the split-table data schema already exists.
 `backend-node/sql/preview-schema.sql` creates only `migration_locks`; it does
