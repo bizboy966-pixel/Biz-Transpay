@@ -106,3 +106,17 @@ mtime_ms = 1793248405532
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/4534c5b9-89b1-4e51-a920-203820755c7b/0670ee1d-3245-4cfa-bb57-dcf30c4d27e8"
 storage_version_token = "1793248425086819"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "nRM4P7GtMdUcG5QTW-LNr"
+uri = "file://generated-artifacts/biz-transpay-mysql-missing-schema-patch.zip"
+type = "unspecified"
+title = "Correctif MySQL Biz-transPay"
+description = "ZIP SQL additif pour créer les trois tables manquantes; il ne contient aucune donnée et ne modifie aucune table existante."
+logical_id = "cc016596-ac4e-4719-b606-12e067f2bf3d"
+content_hash = "sha256:ae84a80273edbd5000316c5e34a1888059f1b7d6401c8efab028c3de8b411b70"
+size = 1353
+mtime_ms = 1793286637432
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/cc016596-ac4e-4719-b606-12e067f2bf3d/4fe12b3d-b3ef-4013-a02d-f7e3f26e856d"
+storage_version_token = "1793286662435532"
+content_type = "application/octet-stream"
