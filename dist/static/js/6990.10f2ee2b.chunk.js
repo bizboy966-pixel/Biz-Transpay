@@ -1,0 +1,2 @@
+"use strict";(globalThis.webpackChunkfrontend||=[]).push([[6990],{6990(t,e,n){n.r(e),n.d(e,{default:()=>s});var r=n(959),i=n(579);function s(){return(0,i.jsx)(r.A,{direction:"deposit"})}}}]);
+//# sourceMappingURL=6990.10f2ee2b.chunk.js.map

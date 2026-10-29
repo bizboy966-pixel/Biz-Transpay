@@ -120,3 +120,17 @@ mtime_ms = 1793286637432
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/cc016596-ac4e-4719-b606-12e067f2bf3d/4fe12b3d-b3ef-4013-a02d-f7e3f26e856d"
 storage_version_token = "1793286662435532"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "xJ3feKaf7ftEXQ3VPbxg7"
+uri = "file://generated-artifacts/biz-transpay-dist-20261029.zip"
+type = "unspecified"
+title = "Build Biz-transPay pour Plesk"
+description = "Archive vérifiée du build React. Extrais-la pour obtenir le dossier dist."
+logical_id = "07263d26-10ec-4c2f-b6ea-91c6c013a18c"
+content_hash = "sha256:33fb6792b3329cb8a1aed355c171d9ebfe5bc0e02334042ebb0a2de326ef12fb"
+size = 6059416
+mtime_ms = 1793296380096
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/07263d26-10ec-4c2f-b6ea-91c6c013a18c/5cd627e8-9616-4fee-9458-f90d70ee375b"
+storage_version_token = "1793296421942961"
+content_type = "application/octet-stream"

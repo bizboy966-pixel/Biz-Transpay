@@ -1,1 +1,0 @@
-"use strict";(globalThis.webpackChunkfrontend||=[]).push([[2641],{2641(t,e,n){n.r(e),n.d(e,{default:()=>s});var r=n(5266),i=n(4414);function s(){return(0,i.jsx)(r.A,{direction:"deposit"})}}}]);
