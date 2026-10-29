@@ -40,19 +40,22 @@ function createAdminTransactionRoutes({ db, sessionService, env = process.env })
     catch { return false; }
     const conversionsRoute = url.pathname === '/api/admin/conversions';
     const listRoute = url.pathname === '/api/admin/transactions';
+    const logsRoute = url.pathname === '/api/admin/logs';
     const detailMatch = /^\/api\/admin\/transactions\/([^/]+)$/.exec(url.pathname);
-    if (!((req.method === 'GET' && (listRoute || conversionsRoute))
+    if (!((req.method === 'GET' && (listRoute || conversionsRoute || logsRoute))
         || (req.method === 'GET' && detailMatch))) {
       return false;
     }
 
-    const action = conversionsRoute ? 'admin_conversions_list'
+    const action = logsRoute ? 'read_admin_logs'
+      : conversionsRoute ? 'admin_conversions_list'
       : detailMatch ? 'admin_transaction_detail' : 'admin_transactions_list';
     let authorized;
     try {
       authorized = await authorizeAdmin(req, {
         db, sessionService, env,
-        permission: conversionsRoute ? 'finance:read' : 'transactions:read',
+        permission: logsRoute ? 'audit:read'
+          : conversionsRoute ? 'finance:read' : 'transactions:read',
         action,
       });
     } catch (error) {
@@ -64,6 +67,18 @@ function createAdminTransactionRoutes({ db, sessionService, env = process.env })
     void authorized;
 
     try {
+      if (logsRoute) {
+        const rawLimit = url.searchParams.get('limit');
+        const limit = rawLimit == null ? 200 : Number(rawLimit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+          reply(res, 422, { detail: 'Limite invalide (1–1000)' });
+          return true;
+        }
+        const logs = await db.collection('admin_logs').find({}, { _id: 0 })
+          .sort('created_at', -1).to_list(limit);
+        reply(res, 200, logs);
+        return true;
+      }
       if (conversionsRoute) {
         const now = new Date();
         const period = String(url.searchParams.get('period') || 'month');

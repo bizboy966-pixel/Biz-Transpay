@@ -16,9 +16,18 @@ class Collection {
     return row ? project(row, projection) : null;
   }
   find(query = {}, projection = null) {
+    const collection = this;
     return {
-      to_list: async () => this.rows.filter(row => matches(row, query))
-        .map(row => project(row, projection)),
+      key: null,
+      direction: 1,
+      sort(key, direction = 1) { this.key = key; this.direction = direction; return this; },
+      to_list: async limit => {
+        let rows = collection.rows.filter(row => matches(row, query))
+          .map(row => project(row, projection));
+        if (this.key) rows.sort((a, b) => (a[this.key] > b[this.key] ? 1 : -1) * this.direction);
+        if (Number.isFinite(limit)) rows = rows.slice(0, limit);
+        return rows;
+      },
     };
   }
   async insert_one(row) { this.rows.push(structuredClone(row)); }
@@ -67,6 +76,53 @@ function currentMonthDate(day = 10) {
 }
 
 const admin = { id: 'admin-1', role: 'super_admin', two_fa_enabled: true };
+
+test('admin benefits aggregate only recorded platform margins and detail filters are owner-enriched', async () => {
+  const createdAt = new Date().toISOString();
+  const { service } = setup({
+    users: [admin, { id: 'user-1', full_name: 'Awa Diallo', email: 'awa@example.test' }],
+    transactions: [
+      {
+        id: 'deposit-margin', user_id: 'user-1', type: 'deposit',
+        status: 'completed', amount: 1000, currency: 'XOF', created_at: createdAt,
+        reference: 'BTP-001', description: 'Dépôt', metadata: { platform_fee: 10 },
+      },
+      {
+        id: 'withdrawal-margin', user_id: 'user-1', type: 'withdrawal',
+        status: 'completed', amount: 200, currency: 'XOF', created_at: createdAt,
+        metadata: { platform_fee: 50 },
+      },
+      {
+        id: 'api-crypto-margin', user_id: 'user-1', type: 'payment',
+        status: 'paid', amount: 2, currency: 'USDT', created_at: createdAt,
+        metadata: { platform_fee: 0.5 },
+      },
+      {
+        id: 'failed-margin', user_id: 'user-1', type: 'deposit',
+        status: 'failed', amount: 50, currency: 'XOF', created_at: createdAt,
+        metadata: { platform_fee: 99 },
+      },
+    ],
+  });
+  const summary = await call(service, '/api/admin/benefits?period=all');
+  assert.equal(summary.status, 200);
+  assert.deepEqual(summary.body.xof, { total: 10, count: 1 });
+  assert.deepEqual(summary.body.usdt, { total: 0.5, count: 1 });
+
+  const details = await call(
+    service, '/api/admin/benefits/details?period=all&currency=XOF&q=awa',
+  );
+  assert.equal(details.status, 200);
+  assert.equal(details.body.total, 1);
+  assert.equal(details.body.items[0].tx_id, 'deposit-margin');
+  assert.equal(details.body.items[0].platform_fee, 10);
+  assert.equal(details.body.items[0].user.name, 'Awa Diallo');
+
+  const withdrawals = await call(
+    service, '/api/admin/benefits/details?period=all&type=withdrawal',
+  );
+  assert.equal(withdrawals.body.total, 0);
+});
 
 test('monthly dashboard distinguishes API payments and keeps revenue limited to recorded margins', async () => {
   const createdAt = currentMonthDate();

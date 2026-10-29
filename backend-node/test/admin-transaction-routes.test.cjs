@@ -221,6 +221,23 @@ test('admin transaction detail adds persisted wallet snapshots and scoped user i
   assert.equal(detail.body.metadata.wallet_operation_direction, 'credit');
 });
 
+test('admin audit log reads require an authorized admin and enforce the requested limit', async () => {
+  const { db, routes } = setup();
+  db.rows.users[0].role = 'super_admin';
+  db.rows.admin_logs.push({
+    id: 'audit-seeded', action: 'settings_changed', created_at: '2999-01-01T00:00:00.000Z',
+  });
+  const result = await call(routes, '/api/admin/logs?limit=1');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.length, 1);
+  assert.equal(result.body[0].id, 'audit-seeded');
+
+  const invalid = await call(routes, '/api/admin/logs?limit=1001');
+  assert.equal(invalid.status, 422);
+  const unauthorized = await call(routes, '/api/admin/logs', 'not-a-session');
+  assert.equal(unauthorized.status, 401);
+});
+
 test('admin conversion route returns period rows, counts, and completed volume by currency', async () => {
   const { routes, db } = setup({ includeExchanges: true });
   const result = await call(routes, '/api/admin/conversions?period=month');

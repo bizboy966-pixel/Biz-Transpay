@@ -21,6 +21,8 @@ const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
 const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
 const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
+const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
+const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
@@ -56,6 +58,7 @@ function createServer({
   const referrals = createReferralRoutes({ db, sessionService });
   const support = createSupportRoutes({ db, sessionService, env });
   const publicConfig = createPublicConfigRoutes({ db, env });
+  const paymentLinks = createPaymentLinkRoutes({ db, sessionService });
   const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env });
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
@@ -77,6 +80,7 @@ function createServer({
   });
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
+  const adminPushRoutes = createAdminPushRoutes({ db, sessionService, env });
   // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -97,6 +101,7 @@ function createServer({
           'user-notifications-push',
           'user-referrals',
           'user-support',
+           'user-payment-links',
           'public-config',
           'crypto-catalog',
           'internal-biz-transfers',
@@ -108,6 +113,7 @@ function createServer({
           'admin-settings',
            'admin-statistics-dashboard',
            'admin-statistics-summary',
+           'admin-push-audience-and-history',
         ],
       }));
       return;
@@ -154,6 +160,7 @@ function createServer({
       if (await notifications.handleRoute(req, res)) return;
       if (await referrals.handleRoute(req, res)) return;
       if (await support.handleRoute(req, res)) return;
+       if (await paymentLinks(req, res)) return;
       if (await publicConfig.handleRoute(req, res)) return;
       if (await cryptoCatalog.handleRoute(req, res)) return;
       if (await transfers.handleRoute(req, res)) return;
@@ -163,6 +170,7 @@ function createServer({
       if (await adminUserRoutes.handleRoute(req, res)) return;
       if (await adminSettingsRoutes.handleRoute(req, res)) return;
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
+       if (await adminPushRoutes(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',

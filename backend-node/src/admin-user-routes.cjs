@@ -173,18 +173,36 @@ function createAdminUserRoutes({
       : null;
     if (kycList || kycDecision) return handleKycRoute(req, res, url, kycDecision);
     if (req.method !== 'GET') return false;
+    const adminsList = url.pathname === '/api/admin/admins';
     const listUsers = url.pathname === '/api/admin/users';
     const balanceMatch = /^\/api\/admin\/users\/([^/]+)\/balance-wallets$/.exec(url.pathname);
     const detailMatch = /^\/api\/admin\/users\/([^/]+)$/.exec(url.pathname);
-    if (!listUsers && !balanceMatch && !detailMatch) return false;
+    if (!adminsList && !listUsers && !balanceMatch && !detailMatch) return false;
 
     try {
       await authorizeAdmin(req, {
         db, sessionService, env,
-        permission: 'users:read',
-        action: listUsers ? 'admin_list_users'
-          : (balanceMatch ? 'admin_user_balance_wallets' : 'admin_get_user'),
+        permission: adminsList ? 'admin_users:read' : 'users:read',
+        action: adminsList ? 'admin_list_admins'
+          : listUsers ? 'admin_list_users'
+            : (balanceMatch ? 'admin_user_balance_wallets' : 'admin_get_user'),
       });
+
+      if (adminsList) {
+        const admins = await db.collection('users').find({
+          role: { $in: ['admin', 'super_admin'] },
+        }, {
+          _id: 0, id: 1, full_name: 1, username: 1, email: 1,
+          role: 1, admin_role: 1, created_at: 1, two_fa_enabled: 1,
+          is_active: 1, last_login_at: 1,
+        }).sort('created_at', -1).to_list(200);
+        reply(res, 200, admins.map(admin => ({
+          ...admin,
+          admin_role: admin.role === 'admin' && !admin.admin_role
+            ? 'general' : admin.admin_role,
+        })));
+        return true;
+      }
 
       if (balanceMatch || detailMatch) {
         let userId;

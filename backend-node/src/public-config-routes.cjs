@@ -167,6 +167,15 @@ function createPublicConfigRoutes({ db, env = process.env }) {
     if (req.method !== 'GET') return false;
     const url = new URL(req.url || '/', 'http://localhost');
     const path = url.pathname;
+    if (path === '/api/stats/public') {
+      reply(res, 200, {
+        users: 50000,
+        partners: 5000,
+        transactions: 1000000,
+        uptime: 99.9,
+      });
+      return true;
+    }
     if (path === '/api/security/turnstile-config') {
       const siteKey = String(env.CLOUDFLARE_TURNSTILE_SITE_KEY || '').trim();
       const secret = String(env.CLOUDFLARE_TURNSTILE_SECRET_KEY || '').trim();

@@ -527,12 +527,16 @@ function createAdminStatisticsRoutes({ db, sessionService, env = process.env }) 
     const isDashboard = req.method === 'GET' && url.pathname === '/api/admin/statistics/dashboard';
     const isWallets = req.method === 'GET' && url.pathname === '/api/admin/statistics/wallet-balances';
     const isHomeStats = req.method === 'GET' && url.pathname === '/api/admin/stats';
-    if (!isDashboard && !isWallets && !isHomeStats) return false;
+    const isBenefits = req.method === 'GET' && url.pathname === '/api/admin/benefits';
+    const isBenefitDetails = req.method === 'GET' && url.pathname === '/api/admin/benefits/details';
+    if (!isDashboard && !isWallets && !isHomeStats && !isBenefits && !isBenefitDetails) return false;
     try {
       await authorizeAdmin(req, {
         db, sessionService, env, permission: 'finance:read',
-        action: isDashboard ? 'read_admin_statistics'
-          : isWallets ? 'read_admin_wallet_balances' : 'read_admin_summary',
+        action: isBenefits ? 'read_admin_benefits'
+          : isBenefitDetails ? 'read_admin_benefit_details'
+            : isDashboard ? 'read_admin_statistics'
+              : isWallets ? 'read_admin_wallet_balances' : 'read_admin_summary',
       });
       if (isHomeStats) {
         const periodValue = String(url.searchParams.get('period') || 'month');
@@ -551,6 +555,131 @@ function createAdminStatisticsRoutes({ db, sessionService, env = process.env }) 
         const snapshot = aggregateAdminHome(users, transactions, period);
         homeCache = { snapshot, expiresAt: Date.now() + 15_000 };
         reply(res, 200, snapshot);
+        return true;
+      }
+      if (isBenefits || isBenefitDetails) {
+        const period = String(url.searchParams.get('period') || 'all');
+        if (!['all', '7d', '30d'].includes(period)) {
+          reply(res, 422, { detail: 'Période invalide.' });
+          return true;
+        }
+        const query = {
+          status: { $in: ['completed', 'paid'] },
+          'metadata.platform_fee': { $exists: true, $ne: null },
+        };
+        if (period !== 'all') {
+          const days = period === '7d' ? 7 : 30;
+          query.created_at = { $gte: new Date(Date.now() - days * 86_400_000).toISOString() };
+        }
+        if (isBenefits) {
+          const rows = (await db.collection('transactions').find(query, { _id: 0 }).to_list())
+            .map(transactionDocument);
+          const totals = {
+            XOF: { total: 0, count: 0 },
+            XAF: { total: 0, count: 0 },
+            USDT: { total: 0, count: 0 },
+          };
+          for (const tx of rows) {
+            if (!marginCategory(tx)) continue;
+            const value = marginValue(tx);
+            if (!value || !Number.isFinite(value.value) || !Object.hasOwn(totals, value.currency)) continue;
+            totals[value.currency].total += value.value;
+            totals[value.currency].count += 1;
+          }
+          reply(res, 200, {
+            xof: totals.XOF,
+            xaf: totals.XAF,
+            usdt: totals.USDT,
+            period,
+          });
+          return true;
+        }
+
+        const rawLimit = url.searchParams.get('limit');
+        const rawOffset = url.searchParams.get('offset');
+        const limit = rawLimit == null ? 100 : Number(rawLimit);
+        const offset = rawOffset == null ? 0 : Number(rawOffset);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 500
+            || !Number.isInteger(offset) || offset < 0 || offset > 1_000_000) {
+          reply(res, 422, { detail: 'Pagination invalide.' });
+          return true;
+        }
+        const type = String(url.searchParams.get('type') || '').trim();
+        const currency = String(url.searchParams.get('currency') || '').trim().toUpperCase();
+        const search = String(url.searchParams.get('q') || '').trim();
+        if (type.length > 50 || search.length > 80
+            || (currency && !['XOF', 'XAF', 'USDT'].includes(currency))) {
+          reply(res, 422, { detail: 'Filtre invalide.' });
+          return true;
+        }
+        if (type) query.type = type;
+        if (search) {
+          const literal = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const matchingUsers = await db.collection('users').find({
+            $or: [
+              { full_name: { $regex: literal, $options: 'i' } },
+              { email: { $regex: literal, $options: 'i' } },
+              { phone: { $regex: literal, $options: 'i' } },
+            ],
+          }, { _id: 0, id: 1 }).to_list(200);
+          query.$or = [
+            { reference: { $regex: literal, $options: 'i' } },
+            { description: { $regex: literal, $options: 'i' } },
+            { id: search },
+            ...(matchingUsers.length
+              ? [{ user_id: { $in: matchingUsers.map(user => user.id) } }]
+              : []),
+          ];
+        }
+        let rows = (await db.collection('transactions').find(query, { _id: 0 })
+          .sort('created_at', -1).to_list()).map(transactionDocument)
+          .filter(tx => marginCategory(tx));
+        if (search) {
+          rows = rows.filter(tx => marginCategory(tx));
+        }
+        if (currency) {
+          rows = rows.filter(tx => marginValue(tx)?.currency === currency);
+        }
+        const total = rows.length;
+        const page = rows.slice(offset, offset + limit);
+        const ids = [...new Set(page.map(tx => String(tx.user_id || '')).filter(Boolean))];
+        const users = ids.length
+          ? await db.collection('users').find({ id: { $in: ids } }, {
+            _id: 0, id: 1, full_name: 1, email: 1,
+          }).to_list(ids.length)
+          : [];
+        const byId = new Map(users.map(user => [String(user.id), user]));
+        const labels = {
+          deposit: 'Frais dépôt',
+          withdrawal: 'Frais retrait',
+          transfer: 'Frais retrait',
+          link_payment: 'Frais lien',
+          payment: 'Frais API',
+          exchange: 'Frais conversion',
+        };
+        reply(res, 200, {
+          total, limit, offset,
+          items: page.map(tx => {
+            const value = marginValue(tx) || { currency: tx.currency || '', value: 0 };
+            const metadata = tx.metadata || {};
+            const user = byId.get(String(tx.user_id || '')) || {};
+            return {
+              tx_id: tx.id,
+              date: tx.created_at,
+              type: tx.type,
+              type_label: labels[tx.type] || tx.type,
+              reference: tx.reference || null,
+              user: { id: tx.user_id || null, name: user.full_name || null, email: user.email || null },
+              currency: tx.currency,
+              amount: Number(tx.amount) || 0,
+              platform_fee: value.value,
+              benefit_currency: value.currency,
+              gateway_fee: Number(metadata.gateway_fee) || 0,
+              fee_total: Number(metadata.fee) || 0,
+              description: tx.description || null,
+            };
+          }),
+        });
         return true;
       }
       if (isDashboard) {

@@ -13,7 +13,7 @@
       "path": "/api/admin/admins",
       "source": "backend/server.py",
       "handler": "admin_list_admins",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -27,14 +27,14 @@
       "path": "/api/admin/benefits",
       "source": "backend/server.py",
       "handler": "admin_benefits",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/benefits/details",
       "source": "backend/server.py",
       "handler": "admin_benefits_details",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -132,7 +132,7 @@
       "path": "/api/admin/logs",
       "source": "backend/server.py",
       "handler": "admin_logs",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -230,21 +230,21 @@
       "path": "/api/admin/push/audience-options",
       "source": "backend/server.py",
       "handler": "admin_push_audience_options",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/push/campaigns",
       "source": "backend/server.py",
       "handler": "admin_list_push_campaigns",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/admin/push/preview",
       "source": "backend/server.py",
       "handler": "admin_push_preview",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -258,7 +258,7 @@
       "path": "/api/admin/push/users",
       "source": "backend/server.py",
       "handler": "admin_push_user_search",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1070,14 +1070,14 @@
       "path": "/api/links",
       "source": "backend/server.py",
       "handler": "list_links",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/links",
       "source": "backend/server.py",
       "handler": "create_link",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -1119,21 +1119,21 @@
       "path": "/api/links/public/{slug}",
       "source": "backend/server.py",
       "handler": "get_public_link",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "DELETE",
       "path": "/api/links/{link_id}",
       "source": "backend/server.py",
       "handler": "delete_link",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/links/{link_id}",
       "source": "backend/server.py",
       "handler": "update_link",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1259,7 +1259,7 @@
       "path": "/api/stats/public",
       "source": "backend/server.py",
       "handler": "public_stats",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

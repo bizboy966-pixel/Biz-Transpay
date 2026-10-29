@@ -116,3 +116,15 @@ test('legacy exchange-rate endpoint preserves query currencies and configured fe
     fee_min: 12, fee_max: 500, fee_pct: 0.0075,
   });
 });
+
+test('public statistics endpoint retains the existing response contract', async () => {
+  const { service } = setup();
+  const result = await call(service, '/api/stats/public');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {
+    users: 50000,
+    partners: 5000,
+    transactions: 1000000,
+    uptime: 99.9,
+  });
+});
