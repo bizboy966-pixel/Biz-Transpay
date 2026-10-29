@@ -78,3 +78,17 @@ mtime_ms = 1793245128119
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/b54de2d1-8a6e-4ca5-a03c-bbd62d949227/bec1d290-ede9-41fe-8d4b-00807b6ddda6"
 storage_version_token = "1793245144217472"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "0iKvAtxFgk9-lTbhqKR7t"
+uri = "file://generated-artifacts/production-mysql-export/biz-transpay-production-split-tables-best-effort.zip"
+type = "unspecified"
+title = "Biz-transPay — ZIP MySQL en tables séparées"
+description = "37 tables MariaDB, dont users, transactions et kyc; 37 236 documents capturés. Chaque ligne garde le document complet dans raw_document et expose aussi ses champs de premier niveau. IMPORTANT : export best-effort avec 9 collections en écart; pas une sauvegarde complète garantie sans perte."
+logical_id = "597fba53-593d-4aa5-b546-c3f67f530eab"
+content_hash = "sha256:d2aa0209d5ed01a3779bc692d05d028819ba98676ddb5b9e875e0e4e5afab6f2"
+size = 47273979
+mtime_ms = 1793246738387
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/597fba53-593d-4aa5-b546-c3f67f530eab/a22e5cd8-e3ca-43a9-975b-960d782f8cad"
+storage_version_token = "1793246787224616"
+content_type = "application/octet-stream"
