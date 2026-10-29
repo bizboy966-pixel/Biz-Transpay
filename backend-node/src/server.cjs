@@ -28,6 +28,7 @@ const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
 const { createIntegrationSettingsRoutes } = require('./integration-settings-routes.cjs');
 const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
+const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 
@@ -187,6 +188,7 @@ function createServer({
   });
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
+  const adminFundsRoutes = createAdminFundsRoutes({ db, sessionService, env });
   const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService });
   const webhookProbeRoutes = createWebhookProbeRoutes();
   const adminPushRoutes = createAdminPushRoutes({
@@ -301,6 +303,7 @@ function createServer({
       if (await adminUserRoutes.handleRoute(req, res)) return;
       if (await adminSettingsRoutes.handleRoute(req, res)) return;
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
+      if (await adminFundsRoutes.handleRoute(req, res)) return;
       if (await integrationSettingsRoutes.handleRoute(req, res)) return;
       if (await webhookProbeRoutes.handleRoute(req, res)) return;
       if (await adminPushRoutes(req, res)) return;

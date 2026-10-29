@@ -167,6 +167,74 @@ test('imported legacy claim remains idempotent', async () => {
   assert.equal(store.user().balance_xof, 1000);
 });
 
+test('wallet credit repairs a matching pending ledger atomically with its balance snapshot', async () => {
+  const store = new MemoryStore();
+  store.docs.set('transactions:deposit-ledger', {
+    id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+    amount: 500, currency: 'XOF', status: 'pending', reference: 'BTP-PD-deposit1',
+    metadata: { provider: 'afribapay' },
+  });
+  const result = await applyWalletOperation(store, credit({
+    ledger: {
+      id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+      amount: 500, currency: 'XOF', status: 'completed', reference: 'BTP-PD-deposit1',
+      metadata: { provider: 'afribapay', wallet_operation_id: 'deposit-1' },
+    },
+  }));
+  const ledger = store.docs.get('transactions:deposit-ledger');
+  assert.equal(result.state, 'applied');
+  assert.equal(store.user().balance_xof, 1500);
+  assert.equal(ledger.status, 'completed');
+  assert.deepEqual(ledger.metadata.wallet_snapshot, {
+    wallet_field: 'balance_xof', balance_before: 1000, balance_after: 1500,
+    wallet_balances_before: { balance_xof: 1000 },
+    wallet_balances_after: { balance_xof: 1500 },
+    direction: 'credit', amount: 500,
+  });
+});
+
+test('legacy credit marker repairs a matching pending ledger without fabricating balance history', async () => {
+  const store = new MemoryStore();
+  store.user().wallet_credit_operation_ids = ['deposit-1'];
+  store.docs.set('transactions:deposit-ledger', {
+    id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+    amount: 500, currency: 'XOF', status: 'pending', reference: 'BTP-PD-deposit1',
+    metadata: { provider: 'afribapay' },
+  });
+  const result = await applyWalletOperation(store, credit({
+    ledger: {
+      id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+      amount: 500, currency: 'XOF', status: 'completed', reference: 'BTP-PD-deposit1',
+      metadata: { provider: 'afribapay', wallet_operation_id: 'deposit-1' },
+    },
+  }));
+  const ledger = store.docs.get('transactions:deposit-ledger');
+  assert.equal(result.state, 'already');
+  assert.equal(result.snapshot, null);
+  assert.equal(store.user().balance_xof, 1000);
+  assert.equal(ledger.status, 'completed');
+  assert.equal(Object.hasOwn(ledger.metadata, 'wallet_snapshot'), false);
+});
+
+test('wallet credit refuses a completed or mismatched ledger collision without changing balances', async () => {
+  const store = new MemoryStore();
+  store.docs.set('transactions:deposit-ledger', {
+    id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+    amount: 500, currency: 'XOF', status: 'completed', reference: 'BTP-PD-other',
+    metadata: {},
+  });
+  await assert.rejects(() => applyWalletOperation(store, credit({
+    ledger: {
+      id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+      amount: 500, currency: 'XOF', status: 'completed', reference: 'BTP-PD-deposit1',
+      metadata: { wallet_operation_id: 'deposit-1' },
+    },
+  })), /Conflicting existing wallet ledger entry/);
+  assert.equal(store.user().balance_xof, 1000);
+  assert.equal(store.docs.has('wallet_operations:' + operationIdentity(
+    'operation', 'alice:deposit-1')), false);
+});
+
 test('two withdrawals cannot overspend and fees are included in the snapshot', async () => {
   const store = new MemoryStore();
   const debit = operationId => credit({

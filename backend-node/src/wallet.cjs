@@ -117,12 +117,43 @@ async function applyWalletOperation(store, input) {
         created_at: new Date().toISOString(),
       });
     }
-    if (state === 'applied' && input.ledger) {
+    if (['applied', 'already'].includes(state) && input.ledger) {
       if (!input.ledger.id || String(input.ledger.user_id) !== userId
           || String(input.ledger.metadata?.wallet_operation_id || '') !== operationId) {
         throw new Error('Invalid atomic wallet ledger entry');
       }
-      await repo.insert('transactions', String(input.ledger.id), input.ledger);
+      const ledgerId = String(input.ledger.id);
+      const existingLedger = await repo.get('transactions', ledgerId);
+      const canCreateLedger = state === 'applied' || snapshot !== null;
+      const metadata = {
+        ...(existingLedger?.metadata || {}),
+        ...(input.ledger.metadata || {}),
+      };
+      delete metadata.wallet_snapshot;
+      if (snapshot) metadata.wallet_snapshot = snapshot;
+      else if (existingLedger?.metadata?.wallet_snapshot) {
+        metadata.wallet_snapshot = existingLedger.metadata.wallet_snapshot;
+      }
+      const ledger = { ...(existingLedger || {}), ...input.ledger, metadata };
+      if (existingLedger) {
+        const matchesOperation = String(existingLedger.user_id) === userId
+            && String(existingLedger.type || '') === String(input.ledger.type || '')
+            && String(existingLedger.reference || '') === String(input.ledger.reference || '')
+            && String(existingLedger.currency || '') === String(input.ledger.currency || '')
+            && Number(existingLedger.amount) === Number(input.ledger.amount)
+            && (!existingLedger.metadata?.wallet_operation_id
+              || String(existingLedger.metadata.wallet_operation_id) === operationId);
+        if (!matchesOperation
+            || !['pending', 'completed'].includes(existingLedger.status)
+            || (state === 'applied' && existingLedger.status !== 'pending')) {
+          throw new Error('Conflicting existing wallet ledger entry');
+        }
+        if (existingLedger.status === 'pending') {
+          await repo.replace('transactions', ledgerId, ledger);
+        }
+      } else if (canCreateLedger) {
+        await repo.insert('transactions', ledgerId, ledger);
+      }
     }
     if (state === 'applied' && input.adminLog) {
       if (!input.adminLog.id || !input.adminLog.admin_id

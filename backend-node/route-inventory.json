@@ -97,7 +97,7 @@
       "path": "/api/admin/funds",
       "source": "backend/server.py",
       "handler": "admin_funds",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
