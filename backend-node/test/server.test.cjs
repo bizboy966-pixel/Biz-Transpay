@@ -5,8 +5,8 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { createServer } = require('../src/server.cjs');
 
-test('startup refuses unspecified or production data environment', () => {
-  for (const environment of ['', 'production']) {
+test('startup refuses unspecified or invalid data environment', () => {
+  for (const environment of ['', 'staging']) {
     const child = spawnSync(process.execPath, [path.join(__dirname, '../app.js')], {
       env: { BIZTRANSPAY_MIGRATION_ENV: environment }, encoding: 'utf8',
     });
@@ -15,12 +15,21 @@ test('startup refuses unspecified or production data environment', () => {
   }
 });
 
-test('Plesk entrypoint refuses to start against production mode', () => {
+test('production mode is recognized but fails closed without its MySQL URL', () => {
+  const child = spawnSync(process.execPath, [path.join(__dirname, '../app.js')], {
+    env: { BIZTRANSPAY_MIGRATION_ENV: 'production', PORT: '5100' }, encoding: 'utf8',
+  });
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /Startup failed at mysql-configuration \(MYSQL_URL_REQUIRED\)/);
+});
+
+test('Plesk entrypoint accepts production mode but still requires a built frontend', () => {
   const child = spawnSync(process.execPath, [path.join(__dirname, '../../app.js')], {
     env: { BIZTRANSPAY_MIGRATION_ENV: 'production' }, encoding: 'utf8',
   });
   assert.equal(child.status, 1);
-  assert.match(child.stderr, /isolated Preview/);
+  assert.doesNotMatch(child.stderr, /Startup blocked/);
+  assert.match(child.stderr, /Frontend build missing|Startup failed at mysql-configuration/);
 });
 
 test('API root is available while diagnostic mode rejects unported business routes', async () => {

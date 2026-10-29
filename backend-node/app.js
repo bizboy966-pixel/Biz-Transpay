@@ -1,10 +1,10 @@
 'use strict';
 const { createServer } = require('./src/server.cjs');
 
-// NODE_ENV=production can be required by Plesk even for a test domain.
-// This independent guard describes the DATA environment instead.
-if (process.env.BIZTRANSPAY_MIGRATION_ENV !== 'preview') {
-  console.error('Startup blocked: this incomplete backend is for isolated Preview only.');
+// This independent setting identifies the data environment, not NODE_ENV.
+const migrationEnvironment = process.env.BIZTRANSPAY_MIGRATION_ENV;
+if (!['preview', 'production'].includes(migrationEnvironment)) {
+  console.error('Startup blocked: set BIZTRANSPAY_MIGRATION_ENV to preview or production.');
   process.exit(1);
 }
 const port = Number(process.env.PORT || 5100);
@@ -19,9 +19,15 @@ async function start() {
   let startupStage = 'session-configuration';
   try {
     let dependencies = {};
+    if (migrationEnvironment === 'production' && !process.env.MYSQL_DATABASE_URL) {
+      startupStage = 'mysql-configuration';
+      const error = new Error('Production MySQL URL is required');
+      error.code = 'MYSQL_URL_REQUIRED';
+      throw error;
+    }
     if (process.env.MYSQL_DATABASE_URL) {
       const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-      if (!jwtSecret) throw new Error('Preview session signing secret is not configured');
+      if (!jwtSecret) throw new Error('Session signing secret is not configured');
       const sessionSecret = process.env.SESSION_SECRET || jwtSecret;
       const { createPreviewPool, MySqlStore } = require('./src/mysql-store.cjs');
       const { SessionService } = require('./src/session-service.cjs');
@@ -47,8 +53,8 @@ async function start() {
       staticRoot: process.env.STATIC_ROOT || '',
     }).listen(port, '0.0.0.0', () => {
       console.log(process.env.MYSQL_DATABASE_URL
-        ? `Preview Node server on port ${port}; only verified authentication routes are enabled.`
-        : `Migration diagnostic server on port ${port}; business routes disabled.`);
+        ? `${migrationEnvironment} Node server on port ${port}; unverified routes remain disabled.`
+        : `${migrationEnvironment} diagnostic server on port ${port}; business routes disabled.`);
     });
   } catch (error) {
     if (store) await store.close().catch(() => {});

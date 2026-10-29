@@ -1,32 +1,31 @@
-# Biz-transPay Preview on Plesk
+# Biz-transPay on Plesk
 
-This setup is for a temporary Preview hostname and an isolated MySQL database.
-Do not point it at the main domain, the production database, or live payment
-callbacks.
+The startup supports an explicit `preview` or `production` data environment.
+The user has confirmed `https://biz-transpay.com` as the Production target.
+Plesk actions still need to be performed in its control panel; this repository
+does not connect to Plesk or change its database.
 
 ## Plesk Node.js settings
 
-- Application Root: the repository root in a separate Preview directory attached
-  to the temporary hostname, not the production domain's `/httpdocs`
+- Application Root: repository root (the supplied Plesk setting is `/httpdocs`)
 - Application Startup File: `app.js`
 - Package Manager: `npm`
 - Node.js: version 20 or newer
-- Document Root: `generated-artifacts/frontend-build` under the Preview
-  application root
-- Application Mode: `production` is compatible; the separate migration-mode
-  variable below must remain `preview`
+- Document Root: `generated-artifacts/frontend-build` under the application root
+- Application Mode: `production`
 
 ## Environment variables in Plesk
 
 Add these in the Plesk Node.js environment settings. Do not put them in Git:
 
-- `BIZTRANSPAY_MIGRATION_ENV=preview`
-- `MYSQL_DATABASE_URL=mysql://USER:PASSWORD@localhost:3306/PREVIEW_DATABASE`
+- `BIZTRANSPAY_MIGRATION_ENV=production`
+- `MYSQL_DATABASE_URL=mysql://USER:PASSWORD@localhost:3306/PRODUCTION_DATABASE`
 - `SESSION_SECRET=<a long random secret>`
 
 `JWT_SECRET` may be set separately; otherwise the Node app uses
-`SESSION_SECRET`. The MySQL database must be dedicated to Preview. In Plesk,
-`localhost` refers to the Plesk server; it does not work from Replit Preview.
+`SESSION_SECRET`. In Plesk, `localhost` refers to the Plesk server; it does not
+work from Replit Preview. Confirm the database and take a backup before
+restarting the app on the main domain.
 
 ## Build and start
 
@@ -46,14 +45,15 @@ npm to replace only `package-firewall.replit.internal` lockfile URLs. This is
 needed because Plesk cannot resolve that Replit-only host; direct tarball URLs
 from other providers remain unchanged.
 
-The current Node startup checks that the split-table data schema already exists.
+The Node startup checks that the split-table data schema already exists.
 `backend-node/sql/preview-schema.sql` creates only `migration_locks`; it does
-not create the application data tables. If schema validation fails, stop here
-and install the correct split-table schema into the isolated Preview database.
-Do not redirect production traffic or provider callbacks to this app.
+not create the application data tables. If schema validation fails, startup
+stops. Do not import a schema or dump into the live database without checking
+its contents and taking a backup first.
 
 ## Current migration limit
 
-The Node API is still incomplete. Routes not yet ported intentionally return
-`MIGRATION_INCOMPLETE`; therefore this is a Preview shell and must not be used
-for live payments or real customer accounts.
+The Node API is still incomplete: 98 routes are not ported and 103 are ported
+but unverified. Those routes intentionally return `MIGRATION_INCOMPLETE`, so
+starting this build on the main domain will not provide full Biz-transPay
+functionality; payment and account flows may be unavailable.
