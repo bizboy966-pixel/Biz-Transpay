@@ -25,6 +25,7 @@ const { createAdminPaymentLinkRoutes } = require('./admin-payment-link-routes.cj
 const { createAdminPaymentProviderRoutes } = require('./admin-payment-provider-routes.cjs');
 const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
+const { createIntegrationSettingsRoutes } = require('./integration-settings-routes.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 
@@ -183,6 +184,7 @@ function createServer({
   });
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
+  const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService });
   const adminPushRoutes = createAdminPushRoutes({
     db, sessionService, env,
     sendPushToUser: notifications.sendPushToUser,
@@ -294,7 +296,8 @@ function createServer({
       if (await adminUserRoutes.handleRoute(req, res)) return;
       if (await adminSettingsRoutes.handleRoute(req, res)) return;
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
-       if (await adminPushRoutes(req, res)) return;
+      if (await integrationSettingsRoutes.handleRoute(req, res)) return;
+      if (await adminPushRoutes(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',

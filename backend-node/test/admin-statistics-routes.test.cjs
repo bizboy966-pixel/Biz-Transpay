@@ -178,6 +178,44 @@ test('monthly dashboard distinguishes API payments and keeps revenue limited to 
   assert.equal(result.body.margins.categories.transfer_mobile_money.count, 0);
 });
 
+test('period statistics return bounded activity, successful volumes, and country summaries', async () => {
+  const createdAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { service } = setup({
+    users: [admin, { id: 'user-1', country_code: 'TG', country_name: 'Togo' }],
+    transactions: [
+      {
+        id: 'deposit-period', user_id: 'user-1', type: 'deposit',
+        status: 'completed', amount: 1250, currency: 'XOF', created_at: createdAt,
+      },
+      {
+        id: 'exchange-period', user_id: 'user-1', type: 'exchange',
+        status: 'completed', amount: 10, currency: 'USDT', created_at: createdAt,
+      },
+      {
+        id: 'payout-period', user_id: 'user-1', type: 'transfer', direction: 'out',
+        status: 'pending', amount: 700, currency: 'XOF', created_at: createdAt,
+        metadata: { transfer_type: 'biz_to_mobile' },
+      },
+    ],
+  });
+  const result = await call(service, '/api/admin/statistics?period=7d');
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.period, '7d');
+  assert.equal(result.body.summary.transaction_count, 3);
+  assert.equal(result.body.summary.operations.deposits.count, 1);
+  assert.equal(result.body.summary.operations.withdrawals.count, 1);
+  assert.equal(result.body.summary.operations.exchanges.count, 1);
+  assert.equal(result.body.summary.volume_by_currency.find(row => row.currency === 'XOF').total, 1250);
+  assert.equal(result.body.summary.volume_by_currency.find(row => row.currency === 'USDT').total, 10);
+  assert.equal(result.body.countries[0].country_code, 'TG');
+  assert.equal(result.body.countries[0].transaction_count, 3);
+  assert.ok(result.body.timeline.length > 0);
+  assert.deepEqual(result.body.provider_liquidity, []);
+
+  const invalid = await call(service, '/api/admin/statistics?period=all');
+  assert.equal(invalid.status, 400);
+});
+
 test('wallet balances aggregate every configured user wallet and report missing rates', async () => {
   const { service } = setup({
     users: [

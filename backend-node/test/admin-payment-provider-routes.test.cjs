@@ -261,6 +261,7 @@ test('server routes the payment provider page to Node instead of the migration f
     assert.equal(body.mode, 'test');
     assert.equal(body.enabled, true);
     assert.notEqual(body.code, 'MIGRATION_INCOMPLETE');
+
   } finally {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

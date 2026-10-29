@@ -394,6 +394,136 @@ async function rowsForMonth(db, start, end) {
   return { rows, accounts };
 }
 
+function statisticsOperation(tx) {
+  const type = String(tx.type || '').trim().toLowerCase();
+  if (['deposit', 'deposit_in', 'payin'].includes(type)) return 'deposits';
+  if (type === 'exchange') return 'exchanges';
+  if (['withdrawal', 'payout'].includes(type)) return 'withdrawals';
+  const metadata = tx.metadata || {};
+  const transferType = String(metadata.transfer_type || tx.transfer_type || '').toLowerCase();
+  const direction = String(tx.direction || '').toLowerCase();
+  if (type === 'transfer'
+      && ['out', 'debit'].includes(direction)
+      && ['biz_to_mobile', 'biz_to_crypto'].includes(transferType)) return 'withdrawals';
+  return null;
+}
+
+function statisticsBuckets(period, start, end) {
+  const bucket = new Date(start);
+  if (period === '24h') bucket.setUTCMinutes(0, 0, 0);
+  else if (period === '1y') bucket.setUTCDate(1), bucket.setUTCHours(0, 0, 0, 0);
+  else bucket.setUTCHours(0, 0, 0, 0);
+  const last = new Date(end);
+  if (period === '24h') last.setUTCMinutes(0, 0, 0);
+  else if (period === '1y') last.setUTCDate(1), last.setUTCHours(0, 0, 0, 0);
+  else last.setUTCHours(0, 0, 0, 0);
+  const buckets = [];
+  while (bucket <= last) {
+    buckets.push(new Date(bucket));
+    if (period === '24h') bucket.setUTCHours(bucket.getUTCHours() + 1);
+    else if (period === '1y') bucket.setUTCMonth(bucket.getUTCMonth() + 1);
+    else bucket.setUTCDate(bucket.getUTCDate() + 1);
+  }
+  return buckets;
+}
+
+function aggregatePeriodStatistics(rows, accounts, period, start, end) {
+  const operationTypes = ['deposits', 'withdrawals', 'exchanges'];
+  const timeline = new Map(statisticsBuckets(period, start, end).map(bucket => {
+    const key = bucket.toISOString();
+    return [key, {
+      bucket: key, transaction_count: 0, deposits: 0, withdrawals: 0,
+      exchanges: 0, _volumes: new Map(),
+    }];
+  }));
+  const summary = {
+    transaction_count: 0,
+    volume_by_currency: new Map(),
+    operations: Object.fromEntries(operationTypes.map(type => [
+      type, { count: 0, volume_by_currency: new Map() },
+    ])),
+  };
+  const countries = new Map();
+  const successful = SUCCESS_STATUSES;
+  const add = (map, currency, operation, value) => {
+    const entry = map.get(currency) || { total: 0, deposits: 0, withdrawals: 0, exchanges: 0 };
+    entry.total += value;
+    entry[operation] += value;
+    map.set(currency, entry);
+  };
+  for (const source of rows) {
+    const tx = transactionDocument(source);
+    const createdAt = new Date(tx.created_at || '');
+    if (!Number.isFinite(createdAt.getTime()) || createdAt < start || createdAt > end) continue;
+    const operation = statisticsOperation(tx);
+    if (!operation) continue;
+    const startBucket = new Date(createdAt);
+    if (period === '24h') startBucket.setUTCMinutes(0, 0, 0);
+    else if (period === '1y') startBucket.setUTCDate(1), startBucket.setUTCHours(0, 0, 0, 0);
+    else startBucket.setUTCHours(0, 0, 0, 0);
+    const row = timeline.get(startBucket.toISOString());
+    if (!row) continue;
+    row[operation] += 1;
+    row.transaction_count += 1;
+    summary.transaction_count += 1;
+    summary.operations[operation].count += 1;
+
+    const location = country(tx, accounts.get(String(tx.user_id || '')) || {});
+    const countryRow = countries.get(location.code) || {
+      country_code: location.code, country: location.label,
+      transaction_count: 0, _volumes: new Map(),
+    };
+    countryRow.transaction_count += 1;
+    countries.set(location.code, countryRow);
+
+    if (!successful.has(String(tx.status || '').trim().toLowerCase())) continue;
+    const metadata = tx.metadata || {};
+    const currency = String(tx.currency || metadata.currency || '').trim().toUpperCase();
+    const value = amount(tx.amount);
+    if (!/^[A-Z0-9][A-Z0-9._-]{1,20}$/.test(currency) || value === null) continue;
+    const absoluteAmount = Math.abs(value);
+    add(summary.volume_by_currency, currency, operation, absoluteAmount);
+    add(summary.operations[operation].volume_by_currency, currency, operation, absoluteAmount);
+    add(row._volumes, currency, operation, absoluteAmount);
+    const countryVolume = countryRow._volumes.get(currency) || 0;
+    countryRow._volumes.set(currency, countryVolume + absoluteAmount);
+  }
+  const amountRows = map => [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([currency, values]) => ({
+      currency, total: values.total,
+      ...Object.fromEntries(operationTypes.map(type => [type, values[type]])),
+    }));
+  return {
+    summary: {
+      transaction_count: summary.transaction_count,
+      volume_by_currency: amountRows(summary.volume_by_currency),
+      operations: Object.fromEntries(operationTypes.map(type => [type, {
+        count: summary.operations[type].count,
+        volume_by_currency: [...summary.operations[type].volume_by_currency.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([currency, values]) => ({ currency, volume: values.total })),
+      }])),
+    },
+    timeline: [...timeline.values()].map(row => ({
+      bucket: row.bucket,
+      transaction_count: row.transaction_count,
+      deposits: row.deposits,
+      withdrawals: row.withdrawals,
+      exchanges: row.exchanges,
+      volume_by_currency: amountRows(row._volumes),
+    })),
+    countries: [...countries.values()].sort((a, b) =>
+      b.transaction_count - a.transaction_count || a.country_code.localeCompare(b.country_code))
+      .map(row => ({
+        country_code: row.country_code,
+        country: row.country,
+        transaction_count: row.transaction_count,
+        volume_by_currency: [...row._volumes.entries()].sort(([a], [b]) => a.localeCompare(b))
+          .map(([currency, volume]) => ({ currency, volume })),
+      })),
+  };
+}
+
 function emptyChannel() {
   const status = () => ({ count: 0, amount: 0 });
   return {
@@ -524,20 +654,49 @@ function createAdminStatisticsRoutes({ db, sessionService, env = process.env }) 
 
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
+    const isPeriodStats = req.method === 'GET' && url.pathname === '/api/admin/statistics';
     const isDashboard = req.method === 'GET' && url.pathname === '/api/admin/statistics/dashboard';
     const isWallets = req.method === 'GET' && url.pathname === '/api/admin/statistics/wallet-balances';
     const isHomeStats = req.method === 'GET' && url.pathname === '/api/admin/stats';
     const isBenefits = req.method === 'GET' && url.pathname === '/api/admin/benefits';
     const isBenefitDetails = req.method === 'GET' && url.pathname === '/api/admin/benefits/details';
-    if (!isDashboard && !isWallets && !isHomeStats && !isBenefits && !isBenefitDetails) return false;
+    if (!isPeriodStats && !isDashboard && !isWallets && !isHomeStats && !isBenefits && !isBenefitDetails) return false;
     try {
       await authorizeAdmin(req, {
         db, sessionService, env, permission: 'finance:read',
         action: isBenefits ? 'read_admin_benefits'
           : isBenefitDetails ? 'read_admin_benefit_details'
-            : isDashboard ? 'read_admin_statistics'
+            : isPeriodStats || isDashboard ? 'read_admin_statistics'
               : isWallets ? 'read_admin_wallet_balances' : 'read_admin_summary',
       });
+      if (isPeriodStats) {
+        const period = String(url.searchParams.get('period') || '7d').trim().toLowerCase();
+        if (!['24h', '7d', '30d', '1y'].includes(period)) {
+          reply(res, 400, { detail: 'Période invalide. Choisissez 24h, 7d, 30d ou 1y.' });
+          return true;
+        }
+        const end = new Date();
+        const start = new Date(end);
+        if (period === '1y') {
+          const targetYear = end.getUTCFullYear() - 1;
+          const targetDay = Math.min(end.getUTCDate(), new Date(Date.UTC(
+            targetYear, end.getUTCMonth() + 1, 0,
+          )).getUTCDate());
+          start.setUTCFullYear(targetYear);
+          start.setUTCDate(targetDay);
+        } else {
+          const days = period === '24h' ? 1 : Number.parseInt(period, 10);
+          start.setTime(end.getTime() - days * 86_400_000);
+        }
+        const { rows, accounts } = await rowsForMonth(db, start, end);
+        const statistics = aggregatePeriodStatistics(rows, accounts, period, start, end);
+        const generatedAt = new Date().toISOString();
+        reply(res, 200, {
+          period, from: start.toISOString(), to: end.toISOString(),
+          generated_at: generatedAt, ...statistics, provider_liquidity: [],
+        });
+        return true;
+      }
       if (isHomeStats) {
         const periodValue = String(url.searchParams.get('period') || 'month');
         const period = ['day', 'week', 'month', 'year'].includes(periodValue)
@@ -727,6 +886,7 @@ function createAdminStatisticsRoutes({ db, sessionService, env = process.env }) 
 
 module.exports = {
   aggregateAdminHome,
+  aggregatePeriodStatistics,
   aggregateMargins,
   aggregateTopCountries,
   aggregateCustomerWallets,

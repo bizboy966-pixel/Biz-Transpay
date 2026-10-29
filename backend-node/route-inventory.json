@@ -293,7 +293,7 @@
       "path": "/api/admin/statistics",
       "source": "backend/server.py",
       "handler": "admin_statistics",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -818,7 +818,7 @@
       "path": "/api/integration/settings",
       "source": "backend/integration_api.py",
       "handler": "integration_settings",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -986,7 +986,7 @@
       "path": "/api/integration/webhooks/{environment}",
       "source": "backend/integration_api.py",
       "handler": "list_webhooks",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -1007,7 +1007,7 @@
       "path": "/api/integration/webhooks/{environment}/deliveries",
       "source": "backend/integration_api.py",
       "handler": "webhook_deliveries",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
