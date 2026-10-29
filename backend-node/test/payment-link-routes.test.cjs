@@ -141,3 +141,28 @@ test('payment link creation rejects invalid ranges and unauthenticated users', a
   });
   assert.equal(invalidFlag.status, 422);
 });
+
+test('integration payment-link creation binds ownership and replays the same idempotency key', async () => {
+  const { db, handle } = setup();
+  const payload = {
+    title: 'API order',
+    amount_type: 'fixed',
+    amount: 750,
+    currency: 'XOF',
+    fee_bearer: 'customer',
+  };
+  const first = await handle.handleIntegration('user-a', payload, 'link-create-001');
+  const retry = await handle.handleIntegration('user-a', payload, 'link-create-001');
+  assert.equal(first.status, 200);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.id, first.body.id);
+  assert.equal(retry.body.slug, first.body.slug);
+  assert.equal(db.collection('payment_links').rows.length, 1);
+  assert.equal(db.collection('payment_links').rows[0].user_id, 'user-a');
+
+  const conflict = await handle.handleIntegration('user-a', {
+    ...payload, amount: 900,
+  }, 'link-create-001');
+  assert.equal(conflict.status, 409);
+  assert.equal(db.collection('payment_links').rows.length, 1);
+});

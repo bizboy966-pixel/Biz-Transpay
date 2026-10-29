@@ -3,6 +3,7 @@
 const { randomUUID } = require('node:crypto');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
 const { readJson } = require('./auth-login.cjs');
+const { passwordPolicyErrors } = require('./security.cjs');
 
 const SECRET_FIELDS = {
   _id: 0,
@@ -185,6 +186,63 @@ function createAdminUserRoutes({
       reply(res, 200, user);
     } catch (error) {
       adminUpdateError(res, error);
+    }
+    return true;
+  }
+
+  async function handleAdminPasswordReset(req, res, match) {
+    try {
+      const { admin } = await authorizeAdmin(req, {
+        db, sessionService, env, permission: 'users:write',
+        action: 'admin_reset_password', sensitive: true,
+      });
+      const userId = decodeURIComponent(match[1]);
+      if (!userId || userId.length > 160) {
+        reply(res, 422, { detail: 'Identifiant utilisateur invalide' });
+        return true;
+      }
+      const users = db.collection('users');
+      const target = await users.find_one({ id: userId }, { _id: 0 });
+      if (!target) {
+        reply(res, 404, { detail: 'Utilisateur introuvable' });
+        return true;
+      }
+      const body = await readJson(req, 16 * 1024);
+      if (Object.keys(body).some(key => !['new_password', 'confirmation'].includes(key))) {
+        reply(res, 422, { detail: 'Champ de réinitialisation invalide' });
+        return true;
+      }
+      if (String(body.confirmation || '').trim().toUpperCase() !== 'CONFIRMER') {
+        reply(res, 422, {
+          detail: { code: 'ADMIN_CONFIRMATION_REQUIRED', message: 'Saisissez CONFIRMER.' },
+        });
+        return true;
+      }
+      const isAdminTarget = ['admin', 'super_admin'].includes(target.role);
+      const errors = passwordPolicyErrors(body.new_password, isAdminTarget);
+      if (errors.length) {
+        reply(res, 422, { detail: `Mot de passe insuffisant : ${errors.join(', ')}` });
+        return true;
+      }
+      const passwordHash = await require('bcryptjs').hash(body.new_password, 12);
+      await users.update_one({ id: userId }, { $set: {
+        password_hash: passwordHash,
+        password_policy_version: 1,
+      } });
+      await db.collection('admin_logs').insert_one({
+        admin_id: admin.id,
+        admin_username: admin.username || '',
+        action: 'reset_password',
+        target_user_id: userId,
+        target_username: target.username || '',
+        created_at: new Date().toISOString(),
+      });
+      reply(res, 200, { ok: true });
+    } catch (error) {
+      const status = Number.isInteger(error.status) ? error.status : 500;
+      reply(res, status, {
+        detail: status >= 500 ? 'Erreur interne.' : error.message,
+      });
     }
     return true;
   }
@@ -397,6 +455,9 @@ function createAdminUserRoutes({
       ? /^\/api\/admin\/users\/([^/]+)$/.exec(url.pathname)
       : null;
     if (userUpdate) return handleUserUpdate(req, res, userUpdate);
+    const resetPassword = req.method === 'POST'
+      ? /^\/api\/admin\/users\/([^/]+)\/reset-password$/.exec(url.pathname) : null;
+    if (resetPassword) return handleAdminPasswordReset(req, res, resetPassword);
     const userAction = req.method === 'POST'
       ? /^\/api\/admin\/users\/([^/]+)\/action\/([^/]+)$/.exec(url.pathname)
       : null;

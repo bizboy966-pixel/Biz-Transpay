@@ -620,7 +620,56 @@ function createTransferRoutes({
     return true;
   }
 
-  return { handleRoute };
+  async function integrationMobileMoneyOperators(userId) {
+    const settings = db.collection('settings');
+    const [saved, paydunya, mbiyo, afribapay] = await Promise.all([
+      settings.find_one({ id: 'transfer_config' }, { _id: 0 }),
+      settings.find_one({ id: 'payment_provider_paydunya' }, { _id: 0 }),
+      settings.find_one({ id: 'payment_provider_mbiyo' }, { _id: 0 }),
+      settings.find_one({ id: 'payment_provider_afribapay' }, { _id: 0 }),
+    ]);
+    const section = saved?.mobile_money || {};
+    const providerReady = {
+      paydunya: configuredProvider(paydunya, env, 'paydunya'),
+      mbiyo: configuredProvider(mbiyo, env, 'mbiyo'),
+      afribapay: configuredProvider(afribapay, env, 'afribapay'),
+    };
+    const seen = new Set();
+    const operators = (Array.isArray(section.operators) ? section.operators : [])
+      .filter(operator => {
+        const provider = String(operator.provider || 'paydunya').toLowerCase();
+        if (!section.enabled || !providerReady[provider]
+            || operator.active === false || operator.archived || operator.hidden
+            || !['paydunya', 'mbiyo', 'afribapay'].includes(provider)) return false;
+        const identity = [
+          String(operator.country || '').toUpperCase(),
+          String(operator.public_code || operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
+          String(operator.currency || '').toUpperCase(),
+        ].join(':');
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      })
+      .map(operator => ({
+        country: operator.country,
+        country_label: operator.country_label || operator.country,
+        code: String(operator.public_code || operator.code || '')
+          .toLowerCase().replace(/^mbiyo_/, ''),
+        name: operator.name || operator.code,
+        currency: operator.currency || 'XOF',
+        min: Number(operator.min) || 0,
+        max: Number(operator.max) || null,
+      }));
+    void userId;
+    return {
+      direction: 'payout',
+      enabled: Boolean(section.enabled),
+      operators: section.enabled ? operators : [],
+      availability_source: 'serving_environment_configuration',
+    };
+  }
+
+  return { handleRoute, integrationMobileMoneyOperators };
 }
 
 module.exports = { createTransferRoutes };

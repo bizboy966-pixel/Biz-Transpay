@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { reply } = require('./auth-login.cjs');
 
@@ -148,12 +149,62 @@ function createDepositStatusRoutes({ db, sessionService }) {
     if (req.method !== 'GET') return false;
     const url = new URL(req.url || '/', 'http://localhost');
     const pendingMomo = url.pathname === '/api/deposits/mobile-money/pending';
+    const psrTokenMatch = req.method === 'GET'
+      ? /^\/api\/deposits\/paydunya\/psr\/([^/]+)\/token\/([^/]+)$/.exec(url.pathname)
+      : null;
     const momoMatch = !pendingMomo
       ? /^\/api\/deposits\/mobile-money\/([^/]+)$/.exec(url.pathname) : null;
     const cryptoMatch = /^\/api\/deposits\/crypto\/([^/]+)$/.exec(url.pathname);
-    if (!pendingMomo && !momoMatch && !cryptoMatch) return false;
+    if (!pendingMomo && !psrTokenMatch && !momoMatch && !cryptoMatch) return false;
 
     try {
+      if (psrTokenMatch) {
+        const depositId = decodeURIComponent(psrTokenMatch[1]);
+        const capability = decodeURIComponent(psrTokenMatch[2]);
+        if (!depositId || depositId.length > 160 || !capability || capability.length > 256) {
+          reply(res, 404, { detail: 'Facture PSR introuvable ou indisponible.' });
+          return true;
+        }
+        const providerConfig = await db.collection('settings').find_one(
+          { id: 'payment_provider_paydunya' }, { _id: 0 },
+        );
+        if (!providerConfig?.enabled || providerConfig.modes?.psr?.enabled !== true) {
+          reply(res, 503, { detail: 'Ce mode de paiement Mobile Money est désactivé.' });
+          return true;
+        }
+        const capabilityHash = crypto.createHash('sha256')
+          .update(capability, 'utf8').digest('hex');
+        const now = new Date().toISOString();
+        const query = {
+          id: depositId,
+          provider: 'paydunya',
+          paydunya_flow: 'psr',
+          status: 'pending',
+          psr_capability_hash: capabilityHash,
+          psr_capability_used: { $ne: true },
+          psr_capability_expires_at: { $gt: now },
+        };
+        const deposits = db.collection('momo_deposits');
+        const deposit = await deposits.find_one(query, { _id: 0 });
+        if (!deposit || typeof deposit.paydunya_token !== 'string' || !deposit.paydunya_token) {
+          reply(res, 404, { detail: 'Facture PSR introuvable ou indisponible.' });
+          return true;
+        }
+        const claimed = await deposits.update_one(query, { $set: {
+          psr_capability_used: true,
+          psr_capability_used_at: now,
+        } });
+        if (claimed.modified_count !== 1) {
+          reply(res, 404, { detail: 'Facture PSR introuvable ou indisponible.' });
+          return true;
+        }
+        reply(res, 200, {
+          success: true,
+          token: deposit.paydunya_token,
+          ...(providerConfig.mode !== 'live' ? { mode: 'test' } : {}),
+        });
+        return true;
+      }
       const identity = await sessionService.authenticate(sessionToken(req));
       const userId = String(identity?.userId || '');
       if (!userId) {

@@ -195,13 +195,16 @@ function createAdminFundsRoutes({
     if (req.method !== 'GET') return false;
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); } catch { return false; }
-    if (url.pathname !== '/api/admin/funds') return false;
+    const isFunds = url.pathname === '/api/admin/funds';
+    const isProviderLiquidity = url.pathname === '/api/admin/statistics/provider-liquidity';
+    if (!isFunds && !isProviderLiquidity) return false;
 
     try {
       await authorizeAdmin(req, {
         db, sessionService, env,
         permission: 'providers:read',
-        action: 'admin_read_provider_funds',
+        action: isProviderLiquidity
+          ? 'read_admin_provider_liquidity' : 'admin_read_provider_funds',
       });
       const currency = String(url.searchParams.get('currency') || '').trim().toUpperCase();
       const countryCode = String(url.searchParams.get('country_code') || '').trim().toUpperCase();

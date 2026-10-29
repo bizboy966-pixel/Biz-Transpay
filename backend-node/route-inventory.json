@@ -307,7 +307,7 @@
       "path": "/api/admin/statistics/provider-liquidity",
       "source": "backend/server.py",
       "handler": "admin_statistics_provider_liquidity",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -475,7 +475,7 @@
       "path": "/api/admin/users/{user_id}/reset-password",
       "source": "backend/server.py",
       "handler": "admin_reset_password",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -734,7 +734,7 @@
       "path": "/api/deposits/paydunya/psr/{deposit_id}/token/{capability}",
       "source": "backend/server.py",
       "handler": "get_paydunya_psr_token",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -776,42 +776,42 @@
       "path": "/api/integration/credentials",
       "source": "backend/integration_api.py",
       "handler": "create_credentials",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "DELETE",
       "path": "/api/integration/credentials/{environment}",
       "source": "backend/integration_api.py",
       "handler": "delete_credentials",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/integration/credentials/{environment}",
       "source": "backend/integration_api.py",
       "handler": "set_credentials_active",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/integration/credentials/{environment}/regenerate",
       "source": "backend/integration_api.py",
       "handler": "regenerate_credentials",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/documentation",
       "source": "backend/integration_api.py",
       "handler": "documentation",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/documentation.pdf",
       "source": "backend/integration_api.py",
       "handler": "documentation_pdf",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -825,14 +825,14 @@
       "path": "/api/integration/v1/crypto/assets",
       "source": "backend/integration_api.py",
       "handler": "crypto_asset_catalog",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/crypto/deposits",
       "source": "backend/integration_api.py",
       "handler": "list_integration_crypto_deposits",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -846,14 +846,14 @@
       "path": "/api/integration/v1/crypto/deposits/{deposit_id}",
       "source": "backend/integration_api.py",
       "handler": "get_integration_crypto_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/crypto/payouts",
       "source": "backend/integration_api.py",
       "handler": "list_integration_crypto_payouts",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -867,14 +867,14 @@
       "path": "/api/integration/v1/crypto/payouts/{payout_id}",
       "source": "backend/integration_api.py",
       "handler": "get_integration_crypto_payout",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/deposits",
       "source": "backend/integration_api.py",
       "handler": "list_deposits",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -888,77 +888,77 @@
       "path": "/api/integration/v1/deposits/{deposit_id}",
       "source": "backend/integration_api.py",
       "handler": "get_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/exchanges",
       "source": "backend/integration_api.py",
       "handler": "list_exchanges",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/integration/v1/exchanges",
       "source": "backend/integration_api.py",
       "handler": "execute_exchange",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/exchanges/quote",
       "source": "backend/integration_api.py",
       "handler": "exchange_quote",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/exchanges/{exchange_id}",
       "source": "backend/integration_api.py",
       "handler": "get_exchange",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/links",
       "source": "backend/integration_api.py",
       "handler": "list_payment_links",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/integration/v1/links",
       "source": "backend/integration_api.py",
       "handler": "create_payment_link",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/links/{link_id}",
       "source": "backend/integration_api.py",
       "handler": "get_payment_link",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/links/{link_id}/payments",
       "source": "backend/integration_api.py",
       "handler": "link_payments",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/mobile-money/operators",
       "source": "backend/integration_api.py",
       "handler": "mobile_money_operators",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/payouts",
       "source": "backend/integration_api.py",
       "handler": "list_payouts",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -972,14 +972,14 @@
       "path": "/api/integration/v1/payouts/{payout_id}",
       "source": "backend/integration_api.py",
       "handler": "get_payout",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/integration/v1/transactions",
       "source": "backend/integration_api.py",
       "handler": "integration_transactions",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -993,14 +993,14 @@
       "path": "/api/integration/webhooks/{environment}",
       "source": "backend/integration_api.py",
       "handler": "create_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PUT",
       "path": "/api/integration/webhooks/{environment}",
       "source": "backend/integration_api.py",
       "handler": "configure_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1014,42 +1014,42 @@
       "path": "/api/integration/webhooks/{environment}/regenerate-secret",
       "source": "backend/integration_api.py",
       "handler": "rotate_webhook_secret",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/integration/webhooks/{environment}/test",
       "source": "backend/integration_api.py",
       "handler": "test_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "DELETE",
       "path": "/api/integration/webhooks/{environment}/{webhook_id}",
       "source": "backend/integration_api.py",
       "handler": "delete_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PATCH",
       "path": "/api/integration/webhooks/{environment}/{webhook_id}",
       "source": "backend/integration_api.py",
       "handler": "update_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/integration/webhooks/{environment}/{webhook_id}/regenerate-secret",
       "source": "backend/integration_api.py",
       "handler": "rotate_single_webhook_secret",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/integration/webhooks/{environment}/{webhook_id}/test",
       "source": "backend/integration_api.py",
       "handler": "test_single_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1394,14 +1394,14 @@
       "path": "/api/webhooks/paydunya/disbursement",
       "source": "backend/server.py",
       "handler": "paydunya_disbursement_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "HEAD",
       "path": "/api/webhooks/paydunya/disbursement",
       "source": "backend/server.py",
       "handler": "paydunya_disbursement_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",

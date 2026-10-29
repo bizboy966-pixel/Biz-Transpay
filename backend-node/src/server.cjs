@@ -27,6 +27,9 @@ const { createAdminPaymentProviderRoutes } = require('./admin-payment-provider-r
 const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
 const { createIntegrationSettingsRoutes } = require('./integration-settings-routes.cjs');
+const { createIntegrationApiRoutes } = require('./integration-api-routes.cjs');
+const { createIntegrationDocumentationRoutes } = require('./integration-documentation-routes.cjs');
+const { createPayDunyaDisbursementProbeRoutes } = require('./paydunya-disbursement-probe-routes.cjs');
 const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
 const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
 const { createAfriBaPayWebhookRoutes } = require('./afribapay-webhook-routes.cjs');
@@ -190,7 +193,21 @@ function createServer({
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
   const adminFundsRoutes = createAdminFundsRoutes({ db, sessionService, env });
-  const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService });
+  const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService, env });
+  const integrationDocumentationRoutes = createIntegrationDocumentationRoutes();
+  const paydunyaDisbursementProbeRoutes = createPayDunyaDisbursementProbeRoutes();
+  const integrationApiRoutes = createIntegrationApiRoutes({
+    db,
+    getCryptoAssets: cryptoCatalog.integrationCryptoAssets,
+    getExchangeQuote: cryptoCatalog.integrationExchangeQuote,
+    executeExchange: exchange.handleIntegration,
+    createPaymentLink: paymentLinks.handleIntegration,
+    getMobileMoneyOperators: (direction, userId) => (
+      direction === 'deposit'
+        ? publicConfig.integrationMobileMoneyOperators(direction, userId)
+        : transfers.integrationMobileMoneyOperators(userId)
+    ),
+  });
   const webhookProbeRoutes = createWebhookProbeRoutes();
   const afriBaPayWebhookRoutes = createAfriBaPayWebhookRoutes({ db, env });
   const adminPushRoutes = createAdminPushRoutes({
@@ -307,6 +324,9 @@ function createServer({
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
       if (await adminFundsRoutes.handleRoute(req, res)) return;
       if (await integrationSettingsRoutes.handleRoute(req, res)) return;
+      if (await integrationApiRoutes.handleRoute(req, res)) return;
+      if (await integrationDocumentationRoutes.handleRoute(req, res)) return;
+      if (await paydunyaDisbursementProbeRoutes.handleRoute(req, res)) return;
       if (await afriBaPayWebhookRoutes.handleRoute(req, res)) return;
       if (await webhookProbeRoutes.handleRoute(req, res)) return;
       if (await adminPushRoutes(req, res)) return;

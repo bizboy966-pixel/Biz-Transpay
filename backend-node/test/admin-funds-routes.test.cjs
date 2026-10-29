@@ -54,10 +54,12 @@ function setup({ enabled = true, fetchImpl } = {}) {
   };
 }
 
-async function call(service, query = '', token = 'admin-session') {
+async function call(
+  service, query = '', token = 'admin-session', path = '/api/admin/funds',
+) {
   const req = {
     method: 'GET',
-    url: `/api/admin/funds${query}`,
+    url: `${path}${query}`,
     headers: token ? { authorization: `Bearer ${token}` } : {},
   };
   const res = {
@@ -67,6 +69,19 @@ async function call(service, query = '', token = 'admin-session') {
   const handled = await service.handleRoute(req, res);
   return { handled, ...res };
 }
+
+test('provider liquidity statistics reuses the protected provider balance read', async () => {
+  const { service } = setup({
+    fetchImpl: async () => ({ ok: true, json: async () => ({}) }),
+  });
+  const result = await call(
+    service, '', 'admin-session', '/api/admin/statistics/provider-liquidity',
+  );
+  assert.equal(result.handled, true);
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.provider, 'mbiyo');
+  assert.deepEqual(result.body.wallet_totals, []);
+});
 
 test('Mbiyo fund balance read is admin-only, filtered, sanitized and provider-backed', async () => {
   const requests = [];

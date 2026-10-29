@@ -1,7 +1,27 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
 const { sessionToken } = require('./auth-session-routes.cjs');
+
+const INTERNAL_LINK_OWNER = Symbol('internalLinkOwner');
+const INTERNAL_LINK_IDEMPOTENCY = Symbol('internalLinkIdempotency');
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).filter(key => value[key] !== undefined).sort().map(key => (
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function linkFingerprint(link) {
+  const canonical = { ...link };
+  for (const key of ['id', 'user_id', 'slug', 'created_at', 'active']) delete canonical[key];
+  return crypto.createHash('sha256').update(stableJson(canonical), 'utf8').digest('hex');
+}
 
 const MAX_BODY_BYTES = 3 * 1024 * 1024;
 const LINK_FIELDS = [
@@ -133,7 +153,7 @@ function publicLink(document) {
 }
 
 function createPaymentLinkRoutes({ db, sessionService }) {
-  return async function handlePaymentLinks(req, res) {
+  async function handlePaymentLinks(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const path = url.pathname;
     const list = req.method === 'GET' && path === '/api/links';
@@ -151,10 +171,15 @@ function createPaymentLinkRoutes({ db, sessionService }) {
         reply(res, 200, publicLink(document));
         return true;
       }
-      const token = sessionToken(req);
-      if (!token) throw error(401, 'Session requise');
-      const identity = await sessionService.authenticate(token);
-      const userId = String(identity.userId);
+      let userId;
+      if (req[INTERNAL_LINK_OWNER]) {
+        userId = String(req[INTERNAL_LINK_OWNER]);
+      } else {
+        const token = sessionToken(req);
+        if (!token) throw error(401, 'Session requise');
+        const identity = await sessionService.authenticate(token);
+        userId = String(identity.userId);
+      }
       const links = db.collection('payment_links');
       if (list) {
         const documents = await links.find({ user_id: userId }, { _id: 0 })
@@ -196,8 +221,13 @@ function createPaymentLinkRoutes({ db, sessionService }) {
             && !['customer', 'merchant'].includes(supplied.fee_bearer)) {
           throw error(422, 'Prise en charge des frais invalide');
         }
+        const idempotencyKey = String(req[INTERNAL_LINK_IDEMPOTENCY] || '');
+        const deterministicId = idempotencyKey
+          ? `api_link_${crypto.createHash('sha256')
+            .update(`${userId}:${idempotencyKey}`, 'utf8').digest('hex')}`
+          : null;
         const document = {
-          id: crypto.randomUUID(),
+          id: deterministicId || crypto.randomUUID(),
           user_id: userId,
           slug: crypto.randomBytes(8).toString('base64url'),
           title,
@@ -212,7 +242,29 @@ function createPaymentLinkRoutes({ db, sessionService }) {
           fee_bearer: supplied.fee_bearer || 'customer',
           logo: validateLogo(supplied.logo),
         };
-        await links.insert_one(document);
+        if (idempotencyKey) {
+          const existing = await links.find_one({
+            id: document.id, user_id: userId,
+          }, { _id: 0 });
+          if (existing) {
+            if (linkFingerprint(existing) !== linkFingerprint(document)) {
+              throw error(409, 'Cette clé d’idempotence est déjà associée à un autre lien');
+            }
+            reply(res, 200, existing);
+            return true;
+          }
+        }
+        try {
+          await links.insert_one(document);
+        } catch (cause) {
+          if (!idempotencyKey || !['ER_DUP_ENTRY', 11000].includes(cause.code)) throw cause;
+          const existing = await links.find_one({ id: document.id, user_id: userId }, { _id: 0 });
+          if (!existing || linkFingerprint(existing) !== linkFingerprint(document)) {
+            throw error(409, 'Conflit de clé d’idempotence');
+          }
+          reply(res, 200, existing);
+          return true;
+        }
         reply(res, 200, document);
         return true;
       }
@@ -265,7 +317,28 @@ function createPaymentLinkRoutes({ db, sessionService }) {
       reply(res, status, { detail: status >= 500 ? 'Erreur interne.' : cause.message });
       return true;
     }
-  };
+  }
+
+  async function handleIntegration(userId, body, idempotencyKey) {
+    const req = Readable.from([Buffer.from(JSON.stringify(body))]);
+    req.method = 'POST';
+    req.url = '/api/links';
+    req.headers = {};
+    req[INTERNAL_LINK_OWNER] = String(userId || '');
+    req[INTERNAL_LINK_IDEMPOTENCY] = String(idempotencyKey || '');
+    const res = {
+      status: 500,
+      writeHead(status) { this.status = status; },
+      end(text) {
+        try { this.body = JSON.parse(String(text || '{}')); } catch { this.body = {}; }
+      },
+    };
+    const handled = await handlePaymentLinks(req, res);
+    return { handled, status: res.status, body: res.body || {} };
+  }
+
+  handlePaymentLinks.handleIntegration = handleIntegration;
+  return handlePaymentLinks;
 }
 
 module.exports = { createPaymentLinkRoutes, publicLink, validateLinkAmounts };

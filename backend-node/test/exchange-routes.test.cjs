@@ -258,6 +258,28 @@ test('exchange requires approved KYC and rolls back wallet claims when the ledge
   assert.equal(brokenLedger.store.docs.transactions.size, 0);
 });
 
+test('integration exchange uses the same KYC, wallet, ledger, and idempotency path', async () => {
+  const { service, store, notifications } = setup();
+  const payload = {
+    from_currency: 'XOF',
+    to_currency: 'XAF',
+    amount: 1000,
+    idempotency_key: 'merchant-exchange-001',
+  };
+  const first = await service.handleIntegration('user-1', payload);
+  const retry = await service.handleIntegration('user-1', payload);
+
+  assert.equal(first.handled, true);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.transaction.status, 'completed');
+  assert.deepEqual(retry.body, first.body);
+  assert.equal(store.docs.users.get('user-1').balance_xof, 1000);
+  assert.equal(store.docs.users.get('user-1').balance_xaf, 995);
+  assert.equal(store.docs.transactions.size, 1);
+  assert.equal(store.docs.wallet_operations.size, 1);
+  assert.equal(notifications.length, 1);
+});
+
 test('exchange requires recent authentication before parsing or mutating a transaction', async () => {
   const { service, store } = setup({ lastAuthAt: new Date(Date.now() - 16 * 60 * 1000) });
   const result = await call(service, {

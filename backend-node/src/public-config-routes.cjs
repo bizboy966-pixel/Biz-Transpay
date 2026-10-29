@@ -552,7 +552,60 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
     }
     return false;
   }
-  return { handleRoute };
+  async function integrationMobileMoneyOperators(direction) {
+    if (direction !== 'deposit') {
+      throw Object.assign(new Error('Direction invalide.'), { status: 422 });
+    }
+    const response = {
+      writeHead(status) { this.status = status; },
+      end(payload) { this.body = JSON.parse(payload); },
+    };
+    const handled = await handleRoute({
+      method: 'GET',
+      url: '/api/deposits/config?surface=dashboard',
+      headers: {},
+    }, response);
+    if (!handled || response.status !== 200) {
+      throw Object.assign(new Error('Catalogue Mobile Money indisponible.'), {
+        status: response.status || 503,
+      });
+    }
+    const enabled = Boolean(response.body.mobile_money_enabled);
+    const flowFields = [
+      'kind', 'before_submit', 'otp_required', 'otp_label',
+      'ussd_code', 'ussd_template', 'steps', 'instructions', 'action_label',
+    ];
+    const operators = enabled
+      ? (response.body.catalog || []).flatMap(country => (
+        (country.operators || []).map(operator => {
+          const row = {
+            country: country.country,
+            country_label: country.country_label,
+            code: operator.code,
+            name: operator.name || operator.label || operator.code,
+            currency: operator.currency || 'XOF',
+            min: operator.min ?? null,
+            max: operator.max ?? null,
+          };
+          const flow = operator.payment_flow;
+          if (flow && typeof flow === 'object' && !Array.isArray(flow)) {
+            row.payment_flow = Object.fromEntries(flowFields
+              .filter(key => Object.hasOwn(flow, key))
+              .map(key => [key, flow[key]]));
+          }
+          return row;
+        })
+      ))
+      : [];
+    return {
+      direction,
+      enabled,
+      operators,
+      availability_source: 'serving_environment_configuration',
+    };
+  }
+
+  return { handleRoute, integrationMobileMoneyOperators };
 }
 
 module.exports = {

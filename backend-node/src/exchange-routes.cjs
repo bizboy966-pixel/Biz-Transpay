@@ -1,9 +1,11 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
 const { applyWalletOperation } = require('./wallet.cjs');
 const { getAppFeatures, getPlatformConfig } = require('./public-config-routes.cjs');
 
+const INTERNAL_INTEGRATION_USER = Symbol('internalIntegrationUser');
 const MAX_BODY_BYTES = 16 * 1024;
 const WINDOW_MS = 60_000;
 const MAX_EXCHANGES_PER_WINDOW = 12;
@@ -111,12 +113,15 @@ function createExchangeRoutes({ db, sessionService, cryptoCatalog, notify = asyn
     const path = new URL(req.url || '/', 'http://localhost').pathname;
     if (req.method !== 'POST' || path !== '/api/exchange') return false;
 
-    let authenticated;
     let userId;
     try {
-      const token = require('./auth-session-routes.cjs').sessionToken(req);
-      authenticated = await sessionService.authenticate(token);
-      userId = sessionService.requireRecentAuth(authenticated);
+      if (req[INTERNAL_INTEGRATION_USER]) {
+        userId = String(req[INTERNAL_INTEGRATION_USER]);
+      } else {
+        const token = require('./auth-session-routes.cjs').sessionToken(req);
+        const authenticated = await sessionService.authenticate(token);
+        userId = sessionService.requireRecentAuth(authenticated);
+      }
     } catch (error) {
       reply(res, error.status || 401, {
         detail: error.code
@@ -308,7 +313,24 @@ function createExchangeRoutes({ db, sessionService, cryptoCatalog, notify = asyn
     return true;
   }
 
-  return { handleRoute };
+  async function handleIntegration(userId, body) {
+    const req = Readable.from([Buffer.from(JSON.stringify(body))]);
+    req.method = 'POST';
+    req.url = '/api/exchange';
+    req.headers = {};
+    req[INTERNAL_INTEGRATION_USER] = String(userId || '');
+    const res = {
+      status: 500,
+      writeHead(status) { this.status = status; },
+      end(text) {
+        try { this.body = JSON.parse(String(text || '{}')); } catch { this.body = {}; }
+      },
+    };
+    const handled = await handleRoute(req, res);
+    return { handled, status: res.status, body: res.body || {} };
+  }
+
+  return { handleRoute, handleIntegration };
 }
 
 module.exports = { createExchangeRoutes, uuid5 };

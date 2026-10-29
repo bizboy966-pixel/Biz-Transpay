@@ -3,7 +3,7 @@
 const { createHash } = require('node:crypto');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const security = require('./security.cjs');
-const { getPlatformConfig } = require('./public-config-routes.cjs');
+const { getAppFeatures, getPlatformConfig } = require('./public-config-routes.cjs');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
 
 const ASSET_SPECS = [
@@ -593,8 +593,90 @@ function createCryptoCatalogRoutes({
     return false;
   }
 
+  async function integrationCryptoAssets(direction, userId) {
+    const features = await getAppFeatures(db);
+    const featureKey = direction === 'deposit'
+      ? 'deposit_crypto_enabled' : 'withdrawal_crypto_enabled';
+    if (features.wallet_crypto_enabled === false || features[featureKey] === false) {
+      throw httpError(403, 'Les opérations crypto sont désactivées');
+    }
+    if (direction === 'deposit') {
+      const config = await getDepositCryptoConfig();
+      if (config.enabled === false) return [];
+      const providerConfig = await credentials();
+      if (!providerConfig.configured) return [];
+      const providerRows = await providerAssets(providerConfig);
+      const catalog = catalogMap(providerRows || []);
+      const platform = await getPlatformConfig(db);
+      const result = [];
+      for (const spec of ASSET_SPECS) {
+        const asset = catalog.get(spec.id);
+        if (!asset?.isActive || !assetEnabled(config, spec)) continue;
+        if (cryptoRate(platform, spec.coin) === null) continue;
+        const { gateway, platform: platformPct } = feePercentSplit(config, spec.coin, spec.id);
+        result.push({
+          asset_code: String(asset.assetCode || '').trim().toUpperCase(),
+          coin: spec.coin,
+          network: spec.network,
+          network_name: spec.networkName,
+          minimum: numeric(asset.minimum),
+          maximum: numeric(asset.maximum, 1e12) || 1e12,
+          memo_required: Boolean(asset.memoRequired || spec.memoRequired),
+          fee_pct: gateway + platformPct,
+          fee_fixed: fixedFee(config, 'fees_gateway_fixed', spec)
+            + fixedFee(config, 'fees_platform_fixed', spec),
+        });
+      }
+      return result;
+    }
+
+    const [assets, user] = await Promise.all([
+      activeExchangeAssets(),
+      db.collection('users').find_one({ id: userId }, { _id: 0 }),
+    ]);
+    if (!user) throw httpError(404, 'Utilisateur introuvable');
+    return [...assets.values()].map(asset => ({
+      asset_code: asset.asset_code,
+      coin: asset.coin,
+      network: asset.network,
+      network_name: asset.network_name,
+      minimum: numeric(asset.min),
+      maximum: numeric(asset.max, 1e12) || 1e12,
+      memo_required: Boolean(asset.memo_required),
+      balance: numeric(user[asset.wallet_field]),
+      fee_pct: numeric(asset.fee_pct),
+      fee_fixed: numeric(asset.fee_fixed),
+    }));
+  }
+
+  async function integrationExchangeQuote(fromCurrency, toCurrency, amount) {
+    const query = new URLSearchParams({
+      from_currency: String(fromCurrency ?? ''),
+      to_currency: String(toCurrency ?? ''),
+      amount: String(amount ?? ''),
+    });
+    const response = {
+      writeHead(status) { this.status = status; },
+      end(payload) { this.body = JSON.parse(payload); },
+    };
+    const handled = await handleRoute({
+      method: 'GET',
+      url: `/api/conversion/quote?${query}`,
+      headers: {},
+    }, response);
+    if (!handled || response.status !== 200) {
+      const detail = response.body?.detail;
+      throw Object.assign(new Error(
+        typeof detail === 'string' ? detail : 'Exchange quote unavailable.',
+      ), { status: response.status || 503, detail });
+    }
+    return response.body;
+  }
+
   return {
     handleRoute,
+    integrationCryptoAssets,
+    integrationExchangeQuote,
     activeExchangeAssets,
     providerAssets,
     exchangeRateContext,
