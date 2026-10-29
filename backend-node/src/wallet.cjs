@@ -11,8 +11,8 @@ function asciiJson(value) {
     char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
-// Preserve the signatures already stored by Python json.dumps(float(...)).
-function pythonFloat(value) {
+// Preserve the exact legacy float serialization used in stored signatures.
+function legacyFloat(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) throw new Error('Non-finite amount');
   if (Object.is(number, -0)) return '-0.0';
@@ -27,9 +27,9 @@ function pythonFloat(value) {
 
 function operationSignature(input) {
   const entries = Object.keys(input.increments).sort()
-    .map(key => `${asciiJson(key)}:${pythonFloat(input.increments[key])}`).join(',');
+    .map(key => `${asciiJson(key)}:${legacyFloat(input.increments[key])}`).join(',');
   const serialized = `{"direction":${asciiJson(input.direction)},"increments":{${entries}},`
-    + `"required_balance_amount":${pythonFloat(input.requiredBalanceAmount ?? 0)},`
+    + `"required_balance_amount":${legacyFloat(input.requiredBalanceAmount ?? 0)},`
     + `"required_balance_field":${asciiJson(input.requiredBalanceField ?? null)},`
     + `"user_id":${asciiJson(String(input.userId))}}`;
   return createHash('sha256').update(serialized).digest('hex');
@@ -136,4 +136,4 @@ async function applyWalletOperation(store, input) {
   });
 }
 
-module.exports = { operationIdentity, operationSignature, pythonFloat, applyWalletOperation };
+module.exports = { operationIdentity, operationSignature, legacyFloat, applyWalletOperation };

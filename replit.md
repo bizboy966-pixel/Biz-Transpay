@@ -2,36 +2,27 @@
 
 ## Run the app
 
-Use the configured **Start application** workflow. It starts a local MongoDB
-instance, the FastAPI backend on port 8000, and the React development server
-on port 5000. Replit Preview serves the React app on port 5000.
+Use the configured **Start application** workflow. It starts the React
+development server on port 5000 and the Node API on port 8000. The Node
+migration is Preview-only and not feature-complete.
 
 The frontend uses relative `/api` requests. `frontend/craco.config.js` proxies
 those requests to the backend, so browser requests continue to work through
 the Replit preview proxy without hardcoded localhost URLs.
 
-The local development database is configured with:
-
-- `MONGO_URL=mongodb://127.0.0.1:27017`
-- `DB_NAME=biz_transpay`
-
-For a shared or production database, replace those values with an external
-MongoDB connection string and database name in Replit environment variables.
-No MongoDB Replit integration is currently available for this workspace.
+Without an isolated Preview `MYSQL_DATABASE_URL`, the Node API runs diagnostics
+only and keeps business routes disabled. Never use a production database URL
+for this workflow.
 
 ## Run configuration
 
-The `Start application` workflow starts the existing stack without restructuring
-the project:
-
-- MongoDB uses the local `.data/mongodb` directory on port `27017`.
-- FastAPI serves the backend on port `8000`.
+- Node serves the API on port `8000` in Preview mode.
 - React/CRACO serves the frontend preview on port `5000`.
 - The frontend proxy forwards `/api` requests to the backend.
-
-The local development database is intended for Replit Preview and development.
-For a shared or persistent environment, configure an external MongoDB connection
-and set `MONGO_URL` and `DB_NAME` in Replit environment settings.
+- `backend-node/route-inventory.json` tracks routes that still need migration
+  or end-to-end verification.
+- Do not deploy or connect live provider callbacks until the full route
+  inventory, MySQL behavior, and financial regression checks pass.
 
 ## Optional payment configuration
 

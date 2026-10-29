@@ -64,7 +64,7 @@ function createServer({
   const adminTransactionRoutes = createAdminTransactionRoutes({
     db, sessionService, env,
   });
-  // Explicit fail-closed migration server. Never forward traffic to live Python/providers.
+  // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');

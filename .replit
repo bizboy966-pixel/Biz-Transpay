@@ -1,4 +1,4 @@
-modules = ["nodejs-20", "python-3.12", "web", "bash", "postgresql-16"]
+modules = ["nodejs-20", "web", "bash", "postgresql-16"]
 
 [nix]
 channel = "stable-25_05"
@@ -43,7 +43,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "bash scripts/start-replit.sh"
+args = "bash scripts/start-replit-node.sh"
 waitForPort = 5000
 
 [workflows.workflow.metadata]
@@ -73,4 +73,4 @@ timeoutMs = 180000
 deploymentTarget = "vm"
 run = ["bash", "scripts/start-production.sh"]
 ignorePorts = false
-build = ["bash", "-c", "python -m pip install --disable-pip-version-check --no-input --break-system-packages -r backend/requirements.txt && yarn --cwd frontend install --frozen-lockfile --non-interactive && yarn --cwd frontend build"]
+build = ["bash", "-c", "yarn --cwd frontend install --frozen-lockfile --non-interactive && yarn --cwd frontend build"]

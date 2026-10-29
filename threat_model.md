@@ -2,10 +2,11 @@
 
 ## Project Overview
 
-Biz-transPay is a React/CRACO frontend with a FastAPI backend and a
-PostgreSQL-backed JSONB document adapter. It supports merchant accounts,
-payment links, mobile-money and crypto flows, wallet operations, payouts,
-currency exchange, KYC, administrator actions, and provider webhooks.
+Biz-transPay has a React/CRACO frontend and an incomplete Node.js/MySQL Preview
+migration. Existing business flows include merchant accounts, payment links,
+mobile-money and crypto flows, wallet operations, payouts, currency exchange,
+KYC, administrator actions, and provider webhooks. The Node migration is not
+yet a production replacement.
 
 ## Assets
 

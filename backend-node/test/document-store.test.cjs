@@ -1,17 +1,22 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
-const path = require('node:path');
 const { matches, applyUpdate, project, firstPath } = require('../src/document-store.cjs');
 
-function pythonExpected() {
-  const result = spawnSync('python', [path.join(__dirname, 'python-document-fixtures.py')], {
-    encoding: 'utf8', env: { PATH: process.env.PATH, PYTHONPATH: process.env.PYTHONPATH ?? '' },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return JSON.parse(result.stdout);
-}
+const legacyExpected = {
+  query_results: [true, true, true, true, true, true, true, true, true],
+  updated: {
+    _id: 'synthetic-doc', id: 'synthetic-user', balance_xof: 525, active: true,
+    contact: { phone: '22890123456', email: 'test@example.invalid', name: 'Synthetic' },
+    roles: ['admin', 'support', 'finance'],
+    events: [
+      { kind: 'deposit', amount: 500 },
+      { kind: 'payout', amount: 200 },
+      { kind: 'refund', amount: 25 },
+    ],
+  },
+  projection: { id: 'synthetic-user', contact: { phone: '22890123456' } },
+};
 const document = {
   _id: 'synthetic-doc', id: 'synthetic-user', role: 'admin',
   balance_xof: 500, active: true,
@@ -39,14 +44,13 @@ const update = {
   $pull: { events: { kind: 'payout' } },
 };
 
-test('document filters and nested projections match the Python adapter vectors', () => {
-  const expected = pythonExpected();
-  assert.deepEqual(queries.map(query => matches(document, query)), expected.query_results);
-  assert.deepEqual(project(document, { id: 1, 'contact.phone': 1, _id: 0 }), expected.projection);
+test('document filters and nested projections match the persisted compatibility vectors', () => {
+  assert.deepEqual(queries.map(query => matches(document, query)), legacyExpected.query_results);
+  assert.deepEqual(project(document, { id: 1, 'contact.phone': 1, _id: 0 }), legacyExpected.projection);
 });
 
-test('document updates preserve Python modifier semantics', () => {
-  assert.deepEqual(applyUpdate(document, update), pythonExpected().updated);
+test('document updates preserve the established modifier semantics', () => {
+  assert.deepEqual(applyUpdate(document, update), legacyExpected.updated);
 });
 
 test('nested paths and projection do not expose unselected fields', () => {

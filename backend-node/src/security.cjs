@@ -18,7 +18,7 @@ function pinMaterial(userId, pin, purpose, sessionSecret) {
   if (!/^[0-9]{6}$/.test(pin) || !['admin', 'user'].includes(purpose)) {
     throw new Error('Invalid PIN');
   }
-  // Python HMAC uses the URL-safe BASE64 key bytes, NOT the decoded AES key.
+  // The legacy HMAC derivation uses URL-safe BASE64 key bytes, not the decoded AES key.
   const pepper = fernetKey(sessionSecret).toString('base64')
     .replaceAll('+', '-').replaceAll('/', '_');
   return crypto.createHmac('sha256', pepper)

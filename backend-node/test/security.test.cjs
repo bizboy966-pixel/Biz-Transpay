@@ -1,32 +1,22 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
-const path = require('node:path');
 const crypto = require('node:crypto');
 const jwt = require('jsonwebtoken');
 const security = require('../src/security.cjs');
 const { operationSignature } = require('../src/wallet.cjs');
+const fixtures = require('./legacy-security-fixtures.cjs');
 
 const sessionSecret = 'synthetic-session-key-not-a-production-secret';
 const jwtSecret = 'synthetic-jwt-key-not-a-production-secret';
-function oracle(args = [], input) {
-  const child = spawnSync('python', [path.join(__dirname, 'python-fixtures.py'), ...args], {
-    encoding: 'utf8', input,
-    env: { PATH: process.env.PATH, PYTHONPATH: process.env.PYTHONPATH ?? '' },
-  });
-  assert.equal(child.status, 0, child.stderr);
-  return child.stdout;
-}
-const fixtures = JSON.parse(oracle());
 
-test('existing Python bcrypt passwords remain usable without reset', async () => {
+test('existing bcrypt password hashes remain usable without reset', async () => {
   assert.equal(await security.verifyPassword('Synthetic-password9!', fixtures.password_hash), true);
   assert.equal(await security.verifyPassword('wrong', fixtures.password_hash), false);
   assert.equal(await security.verifyPassword('x'.repeat(73), fixtures.password_hash), false);
 });
 
-test('account/purpose-bound PIN pepper is exactly Python-compatible', async () => {
+test('account/purpose-bound PIN pepper matches the persisted compatibility vector', async () => {
   const material = security.pinMaterial('synthetic-user', '123456', 'user', sessionSecret);
   assert.equal(material, fixtures.user_pin_material);
   assert.equal(await security.verifyPassword(material, fixtures.user_pin_hash), true);
@@ -38,7 +28,7 @@ test('account/purpose-bound PIN pepper is exactly Python-compatible', async () =
   assert.equal(await security.verifyPin('synthetic-user', '123455', 'user', hashed, sessionSecret), false);
 });
 
-test('Python MFA and integration secrets decrypt unchanged', () => {
+test('persisted MFA and integration secrets decrypt unchanged', () => {
   assert.equal(security.decryptFernet(fixtures.encrypted_mfa,
     security.fernetKey(sessionSecret)), 'JBSWY3DPEHPK3PXP');
   assert.equal(security.decryptFernet(fixtures.encrypted_integration,
@@ -53,19 +43,19 @@ test('Python MFA and integration secrets decrypt unchanged', () => {
     security.fernetKey(sessionSecret)));
 });
 
-test('new Node Fernet tokens can be decrypted by existing Python code', () => {
+test('new Fernet tokens round-trip with the persisted key', () => {
   const token = security.encryptFernet('synthetic-round-trip', security.fernetKey(sessionSecret));
-  assert.equal(oracle(['decrypt'], token).trim(), 'synthetic-round-trip');
+  assert.equal(security.decryptFernet(token, security.fernetKey(sessionSecret)), 'synthetic-round-trip');
 });
 
-test('TOTP code and replay counter match Python', () => {
+test('TOTP code and replay counter match the persisted compatibility vector', () => {
   assert.equal(security.totpCode('JBSWY3DPEHPK3PXP', 1700000000), fixtures.totp);
   const counter = Math.floor(1700000000 / 30);
   assert.equal(security.verifyTotp('JBSWY3DPEHPK3PXP', fixtures.totp, null, 1700000000), counter);
   assert.equal(security.verifyTotp('JBSWY3DPEHPK3PXP', fixtures.totp, counter, 1700000000), null);
 });
 
-test('Python JWT accepted; expiration, wrong purpose, algorithm and future issue time rejected', () => {
+test('legacy JWT accepted; expiration, wrong purpose, algorithm and future issue time rejected', () => {
   assert.equal(security.decodeToken(fixtures.token, jwtSecret, { now: 1700000100 }).sub, 'synthetic-user');
   assert.throws(() => security.decodeToken(fixtures.token, jwtSecret, { now: 1700000400 }));
   assert.throws(() => security.decodeToken(fixtures.token, jwtSecret, { now: 1700000100, purpose: 'pin' }));
@@ -74,7 +64,7 @@ test('Python JWT accepted; expiration, wrong purpose, algorithm and future issue
   assert.throws(() => security.decodeToken(otherAlgorithm, jwtSecret, { now: 1700000100 }));
 });
 
-test('password policies match Python fixtures, including admin minimum', () => {
+test('password policies match the persisted fixtures, including admin minimum', () => {
   const values = ['', 'abc', 'Synthetic-password9!', 'NoDigits!', '123456aA!',
     'abcdefghijklmnA1!', `${'A'.repeat(73)}a1!`];
   for (let i = 0; i < values.length; i += 1) {
@@ -83,7 +73,7 @@ test('password policies match Python fixtures, including admin minimum', () => {
   }
 });
 
-test('Node session and MFA JWTs retain Python-compatible claim shapes', () => {
+test('Node session and MFA JWTs retain the established claim shapes', () => {
   const now = 1700000000;
   const session = security.createSessionToken('synthetic-user', 'synthetic-session', jwtSecret, now);
   const payload = security.decodeToken(session, jwtSecret, { now: now + 1 });
@@ -98,7 +88,7 @@ test('Node session and MFA JWTs retain Python-compatible claim shapes', () => {
   assert.throws(() => security.decodeMfaToken(challenge, jwtSecret, 'user_login_pin', now + 1));
 });
 
-test('existing Python financial idempotency signatures are preserved', () => {
+test('existing financial idempotency signatures are preserved', () => {
   for (const vector of fixtures.signature_vectors) {
     assert.equal(operationSignature({
       userId: 'synthetic-user', direction: 'credit',

@@ -170,7 +170,7 @@ async function call(service, body) {
   return { handled, status: res.status, body: res.body ? JSON.parse(res.body) : null };
 }
 
-test('UUIDv5 transaction identity matches Python URL namespace layout', () => {
+test('UUIDv5 transaction identity matches the legacy namespace layout', () => {
   assert.match(uuid5('user-1', 'exchange:user-1:abcdefgh'), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 

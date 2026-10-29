@@ -1,5 +1,5 @@
 {
-  "description": "Python route inventory. pending means not ported; implemented_unverified means a Node handler exists but parity/runtime validation is incomplete; verified requires end-to-end validation.",
+  "description": "Legacy API route inventory. pending means not ported; implemented_unverified means a Node handler exists but parity/runtime validation is incomplete; verified requires end-to-end validation.",
   "routes": [
     {
       "method": "GET",

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node app.js",
     "test": "node --test test/*.test.cjs",
-    "inventory": "python3 scripts/inventory.py",
+    "inventory": "node scripts/inventory.cjs",
     "check:parity": "node scripts/check-parity.cjs"
   },
   "dependencies": {

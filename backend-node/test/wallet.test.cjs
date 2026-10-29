@@ -76,7 +76,7 @@ test('imported legacy marker prevents a second credit without inventing balances
   assert.equal(store.user().balance_xof, 1000);
 });
 
-test('imported Python claim remains idempotent', async () => {
+test('imported legacy claim remains idempotent', async () => {
   const store = new MemoryStore();
   const input = credit();
   const id = operationIdentity('operation', 'alice:deposit-1');

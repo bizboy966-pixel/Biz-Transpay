@@ -1,1 +1,0 @@
-"""Compatibility namespace for the imported payment integration."""
