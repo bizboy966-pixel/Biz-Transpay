@@ -12,12 +12,47 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   console.error('Invalid port');
   process.exit(1);
 }
-const server = createServer().listen(port, '0.0.0.0', () => {
-  console.log(`Migration diagnostic server on port ${port}; business routes disabled.`);
-});
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.once(signal, () => {
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000).unref();
-  });
+
+async function start() {
+  let store = null;
+  let server;
+  try {
+    let dependencies = {};
+    if (process.env.MYSQL_DATABASE_URL) {
+      const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
+      if (!jwtSecret) throw new Error('Preview session signing secret is not configured');
+      const { createPreviewPool, MySqlStore } = require('./src/mysql-store.cjs');
+      const { SessionService } = require('./src/session-service.cjs');
+      store = new MySqlStore(createPreviewPool(process.env.MYSQL_DATABASE_URL));
+      await Promise.all([
+        store.columnsForCollection('users'),
+        store.columnsForCollection('sessions'),
+      ]);
+      dependencies = {
+        db: store,
+        sessionService: new SessionService(store, { jwtSecret }),
+      };
+    }
+    server = createServer(dependencies).listen(port, '0.0.0.0', () => {
+      console.log(process.env.MYSQL_DATABASE_URL
+        ? `Preview Node server on port ${port}; only migrated auth session routes are enabled.`
+        : `Migration diagnostic server on port ${port}; business routes disabled.`);
+    });
+  } catch {
+    if (store) await store.close().catch(() => {});
+    console.error('Startup failed: Preview MySQL schema or Node session configuration is unavailable.');
+    process.exitCode = 1;
+    return;
+  }
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, () => {
+      server.close(async () => {
+        if (store) await store.close().catch(() => {});
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(1), 5000).unref();
+    });
+  }
 }
+
+start();
