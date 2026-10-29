@@ -29,6 +29,61 @@ function createAdminPaymentLinkRoutes({ db, sessionService, env = process.env })
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { return false; }
+    const actionMatch = /^\/api\/admin\/links\/([^/]+)\/action\/([^/]+)$/.exec(url.pathname);
+    if (req.method === 'POST' && actionMatch) {
+      let linkId;
+      try { linkId = decodeURIComponent(actionMatch[1]); }
+      catch {
+        reply(res, 400, { detail: 'Identifiant de lien invalide' });
+        return true;
+      }
+      const action = actionMatch[2];
+      if (!linkId || linkId.length > 128) {
+        reply(res, 400, { detail: 'Identifiant de lien invalide' });
+        return true;
+      }
+      try {
+        await authorizeAdmin(req, {
+          db, sessionService, env,
+          permission: 'links:read',
+          action: ['suspend', 'reactivate', 'delete'].includes(action)
+            ? `link_${action}` : 'admin_link_action',
+          sensitive: action === 'delete',
+        });
+        if (!['suspend', 'reactivate', 'delete'].includes(action)) {
+          reply(res, 400, { detail: 'Action inconnue (suspend|reactivate|delete)' });
+          return true;
+        }
+        const links = db.collection('payment_links');
+        const link = await links.find_one({ id: linkId }, { _id: 0 });
+        if (!link) {
+          reply(res, 404, { detail: 'Lien introuvable' });
+          return true;
+        }
+        if (action === 'suspend' || action === 'reactivate') {
+          await links.update_one(
+            { id: linkId },
+            { $set: { active: action === 'reactivate' } },
+          );
+        } else {
+          const payments = db.collection('link_payments');
+          if (!payments || typeof payments.delete_many !== 'function'
+              || typeof links.delete_one !== 'function') {
+            reply(res, 503, { detail: 'Suppression indisponible.' });
+            return true;
+          }
+          await links.delete_one({ id: linkId });
+          await payments.delete_many({ link_id: linkId });
+        }
+        reply(res, 200, { ok: true });
+      } catch (error) {
+        const status = Number.isInteger(error.status) ? error.status : 500;
+        reply(res, status, {
+          detail: status >= 500 ? 'Erreur interne.' : error.message,
+        });
+      }
+      return true;
+    }
     if (req.method !== 'GET' || url.pathname !== '/api/admin/links') return false;
 
     try {

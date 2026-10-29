@@ -154,7 +154,7 @@ function createServer({
   const notifications = createNotificationsPushRoutes({ db, sessionService, env });
   const referrals = createReferralRoutes({ db, sessionService });
   const support = createSupportRoutes({ db, sessionService, env });
-  const publicConfig = createPublicConfigRoutes({ db, env });
+  const publicConfig = createPublicConfigRoutes({ db, sessionService, env });
   const paymentLinks = createPaymentLinkRoutes({ db, sessionService });
   const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env });
   const exchange = createExchangeRoutes({

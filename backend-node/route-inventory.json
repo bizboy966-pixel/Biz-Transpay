@@ -125,7 +125,7 @@
       "path": "/api/admin/links/{link_id}/action/{action}",
       "source": "backend/server.py",
       "handler": "admin_link_action",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -769,7 +769,7 @@
       "path": "/api/fees/config",
       "source": "backend/server.py",
       "handler": "public_fees_config",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",

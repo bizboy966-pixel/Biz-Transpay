@@ -25,7 +25,15 @@ class SettingsCollection {
 function setup(settings = [], env = {}) {
   const collection = new SettingsCollection(settings);
   const db = { collection: name => name === 'settings' ? collection : null };
-  const service = createPublicConfigRoutes({ db, env });
+  const sessionService = {
+    async authenticate(token) {
+      if (token !== 'test-session') {
+        throw Object.assign(new Error('Session requise'), { status: 401 });
+      }
+      return { userId: 'user-1' };
+    },
+  };
+  const service = createPublicConfigRoutes({ db, env, sessionService });
   return { service, collection };
 }
 
@@ -37,9 +45,13 @@ function response() {
   };
 }
 
-async function call(service, path) {
+async function call(service, path, authenticated = false) {
   const res = response();
-  const handled = await service.handleRoute({ method: 'GET', url: path }, res);
+  const handled = await service.handleRoute({
+    method: 'GET',
+    url: path,
+    headers: authenticated ? { authorization: 'Bearer test-session' } : {},
+  }, res);
   return { handled, status: res.status, body: res.body ? JSON.parse(res.body) : null };
 }
 
@@ -145,4 +157,90 @@ test('FedaPay catalog preserves the legacy public country and operator contract'
     ],
   });
   assert.equal(JSON.stringify(result.body).includes('FEDAPAY_SECRET_KEY'), false);
+});
+
+test('fee configuration is authenticated, provider-neutral, and uses configured fee totals', async () => {
+  const { service } = setup([
+    {
+      id: 'deposit_config',
+      crypto: {
+        enabled: true,
+        fees: { USDT: 3 },
+        fees_gateway_fixed: { 'USDT.BEP20': 0.25 },
+        disabled_assets: ['USDC.POLYGON'],
+      },
+    },
+    {
+      id: 'transfer_config',
+      mobile_money: {
+        enabled: true,
+        operators: [{
+          provider: 'paydunya',
+          country: 'TG',
+          code: 'tmoney_tg',
+          name: 'TMoney Togo',
+          currency: 'XOF',
+          gateway_fee_pct: 1,
+          platform_fee_pct: 2,
+          min: 100,
+          max: 500000,
+        }],
+      },
+      crypto: { enabled: true, fees: { BTC: 2.5 } },
+    },
+    {
+      id: 'payment_provider_paydunya',
+      enabled: true,
+      master_key_encrypted: 'encrypted-master',
+      private_key_encrypted: 'encrypted-private',
+      token_encrypted: 'encrypted-token',
+      catalog: [{
+        country: 'TG',
+        country_label: 'Togo',
+        code: 'tmoney_tg',
+        name: 'TMoney Togo',
+        currency: 'XOF',
+        gateway_fee_pct: 1,
+        platform_fee_pct: 1.5,
+        min: 100,
+        max: 100000,
+      }],
+    },
+    { id: 'payment_provider_mbiyo', enabled: false },
+    { id: 'payment_provider_afribapay', enabled: false },
+    {
+      id: 'platform_config',
+      conversion_fee: { enabled: true, type: 'fixed', value: 25, min_fee: 5, max_fee: 100 },
+    },
+  ]);
+
+  const unauthorized = await call(service, '/api/fees/config');
+  assert.equal(unauthorized.status, 401);
+
+  const result = await call(service, '/api/fees/config', true);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.deposit.mobile_money.operators, [{
+    country: 'TG',
+    country_label: 'Togo',
+    name: 'TMoney Togo',
+    currency: 'XOF',
+    fee_pct: 2.5,
+    fee_fixed: 0,
+    min: 100,
+    max: 100000,
+  }]);
+  const usdt = result.body.deposit.crypto.assets.find(asset => asset.asset_id === 'USDT.BEP20');
+  assert.equal(usdt.fee_pct, 3);
+  assert.equal(usdt.fee_fixed, 0.25);
+  assert.equal(result.body.deposit.crypto.assets.some(asset => asset.asset_id === 'USDC.POLYGON'), false);
+  assert.equal(result.body.withdrawal.mobile_money.operators[0].fee_pct, 3);
+  assert.deepEqual(result.body.conversion, {
+    enabled: true,
+    type: 'fixed',
+    value: 25,
+    min_fee: 5,
+    max_fee: 100,
+  });
+  assert.equal(JSON.stringify(result.body).includes('paydunya'), false);
+  assert.equal(JSON.stringify(result.body).includes('encrypted-master'), false);
 });

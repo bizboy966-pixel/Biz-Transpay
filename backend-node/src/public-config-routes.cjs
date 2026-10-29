@@ -1,5 +1,17 @@
 'use strict';
 
+const { sessionToken } = require('./auth-session-routes.cjs');
+const CRYPTO_FEE_ASSETS = [
+  ['USDC.POLYGON', 'USDC', 'POLYGON'], ['USDC.SOL', 'USDC', 'SOL'],
+  ['USDC.BEP20', 'USDC', 'BEP20'], ['USDC.ERC20', 'USDC', 'ERC20'],
+  ['USDT.POLYGON', 'USDT', 'POLYGON'], ['USDT.BEP20', 'USDT', 'BEP20'],
+  ['USDT.SOL', 'USDT', 'SOL'], ['USDT.TRC20', 'USDT', 'TRC20'],
+  ['USDT.TON', 'USDT', 'TON'], ['USDT.ERC20', 'USDT', 'ERC20'],
+  ['BNB.BNB', 'BNB', 'BNB'], ['BTC.BTC', 'BTC', 'BTC'],
+  ['SOL.SOL', 'SOL', 'SOL'], ['TON.TON', 'TON', 'TON'],
+  ['TRX.TRX', 'TRX', 'TRX'], ['ETH.ETH', 'ETH', 'ETH'],
+].map(([id, coin, network]) => ({ id, coin, network }));
+
 const DEFAULT_APP_FEATURES = {
   id: 'app_features',
   mobile_money_enabled: true,
@@ -212,7 +224,108 @@ function publicCryptoConfig(value) {
   return output;
 }
 
-function createPublicConfigRoutes({ db, env = process.env }) {
+function cryptoFeeValue(section, field, keys, fallback = 0) {
+  const values = section?.[field];
+  if (!values || typeof values !== 'object' || Array.isArray(values)) return fallback;
+  for (const key of keys) {
+    if (!Object.hasOwn(values, key)) continue;
+    const amount = Number(values[key]);
+    if (Number.isFinite(amount) && amount >= 0) return amount;
+  }
+  return fallback;
+}
+
+function publicFeeCrypto(section) {
+  const source = section && typeof section === 'object' ? section : {};
+  const disabled = new Set((source.disabled_assets || []).map(value => String(value).toUpperCase()));
+  const hidden = new Set((source.hidden_coins || []).map(value => String(value).toUpperCase()));
+  const assets = CRYPTO_FEE_ASSETS.filter(asset => (
+    !disabled.has(asset.id) && !hidden.has(asset.coin)
+  )).map(asset => {
+    const keys = [asset.id, asset.coin];
+    const totalPct = cryptoFeeValue(source, 'fees', keys, 4);
+    const platformPct = cryptoFeeValue(source, 'fees_platform', keys, 0);
+    const gatewayPct = cryptoFeeValue(
+      source, 'fees_gateway', keys, Math.max(0, totalPct - platformPct),
+    );
+    return {
+      code: asset.coin,
+      asset_id: asset.id,
+      network: asset.network,
+      fee_pct: gatewayPct + platformPct,
+      fee_fixed: cryptoFeeValue(source, 'fees_gateway_fixed', keys, 0)
+        + cryptoFeeValue(source, 'fees_platform_fixed', keys, 0),
+    };
+  });
+  return { enabled: source.enabled === true, assets };
+}
+
+function publicFeeProviderCatalog(catalog) {
+  return (Array.isArray(catalog) ? catalog : []).map(operator => {
+    const gatewayPct = Number(operator.gateway_fee_pct) || 0;
+    const platformPct = Number(operator.platform_fee_pct) || 0;
+    const gatewayFixed = Number(operator.gateway_fee_fixed) || 0;
+    const platformFixed = Number(operator.platform_fee_fixed) || 0;
+    return {
+      country: operator.country || null,
+      country_label: operator.country_label || operator.country || null,
+      name: operator.name || operator.code || null,
+      currency: operator.currency || 'XOF',
+      fee_pct: gatewayPct || platformPct
+        ? gatewayPct + platformPct : Number(operator.fee_pct) || 0,
+      fee_fixed: gatewayFixed || platformFixed
+        ? gatewayFixed + platformFixed : Number(operator.fee_fixed) || 0,
+      min: Number(operator.min) || 0,
+      max: Number(operator.max) || null,
+    };
+  });
+}
+
+function publicWithdrawalOperators(transferConfig, providers, env) {
+  const mobileMoney = transferConfig?.mobile_money || {};
+  if (!mobileMoney.enabled) return { enabled: false, operators: [] };
+  const ready = {
+    paydunya: providerConfigured(providers.paydunya, env, 'paydunya'),
+    mbiyo: providerConfigured(providers.mbiyo, env, 'mbiyo'),
+    afribapay: providerConfigured(providers.afribapay, env, 'afribapay'),
+  };
+  const seen = new Set();
+  const operators = (Array.isArray(mobileMoney.operators) ? mobileMoney.operators : [])
+    .filter(operator => {
+      const provider = String(operator.provider || 'paydunya').toLowerCase();
+      if (!Object.hasOwn(ready, provider) || !ready[provider]
+          || operator.active === false || operator.archived || operator.hidden) return false;
+      const key = [
+        String(operator.country || '').toUpperCase(),
+        String(operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
+        String(operator.currency || '').toUpperCase(),
+      ].join(':');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(operator => {
+      const gatewayPct = Number(operator.gateway_fee_pct) || 0;
+      const platformPct = Number(operator.platform_fee_pct) || 0;
+      const gatewayFixed = Number(operator.gateway_fee_fixed) || 0;
+      const platformFixed = Number(operator.platform_fee_fixed) || 0;
+      return {
+        country: operator.country,
+        country_label: operator.country_label || operator.country,
+        name: operator.name || operator.code,
+        currency: operator.currency || 'XOF',
+        fee_pct: gatewayPct || platformPct
+          ? gatewayPct + platformPct : Number(operator.fee_pct) || 0,
+        fee_fixed: gatewayFixed || platformFixed
+          ? gatewayFixed + platformFixed : Number(operator.fee_fixed) || 0,
+        min: Number(operator.min) || 0,
+        max: Number(operator.max) || null,
+      };
+    });
+  return { enabled: operators.length > 0, operators };
+}
+
+function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
   async function handleRoute(req, res) {
     if (req.method !== 'GET') return false;
     const url = new URL(req.url || '/', 'http://localhost');
@@ -279,6 +392,77 @@ function createPublicConfigRoutes({ db, env = process.env }) {
           ? Number(feeValue) / 100
           : 0,
       });
+      return true;
+    }
+    if (path === '/api/fees/config') {
+      if (!sessionService) {
+        reply(res, 503, { detail: 'Configuration des frais indisponible.' });
+        return true;
+      }
+      try {
+        await sessionService.authenticate(sessionToken(req));
+        const settings = db.collection('settings');
+        const [deposit, withdrawal, paydunya, mbiyo, afribapay, platform] = await Promise.all([
+          settings.find_one({ id: 'deposit_config' }, { _id: 0 }),
+          settings.find_one({ id: 'transfer_config' }, { _id: 0 }),
+          settings.find_one({ id: 'payment_provider_paydunya' }, { _id: 0 }),
+          settings.find_one({ id: 'payment_provider_mbiyo' }, { _id: 0 }),
+          settings.find_one({ id: 'payment_provider_afribapay' }, { _id: 0 }),
+          getPlatformConfig(db),
+        ]);
+        const paydunyaCredentials = Boolean(
+          (paydunya?.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
+          && (paydunya?.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
+          && (paydunya?.token_encrypted || env.PAYDUNYA_TOKEN),
+        );
+        const paydunyaModes = paydunya?.modes;
+        const paydunyaModeReady = !paydunyaModes || Object.values(paydunyaModes).some(mode => (
+          mode && typeof mode === 'object' ? mode.enabled === true : Boolean(mode)
+        ));
+        const paydunyaCatalog = paydunya?.enabled !== false
+          && paydunyaCredentials && paydunyaModeReady
+          ? publicFeeProviderCatalog((paydunya.catalog || []).filter(operator => (
+            operator.active !== false && !operator.archived && !operator.hidden
+            && ['XOF', 'XAF'].includes(String(operator.currency || '').toUpperCase())
+          )))
+          : [];
+        const mbiyoConfigured = Boolean(
+          mbiyo?.enabled
+          && (mbiyo.secret_key_encrypted || mbiyo.api_key_encrypted
+            || env.MBIYO_SECRET_KEY || env.MBIYO_API_KEY),
+        );
+        const mbiyoCatalog = mbiyoConfigured
+          ? publicFeeProviderCatalog((mbiyo.catalog || []).filter(operator => (
+            operator.active !== false && !operator.archived && !operator.hidden
+          )))
+          : [];
+        const depositOperators = [...paydunyaCatalog, ...mbiyoCatalog];
+        const conversion = platform.conversion_fee || {};
+        reply(res, 200, {
+          deposit: {
+            mobile_money: { enabled: depositOperators.length > 0, operators: depositOperators },
+            crypto: publicFeeCrypto(deposit?.crypto),
+          },
+          withdrawal: {
+            mobile_money: publicWithdrawalOperators(
+              withdrawal, { paydunya, mbiyo, afribapay }, env,
+            ),
+            crypto: publicFeeCrypto(withdrawal?.crypto),
+          },
+          conversion: {
+            enabled: Boolean(conversion.enabled),
+            type: conversion.type || 'percent',
+            value: Number(conversion.value) || 0,
+            min_fee: conversion.min_fee ?? null,
+            max_fee: conversion.max_fee ?? null,
+          },
+        });
+      } catch (error) {
+        reply(res, error.status || 503, {
+          detail: error.status === 401 ? 'Session requise'
+            : error.status ? error.message : 'Configuration des frais indisponible.',
+        });
+      }
       return true;
     }
     if (path === '/api/deposits/config') {
@@ -376,4 +560,5 @@ module.exports = {
   getAppFeatures,
   getPlatformConfig,
   publicFeatures,
+  publicFeeCrypto,
 };
