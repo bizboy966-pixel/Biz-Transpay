@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>Expresso</title>
+  <rect width="720" height="720" rx="96" fill="#16864A"/>
+  <circle cx="360" cy="278" r="128" fill="#F6D32D"/>
+  <path d="M298 220h128v42h-80v30h68v40h-68v30h80v42H298z" fill="#16864A"/>
+  <text x="360" y="535" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="88" font-weight="700">expresso</text>
+</svg>

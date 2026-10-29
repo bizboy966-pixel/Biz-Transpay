@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>Airtel</title>
+  <rect width="720" height="720" rx="96" fill="#E30613"/>
+  <path d="M360 155c-79 0-143 64-143 143 0 52 28 98 70 123-7-17-11-35-11-54 0-75 61-136 136-136 19 0 37 4 54 11-25-42-71-70-123-70z" fill="#fff"/>
+  <text x="360" y="535" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="84" font-weight="700">airtel</text>
+</svg>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>Free Money</title>
+  <rect width="720" height="720" rx="96" fill="#111827"/>
+  <circle cx="360" cy="280" r="135" fill="#19B66B"/>
+  <path d="M292 334V205h42v88h82v41z" fill="#fff"/>
+  <text x="360" y="535" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="94" font-weight="700">FREE</text>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 720" role="img" aria-labelledby="title">
+  <title>Wave</title>
+  <rect width="720" height="720" rx="96" fill="#19A9E8"/>
+  <path d="M154 314c54-76 113-76 167 0s113 76 167 0 113-76 167 0" fill="none" stroke="#fff" stroke-width="44" stroke-linecap="round"/>
+  <text x="360" y="520" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="104" font-weight="700">wave</text>
+</svg>
