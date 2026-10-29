@@ -36,13 +36,25 @@ function startHttpServer(dependencies, healthState = null) {
 
 function diagnosticState(error, stage) {
   if (error?.code === 'MYSQL_URL_REQUIRED') {
-    return { database: 'not_configured', issue: 'mysql_url_missing' };
+    return {
+      database: 'not_configured',
+      schemaStatus: 'not_checked',
+      issue: 'mysql_url_missing',
+    };
   }
   if (error?.code === 'SESSION_SECRET_REQUIRED') {
-    return { database: 'not_checked', issue: 'session_secret_missing' };
+    return {
+      database: 'not_checked',
+      schemaStatus: 'not_checked',
+      issue: 'session_secret_missing',
+    };
   }
   if (error?.code === 'SPLIT_SCHEMA_MISSING') {
-    return { database: 'schema_incomplete', issue: 'required_tables_missing' };
+    return {
+      database: 'schema_incomplete',
+      schemaStatus: 'incomplete',
+      issue: 'required_tables_missing',
+    };
   }
   if (stage === 'mysql-connect-and-schema-check') {
     const connectionErrors = new Set([
@@ -51,10 +63,15 @@ function diagnosticState(error, stage) {
     ]);
     return {
       database: 'unavailable',
+      schemaStatus: 'not_checked',
       issue: connectionErrors.has(error?.code) ? 'mysql_connection_failed' : 'mysql_check_failed',
     };
   }
-  return { database: 'unavailable', issue: 'startup_failed' };
+  return {
+    database: 'unavailable',
+    schemaStatus: 'not_checked',
+    issue: 'startup_failed',
+  };
 }
 
 async function start() {
@@ -96,7 +113,9 @@ async function start() {
       };
     }
     startupStage = 'server-listen';
-    startHttpServer(dependencies);
+    startHttpServer(dependencies, {
+      schemaStatus: store ? 'complete' : 'not_checked',
+    });
   } catch (error) {
     if (store) await store.close().catch(() => {});
     const code = typeof error?.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code)

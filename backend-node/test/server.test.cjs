@@ -53,6 +53,8 @@ test('production startup exposes safe diagnostics and blocks business APIs when 
       backend: 'ok',
       database: 'not_configured',
       issue: 'mysql_url_missing',
+      schema_complete: false,
+      schema_status: 'not_checked',
       migration_complete: false,
     });
 
@@ -79,7 +81,11 @@ test('API root is available while diagnostic mode rejects unported business rout
     const health = await fetch(`${base}/healthz`);
     assert.equal(health.status, 200);
     assert.deepEqual(await health.json(), {
-      backend: 'ok', database: 'not_configured', migration_complete: false,
+      backend: 'ok',
+      database: 'not_configured',
+      schema_complete: false,
+      schema_status: 'not_checked',
+      migration_complete: false,
     });
     const root = await fetch(`${base}/api/`);
     assert.equal(root.status, 200);
@@ -99,16 +105,19 @@ test('health endpoint checks MySQL and returns no connection details', async () 
   for (const scenario of [
     {
       healthCheck: async () => true,
-      status: 200,
       database: 'connected',
+      schemaStatus: 'complete',
     },
     {
       healthCheck: async () => { throw new Error('private database failure detail'); },
-      status: 503,
       database: 'unavailable',
+      schemaStatus: 'unavailable',
     },
   ]) {
-    const server = createServer({ db: { healthCheck: scenario.healthCheck } });
+    const server = createServer(
+      { db: { healthCheck: scenario.healthCheck } },
+      { healthState: { schemaStatus: 'complete' } },
+    );
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/healthz`);
@@ -118,6 +127,8 @@ test('health endpoint checks MySQL and returns no connection details', async () 
         backend: 'ok',
         database: scenario.database,
         ...(scenario.database === 'unavailable' ? { issue: 'mysql_ping_failed' } : {}),
+        schema_complete: scenario.schemaStatus === 'complete',
+        schema_status: scenario.schemaStatus,
         migration_complete: false,
       });
       assert.doesNotMatch(JSON.stringify(body), /private database failure detail/);
@@ -146,6 +157,8 @@ test('startup diagnostic reports incomplete schema and safely gates APIs', async
       backend: 'ok',
       database: 'schema_incomplete',
       issue: 'required_tables_missing',
+      schema_complete: false,
+      schema_status: 'incomplete',
       migration_complete: false,
     });
 

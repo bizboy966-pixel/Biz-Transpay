@@ -189,15 +189,20 @@ function createServer({
     if (health) {
       let database = healthState?.database || (db ? 'unverified' : 'not_configured');
       let issue = healthState?.issue || null;
+      let schemaStatus = healthState?.schemaStatus
+        || (issue === 'required_tables_missing' ? 'incomplete' : 'not_checked');
+      let databasePingFailed = false;
       if (db?.healthCheck) {
         try {
           await db.healthCheck();
           database = 'connected';
         } catch {
           database = 'unavailable';
+          databasePingFailed = true;
           issue = issue || 'mysql_ping_failed';
         }
       }
+      if (databasePingFailed) schemaStatus = 'unavailable';
       // This is a liveness/diagnostic endpoint: always return its JSON body if
       // Node is listening. The database field reports readiness separately.
       res.statusCode = 200;
@@ -205,6 +210,10 @@ function createServer({
         backend: 'ok',
         database,
         ...(issue ? { issue } : {}),
+        schema_complete: database === 'connected' && schemaStatus === 'complete',
+        schema_status: schemaStatus,
+        // Route migration is tracked independently; several business APIs are
+        // intentionally still disabled until their port and regression tests land.
         migration_complete: false,
       }));
       return;
