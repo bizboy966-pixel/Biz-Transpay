@@ -391,6 +391,7 @@ function BizToBizForm({
   onTransferFeedback, onRequestPin,
 }) {
   const turnstileRef = useRef(null);
+  const idempotencyRef = useRef('');
   const [username, setUsername] = useState('');
   const [phone, setPhone] = useState('');
   const [amount, setAmount] = useState('');
@@ -416,7 +417,10 @@ function BizToBizForm({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
-  const emailOtp = useWithdrawalEmailOtp(onDone, 'biz_to_biz');
+  const emailOtp = useWithdrawalEmailOtp((data, meta) => {
+    idempotencyRef.current = '';
+    onDone(data, meta);
+  }, 'biz_to_biz');
 
   const lookup = async () => {
     setLookupErr(null); setRecipient(null);
@@ -439,7 +443,6 @@ function BizToBizForm({
   const currencyOptions = [
     { value: 'XOF', label: 'XOF' },
     { value: 'XAF', label: 'XAF' },
-    { value: 'USDT', label: 'USDT' },
     ...(walletCryptoEnabled
       ? cryptoWallets.map((wallet) => ({
         value: wallet.id,
@@ -456,9 +459,11 @@ function BizToBizForm({
     setPending(true);
     onTransferFeedback({ status: 'processing', transferType: 'biz_to_biz' });
     try {
+      if (!idempotencyRef.current) idempotencyRef.current = crypto.randomUUID();
       const needsEmailOtp = await emailOtp.start({
         transfer_type: 'biz_to_biz', recipient: username || phone,
         recipient_phone: phone, amount: amt, currency, description,
+        idempotency_key: idempotencyRef.current,
         pin,
         turnstile_token: turnstileToken,
       });
@@ -466,6 +471,8 @@ function BizToBizForm({
         onTransferFeedback(null);
         setTurnstileToken('');
         turnstileRef.current?.reset();
+      } else {
+        idempotencyRef.current = '';
       }
       return { ok: true };
     } catch (err) {
@@ -507,14 +514,14 @@ function BizToBizForm({
       <Field label="Nom d'utilisateur du bénéficiaire">
         <div className="relative">
           <AtSign className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input data-testid="b2b-username" value={username} onChange={(e) => { setUsername(e.target.value); setRecipient(null); }} onBlur={lookup} placeholder="bizboy" className="w-full pl-8 sm:pl-9 pr-3 sm:pr-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+          <input data-testid="b2b-username" value={username} onChange={(e) => { idempotencyRef.current = ''; setUsername(e.target.value); setRecipient(null); }} onBlur={lookup} placeholder="bizboy" className="w-full pl-8 sm:pl-9 pr-3 sm:pr-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
         </div>
       </Field>
 
       <Field label="Numéro de téléphone (optionnel)">
         <div className="relative">
           <Phone className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input data-testid="b2b-phone" value={phone} onChange={(e) => { setPhone(e.target.value); setRecipient(null); }} onBlur={lookup} placeholder="+228 …" className="w-full pl-8 sm:pl-9 pr-3 sm:pr-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+          <input data-testid="b2b-phone" value={phone} onChange={(e) => { idempotencyRef.current = ''; setPhone(e.target.value); setRecipient(null); }} onBlur={lookup} placeholder="+228 …" className="w-full pl-8 sm:pl-9 pr-3 sm:pr-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
         </div>
       </Field>
 
@@ -532,11 +539,11 @@ function BizToBizForm({
 
       <div className="grid grid-cols-[1fr_auto] gap-2 sm:gap-3">
         <Field label="Montant">
-          <input data-testid="b2b-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="10000" min="1" className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+          <input data-testid="b2b-amount" type="number" value={amount} onChange={(e) => { idempotencyRef.current = ''; setAmount(e.target.value); }} placeholder="10000" min="1" className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
           <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Solde : {bal.toLocaleString()} {currencyLabel}</div>
         </Field>
         <Field label="Devise">
-          <select data-testid="b2b-currency" value={currency} onChange={(e) => setCurrency(e.target.value)} className="px-2.5 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
+          <select data-testid="b2b-currency" value={currency} onChange={(e) => { idempotencyRef.current = ''; setCurrency(e.target.value); }} className="px-2.5 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl font-semibold text-xs sm:text-sm">
             {currencyOptions.map((option) => (
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
@@ -550,7 +557,7 @@ function BizToBizForm({
       )}
 
       <Field label="Description (optionnel)">
-        <input data-testid="b2b-desc" value={description} onChange={(e) => setDescription(e.target.value)} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+        <input data-testid="b2b-desc" value={description} onChange={(e) => { idempotencyRef.current = ''; setDescription(e.target.value); }} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
       </Field>
 
       <TurnstileWidget

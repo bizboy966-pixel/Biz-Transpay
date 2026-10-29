@@ -1,7 +1,10 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { applyWalletOperation, operationIdentity, operationSignature } = require('../src/wallet.cjs');
+const {
+  applyWalletOperation, applyInternalTransfer,
+  operationIdentity, operationSignature,
+} = require('../src/wallet.cjs');
 
 // Serialized transactional fake, not a substitute for MySQL/InnoDB integration testing.
 class MemoryStore {
@@ -33,6 +36,25 @@ class MemoryStore {
   }
   user(id = 'alice') { return this.docs.get(`users:${id}`); }
 }
+
+const internalTransfer = overrides => ({
+  fromUserId: 'alice',
+  toUserId: 'bob',
+  operationId: 'biz-to-biz:test-key',
+  walletField: 'balance_xof',
+  currency: 'XOF',
+  amount: 200,
+  transactionOut: {
+    id: 'transfer-out-test', user_id: 'alice', type: 'transfer',
+    direction: 'out', amount: 200, currency: 'XOF', status: 'completed', metadata: {},
+  },
+  transactionIn: {
+    id: 'transfer-in-test', user_id: 'bob', type: 'transfer',
+    direction: 'in', amount: 200, currency: 'XOF', status: 'completed', metadata: {},
+  },
+  ...overrides,
+});
+
 const credit = overrides => ({
   userId: 'alice', operationId: 'deposit-1', direction: 'credit',
   primaryField: 'balance_xof', increments: { balance_xof: 500 },
@@ -57,6 +79,63 @@ test('provider event cannot credit another transaction or account', async () => 
   assert.equal((await applyWalletOperation(store, credit({ operationId: 'deposit-2' }))).state, 'duplicate_event');
   assert.equal((await applyWalletOperation(store, credit({ userId: 'bob' }))).state, 'duplicate_event');
   assert.equal(store.user('bob').balance_xof, 0);
+});
+
+test('internal transfer atomically debits and credits once across duplicate requests', async () => {
+  const store = new MemoryStore();
+  store.docs.set('users:bob', { id: 'bob', balance_xof: 50 });
+  const results = await Promise.all(Array.from({ length: 12 }, () =>
+    applyInternalTransfer(store, internalTransfer())));
+
+  assert.equal(results.filter(result => result.state === 'applied').length, 1);
+  assert.equal(results.filter(result => result.state === 'already').length, 11);
+  assert.equal(store.user('alice').balance_xof, 800);
+  assert.equal(store.user('bob').balance_xof, 250);
+  assert.equal(store.docs.get('transactions:transfer-out-test').metadata.wallet_snapshot.balance_before, 1000);
+  assert.equal(store.docs.get('transactions:transfer-in-test').metadata.wallet_snapshot.balance_after, 250);
+});
+
+test('internal transfer rejects a reused operation key with another recipient', async () => {
+  const store = new MemoryStore();
+  store.docs.set('users:bob', { id: 'bob', balance_xof: 0 });
+  store.docs.set('users:carol', { id: 'carol', balance_xof: 0 });
+  await applyInternalTransfer(store, internalTransfer());
+
+  const conflict = await applyInternalTransfer(store, internalTransfer({
+    toUserId: 'carol',
+    transactionIn: {
+      id: 'transfer-in-carol', user_id: 'carol', type: 'transfer',
+      direction: 'in', amount: 200, currency: 'XOF', status: 'completed', metadata: {},
+    },
+  }));
+  assert.equal(conflict.state, 'idempotency_conflict');
+  assert.equal(store.user('alice').balance_xof, 800);
+  assert.equal(store.user('bob').balance_xof, 200);
+  assert.equal(store.user('carol').balance_xof, 0);
+});
+
+test('internal transfer leaves both wallets and ledgers unchanged when funds are insufficient', async () => {
+  const store = new MemoryStore();
+  store.docs.set('users:bob', { id: 'bob', balance_xof: 0 });
+  const result = await applyInternalTransfer(store, internalTransfer({ amount: 1001 }));
+
+  assert.equal(result.state, 'insufficient');
+  assert.equal(store.user('alice').balance_xof, 1000);
+  assert.equal(store.user('bob').balance_xof, 0);
+  assert.equal(store.docs.has('transactions:transfer-out-test'), false);
+  assert.equal(store.docs.has('transactions:transfer-in-test'), false);
+});
+
+test('internal transfer rolls both wallet changes back if a ledger insert fails', async () => {
+  const store = new MemoryStore();
+  store.docs.set('users:bob', { id: 'bob', balance_xof: 0 });
+  store.failInsert = 'transactions';
+
+  await assert.rejects(() => applyInternalTransfer(store, internalTransfer()), /injected storage failure/);
+  assert.equal(store.user('alice').balance_xof, 1000);
+  assert.equal(store.user('bob').balance_xof, 0);
+  assert.equal(store.docs.has('wallet_operations:' + operationIdentity(
+    'internal_transfer_debit', 'alice:biz-to-biz:test-key')), false);
 });
 
 test('idempotency key reused with a different amount is rejected', async () => {

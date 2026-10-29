@@ -450,4 +450,5 @@ module.exports = {
   allowResetRequest,
   publicAppUrl,
   resetEmailContent,
+  sendResendEmail,
 };

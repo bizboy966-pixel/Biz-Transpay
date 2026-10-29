@@ -136,4 +136,118 @@ async function applyWalletOperation(store, input) {
   });
 }
 
-module.exports = { operationIdentity, operationSignature, legacyFloat, applyWalletOperation };
+async function applyInternalTransfer(store, input) {
+  const fromUserId = String(input?.fromUserId || '');
+  const toUserId = String(input?.toUserId || '');
+  const operationId = String(input?.operationId || '');
+  const field = String(input?.walletField || '');
+  const amount = Number(input?.amount);
+  const currency = String(input?.currency || '');
+  const fieldPattern = /^[a-zA-Z0-9_]+$/;
+  if (!fromUserId || !toUserId || fromUserId === toUserId || !operationId
+      || !fieldPattern.test(field) || !Number.isFinite(amount) || amount <= 0
+      || !input.transactionOut?.id || !input.transactionIn?.id
+      || String(input.transactionOut.user_id) !== fromUserId
+      || String(input.transactionIn.user_id) !== toUserId) {
+    return { state: 'invalid' };
+  }
+
+  const debitOperationId = `${operationId}:out`;
+  const creditOperationId = `${operationId}:in`;
+  const debitClaimId = operationIdentity('internal_transfer_debit', `${fromUserId}:${operationId}`);
+  const creditClaimId = operationIdentity('internal_transfer_credit', `${toUserId}:${operationId}`);
+  const signature = createHash('sha256').update(JSON.stringify({
+    fromUserId, toUserId, operationId, walletField: field, amount,
+    currency,
+    requestFingerprint: String(input?.requestFingerprint || ''),
+  })).digest('hex');
+
+  return store.transaction(async repo => {
+    await repo.lockWallets();
+    const sender = await repo.get('users', fromUserId);
+    const recipient = await repo.get('users', toUserId);
+    if (!sender || !recipient) return { state: 'missing_user' };
+
+    const debitClaim = await repo.get('wallet_operations', debitClaimId);
+    const creditClaim = await repo.get('wallet_operations', creditClaimId);
+    if (debitClaim || creditClaim) {
+      if (!debitClaim || !creditClaim
+          || debitClaim.signature !== signature || creditClaim.signature !== signature) {
+        return { state: 'idempotency_conflict' };
+      }
+      return {
+        state: 'already',
+        snapshots: { sender: debitClaim.snapshot, recipient: creditClaim.snapshot },
+      };
+    }
+
+    const debitMarkers = sender.wallet_debit_operation_ids ?? [];
+    const creditMarkers = recipient.wallet_credit_operation_ids ?? [];
+    if (debitMarkers.includes(debitOperationId) || creditMarkers.includes(creditOperationId)) {
+      return { state: 'already', snapshots: null };
+    }
+    if (new Decimal(sender[field] ?? 0).lt(amount)) return { state: 'insufficient' };
+
+    const senderBefore = Number(sender[field] ?? 0);
+    const recipientBefore = Number(recipient[field] ?? 0);
+    const senderAfter = new Decimal(senderBefore).minus(amount).toNumber();
+    const recipientAfter = new Decimal(recipientBefore).plus(amount).toNumber();
+    if (![senderBefore, recipientBefore, senderAfter, recipientAfter].every(Number.isFinite)) {
+      throw new Error('Invalid wallet amount');
+    }
+    sender[field] = senderAfter;
+    recipient[field] = recipientAfter;
+    sender.wallet_debit_operation_ids = [...new Set([...debitMarkers, debitOperationId])];
+    recipient.wallet_credit_operation_ids = [...new Set([...creditMarkers, creditOperationId])];
+
+    const now = new Date().toISOString();
+    const senderSnapshot = {
+      wallet_field: field, balance_before: senderBefore, balance_after: senderAfter,
+      direction: 'debit', amount,
+    };
+    const recipientSnapshot = {
+      wallet_field: field, balance_before: recipientBefore, balance_after: recipientAfter,
+      direction: 'credit', amount,
+    };
+    await repo.replace('users', fromUserId, sender);
+    await repo.replace('users', toUserId, recipient);
+    await repo.insert('wallet_operations', debitClaimId, {
+      id: debitClaimId, identity_type: 'internal_transfer_debit',
+      primary_operation_id: debitClaimId, user_id: fromUserId,
+      signature, snapshot: senderSnapshot, snapshot_available: true, created_at: now,
+    });
+    await repo.insert('wallet_operations', creditClaimId, {
+      id: creditClaimId, identity_type: 'internal_transfer_credit',
+      primary_operation_id: debitClaimId, user_id: toUserId,
+      signature, snapshot: recipientSnapshot, snapshot_available: true, created_at: now,
+    });
+
+    const transactionOut = {
+      ...input.transactionOut,
+      metadata: {
+        ...(input.transactionOut.metadata ?? {}),
+        wallet_operation_id: debitOperationId,
+        wallet_snapshot: senderSnapshot,
+      },
+    };
+    const transactionIn = {
+      ...input.transactionIn,
+      metadata: {
+        ...(input.transactionIn.metadata ?? {}),
+        wallet_operation_id: creditOperationId,
+        wallet_snapshot: recipientSnapshot,
+      },
+    };
+    await repo.insert('transactions', String(transactionOut.id), transactionOut);
+    await repo.insert('transactions', String(transactionIn.id), transactionIn);
+    return {
+      state: 'applied',
+      snapshots: { sender: senderSnapshot, recipient: recipientSnapshot },
+    };
+  });
+}
+
+module.exports = {
+  operationIdentity, operationSignature, legacyFloat,
+  applyWalletOperation, applyInternalTransfer,
+};

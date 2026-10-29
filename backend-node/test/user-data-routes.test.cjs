@@ -220,3 +220,27 @@ test('invalid search limits and oversized query strings are rejected', async () 
     await app.close();
   }
 });
+
+test('recipient lookup supports username and phone while returning only public fields', async () => {
+  const db = new MemoryDatabase();
+  await db.collection('users').insert_one(user('owner'));
+  await db.collection('users').insert_one(user('bob', {
+    username: 'bob', full_name: 'Bob Example', email: 'private@example.invalid',
+    phone: '+22890123456', country: 'TG',
+  }));
+  const app = await start(db);
+  try {
+    const usernameResponse = await get(app, '/api/users/lookup?q=bob');
+    assert.equal(usernameResponse.status, 200);
+    assert.deepEqual(await usernameResponse.json(), {
+      id: 'bob', username: 'bob', full_name: 'Bob Example', country: 'TG',
+    });
+
+    const phoneResponse = await get(app, '/api/users/lookup?q=%2B22890123456');
+    assert.equal(phoneResponse.status, 200);
+    assert.equal((await phoneResponse.json()).id, 'bob');
+    assert.equal((await get(app, '/api/users/lookup?q=missing')).status, 404);
+  } finally {
+    await app.close();
+  }
+});

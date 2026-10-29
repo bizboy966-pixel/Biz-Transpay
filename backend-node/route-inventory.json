@@ -1322,21 +1322,23 @@
       "path": "/api/transfers",
       "source": "backend/server.py",
       "handler": "transfer",
-      "status": "pending"
+      "status": "implemented_unverified",
+      "scope_note": "Biz-to-Biz only; Mobile Money/crypto payouts and email OTP initiation remain pending."
     },
     {
       "method": "POST",
       "path": "/api/transfers/email-otp/cancel",
       "source": "backend/server.py",
       "handler": "cancel_transfer_email_otp",
-      "status": "pending"
+      "status": "implemented_unverified",
+      "scope_note": "Cancellation is ported; email OTP challenge creation and verification remain pending."
     },
     {
       "method": "GET",
       "path": "/api/users/lookup",
       "source": "backend/server.py",
       "handler": "lookup_user",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

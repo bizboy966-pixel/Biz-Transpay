@@ -13,6 +13,12 @@ const PROVIDER_REFERENCE_KEYS = [
   'mbiyo_transaction_id', 'afribapay_transaction_id', 'fedapay_id',
   'provider_id', 'transaction_id',
 ];
+const LOOKUP_WINDOW_MS = 60_000;
+const MAX_LOOKUPS_PER_WINDOW = 30;
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function metadataObject(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
@@ -201,13 +207,27 @@ function numericSearchValue(needle) {
 }
 
 function createUserDataRoutes({ db, sessionService }) {
+  const lookupBuckets = new Map();
+  function enforceLookupLimit(userId) {
+    const now = Date.now();
+    const recent = (lookupBuckets.get(String(userId)) || []).filter(time => time > now - LOOKUP_WINDOW_MS);
+    if (recent.length >= MAX_LOOKUPS_PER_WINDOW) {
+      lookupBuckets.set(String(userId), recent);
+      return false;
+    }
+    recent.push(now);
+    lookupBuckets.set(String(userId), recent);
+    return true;
+  }
+
   return async function handleUserData(req, res) {
     const path = new URL(req.url, 'http://localhost').pathname;
     if (req.method !== 'GET') return false;
+    const isLookup = path === '/api/users/lookup';
     const isWallet = path === '/api/wallet/summary';
     const isList = path === '/api/transactions';
     const detailMatch = /^\/api\/transactions\/([^/]+)$/.exec(path);
-    if (!isWallet && !isList && !detailMatch) return false;
+    if (!isLookup && !isWallet && !isList && !detailMatch) return false;
     if (!db || !sessionService) {
       reply(res, 503, { detail: 'Données utilisateur indisponibles.', code: 'MIGRATION_INCOMPLETE' });
       return true;
@@ -222,6 +242,36 @@ function createUserDataRoutes({ db, sessionService }) {
       const user = await db.collection('users').find_one({ id: identity.userId }, { _id: 0 });
       if (!user) {
         reply(res, 401, { detail: 'Utilisateur introuvable.' });
+        return true;
+      }
+      if (isLookup) {
+        if (!enforceLookupLimit(identity.userId)) {
+          reply(res, 429, { detail: 'Trop de recherches. Réessayez dans une minute.' });
+          return true;
+        }
+        const url = new URL(req.url, 'http://localhost');
+        const needle = String(url.searchParams.get('q') || '').trim().toLowerCase();
+        if (!needle || needle.length > 100) {
+          reply(res, 422, { detail: 'Recherche invalide.' });
+          return true;
+        }
+        const recipient = await db.collection('users').find_one({
+          $or: [
+            { username: needle },
+            { email: needle },
+            { phone: { $regex: escapeRegex(needle), $options: 'i' } },
+          ],
+        }, { _id: 0, id: 1, username: 1, full_name: 1, country: 1 });
+        if (!recipient) {
+          reply(res, 404, { detail: 'Utilisateur introuvable' });
+          return true;
+        }
+        reply(res, 200, {
+          id: recipient.id,
+          username: recipient.username,
+          full_name: recipient.full_name || '',
+          country: recipient.country || '',
+        });
         return true;
       }
       if (isWallet) {

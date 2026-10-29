@@ -15,6 +15,7 @@ const { createSupportRoutes } = require('./support-routes.cjs');
 const { createPublicConfigRoutes } = require('./public-config-routes.cjs');
 const { createCryptoCatalogRoutes } = require('./crypto-catalog-routes.cjs');
 const { createExchangeRoutes } = require('./exchange-routes.cjs');
+const { createTransferRoutes } = require('./transfer-routes.cjs');
 const { createAdminUserRoutes } = require('./admin-user-routes.cjs');
 const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
 const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
@@ -58,6 +59,10 @@ function createServer({
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
   });
+  const transfers = createTransferRoutes({
+    db, sessionService, sessionSecret, env, verifyBot, cryptoCatalog,
+    notify: notifications.notify,
+  });
   const adminUserRoutes = createAdminUserRoutes({ db, sessionService, cryptoCatalog, env });
   const adminBalanceRoutes = createAdminBalanceRoutes({
     db, sessionService, cryptoCatalog, env,
@@ -88,6 +93,7 @@ function createServer({
           'user-support',
           'public-config',
           'crypto-catalog',
+          'internal-biz-transfers',
           'conversion-exchange',
           'admin-user-list',
           'admin-wallet-adjustment',
@@ -141,6 +147,7 @@ function createServer({
       if (await support.handleRoute(req, res)) return;
       if (await publicConfig.handleRoute(req, res)) return;
       if (await cryptoCatalog.handleRoute(req, res)) return;
+      if (await transfers.handleRoute(req, res)) return;
       if (await exchange.handleRoute(req, res)) return;
       if (await adminTransactionRoutes.handleRoute(req, res)) return;
       if (await adminBalanceRoutes.handleRoute(req, res)) return;
