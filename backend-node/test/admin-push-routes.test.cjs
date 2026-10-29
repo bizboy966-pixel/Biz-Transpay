@@ -33,6 +33,12 @@ class Collection {
     this.rows.push(structuredClone(row));
     return { inserted_id: row.id };
   }
+  async update_one(query, update) {
+    const row = this.rows.find(item => matches(item, query));
+    if (!row) return { matched_count: 0 };
+    Object.assign(row, update.$set || {});
+    return { matched_count: 1 };
+  }
 }
 
 class Database {
@@ -63,17 +69,37 @@ function setup() {
     ],
     admin_logs: [],
   });
+  const scheduled = [];
+  const deliveries = [];
+  const env = {
+    FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+      project_id: 'test-project',
+      client_email: 'push@test-project.iam.gserviceaccount.com',
+      private_key: 'test-private-key',
+    }),
+    FIREBASE_WEB_API_KEY: 'test-web-key',
+    FIREBASE_MESSAGING_SENDER_ID: '123456',
+    FIREBASE_APP_ID: '1:123456:web:test',
+    FIREBASE_VAPID_KEY: 'test-vapid-key',
+  };
   const handle = createAdminPushRoutes({
     db,
-    env: {},
+    env,
+    schedule: callback => scheduled.push(callback),
+    sendPushToUser: async (userId, message) => {
+      deliveries.push({ userId, message });
+      return ['sent'];
+    },
+    notify: async userId => ({ id: `notification-${userId}` }),
     sessionService: {
       async authenticate(token) {
         if (token !== 'admin-session') throw Object.assign(new Error('Session requise'), { status: 401 });
         return { userId: 'admin', session: { admin_auth_method: 'totp' } };
       },
+      requireRecentAuth() {},
     },
   });
-  return { db, handle };
+  return { db, handle, scheduled, deliveries };
 }
 
 async function call(handle, method, url, body, token = 'admin-session') {
@@ -119,4 +145,58 @@ test('admin campaign history excludes automatic notifications and enforces authe
   assert.equal(campaigns.body.campaigns[0].id, 'manual');
   const unauthorized = await call(handle, 'GET', '/api/admin/push/campaigns', undefined, 'invalid');
   assert.equal(unauthorized.status, 401);
+});
+
+test('admin push campaign is confirmed, idempotently queued, and records delivery results', async () => {
+  const { db, handle, scheduled, deliveries } = setup();
+  const payload = {
+    audience: 'user',
+    user_id: 'u1',
+    title: 'Information importante',
+    body: 'Votre espace est à jour.',
+    url: '/dashboard/transactions',
+    confirmation: 'CONFIRMER',
+    request_id: '11111111-1111-4111-8111-111111111111',
+  };
+  const queued = await call(handle, 'POST', '/api/admin/push/send', payload);
+  assert.equal(queued.status, 200, JSON.stringify(queued.body));
+  assert.deepEqual(queued.body, {
+    id: payload.request_id, status: 'queued', users: 1, devices: 1,
+  });
+  assert.equal(scheduled.length, 1);
+
+  const duplicate = await call(handle, 'POST', '/api/admin/push/send', payload);
+  assert.equal(duplicate.status, 200);
+  assert.equal(scheduled.length, 2);
+
+  await scheduled[0]();
+  await scheduled[1]();
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].userId, 'u1');
+  assert.equal(deliveries[0].message.data.notification_id, 'notification-u1');
+  const campaign = await db.collection('push_campaigns')
+    .find_one({ id: payload.request_id }, { _id: 0 });
+  assert.equal(campaign.status, 'sent');
+  assert.equal(campaign.sent, 1);
+  assert.equal(campaign.failed, 0);
+  assert.equal(campaign.processed, 1);
+});
+
+test('admin push refuses missing confirmation and external notification links', async () => {
+  const { handle, scheduled } = setup();
+  const payload = {
+    audience: 'user',
+    user_id: 'u1',
+    title: 'Information',
+    body: 'Message',
+    url: '/dashboard',
+    request_id: '22222222-2222-4222-8222-222222222222',
+  };
+  const unconfirmed = await call(handle, 'POST', '/api/admin/push/send', payload);
+  assert.equal(unconfirmed.status, 428);
+  const external = await call(handle, 'POST', '/api/admin/push/send', {
+    ...payload, confirmation: 'CONFIRMER', url: 'https://example.com',
+  });
+  assert.equal(external.status, 422);
+  assert.equal(scheduled.length, 0);
 });

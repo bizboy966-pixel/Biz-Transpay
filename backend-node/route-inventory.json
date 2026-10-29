@@ -251,7 +251,7 @@
       "path": "/api/admin/push/send",
       "source": "backend/server.py",
       "handler": "admin_send_push_campaign",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

@@ -183,7 +183,11 @@ function createServer({
   });
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
-  const adminPushRoutes = createAdminPushRoutes({ db, sessionService, env });
+  const adminPushRoutes = createAdminPushRoutes({
+    db, sessionService, env,
+    sendPushToUser: notifications.sendPushToUser,
+    notify: notifications.notify,
+  });
   // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
