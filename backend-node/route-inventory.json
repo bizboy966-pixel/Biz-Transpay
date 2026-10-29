@@ -153,56 +153,56 @@
       "path": "/api/admin/payment-providers/afribapay",
       "source": "backend/server.py",
       "handler": "admin_get_afribapay",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PUT",
       "path": "/api/admin/payment-providers/afribapay",
       "source": "backend/server.py",
       "handler": "admin_update_afribapay",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/payment-providers/izipay",
       "source": "backend/server.py",
       "handler": "admin_get_izipay",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PUT",
       "path": "/api/admin/payment-providers/izipay",
       "source": "backend/server.py",
       "handler": "admin_update_izipay",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/payment-providers/mbiyo",
       "source": "backend/server.py",
       "handler": "admin_get_mbiyo",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PUT",
       "path": "/api/admin/payment-providers/mbiyo",
       "source": "backend/server.py",
       "handler": "admin_update_mbiyo",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
       "path": "/api/admin/payment-providers/paydunya",
       "source": "backend/server.py",
       "handler": "admin_get_paydunya",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "PUT",
       "path": "/api/admin/payment-providers/paydunya",
       "source": "backend/server.py",
       "handler": "admin_update_paydunya",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
