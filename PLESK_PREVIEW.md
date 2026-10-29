@@ -11,7 +11,7 @@ does not connect to Plesk or change its database.
 - Application Startup File: `app.js`
 - Package Manager: `npm`
 - Node.js: version 20 or newer
-- Document Root: `generated-artifacts/frontend-build` under the application root
+- Document Root: `dist` under the application root
 - Application Mode: `production`
 
 ## Environment variables in Plesk
@@ -36,9 +36,9 @@ npm install
 npm run build
 ```
 
-Then click **Restart App** in Plesk. The build is written to
-`generated-artifacts/frontend-build`; that directory is generated locally on
-Plesk and excluded from Git.
+Then click **Restart App** in Plesk. The build is written to `dist/` at the
+application root. Plesk can detect `dist/index.html` after the build; the
+directory is generated locally on Plesk and excluded from Git.
 
 The root and frontend `.npmrc` files select the public npm registry. The npm
 lockfiles use canonical `registry.npmjs.org` tarball URLs (without Replit's

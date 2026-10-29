@@ -28,3 +28,9 @@ Plesk's Node.js build step runs `npm run build` from the application root. The r
 **Why:** Plesk fails before startup if the root build script is absent; strict peer checks can also reject the existing React dependency graph even though its production frontend build succeeds.
 
 **How to apply:** Verify the exact root `npm run build` command in Replit and on the Plesk host, and confirm the generated frontend directory matches what the Node server serves.
+
+Plesk's static-output detection expects a root-level `dist/index.html`; a successful build into a custom `generated-artifacts` path may still be reported as missing.
+
+**Why:** Plesk scans conventional static output paths when applying hosting settings and does not infer a custom CRA `BUILD_PATH`.
+
+**How to apply:** Build to root `dist/`, point both the Node server's static root and Plesk's document root there, and keep the generated directory excluded from Git.

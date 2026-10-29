@@ -9,9 +9,9 @@ if (!['preview', 'production'].includes(migrationEnvironment)) {
   process.exit(1);
 }
 
-const staticRoot = path.resolve(__dirname, 'generated-artifacts', 'frontend-build');
+const staticRoot = path.resolve(__dirname, 'dist');
 if (!fs.existsSync(path.join(staticRoot, 'index.html'))) {
-  console.error('Frontend build missing. Run "npm run build:frontend" before starting the Plesk app.');
+  console.error('Frontend build missing. Run "npm run build" before starting the Plesk app.');
   process.exit(1);
 }
 
