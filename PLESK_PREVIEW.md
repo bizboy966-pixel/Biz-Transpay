@@ -6,11 +6,13 @@ callbacks.
 
 ## Plesk Node.js settings
 
-- Application Root: the repository root (for example, `/httpdocs`)
+- Application Root: the repository root in a separate Preview directory attached
+  to the temporary hostname, not the production domain's `/httpdocs`
 - Application Startup File: `app.js`
 - Package Manager: `npm`
 - Node.js: version 20 or newer
-- Document Root: `generated-artifacts/frontend-build` under the application root
+- Document Root: `generated-artifacts/frontend-build` under the Preview
+  application root
 - Application Mode: `production` is compatible; the separate migration-mode
   variable below must remain `preview`
 
@@ -38,6 +40,11 @@ npm run build:frontend
 Then click **Restart App** in Plesk. The build is written to
 `generated-artifacts/frontend-build`; that directory is generated locally on
 Plesk and excluded from Git.
+
+The root and frontend `.npmrc` files select the public npm registry and tell
+npm to replace only `package-firewall.replit.internal` lockfile URLs. This is
+needed because Plesk cannot resolve that Replit-only host; direct tarball URLs
+from other providers remain unchanged.
 
 The current Node startup checks that the split-table data schema already exists.
 `backend-node/sql/preview-schema.sql` creates only `migration_locks`; it does

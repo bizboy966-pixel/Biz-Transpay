@@ -16,3 +16,9 @@ The user chose to test the Node app on Plesk. `localhost` in `MYSQL_DATABASE_URL
 **Why:** Replit Preview and Plesk are separate machines, and opening production MySQL to Replit would violate the user's Preview-first boundary.
 
 **How to apply:** Test on a temporary Plesk hostname with a dedicated Preview database and Plesk-local MySQL connection. Keep Replit Preview diagnostic-only if it cannot reach that database; never point either environment at production as a workaround.
+
+Plesk installs can also fail when a Replit-generated npm lockfile embeds `package-firewall.replit.internal`, which Plesk cannot resolve.
+
+**Why:** The lockfile can preserve Replit's internal tarball host even when npm is run outside Replit.
+
+**How to apply:** Configure npm to use `https://registry.npmjs.org/` and replace only the Replit firewall hostname, preserving direct package tarball hosts. Keep the Preview clone and app root separate from the production domain's document root.
