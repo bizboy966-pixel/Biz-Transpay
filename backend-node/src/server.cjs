@@ -1,5 +1,7 @@
 'use strict';
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const { createAuthSessionRoutes, verifyCsrf } = require('./auth-session-routes.cjs');
 const { createAuthLoginRoute } = require('./auth-login.cjs');
 const { createAuthRegisterRoute } = require('./auth-register.cjs');
@@ -25,11 +27,101 @@ const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs')
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 
+const STATIC_MIME_TYPES = {
+  '.css': 'text/css; charset=utf-8',
+  '.gif': 'image/gif',
+  '.html': 'text/html; charset=utf-8',
+  '.ico': 'image/x-icon',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.svg': 'image/svg+xml',
+  '.txt': 'text/plain; charset=utf-8',
+  '.webp': 'image/webp',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+async function serveStatic(req, res, root) {
+  if (!root || !['GET', 'HEAD'].includes(String(req.method || '').toUpperCase())) return false;
+  let pathname;
+  try { pathname = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname); }
+  catch {
+    res.writeHead(400);
+    res.end();
+    return true;
+  }
+  if (pathname === '/healthz' || pathname === '/api' || pathname.startsWith('/api/')) return false;
+
+  const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const candidate = path.resolve(root, relative);
+  if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+    res.writeHead(404);
+    res.end();
+    return true;
+  }
+
+  let file = candidate;
+  let stat;
+  try {
+    stat = await fs.promises.stat(file);
+    if (!stat.isFile()) stat = null;
+  } catch { stat = null; }
+
+  if (!stat) {
+    // Serve the React entry point for client-side routes, but never disguise a
+    // missing asset (such as a missing JS bundle) as a successful HTML response.
+    if (path.extname(relative)) {
+      res.writeHead(404);
+      res.end();
+      return true;
+    }
+    file = path.join(root, 'index.html');
+    try {
+      stat = await fs.promises.stat(file);
+      if (!stat.isFile()) stat = null;
+    } catch { stat = null; }
+  }
+  if (!stat) {
+    res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Frontend build unavailable');
+    return true;
+  }
+
+  const extension = path.extname(file).toLowerCase();
+  const headers = {
+    'Content-Type': STATIC_MIME_TYPES[extension] || 'application/octet-stream',
+    'Content-Length': String(stat.size),
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': path.basename(file) === 'index.html'
+      ? 'no-cache' : 'public, max-age=31536000, immutable',
+  };
+  res.writeHead(200, headers);
+  if (String(req.method).toUpperCase() === 'HEAD') {
+    res.end();
+    return true;
+  }
+  await new Promise(resolve => {
+    const stream = fs.createReadStream(file);
+    stream.on('error', () => {
+      if (!res.headersSent) res.writeHead(500);
+      res.end();
+      resolve();
+    });
+    stream.on('end', resolve);
+    stream.pipe(res);
+  });
+  return true;
+}
+
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
   env = process.env, verifyBot, sendEmail, onAuthRecoveryError,
   sendTelegramNotification,
-} = {}) {
+} = {}, { staticRoot: configuredStaticRoot = '' } = {}) {
+  const staticRoot = configuredStaticRoot ? path.resolve(configuredStaticRoot) : '';
   const telegramNotifier = sendTelegramNotification
     ? { enqueueAdminLogin: sendTelegramNotification }
     : createTelegramNotifier({ db, env });
@@ -125,6 +217,7 @@ function createServer({
     try {
       const path = new URL(req.url, 'http://localhost').pathname;
       const method = String(req.method || 'GET').toUpperCase();
+      if (await serveStatic(req, res, staticRoot)) return;
       if (method === 'GET' && path === '/api/') {
         res.statusCode = 200;
         res.end(JSON.stringify({ message: 'Biz-transPay API', status: 'ok' }));

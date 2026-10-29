@@ -43,7 +43,9 @@ async function start() {
       };
     }
     startupStage = 'server-listen';
-    server = createServer(dependencies).listen(port, '0.0.0.0', () => {
+    server = createServer(dependencies, {
+      staticRoot: process.env.STATIC_ROOT || '',
+    }).listen(port, '0.0.0.0', () => {
       console.log(process.env.MYSQL_DATABASE_URL
         ? `Preview Node server on port ${port}; only verified authentication routes are enabled.`
         : `Migration diagnostic server on port ${port}; business routes disabled.`);
