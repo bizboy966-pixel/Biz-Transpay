@@ -29,10 +29,231 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function isProtectedPlatformOwner(user, env) {
+  if (user?.platform_owner === true) return true;
+  const ownerEmail = String(env.PLATFORM_OWNER_EMAIL || '').trim().toLowerCase();
+  if (!ownerEmail || String(user?.email || '').trim().toLowerCase() !== ownerEmail) return false;
+  const created = Date.parse(user.created_at || '');
+  const claimBefore = Date.parse(env.PLATFORM_OWNER_CLAIM_BEFORE || '');
+  return Number.isFinite(created) && Number.isFinite(claimBefore) && created <= claimBefore;
+}
+
+function adminUpdateError(res, error) {
+  const status = Number.isInteger(error.status) ? error.status : 500;
+  reply(res, status, {
+    detail: error.code
+      ? { code: error.code, message: error.message }
+      : status >= 500 ? 'Erreur interne.' : error.message,
+  });
+}
+
 function createAdminUserRoutes({
   db, sessionService, cryptoCatalog, env = process.env,
   notify = async () => {}, notifyAdminKyc = async () => {},
 }) {
+  async function handleUserUpdate(req, res, match) {
+    try {
+      const { admin } = await authorizeAdmin(req, {
+        db, sessionService, env, permission: 'users:write',
+        action: 'admin_update_user', sensitive: true,
+      });
+      const userId = decodeURIComponent(match[1]);
+      if (!userId || userId.length > 160) {
+        reply(res, 422, { detail: 'Identifiant utilisateur invalide' });
+        return true;
+      }
+      const target = await db.collection('users').find_one({ id: userId }, { _id: 0 });
+      if (!target) {
+        reply(res, 404, { detail: 'Utilisateur introuvable' });
+        return true;
+      }
+      const body = await readJson(req, 16 * 1024);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        reply(res, 422, { detail: 'Corps de requête invalide' });
+        return true;
+      }
+      const allowed = new Set([
+        'full_name', 'username', 'email', 'phone', 'country',
+        'role', 'admin_role', 'account_type', 'confirmation',
+      ]);
+      if (Object.keys(body).some(key => !allowed.has(key))) {
+        reply(res, 422, { detail: 'Champ de modification non autorisé' });
+        return true;
+      }
+      const updates = {};
+      const limits = {
+        full_name: 200, username: 64, email: 320, phone: 64, country: 100,
+      };
+      for (const [field, maxLength] of Object.entries(limits)) {
+        if (body[field] === undefined || body[field] === null) continue;
+        if (typeof body[field] !== 'string' || body[field].length > maxLength) {
+          reply(res, 422, { detail: `Champ ${field} invalide` });
+          return true;
+        }
+        updates[field] = body[field].trim();
+      }
+      if (updates.email) updates.email = updates.email.toLowerCase();
+      if (body.account_type !== undefined && body.account_type !== null) {
+        if (!['personal', 'merchant'].includes(body.account_type)) {
+          reply(res, 422, { detail: 'Type de compte invalide' });
+          return true;
+        }
+        updates.account_type = body.account_type;
+      }
+      if (body.role !== undefined && body.role !== null) {
+        if (!['user', 'admin', 'super_admin'].includes(body.role)) {
+          reply(res, 422, { detail: 'Rôle invalide' });
+          return true;
+        }
+        updates.role = body.role;
+      }
+      if (body.admin_role !== undefined && body.admin_role !== null) {
+        if (!['general', 'finance', 'operations', 'support', 'compliance'].includes(body.admin_role)) {
+          reply(res, 422, { detail: 'Rôle administratif invalide' });
+          return true;
+        }
+        updates.admin_role = body.admin_role;
+      }
+
+      const protectedIdentityFields = ['role', 'admin_role', 'email', 'account_type'];
+      if (isProtectedPlatformOwner(target, env)
+          && protectedIdentityFields.some(field => field in updates)) {
+        reply(res, 403, { detail: 'Le compte propriétaire de la plateforme est protégé.' });
+        return true;
+      }
+      const confirmation = String(body.confirmation || '').trim().toUpperCase();
+      if ('role' in updates || 'admin_role' in updates) {
+        if (String(admin._effective_role || admin.role || '').toLowerCase() !== 'super_admin') {
+          reply(res, 403, { detail: 'Seul un super administrateur peut modifier les rôles.' });
+          return true;
+        }
+        if (confirmation !== 'CONFIRMER') {
+          reply(res, 428, {
+            detail: { code: 'ADMIN_CONFIRMATION_REQUIRED', message: 'Saisissez CONFIRMER.' },
+          });
+          return true;
+        }
+      }
+      if (updates.role === 'user') delete updates.admin_role;
+      if (updates.admin_role && (updates.role || target.role) !== 'admin') {
+        reply(res, 422, { detail: 'Un rôle administratif nécessite un compte admin.' });
+        return true;
+      }
+      if (isProtectedPlatformOwner(target, env)
+          && updates.role && updates.role !== 'super_admin') {
+        reply(res, 403, { detail: 'Le compte propriétaire ne peut pas être rétrogradé.' });
+        return true;
+      }
+      if ('username' in updates && updates.username !== target.username) {
+        const duplicate = await db.collection('users').find_one({
+          username: updates.username, id: { $ne: userId },
+        }, { _id: 0, id: 1 });
+        if (duplicate) {
+          reply(res, 409, { detail: "Nom d'utilisateur déjà utilisé" });
+          return true;
+        }
+      }
+      if ('email' in updates && updates.email !== target.email) {
+        const duplicate = await db.collection('users').find_one({
+          email: updates.email, id: { $ne: userId },
+        }, { _id: 0, id: 1 });
+        if (duplicate) {
+          reply(res, 409, { detail: 'Adresse email déjà utilisée' });
+          return true;
+        }
+      }
+
+      const update = {};
+      if (updates.role === 'user') {
+        update.$unset = { admin_role: '' };
+      }
+      if (Object.keys(updates).length) update.$set = updates;
+      if (Object.keys(update).length) {
+        await db.collection('users').update_one({ id: userId }, update);
+      }
+      await db.collection('admin_logs').insert_one({
+        id: randomUUID(),
+        admin_id: admin.id,
+        admin_username: admin.username || '',
+        action: 'update_user',
+        target_user_id: userId,
+        target_username: target.username || '',
+        details: updates,
+        created_at: new Date().toISOString(),
+      });
+      const user = await db.collection('users').find_one({ id: userId }, SECRET_FIELDS);
+      reply(res, 200, user);
+    } catch (error) {
+      adminUpdateError(res, error);
+    }
+    return true;
+  }
+
+  async function handleUserAction(req, res, match) {
+    try {
+      const { admin } = await authorizeAdmin(req, {
+        db, sessionService, env, permission: 'users:write',
+        action: 'admin_user_action', sensitive: true,
+      });
+      const userId = decodeURIComponent(match[1]);
+      const action = String(match[2] || '');
+      const updates = {
+        block: { is_blocked: true },
+        unblock: { is_blocked: false },
+        ban: { is_banned: true, is_blocked: true },
+        unban: { is_banned: false, is_blocked: false },
+        block_withdrawals: { withdrawals_blocked: true },
+        unblock_withdrawals: { withdrawals_blocked: false },
+      }[action];
+      if (!updates) {
+        reply(res, 400, { detail: 'Action inconnue' });
+        return true;
+      }
+      const body = await readJson(req, 16 * 1024);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        reply(res, 422, { detail: 'Corps de requête invalide' });
+        return true;
+      }
+      if (typeof body.reason !== 'undefined'
+          && (typeof body.reason !== 'string' || body.reason.length > 500)) {
+        reply(res, 422, { detail: 'Motif invalide' });
+        return true;
+      }
+      if (String(body.confirmation || '').trim().toUpperCase() !== 'CONFIRMER') {
+        reply(res, 428, {
+          detail: { code: 'ADMIN_CONFIRMATION_REQUIRED', message: 'Saisissez CONFIRMER.' },
+        });
+        return true;
+      }
+      const target = await db.collection('users').find_one({ id: userId }, { _id: 0 });
+      if (!target) {
+        reply(res, 404, { detail: 'Utilisateur introuvable' });
+        return true;
+      }
+      if (isProtectedPlatformOwner(target, env)
+          && Object.values(updates).some(value => value === true)) {
+        reply(res, 403, { detail: 'Le compte propriétaire de la plateforme est protégé.' });
+        return true;
+      }
+      await db.collection('users').update_one({ id: userId }, { $set: updates });
+      await db.collection('admin_logs').insert_one({
+        id: randomUUID(),
+        admin_id: admin.id,
+        admin_username: admin.username || '',
+        action,
+        target_user_id: userId,
+        target_username: target.username || '',
+        details: { reason: String(body.reason || '').slice(0, 500) },
+        created_at: new Date().toISOString(),
+      });
+      const user = await db.collection('users').find_one({ id: userId }, SECRET_FIELDS);
+      reply(res, 200, { ok: true, user });
+    } catch (error) {
+      adminUpdateError(res, error);
+    }
+    return true;
+  }
+
   async function handleKycRoute(req, res, url, decisionMatch) {
     const list = !decisionMatch;
     try {
@@ -172,6 +393,14 @@ function createAdminUserRoutes({
       ? /^\/api\/admin\/kyc\/([^/]+)\/decision$/.exec(url.pathname)
       : null;
     if (kycList || kycDecision) return handleKycRoute(req, res, url, kycDecision);
+    const userUpdate = req.method === 'PATCH'
+      ? /^\/api\/admin\/users\/([^/]+)$/.exec(url.pathname)
+      : null;
+    if (userUpdate) return handleUserUpdate(req, res, userUpdate);
+    const userAction = req.method === 'POST'
+      ? /^\/api\/admin\/users\/([^/]+)\/action\/([^/]+)$/.exec(url.pathname)
+      : null;
+    if (userAction) return handleUserAction(req, res, userAction);
     if (req.method !== 'GET') return false;
     const adminsList = url.pathname === '/api/admin/admins';
     const listUsers = url.pathname === '/api/admin/users';

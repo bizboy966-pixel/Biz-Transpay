@@ -440,14 +440,14 @@
       "path": "/api/admin/users/{user_id}",
       "source": "backend/server.py",
       "handler": "admin_update_user",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/admin/users/{user_id}/action/{action}",
       "source": "backend/server.py",
       "handler": "admin_user_action",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -650,7 +650,7 @@
       "path": "/api/deposits/crypto/{deposit_id}",
       "source": "backend/server.py",
       "handler": "get_crypto_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -678,7 +678,7 @@
       "path": "/api/deposits/mobile-money/pending",
       "source": "backend/server.py",
       "handler": "get_latest_pending_momo_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -699,7 +699,7 @@
       "path": "/api/deposits/mobile-money/{deposit_id}",
       "source": "backend/server.py",
       "handler": "get_momo_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -1359,14 +1359,14 @@
       "path": "/api/webhooks/afribapay",
       "source": "backend/server.py",
       "handler": "afribapay_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "HEAD",
       "path": "/api/webhooks/afribapay",
       "source": "backend/server.py",
       "handler": "afribapay_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",

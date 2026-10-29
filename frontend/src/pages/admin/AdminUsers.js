@@ -161,8 +161,12 @@ function UserActionsMenu({ user, me, onChanged, onNav }) {
   const nextType = currentType === 'merchant' ? 'personal' : 'merchant';
 
   const doAction = async (action, ok) => {
+    const confirmation = window.prompt('Tapez CONFIRMER pour appliquer cette action.');
+    if (confirmation?.trim().toUpperCase() !== 'CONFIRMER') return;
     try {
-      await api.post(`/admin/users/${user.id}/action/${action}`, { reason: '' });
+      await api.post(`/admin/users/${user.id}/action/${action}`, {
+        reason: '', confirmation,
+      });
       toast.success(ok);
       setOpen(false); onChanged();
     } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }

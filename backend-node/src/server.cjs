@@ -8,6 +8,7 @@ const { createAuthRegisterRoute } = require('./auth-register.cjs');
 const { createAuthMfaRoutes } = require('./auth-mfa-routes.cjs');
 const { createAuthRecoveryRoutes } = require('./auth-recovery-routes.cjs');
 const { createUserDataRoutes } = require('./user-data-routes.cjs');
+const { createDepositStatusRoutes } = require('./deposit-status-routes.cjs');
 const { createTelegramNotifier } = require('./telegram-notifications.cjs');
 const { createKycRoutes } = require('./kyc-routes.cjs');
 const { createUserSettingsRoutes } = require('./user-settings-routes.cjs');
@@ -26,6 +27,7 @@ const { createAdminPaymentProviderRoutes } = require('./admin-payment-provider-r
 const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
 const { createIntegrationSettingsRoutes } = require('./integration-settings-routes.cjs');
+const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 
@@ -146,6 +148,7 @@ function createServer({
     onError: onAuthRecoveryError,
   });
   const handleUserData = createUserDataRoutes({ db, sessionService });
+  const depositStatusRoutes = createDepositStatusRoutes({ db, sessionService });
   const handleKyc = createKycRoutes({
     db, sessionService, notifyAdminKyc: telegramNotifier.enqueueKycEvent,
   });
@@ -185,6 +188,7 @@ function createServer({
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
   const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService });
+  const webhookProbeRoutes = createWebhookProbeRoutes();
   const adminPushRoutes = createAdminPushRoutes({
     db, sessionService, env,
     sendPushToUser: notifications.sendPushToUser,
@@ -279,6 +283,7 @@ function createServer({
       if (await handleAuthRecovery(req, res)) return;
       if (await handleAuthSession(req, res)) return;
       if (await handleUserData(req, res)) return;
+      if (await depositStatusRoutes.handleRoute(req, res)) return;
       if (await handleKyc(req, res)) return;
       if (await handleUserSettings(req, res)) return;
       if (await notifications.handleRoute(req, res)) return;
@@ -297,6 +302,7 @@ function createServer({
       if (await adminSettingsRoutes.handleRoute(req, res)) return;
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
       if (await integrationSettingsRoutes.handleRoute(req, res)) return;
+      if (await webhookProbeRoutes.handleRoute(req, res)) return;
       if (await adminPushRoutes(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({

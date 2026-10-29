@@ -67,9 +67,11 @@ export default function AdminUserDetail() {
   };
 
   const doAction = async (action) => {
+    const confirmation = window.prompt('Tapez CONFIRMER pour appliquer cette action.');
+    if (confirmation?.trim().toUpperCase() !== 'CONFIRMER') return;
     setPending(true);
     try {
-      await api.post(`/admin/users/${id}/action/${action}`, { reason });
+      await api.post(`/admin/users/${id}/action/${action}`, { reason, confirmation });
       toast.success('Action effectuée');
       setModal(null); setReason('');
       load();
