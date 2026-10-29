@@ -249,7 +249,8 @@ const SPLIT_COLLECTIONS = new Set([
   'notifications', 'password_reset_limits', 'password_reset_tokens',
   'payment_links', 'platform_bootstrap', 'push_campaigns', 'push_devices',
   'referral_commissions',
-  'sessions', 'settings', 'transactions', 'users', 'wallet_operations',
+  'sessions', 'settings', 'support_messages', 'tickets', 'transactions',
+  'users', 'wallet_operations',
   'webhook_events', 'withdrawal_email_otp_limits', 'withdrawal_email_otps',
 ]);
 

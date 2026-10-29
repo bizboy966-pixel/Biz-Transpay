@@ -117,6 +117,13 @@ async function applyWalletOperation(store, input) {
         created_at: new Date().toISOString(),
       });
     }
+    if (state === 'applied' && input.ledger) {
+      if (!input.ledger.id || String(input.ledger.user_id) !== userId
+          || String(input.ledger.metadata?.wallet_operation_id || '') !== operationId) {
+        throw new Error('Invalid atomic wallet ledger entry');
+      }
+      await repo.insert('transactions', String(input.ledger.id), input.ledger);
+    }
     return { state, snapshot };
   });
 }

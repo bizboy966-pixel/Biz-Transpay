@@ -11,6 +11,10 @@ const { createKycRoutes } = require('./kyc-routes.cjs');
 const { createUserSettingsRoutes } = require('./user-settings-routes.cjs');
 const { createNotificationsPushRoutes } = require('./notifications-push-routes.cjs');
 const { createReferralRoutes } = require('./referral-routes.cjs');
+const { createSupportRoutes } = require('./support-routes.cjs');
+const { createPublicConfigRoutes } = require('./public-config-routes.cjs');
+const { createCryptoCatalogRoutes } = require('./crypto-catalog-routes.cjs');
+const { createExchangeRoutes } = require('./exchange-routes.cjs');
 
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
@@ -44,6 +48,12 @@ function createServer({
   });
   const notifications = createNotificationsPushRoutes({ db, sessionService, env });
   const referrals = createReferralRoutes({ db, sessionService });
+  const support = createSupportRoutes({ db, sessionService });
+  const publicConfig = createPublicConfigRoutes({ db, env });
+  const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env });
+  const exchange = createExchangeRoutes({
+    db, sessionService, cryptoCatalog, notify: notifications.notify,
+  });
   // Explicit fail-closed migration server. Never forward traffic to live Python/providers.
   return http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -63,6 +73,10 @@ function createServer({
           'user-settings',
           'user-notifications-push',
           'user-referrals',
+          'user-support',
+          'public-config',
+          'crypto-catalog',
+          'conversion-exchange',
         ],
       }));
       return;
@@ -103,6 +117,10 @@ function createServer({
       if (await handleUserSettings(req, res)) return;
       if (await notifications.handleRoute(req, res)) return;
       if (await referrals.handleRoute(req, res)) return;
+      if (await support.handleRoute(req, res)) return;
+      if (await publicConfig.handleRoute(req, res)) return;
+      if (await cryptoCatalog.handleRoute(req, res)) return;
+      if (await exchange.handleRoute(req, res)) return;
       res.statusCode = 503;
       res.end(JSON.stringify({
         detail: 'Migration Node.js en cours. Opération non disponible.',

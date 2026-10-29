@@ -31,6 +31,7 @@ async function start() {
         'password_reset_limits', 'password_reset_tokens', 'settings',
         'transactions', 'momo_deposits', 'crypto_deposits', 'wallet_operations',
         'kyc', 'notifications', 'push_devices', 'referral_commissions',
+        'tickets', 'support_messages',
       ].map(collection => store.columnsForCollection(collection)));
       dependencies = {
         db: store,
