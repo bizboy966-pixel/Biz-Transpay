@@ -19,6 +19,7 @@ const { createTransferRoutes } = require('./transfer-routes.cjs');
 const { createAdminUserRoutes } = require('./admin-user-routes.cjs');
 const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
 const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
+const { createAdminPaymentLinkRoutes } = require('./admin-payment-link-routes.cjs');
 const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
@@ -76,6 +77,9 @@ function createServer({
     db, sessionService, cryptoCatalog, env,
   });
   const adminTransactionRoutes = createAdminTransactionRoutes({
+    db, sessionService, env,
+  });
+  const adminPaymentLinkRoutes = createAdminPaymentLinkRoutes({
     db, sessionService, env,
   });
   const adminSettingsRoutes = createAdminSettingsRoutes({ db, sessionService, env });
@@ -166,6 +170,7 @@ function createServer({
       if (await transfers.handleRoute(req, res)) return;
       if (await exchange.handleRoute(req, res)) return;
       if (await adminTransactionRoutes.handleRoute(req, res)) return;
+      if (await adminPaymentLinkRoutes.handleRoute(req, res)) return;
       if (await adminBalanceRoutes.handleRoute(req, res)) return;
       if (await adminUserRoutes.handleRoute(req, res)) return;
       if (await adminSettingsRoutes.handleRoute(req, res)) return;

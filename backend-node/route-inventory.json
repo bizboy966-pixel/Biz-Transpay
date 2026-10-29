@@ -118,7 +118,7 @@
       "path": "/api/admin/links",
       "source": "backend/server.py",
       "handler": "admin_list_links",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
