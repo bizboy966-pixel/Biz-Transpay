@@ -27,15 +27,21 @@ separate production migration.
 - `src/wallet.cjs` reproduces the existing Python idempotency identifiers and
   signatures and implements an atomic wallet-operation state machine against a
   transactional repository interface.
-- `src/mysql-store.cjs` has an InnoDB transaction/repository foundation.
-- `sql/preview-schema.sql` creates only the initial JSON document and lock tables.
-  It contains **no user, transaction, settings, or other exported data**.
+- `src/mysql-store.cjs` and `src/document-store.cjs` use the split-table ZIP layout:
+  one allowlisted table per collection, `doc_id`, and the full JSON in
+  `raw_document`. Writes also refresh the matching `field_*` columns.
+- `sql/preview-schema.sql` creates only the InnoDB lock-support table. Import the
+  split-table ZIP separately to create the collection tables and captured records.
+- The ZIP is a best-effort, non-atomic production capture, not a guaranteed
+  complete or lossless migration snapshot. Its own verification report lists
+  collection mismatches; do not treat it as a validated production replacement.
 - `route-inventory.json` lists the Python routes. A `pending` entry is not
   implemented or tested in Node.js.
 
 These modules are not yet connected to login, user, payment, API or admin routes.
-Session tests use an in-memory adapter; they are not a substitute for a real
-MySQL/InnoDB test. No Node route has been marked verified.
+The split-table store tests use a SQL mock; they are not a substitute for
+integration tests against the exact MariaDB version and imported Preview schema.
+No Node route has been marked verified.
 
 ## Tests and route inventory
 

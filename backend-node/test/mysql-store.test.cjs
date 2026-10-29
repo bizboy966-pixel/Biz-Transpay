@@ -73,6 +73,7 @@ test('does not accept PostgreSQL URLs or a missing Preview database', () => {
 function documentPool() {
   const rows = new Map();
   const locks = new Set();
+  const writes = [];
   const selectDocuments = (table, params) => {
     const docs = [...rows.entries()].filter(([key]) => key.startsWith(`${table}:`)).map(([, doc]) => doc);
     const candidate = params;
@@ -99,6 +100,7 @@ function documentPool() {
           if (sql.startsWith('INSERT INTO migration_locks')) { locks.add(params[0]); return [{ affectedRows: 1 }]; }
           if (sql.startsWith('SELECT lock_name')) return [[{ lock_name: params[0] }]];
           if (sql.startsWith('INSERT INTO `')) {
+            writes.push({ sql, params });
             const table = sql.match(/^INSERT INTO `([^`]+)`/)[1];
             const [id, raw] = params;
             const key = `${table}:${id}`;
@@ -116,6 +118,7 @@ function documentPool() {
             return [selectDocuments(table, params).map(raw_document => ({ raw_document }))];
           }
           if (sql.startsWith('UPDATE `')) {
+            writes.push({ sql, params });
             const table = sql.match(/^UPDATE `([^`]+)`/)[1];
             const oldId = params.at(-1);
             const newId = params[0];
@@ -143,6 +146,7 @@ function documentPool() {
         ]];
       }
       if (sql.startsWith('INSERT INTO `')) {
+        writes.push({ sql, params });
         const table = sql.match(/^INSERT INTO `([^`]+)`/)[1];
         const [id, raw] = params;
         const key = `${table}:${id}`;
@@ -161,7 +165,7 @@ function documentPool() {
     },
     async end() {},
   };
-  return { pool, rows, locks };
+  return { pool, rows, locks, writes };
 }
 
 test('document collections provide parameterized CRUD, filters and aggregation', async () => {
@@ -178,6 +182,18 @@ test('document collections provide parameterized CRUD, filters and aggregation',
   });
   assert.deepEqual(changed, { matched_count: 1, modified_count: 1 });
   assert.equal((await users.find_one({ id: 'a' })).balance_xof, 525);
+  const insert = fake.writes.find(write => write.sql.startsWith('INSERT INTO `users`'));
+  const insertColumns = [...insert.sql.matchAll(/`([^`]+)`/g)].map(match => match[1]);
+  const insertedFields = insertColumns.filter(column => column.startsWith('field_'));
+  assert.equal(insert.params[2 + insertedFields.indexOf('field_balance_xof')], '500');
+  assert.equal(insert.params[2 + insertedFields.indexOf('field_tags')], '["one"]');
+  const update = fake.writes.find(write => write.sql.startsWith('UPDATE `users`'));
+  const updateColumns = [...update.sql.matchAll(/`([^`]+)`=\?/g)].map(match => match[1]);
+  const updateValues = Object.fromEntries(updateColumns.map((column, index) =>
+    [column, update.params[index]]));
+  assert.equal(updateValues.field_balance_xof, '525');
+  assert.equal(updateValues.field_tags, '["one"]');
+  assert.equal(JSON.parse(updateValues.raw_document).balance_xof, 525);
   assert.ok(fake.locks.has('users'));
   const groups = await users.aggregate([
     { $group: { _id: '$username', total: { $sum: '$balance_xof' } } },
