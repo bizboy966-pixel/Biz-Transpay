@@ -29,6 +29,7 @@ const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs')
 const { createIntegrationSettingsRoutes } = require('./integration-settings-routes.cjs');
 const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
 const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
+const { createAfriBaPayWebhookRoutes } = require('./afribapay-webhook-routes.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 
@@ -191,6 +192,7 @@ function createServer({
   const adminFundsRoutes = createAdminFundsRoutes({ db, sessionService, env });
   const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService });
   const webhookProbeRoutes = createWebhookProbeRoutes();
+  const afriBaPayWebhookRoutes = createAfriBaPayWebhookRoutes({ db, env });
   const adminPushRoutes = createAdminPushRoutes({
     db, sessionService, env,
     sendPushToUser: notifications.sendPushToUser,
@@ -305,6 +307,7 @@ function createServer({
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
       if (await adminFundsRoutes.handleRoute(req, res)) return;
       if (await integrationSettingsRoutes.handleRoute(req, res)) return;
+      if (await afriBaPayWebhookRoutes.handleRoute(req, res)) return;
       if (await webhookProbeRoutes.handleRoute(req, res)) return;
       if (await adminPushRoutes(req, res)) return;
       res.statusCode = 503;

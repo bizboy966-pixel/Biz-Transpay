@@ -124,7 +124,9 @@ async function applyWalletOperation(store, input) {
       }
       const ledgerId = String(input.ledger.id);
       const existingLedger = await repo.get('transactions', ledgerId);
-      const canCreateLedger = state === 'applied' || snapshot !== null;
+      const hasLegacyCreditMarker = Array.isArray(input.legacyMarkers)
+        && input.legacyMarkers.length > 0;
+      const canCreateLedger = state === 'applied' || snapshot !== null || hasLegacyCreditMarker;
       const metadata = {
         ...(existingLedger?.metadata || {}),
         ...(input.ledger.metadata || {}),
@@ -134,15 +136,21 @@ async function applyWalletOperation(store, input) {
       else if (existingLedger?.metadata?.wallet_snapshot) {
         metadata.wallet_snapshot = existingLedger.metadata.wallet_snapshot;
       }
-      const ledger = { ...(existingLedger || {}), ...input.ledger, metadata };
+      const ledger = {
+        ...(existingLedger || {}),
+        ...input.ledger,
+        ...(existingLedger?.reference ? { reference: existingLedger.reference } : {}),
+        metadata,
+      };
       if (existingLedger) {
+        const existingOperationId = String(existingLedger.metadata?.wallet_operation_id || '');
         const matchesOperation = String(existingLedger.user_id) === userId
             && String(existingLedger.type || '') === String(input.ledger.type || '')
-            && String(existingLedger.reference || '') === String(input.ledger.reference || '')
             && String(existingLedger.currency || '') === String(input.ledger.currency || '')
             && Number(existingLedger.amount) === Number(input.ledger.amount)
-            && (!existingLedger.metadata?.wallet_operation_id
-              || String(existingLedger.metadata.wallet_operation_id) === operationId);
+            && (existingOperationId
+              ? existingOperationId === operationId
+              : String(existingLedger.reference || '') === String(input.ledger.reference || ''));
         if (!matchesOperation
             || !['pending', 'completed'].includes(existingLedger.status)
             || (state === 'applied' && existingLedger.status !== 'pending')) {

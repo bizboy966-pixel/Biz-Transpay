@@ -311,6 +311,7 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
           status: 'failed',
           provider_status: providerStatusValue,
           provider_transaction_id: providerTransactionId || null,
+          afribapay_transaction_id: providerTransactionId || null,
           afribapay_verified_at: verifiedAt,
         });
         reply(res, 200, { received: true });
@@ -324,10 +325,15 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
         return true;
       }
       const fee = amount(deposit.fee ?? deposit.total_fee ?? 0);
-      const net = amount(deposit.wallet_credit_amount ?? deposit.amount_net)
-        || (fee ? expectedGross.minus(fee) : expectedGross);
-      if (!fee || fee.isNegative() || !net.isFinite() || !net.isPositive()
-          || net.greaterThan(expectedGross)) {
+      const netValue = deposit.wallet_credit_amount ?? deposit.amount_net;
+      const net = netValue === null || netValue === undefined
+        ? (fee ? expectedGross.minus(fee) : expectedGross)
+        : amount(netValue);
+      const gatewayFee = amount(deposit.gateway_fee ?? 0);
+      const platformFee = amount(deposit.platform_fee ?? 0);
+      if (!fee || fee.isNegative() || !net || !net.isFinite() || !net.isPositive()
+          || net.greaterThan(expectedGross) || !gatewayFee || gatewayFee.isNegative()
+          || !platformFee || platformFee.isNegative()) {
         await quarantine('invalid_settlement_amount');
         return true;
       }
@@ -342,13 +348,12 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
       const walletField = `balance_${currency.toLowerCase()}`;
       const ledgerId = `afribapay-deposit-${depositId}`;
       const reference = `BTP-PD-${depositId.slice(0, 16)}`;
-      const gatewayFee = amount(deposit.gateway_fee ?? 0) || new Decimal(0);
-      const platformFee = amount(deposit.platform_fee ?? 0) || new Decimal(0);
       const metadata = {
         operation_id: operationId,
         wallet_operation_id: operationId,
         provider: 'afribapay',
-        provider_reference: providerTransactionId || null,
+        provider_reference: providerTransactionId
+          || deposit.afribapay_transaction_id || deposit.afribapay_payment_id || null,
         operator: deposit.operator || null,
         operator_name: deposit.operator_name || null,
         country,
@@ -403,6 +408,7 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
           updated_at: verifiedAt,
           provider_status: providerStatusValue,
           provider_transaction_id: providerTransactionId || null,
+          afribapay_transaction_id: providerTransactionId || null,
           afribapay_verified_at: verifiedAt,
           amount_gross: expectedGross.toNumber(),
           fee: fee.toNumber(),

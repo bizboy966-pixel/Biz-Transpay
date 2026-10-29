@@ -1373,7 +1373,7 @@
       "path": "/api/webhooks/afribapay",
       "source": "backend/server.py",
       "handler": "afribapay_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",

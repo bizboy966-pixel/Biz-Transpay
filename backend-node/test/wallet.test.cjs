@@ -216,6 +216,25 @@ test('legacy credit marker repairs a matching pending ledger without fabricating
   assert.equal(Object.hasOwn(ledger.metadata, 'wallet_snapshot'), false);
 });
 
+test('legacy credit marker can restore a missing ledger without fabricating a balance snapshot', async () => {
+  const store = new MemoryStore();
+  store.user().wallet_credit_operation_ids = ['deposit-1'];
+  const result = await applyWalletOperation(store, credit({
+    ledger: {
+      id: 'deposit-ledger', user_id: 'alice', type: 'deposit', direction: 'in',
+      amount: 500, currency: 'XOF', status: 'completed', reference: 'BTP-PD-deposit1',
+      metadata: { provider: 'afribapay', wallet_operation_id: 'deposit-1' },
+    },
+    legacyMarkers: [['credited_deposit_ids', 'deposit-1']],
+  }));
+  const ledger = store.docs.get('transactions:deposit-ledger');
+  assert.equal(result.state, 'already');
+  assert.equal(result.snapshot, null);
+  assert.equal(store.user().balance_xof, 1000);
+  assert.equal(ledger.status, 'completed');
+  assert.equal(Object.hasOwn(ledger.metadata, 'wallet_snapshot'), false);
+});
+
 test('wallet credit refuses a completed or mismatched ledger collision without changing balances', async () => {
   const store = new MemoryStore();
   store.docs.set('transactions:deposit-ledger', {
