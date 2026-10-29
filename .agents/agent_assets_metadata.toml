@@ -92,3 +92,17 @@ mtime_ms = 1793246738387
 storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/597fba53-593d-4aa5-b546-c3f67f530eab/a22e5cd8-e3ca-43a9-975b-960d782f8cad"
 storage_version_token = "1793246787224616"
 content_type = "application/octet-stream"
+
+[[outputs]]
+id = "0y4k-AadFFgyUxqk7CyRN"
+uri = "file://generated-artifacts/production-mysql-export/biz-transpay-production-split-tables-mariadb-fixed.zip"
+type = "unspecified"
+title = "Biz-transPay — ZIP corrigé pour MariaDB"
+description = "Version sans la ligne SET time_zone mal formée qui bloquait l’import. Contient 37 tables et 37 236 enregistrements capturés. L’archive est vérifiée; l’export reste best-effort et présente toujours 9 écarts avec la production."
+logical_id = "4534c5b9-89b1-4e51-a920-203820755c7b"
+content_hash = "sha256:5fdffa8566d42ac7f72592cc0df6815fad6d1d322d3760cea72dc68061392d57"
+size = 47273895
+mtime_ms = 1793248405532
+storage_uri = "gcs://replit-rams-assets-janeway/rams/assets/repl:c8c099bd-9561-4822-ac1a-4c8911a305b9/4534c5b9-89b1-4e51-a920-203820755c7b/0670ee1d-3245-4cfa-bb57-dcf30c4d27e8"
+storage_version_token = "1793248425086819"
+content_type = "application/octet-stream"

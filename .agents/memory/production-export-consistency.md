@@ -9,4 +9,4 @@ For MariaDB-compatible SQL exports, avoid `CAST(... AS JSON)`: store validated U
 
 **Why:** Production data changed between separate read-only queries during an attempted export, including row counts and transaction-related records, which made a no-loss guarantee impossible.
 
-**How to apply:** For full production migrations, obtain a consistent database backup or snapshot first; if only independent live reads are available, stop before packaging and explain the limitation. When the target is MariaDB, validate every serialized JSON document and use UTF-8 text storage rather than `CAST(... AS JSON)`.
+**How to apply:** For full production migrations, obtain a consistent database backup or snapshot first; if only independent live reads are available, stop before packaging and explain the limitation. When the target is MariaDB, validate every serialized JSON document, use UTF-8 text storage rather than `CAST(... AS JSON)`, and avoid unnecessary `SET time_zone` statements when dates are stored as `DATETIME`.
