@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import api from '@/api';
 
-const PUBLIC_DOCS_URL = 'https://biz-transppayy.com/integration/docs';
+const PUBLIC_DOCS_URL = 'https://biz-transpay.com/integration/docs';
 
 const asList = (value) => {
   if (Array.isArray(value)) return value;

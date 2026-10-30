@@ -20,7 +20,7 @@ FIREBASE_APP_ID = "1:1097942310803:web:f6db67f980472560859266"
 FIREBASE_VAPID_KEY = "BEmcxvxl51tXKJlz_lqBD_Q18-NqKQxRN0nFcg3ZaBSkYeltM0a9_iXMdsE105VFnligfHnsk4_mOvxwSoiu62o"
 
 [userenv.production]
-OFFICIAL_DOMAIN = "https://biz-transppayy.com"
+OFFICIAL_DOMAIN = "https://biz-transpay.com"
 
 [env]
 DB_NAME = "biz_transpay"

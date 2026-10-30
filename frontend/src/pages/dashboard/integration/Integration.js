@@ -15,7 +15,7 @@ const errorMessage = (error, fallback) => {
   const detail = error?.response?.data?.detail;
   return typeof detail === 'string' ? detail : detail?.message || fallback;
 };
-const PUBLIC_DOCS_URL = 'https://biz-transppayy.com/integration/docs';
+const PUBLIC_DOCS_URL = 'https://biz-transpay.com/integration/docs';
 const DELETE_CONFIRMATION_PHRASE = 'SUPPRIMER';
 
 function Badge({ children, tone = 'slate' }) {

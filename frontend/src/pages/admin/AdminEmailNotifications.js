@@ -182,7 +182,7 @@ export default function AdminEmailNotifications() {
             onChange={(event) => setSenderEmail(event.target.value)}
             disabled={!canEdit}
             maxLength={254}
-            placeholder="notifications@biz-transppayy.com"
+            placeholder="notifications@biz-transpay.com"
             className="bt-field"
           />
           {!settings.resend_configured && (

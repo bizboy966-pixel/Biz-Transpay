@@ -339,14 +339,14 @@ Note prod : après redéploiement, les stats du dashboard remonteront tous les p
 - `POST /api/webhooks/fedapay` sans signature → 400 "Missing webhook signature" ✅
 - Screenshot du formulaire Deposit → Mobile Money validé (tous les champs demandés visibles, dropdown pays fonctionnel) ✅
 - Backend lint 0 erreur, frontend lint sans problèmes bloquants ✅
-- ⚠️ **Test E2E réel non exécuté** (nécessite un vrai numéro Mobile Money + le webhook configuré côté FedaPay dashboard vers `https://biz-transppayy.com/api/webhooks/fedapay`)
+- ⚠️ **Test E2E réel non exécuté** (nécessite un vrai numéro Mobile Money + le webhook configuré côté FedaPay dashboard vers `https://biz-transpay.com/api/webhooks/fedapay`)
 
 **⚠️ À faire côté FedaPay Dashboard AVANT de tester** :
 1. Se connecter sur https://app.fedapay.com
-2. Onglet Webhooks → ajouter l'URL : `https://biz-transppayy.com/api/webhooks/fedapay`
+2. Onglet Webhooks → ajouter l'URL : `https://biz-transpay.com/api/webhooks/fedapay`
 3. Sélectionner les événements : `transaction.approved`, `transaction.canceled`, `transaction.declined`, `transaction.refunded`, `payout.sent`, `payout.failed`, `payout.canceled`
 4. Utiliser le secret webhook fourni (`wh_live_...`)
-5. Autoriser le domaine `biz-transppayy.com` pour Checkout.js si utilisé côté navigateur
+5. Autoriser le domaine `biz-transpay.com` pour Checkout.js si utilisé côté navigateur
 
 **⚠️ Sécurité** — les clés LIVE ont été partagées dans le chat. Recommandé de les **régénérer** immédiatement sur le dashboard FedaPay, puis mettre à jour `.env` avec les nouvelles.
 
@@ -482,7 +482,7 @@ Note prod : après redéploiement, les stats du dashboard remonteront tous les p
 - ⚠️ Les clés API du super_admin ont aussi été purgées ; elles seront régénérées automatiquement à la prochaine consultation de `/dashboard/api` via `_ensure_api_keys` (idempotent).
 
 ## Implémenté (2026-02-XX) — Bug webhook Emergent + PDF docs téléchargeable (iter16)
-- ✅ **BUG — URL webhook migrée** : script exécuté sur TOUS les comptes existants → `webhook.url` désormais `https://biz-transppayy.com/api/v1/webhooks/{merchant_id}` pour l'ensemble de la plateforme. Migration idempotente. Zéro référence `emergent*` restante dans les webhooks (vérifié).
+- ✅ **BUG — URL webhook migrée** : script exécuté sur TOUS les comptes existants → `webhook.url` désormais `https://biz-transpay.com/api/v1/webhooks/{merchant_id}` pour l'ensemble de la plateforme. Migration idempotente. Zéro référence `emergent*` restante dans les webhooks (vérifié).
 - ✅ **Nouveau endpoint `GET /api-keys/documentation.pdf`** — génère un PDF pro (reportlab 5.0.0) de ~9 KB à la demande. Requiert JWT (401 sinon). `Content-Type: application/pdf`, filename `biz-transpay-api-docs.pdf`.
 - ✅ **Contenu PDF (7 sections)** :
   - Couverture + présentation
@@ -495,7 +495,7 @@ Note prod : après redéploiement, les stats du dashboard remonteront tous les p
   - Exemples SDK 5 langages (Node.js, Python, PHP, Laravel, JavaScript) + snippet vérification signature Node.js
 - ✅ **Bouton "Télécharger la documentation (PDF)"** (`btn-download-pdf`) intégré au header de `/dashboard/api/docs`. Loading state "Génération…", téléchargement via blob.
 
-**Testing** : `testing_agent_v3_fork` iter16 — **7/7 pytest backend + 100% frontend**. PDF vérifié : 8.6 KB, magic `%PDF-1.4`, contient `biz-transppayy`, **zéro** occurrence `emergent`, 7 sections + 5 langages + snippet HMAC.
+**Testing** : `testing_agent_v3_fork` iter16 — **7/7 pytest backend + 100% frontend**. PDF vérifié : 8.6 KB, magic `%PDF-1.4`, contient `biz-transpay`, **zéro** occurrence `emergent`, 7 sections + 5 langages + snippet HMAC.
 
 **Backlog restant (P2, non-bloquant)** :
 - **Refactor server.py** (3110 lignes → très urgent, dette à ce stade)
@@ -518,13 +518,13 @@ Note prod : après redéploiement, les stats du dashboard remonteront tous les p
 - Documenter dans l'UI admin que la régénération de clés API n'expose pas le plaintext au marchand (destructive-only)
 - Message "essayer de vider les filtres" quand la recherche renvoie 0 mais qu'il y a des filtres actifs
 
-## Implémenté (2026-02-XX) — Domaine officiel (remplacement Emergent → biz-transppayy.com)
-- ✅ **Nouvelle variable env** `OFFICIAL_DOMAIN=https://biz-transppayy.com` (backend `.env`) + `REACT_APP_PUBLIC_DOMAIN=https://biz-transppayy.com` (frontend `.env`).
-- ✅ **URL webhook par défaut** — `_default_webhook_url(uid)` retourne désormais `https://biz-transppayy.com/api/v1/webhooks/{uid}` (au lieu de la preview URL Emergent). Migration DB automatique pour tous les comptes existants dont le webhook pointait vers emergent.
-- ✅ **Documentation API** (`/dashboard/api/docs`) — tous les snippets cURL, Node.js, Python, PHP, Laravel, JavaScript affichent maintenant `https://biz-transppayy.com/api/v1/...` (vérifié : 6× `biz-transppayy`, 0× `emergentagent` dans le bundle).
-- ✅ **URLs de partage de liens de paiement** (`/dashboard/links`) — utilise `REACT_APP_PUBLIC_DOMAIN` avec fallback `window.location.origin`. Les marchands copient/partagent des URLs `biz-transppayy.com/pay/{slug}`.
+## Implémenté (2026-02-XX) — Domaine officiel (remplacement Emergent → biz-transpay.com)
+- ✅ **Nouvelle variable env** `OFFICIAL_DOMAIN=https://biz-transpay.com` (backend `.env`) + `REACT_APP_PUBLIC_DOMAIN=https://biz-transpay.com` (frontend `.env`).
+- ✅ **URL webhook par défaut** — `_default_webhook_url(uid)` retourne désormais `https://biz-transpay.com/api/v1/webhooks/{uid}` (au lieu de la preview URL Emergent). Migration DB automatique pour tous les comptes existants dont le webhook pointait vers emergent.
+- ✅ **Documentation API** (`/dashboard/api/docs`) — tous les snippets cURL, Node.js, Python, PHP, Laravel, JavaScript affichent maintenant `https://biz-transpay.com/api/v1/...` (vérifié : domaine corrigé dans les exemples).
+- ✅ **URLs de partage de liens de paiement** (`/dashboard/links`) — utilise `REACT_APP_PUBLIC_DOMAIN` avec fallback `window.location.origin`. Les marchands copient/partagent des URLs `biz-transpay.com/pay/{slug}`.
 - ✅ **Pas de fuites côté user** — grep exhaustif : aucune référence `emergentagent` dans les pages frontend. Les seules mentions restantes sont des imports Python internes (`emergentintegrations` SDK, non-user-facing) et des tests unitaires backend.
-- ⚠️ **Restent dynamiques (correct)** : `NotificationBell.js` (SSE endpoint interne), `Deposit.js` + `PublicLink.js` (`window.location.origin` envoyé à IziPay comme URL de retour — devient `biz-transppayy.com` en production).
+- ⚠️ **Restent dynamiques (correct)** : `NotificationBell.js` (SSE endpoint interne), `Deposit.js` + `PublicLink.js` (`window.location.origin` envoyé à IziPay comme URL de retour — devient `biz-transpay.com` en production).
 
 ## Implémenté (2026-02-XX) — Phase 3b (Documentation + Encryption at rest + SDK)
 - ✅ **Chiffrement au repos du webhook secret** via **Fernet** (`SECRETS_ENCRYPTION_KEY` dans `.env`). Chaque merchant a `webhook.secret_encrypted` (ciphertext `gAAAAA...`) en plus de `secret_hash`.
@@ -660,7 +660,7 @@ Le design doit dépasser Stripe/Flutterwave/Paystack/CinetPay/Moneroo/Lemon Sque
 
 **Testing** : 7/7 pytest backend, 100 % des flows frontend validés (iteration 7). Aucune régression sur les intégrations existantes (webhook signé, deposit, transfer biz_to_crypto, merchant API).
 
-**⚠️ Attention** : les correctifs sont en preview. Pour que la production `https://biz-transppayy.com` en bénéficie, **il faut redéployer** depuis Emergent.
+**⚠️ Attention** : les correctifs sont en preview. Pour que la production `https://biz-transpay.com` en bénéficie, **il faut redéployer** depuis Emergent.
 
 ## Implémenté (2026-07-29b) — Flow crypto IN-APP complet (v2)
 - ✅ **Suppression du redirect hosted** — passage à `POST /v1/payment-intents/direct` d'IzichangePay qui retourne directement `depositAddress`, `memo`, `amountToSend`, `expiresAt` sans redirection.
