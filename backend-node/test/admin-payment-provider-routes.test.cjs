@@ -29,7 +29,7 @@ class Collection {
   async insert_one(row) { this.rows.push(structuredClone(row)); }
 }
 
-function setup({ settings = [], user = {}, env = {} } = {}) {
+function setup({ settings = [], user = {}, env = {}, adminAuthMethod = 'totp' } = {}) {
   const collections = {
     users: new Collection([{
       id: 'admin-1', username: 'owner', role: 'super_admin',
@@ -49,7 +49,7 @@ function setup({ settings = [], user = {}, env = {} } = {}) {
       }
       return {
         userId: 'admin-1',
-        session: { admin_auth_method: 'totp' },
+        session: { admin_auth_method: adminAuthMethod },
       };
     },
     requireRecentAuth() { authChecks.recent += 1; },
@@ -159,6 +159,20 @@ test('provider credentials are encrypted, omitted from responses, and audited by
   assert.ok(updateAudit);
   assert.match(JSON.stringify(updateAudit.details), /api_key_secret/);
   assert.doesNotMatch(JSON.stringify(updateAudit), /sensitive/);
+});
+
+test('provider step-up denial preserves REAUTH_REQUIRED so the frontend can prompt for verification', async () => {
+  const { service, collections } = setup({ adminAuthMethod: 'password' });
+  const result = await call(service, 'PUT', '/api/admin/payment-providers/paydunya', {
+    enabled: false,
+  });
+
+  assert.equal(result.status, 428);
+  assert.deepEqual(result.body.detail, {
+    code: 'REAUTH_REQUIRED',
+    message: 'Confirmez cette action sensible avec votre mot de passe et l’authentificateur.',
+  });
+  assert.equal(collections.settings.rows.length, 0);
 });
 
 test('provider settings preserve omitted credentials and clear them only explicitly', async () => {

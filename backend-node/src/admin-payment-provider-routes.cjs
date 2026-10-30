@@ -427,7 +427,9 @@ function createAdminPaymentProviderRoutes({ db, sessionService, sessionSecret = 
       return true;
     } catch (error) {
       reply(res, error.status || 500, {
-        detail: error.status ? error.message : 'Erreur interne.',
+        detail: error.code
+          ? { code: error.code, message: error.message }
+          : error.status ? error.message : 'Erreur interne.',
       });
       return true;
     }
