@@ -539,6 +539,9 @@ function createPaydunyaInvoiceRoutes({
             submission_unknown: unknown,
             provider_status: rejected ? 'rejected' : 'unknown',
             afribapay_submission_phase: rejected ? 'rejected' : 'outcome_unknown',
+            ...(rejected ? {} : {
+              next_reconcile_at: new Date(Date.now() + 15_000).toISOString(),
+            }),
             updated_at: new Date().toISOString(),
           } });
           if (rejected) {

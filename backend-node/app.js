@@ -14,16 +14,19 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 }
 
 function startHttpServer(dependencies, healthState = null) {
-  const server = createServer(dependencies, {
+  const application = createServer(dependencies, {
     staticRoot: process.env.STATIC_ROOT || '',
     healthState,
-  }).listen(port, '0.0.0.0', () => {
+  });
+  const server = application.listen(port, '0.0.0.0', () => {
     console.log(healthState?.issue
       ? `${migrationEnvironment} Node diagnostic server on port ${port}; business APIs are blocked.`
       : `${migrationEnvironment} Node server on port ${port}; unverified routes remain disabled.`);
   });
+  application.afriBaPayDepositWorker?.start();
   for (const signal of ['SIGTERM', 'SIGINT']) {
     process.once(signal, () => {
+      application.afriBaPayDepositWorker?.stop();
       server.close(async () => {
         if (dependencies.db) await dependencies.db.close().catch(() => {});
         process.exit(0);

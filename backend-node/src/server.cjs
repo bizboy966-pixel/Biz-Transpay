@@ -39,6 +39,7 @@ const { createPayDunyaDisbursementProbeRoutes } = require('./paydunya-disburseme
 const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
 const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
 const { createAfriBaPayWebhookRoutes } = require('./afribapay-webhook-routes.cjs');
+const { createAfriBaPayDepositWorker } = require('./afribapay-deposit-worker.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 const { createMobileMoneyPayoutService } = require('./mobile-money-payout-service.cjs');
@@ -261,13 +262,18 @@ function createServer({
   });
   const webhookProbeRoutes = createWebhookProbeRoutes();
   const afriBaPayWebhookRoutes = createAfriBaPayWebhookRoutes({ db, env });
+  const afriBaPayDepositWorker = db ? createAfriBaPayDepositWorker({
+    db,
+    env,
+    reconcileOrder: afriBaPayWebhookRoutes.reconcileOrder,
+  }) : null;
   const adminPushRoutes = createAdminPushRoutes({
     db, sessionService, env,
     sendPushToUser: notifications.sendPushToUser,
     notify: notifications.notify,
   });
   // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
-  return http.createServer(async (req, res) => {
+  const appServer = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -401,6 +407,8 @@ function createServer({
       }
     }
   });
+  appServer.afriBaPayDepositWorker = afriBaPayDepositWorker;
+  return appServer;
 }
 
 module.exports = { createServer };

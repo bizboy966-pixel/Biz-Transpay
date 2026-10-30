@@ -86,44 +86,71 @@ function providerConfig(saved, env) {
   }
 }
 
-async function providerStatus(config, orderId, fetchImpl) {
-  const basic = Buffer.from(`${config.apiUser}:${config.apiKey}`, 'utf8').toString('base64');
-  let tokenResponse;
+function tokenExpiration(payload, token, now = Date.now()) {
+  const expiresAt = Date.parse(String(providerValue(payload, ['expires_at']) || ''));
+  if (Number.isFinite(expiresAt)) return expiresAt;
+  const expiresIn = Number(providerValue(payload, ['expires_in']));
+  if (Number.isFinite(expiresIn) && expiresIn > 0) return now + (expiresIn * 1000);
   try {
-    tokenResponse = await fetchImpl(new URL('/v1/token', config.baseUrl), {
-      method: 'POST',
-      headers: {
-        authorization: `Basic ${basic}`,
-        'content-type': 'application/json',
-        accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(20_000),
-    });
+    const claims = JSON.parse(Buffer.from(String(token).split('.')[1], 'base64url').toString('utf8'));
+    if (Number.isFinite(Number(claims.exp))) return Number(claims.exp) * 1000;
   } catch {
-    const error = new Error('AfribaPAY token service unavailable');
-    error.status = 503;
-    throw error;
+    // Opaque tokens without expiry metadata are used only for the current request.
   }
-  if (!tokenResponse.ok) {
-    const error = new Error('AfribaPAY token service rejected the request');
-    error.status = 503;
-    throw error;
-  }
-  let tokenPayload;
-  try { tokenPayload = await tokenResponse.json(); } catch {
-    const error = new Error('AfribaPAY token response invalid');
-    error.status = 503;
-    throw error;
-  }
-  const token = String(providerValue(tokenPayload, ['access_token']) || '');
+  return null;
+}
+
+async function providerStatus(config, orderId, fetchImpl, tokenCache = null, transactionId = '') {
+  const cacheKey = `${config.baseUrl}:${config.apiUser}:${
+    crypto.createHash('sha256').update(config.apiKey).digest('hex')}`;
+  const now = Date.now();
+  let token = tokenCache?.get(cacheKey)?.expiresAt > now + 60_000
+    ? tokenCache.get(cacheKey).token : '';
   if (!token) {
-    const error = new Error('AfribaPAY token missing');
-    error.status = 503;
-    throw error;
+    const basic = Buffer.from(`${config.apiUser}:${config.apiKey}`, 'utf8').toString('base64');
+    let tokenResponse;
+    try {
+      tokenResponse = await fetchImpl(new URL('/v1/token', config.baseUrl), {
+        method: 'POST',
+        headers: {
+          authorization: `Basic ${basic}`,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch {
+      const error = new Error('AfribaPAY token service unavailable');
+      error.status = 503;
+      throw error;
+    }
+    if (!tokenResponse.ok) {
+      const error = new Error('AfribaPAY token service rejected the request');
+      error.status = 503;
+      throw error;
+    }
+    let tokenPayload;
+    try { tokenPayload = await tokenResponse.json(); } catch {
+      const error = new Error('AfribaPAY token response invalid');
+      error.status = 503;
+      throw error;
+    }
+    token = String(providerValue(tokenPayload, ['access_token']) || '');
+    if (!token) {
+      const error = new Error('AfribaPAY token missing');
+      error.status = 503;
+      throw error;
+    }
+    const expiresAt = tokenExpiration(tokenPayload, token);
+    if (tokenCache && expiresAt) tokenCache.set(cacheKey, { token, expiresAt });
   }
 
   const statusUrl = new URL('/v1/status', config.baseUrl);
-  statusUrl.searchParams.set('order_id', orderId);
+  const transactionIdentifier = String(transactionId || '').trim();
+  statusUrl.searchParams.set(
+    transactionIdentifier ? 'transaction_id' : 'order_id',
+    transactionIdentifier || orderId,
+  );
   let statusResponse;
   try {
     statusResponse = await fetchImpl(statusUrl, {
@@ -142,6 +169,7 @@ async function providerStatus(config, orderId, fetchImpl) {
   if (!statusResponse.ok) {
     const error = new Error('AfribaPAY status service rejected the request');
     error.status = 503;
+    error.providerStatusCode = statusResponse.status;
     throw error;
   }
   try {
@@ -168,15 +196,17 @@ function amount(value) {
 function eventOrderId(payload, url) {
   const data = payload?.data;
   return String(
-    url.searchParams.get('order_id')
-      || url.searchParams.get('reference')
-      || first(data, ['order_id', 'orderId', 'merchant_order_id', 'reference'])
+    first(data, ['order_id', 'orderId', 'merchant_order_id', 'reference'])
       || first(payload, ['order_id', 'orderId', 'merchant_order_id', 'reference'])
+      || url.searchParams.get('order_id')
+      || url.searchParams.get('reference')
+      || url.searchParams.get('ref')
       || '',
   ).trim();
 }
 
 function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globalThis.fetch }) {
+  const tokenCache = new Map();
   async function handleRoute(req, res) {
     if (req.method !== 'POST') return false;
     let url;
@@ -234,7 +264,13 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
       const expectedOrderId = String(
         deposit.afribapay_order_id || deposit.order_id || deposit.id || '',
       ).trim();
-      const statusPayload = await providerStatus(config, expectedOrderId, fetchImpl);
+      const statusPayload = await providerStatus(
+        config,
+        expectedOrderId,
+        fetchImpl,
+        tokenCache,
+        deposit.afribapay_transaction_id || deposit.provider_transaction_id,
+      );
       const providerStatusValue = String(providerValue(statusPayload, [
         'status', 'payment_status', 'transaction_status',
       ]) || '').trim().toLowerCase();
@@ -248,7 +284,13 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
 
       const updatePending = async values => deposits.update_one(
         { id: String(deposit.id), status: 'pending' },
-        { $set: { ...values, updated_at: verifiedAt } },
+        {
+          $set: { ...values, updated_at: verifiedAt },
+          $unset: {
+            afribapay_last_reconcile_error: '',
+            afribapay_reconcile_paused: '',
+          },
+        },
       );
       const quarantine = async reason => {
         await updatePending({
@@ -415,11 +457,19 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
           gateway_fee: gatewayFee.toNumber(),
           platform_fee: platformFee.toNumber(),
           amount_net: net.toNumber(),
-        }, $unset: { reconciliation_mismatch: '', settlement_error: '' } },
+        }, $unset: {
+          reconciliation_mismatch: '',
+          settlement_error: '',
+          afribapay_last_reconcile_error: '',
+          afribapay_reconcile_paused: '',
+        } },
       );
       reply(res, 200, { received: true });
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 503;
+      if (Number.isInteger(error.providerStatusCode)) {
+        res.providerStatusCode = error.providerStatusCode;
+      }
       reply(res, status, {
         detail: status === 403 ? 'Signature invalide.'
           : status === 400 ? 'Notification AfribaPAY invalide.'
@@ -430,7 +480,42 @@ function createAfriBaPayWebhookRoutes({ db, env = process.env, fetchImpl = globa
     return true;
   }
 
-  return { handleRoute };
+  async function reconcileOrder(orderId) {
+    const value = String(orderId || '').trim();
+    if (!value || value.length > 200) {
+      const error = new Error('Invalid AfriBaPay order identifier');
+      error.status = 400;
+      throw error;
+    }
+    const saved = await db.collection('settings').find_one(
+      { id: 'payment_provider_afribapay' }, { _id: 0 },
+    );
+    const config = providerConfig(saved, env);
+    const rawBody = Buffer.from(JSON.stringify({ order_id: value }), 'utf8');
+    const signature = crypto.createHmac('sha256', config.apiKey).update(rawBody).digest('hex');
+    const request = {
+      method: 'POST',
+      url: `/api/webhooks/afribapay?ref=${encodeURIComponent(value)}`,
+      headers: { afribapay_sign: signature },
+      rawBody,
+    };
+    const response = {
+      writeHead(statusCode) { this.statusCode = statusCode; },
+      end(body) { this.body = body; },
+    };
+    await handleRoute(request, response);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      const error = new Error('AfriBaPay deposit reconciliation failed');
+      error.status = response.statusCode || 503;
+      if (Number.isInteger(response.providerStatusCode)) {
+        error.providerStatusCode = response.providerStatusCode;
+      }
+      throw error;
+    }
+    return response.body ? JSON.parse(response.body) : { received: true };
+  }
+
+  return { handleRoute, reconcileOrder };
 }
 
 module.exports = {

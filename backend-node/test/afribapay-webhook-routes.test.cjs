@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const security = require('../src/security.cjs');
 const { createAfriBaPayWebhookRoutes } = require('../src/afribapay-webhook-routes.cjs');
 
-function createDb({ providerStatus } = {}) {
+function createDb({ providerStatus, providerTransactionId = '' } = {}) {
   const sessionSecret = 'webhook-test-session-secret';
   const key = security.fernetKey(sessionSecret);
   const apiKey = 'test-afribapay-key';
@@ -25,6 +25,7 @@ function createDb({ providerStatus } = {}) {
     status: 'pending',
     country: 'CI',
     currency: 'XOF',
+    ...(providerTransactionId ? { afribapay_transaction_id: providerTransactionId } : {}),
     operator: 'orange',
     phone_number: '0000000000',
     provider_submitted_amount: 2000,
@@ -88,10 +89,18 @@ function createDb({ providerStatus } = {}) {
       assert.equal(options.headers.authorization,
         `Basic ${Buffer.from('test-api-user:test-afribapay-key').toString('base64')}`);
       assert.equal(JSON.stringify(options).includes('must-not-be-sent'), false);
-      return { ok: true, json: async () => ({ data: { access_token: 'mock-provider-token' } }) };
+      return {
+        ok: true,
+        json: async () => ({ data: { access_token: 'mock-provider-token', expires_in: 86400 } }),
+      };
     }
     assert.equal(parsed.pathname, '/v1/status');
-    assert.equal(parsed.searchParams.get('order_id'), 'order-1');
+    assert.equal(parsed.searchParams.get('transaction_id') || parsed.searchParams.get('order_id'),
+      providerTransactionId || 'order-1');
+    assert.equal(
+      parsed.searchParams.has('transaction_id') && parsed.searchParams.has('order_id'),
+      false,
+    );
     assert.equal(options.headers.authorization, 'Bearer mock-provider-token');
     assert.equal(JSON.stringify(options).includes('must-not-be-sent'), false);
     return { ok: true, json: async () => structuredClone(providerStatus || {
@@ -111,10 +120,10 @@ function createDb({ providerStatus } = {}) {
   };
 }
 
-function makeRequest(raw, apiKey, signature = null) {
+function makeRequest(raw, apiKey, signature = null, requestUrl = '/api/webhooks/afribapay') {
   const request = Readable.from([Buffer.from(raw)]);
   request.method = 'POST';
-  request.url = '/api/webhooks/afribapay';
+  request.url = requestUrl;
   request.headers = signature
     ? { afribapay_sign: signature }
     : {};
@@ -125,8 +134,10 @@ function sign(raw, apiKey) {
   return crypto.createHmac('sha256', apiKey).update(Buffer.from(raw)).digest('hex');
 }
 
-async function send(service, raw, apiKey, signature = sign(raw, apiKey)) {
-  const req = makeRequest(raw, apiKey, signature);
+async function send(
+  service, raw, apiKey, signature = sign(raw, apiKey), requestUrl = '/api/webhooks/afribapay',
+) {
+  const req = makeRequest(raw, apiKey, signature, requestUrl);
   const res = {
     writeHead(status) { this.statusCode = status; },
     end(body) { this.body = JSON.parse(body); },
@@ -212,4 +223,65 @@ test('AfribaPAY confirmed failures update status without changing balances', asy
   assert.equal(fixture.deposits.get('order-1').status, 'failed');
   assert.equal(fixture.docs.get('users:user-1').balance_xof, 1000);
   assert.equal(fixture.docs.has('transactions:afribapay-deposit-order-1'), false);
+});
+
+test('AfribaPAY callback can correlate with the signed body-free order reference', async () => {
+  const fixture = createDb();
+  const service = createAfriBaPayWebhookRoutes({
+    db: fixture.db, env: { SESSION_SECRET: fixture.sessionSecret }, fetchImpl: fixture.fetchImpl,
+  });
+  const raw = JSON.stringify({ data: { status: 'SUCCESS' } });
+  const result = await send(
+    service, raw, fixture.apiKey, sign(raw, fixture.apiKey),
+    '/api/webhooks/afribapay?ref=order-1',
+  );
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(fixture.deposits.get('order-1').status, 'approved');
+  assert.equal(fixture.docs.get('users:user-1').balance_xof, 2950);
+});
+
+test('AfribaPAY fallback status reconciliation shares the idempotent settlement path', async () => {
+  const fixture = createDb();
+  const service = createAfriBaPayWebhookRoutes({
+    db: fixture.db, env: { SESSION_SECRET: fixture.sessionSecret }, fetchImpl: fixture.fetchImpl,
+  });
+
+  await service.reconcileOrder('order-1');
+  const callback = await send(
+    service,
+    JSON.stringify({ order_id: 'order-1', status: 'SUCCESS' }),
+    fixture.apiKey,
+  );
+
+  assert.equal(callback.statusCode, 200);
+  assert.equal(fixture.deposits.get('order-1').status, 'approved');
+  assert.equal(fixture.docs.get('users:user-1').balance_xof, 2950);
+  assert.equal(fixture.docs.get('transactions:afribapay-deposit-order-1').amount, 1950);
+});
+
+test('AfribaPAY status lookup uses its transaction ID and reuses an unexpired token', async () => {
+  const fixture = createDb({
+    providerTransactionId: 'provider-tx-1',
+    providerStatus: {
+      data: {
+        status: 'PENDING',
+        order_id: 'order-1',
+        transaction_id: 'provider-tx-1',
+        original_amount: 2000,
+        currency: 'XOF',
+        country_code: 'CI',
+      },
+    },
+  });
+  const service = createAfriBaPayWebhookRoutes({
+    db: fixture.db, env: { SESSION_SECRET: fixture.sessionSecret }, fetchImpl: fixture.fetchImpl,
+  });
+  const raw = JSON.stringify({ order_id: 'order-1', status: 'SUCCESS' });
+  await send(service, raw, fixture.apiKey);
+  await send(service, raw, fixture.apiKey);
+
+  assert.equal(fixture.deposits.get('order-1').status, 'pending');
+  assert.equal(fixture.providerCalls, 3);
+  assert.equal(fixture.docs.get('users:user-1').balance_xof, 1000);
 });
