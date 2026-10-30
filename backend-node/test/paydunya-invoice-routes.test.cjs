@@ -33,6 +33,7 @@ function setup({ fetchImpl, modeEnabled = true } = {}) {
       mode: 'test',
       store_name: 'Biz-transPay',
       modes: {
+        softpay_direct: { enabled: false },
         psr: { enabled: modeEnabled },
         par_redirect: { enabled: modeEnabled },
       },
@@ -276,6 +277,7 @@ test('generic Mobile Money start uses the only enabled PayDunya flow', async () 
     },
   });
   collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: false },
     psr: { enabled: true },
     par_redirect: { enabled: false },
   };
@@ -289,12 +291,12 @@ test('generic Mobile Money start uses the only enabled PayDunya flow', async () 
   assert.equal(providerCalls, 1);
 });
 
-test('generic Mobile Money start fails closed when multiple PayDunya flows are enabled', async () => {
+test('generic Mobile Money start fails closed when PSR and PAR are both enabled without SoftPay', async () => {
   let providerCalls = 0;
   const { service, collections } = setup({
     fetchImpl: async () => {
       providerCalls += 1;
-      throw new Error('must not choose a payment flow arbitrarily');
+      throw new Error('ambiguous PayDunya flow must not be submitted');
     },
   });
   const result = await call(
@@ -305,7 +307,39 @@ test('generic Mobile Money start fails closed when multiple PayDunya flows are e
   assert.equal(collections.momo_deposits.rows.length, 0);
 });
 
-test('generic Mobile Money selects ready AfriBaPay when overlapping routes are unavailable', async () => {
+test('generic Mobile Money uses SoftPay direct and returns phone instructions', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { response_code: '00', token: 'provider-softpay-token' }; },
+      };
+    },
+  });
+  collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+
+  const result = await call(
+    service, '/api/deposits/mobile-money/start', depositRequest, 'generic-softpay-direct-001',
+  );
+
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.payment_kind, 'phone');
+  assert.equal(result.body.mode, 'softpay_direct');
+  assert.equal(result.body.prompt_sent, true);
+  assert.equal('checkout_url' in result.body, false);
+  assert.equal('psr_token_url' in result.body, false);
+  assert.equal(collections.momo_deposits.rows[0].paydunya_flow, 'softpay_direct');
+  assert.equal(providerCalls, 1);
+});
+
+test('generic Mobile Money selects ready AfriBaPay when PayDunya has no usable flow', async () => {
   const requests = [];
   const { service, collections } = setupAfriBaPay({
     fetchImpl: async (url, options) => {
@@ -351,7 +385,7 @@ test('generic Mobile Money selects ready AfriBaPay when overlapping routes are u
   );
   Object.assign(paydunya, {
     enabled: true,
-    modes: { psr: true, par_redirect: true },
+    modes: { softpay_direct: false, psr: false, par_redirect: false },
     catalog: [{
       provider: 'paydunya',
       country: 'CM',

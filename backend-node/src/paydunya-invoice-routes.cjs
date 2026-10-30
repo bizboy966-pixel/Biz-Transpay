@@ -10,6 +10,9 @@ const {
 } = require('./supported-currencies.cjs');
 const { decryptSetting } = require('./provider-settings.cjs');
 const { loadAfriBaPayConfig, submitAfriBaPayin } = require('./afribapay-payin.cjs');
+const {
+  paydunyaModeEnabled, preferredPaydunyaPayinMode,
+} = require('./paydunya-payin-capabilities.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
 
@@ -284,14 +287,7 @@ function createPaydunyaInvoiceRoutes({
         const afriSelected = selectOperator(
           afriConfig?.catalog, country, operatorCode, 'afribapay',
         );
-        const modes = settings?.modes && typeof settings.modes === 'object'
-          ? settings.modes : {};
-        const enabledModes = Object.entries(modes).filter(([, value]) => (
-          value === true || value?.enabled === true
-        )).map(([name]) => name);
-        const supportedModes = enabledModes.filter(name => (
-          ['psr', 'par_redirect'].includes(name)
-        ));
+        const preferredPaydunyaMode = preferredPaydunyaPayinMode(settings);
         const paydunyaCredentialsReady = Boolean(
           (settings?.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
           && (settings?.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
@@ -299,13 +295,13 @@ function createPaydunyaInvoiceRoutes({
         );
         const paydunyaReady = Boolean(
           settings?.enabled && paydunyaSelected && paydunyaCredentialsReady
-          && enabledModes.length === 1 && supportedModes.length === 1,
+          && preferredPaydunyaMode,
         );
 
         // Match the public catalogue: an unavailable PayDunya route cannot
         // shadow a ready AfriBaPay route for the same operator.
         if (paydunyaReady) {
-          flow = supportedModes[0];
+          flow = preferredPaydunyaMode;
           selected = paydunyaSelected;
         } else if (afriConfig?.enabled && afriSelected) {
           provider = 'afribapay';
@@ -315,20 +311,19 @@ function createPaydunyaInvoiceRoutes({
         } else if (!settings?.enabled) {
           throw httpError(503, 'Aucun prestataire Mobile Money disponible.');
         } else {
-          if (enabledModes.length !== 1 || supportedModes.length !== 1) {
+          if (!preferredPaydunyaMode) {
             throw httpError(
               503,
               'Le parcours Mobile Money sélectionné n’est pas disponible dans cette version.',
             );
           }
-          flow = supportedModes[0];
+          flow = preferredPaydunyaMode;
         }
       }
 
       if (provider === 'paydunya') {
         if (!settings?.enabled) throw httpError(503, 'Passerelle Mobile Money non configurée.');
-        const modeSetting = settings.modes?.[flow];
-        if (!settings.modes || !(modeSetting === true || modeSetting?.enabled === true)) {
+        if (!paydunyaModeEnabled(settings, flow)) {
           throw httpError(503, 'Ce mode de paiement Mobile Money est désactivé.');
         }
         selected ||= selectOperator(settings.catalog, country, operatorCode, 'paydunya');
@@ -413,7 +408,8 @@ function createPaydunyaInvoiceRoutes({
           if (existing.redirect_url) result.redirect_url = existing.redirect_url;
         } else if (flow === 'par_redirect') {
           result.checkout_url = existing.checkout_url;
-        } else {
+          result.payment_kind = 'redirect';
+        } else if (flow === 'psr') {
           const expiresAt = Date.parse(existing.psr_capability_expires_at || '');
           if (!existing.psr_capability_encrypted || !Number.isFinite(expiresAt)
               || expiresAt <= Date.now()) {
@@ -429,6 +425,11 @@ function createPaydunyaInvoiceRoutes({
           }
           result.psr_token_url = `/api/deposits/paydunya/psr/${encodeURIComponent(existing.id)}`
             + `/token/${encodeURIComponent(previousCapability)}`;
+          result.payment_kind = 'popup';
+        } else {
+          result.payment_kind = 'phone';
+          result.prompt_sent = true;
+          result.message = 'Suivez les instructions sur votre téléphone pour confirmer le paiement.';
         }
         reply(res, 200, result);
         return true;
@@ -715,8 +716,17 @@ function createPaydunyaInvoiceRoutes({
         created_at: now,
         pending_expires_at: document.pending_expires_at,
       };
-      if (flow === 'par_redirect') result.checkout_url = checkoutUrl;
-      else result.psr_token_url = tokenUrl;
+      if (flow === 'par_redirect') {
+        result.payment_kind = 'redirect';
+        result.checkout_url = checkoutUrl;
+      } else if (flow === 'psr') {
+        result.payment_kind = 'popup';
+        result.psr_token_url = tokenUrl;
+      } else {
+        result.payment_kind = 'phone';
+        result.prompt_sent = true;
+        result.message = 'Suivez les instructions sur votre téléphone pour confirmer le paiement.';
+      }
       reply(res, 200, result);
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 500;

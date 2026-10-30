@@ -4,6 +4,7 @@ const { sessionToken } = require('./auth-session-routes.cjs');
 const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
+const { paydunyaPayinReady } = require('./paydunya-payin-capabilities.cjs');
 const CRYPTO_FEE_ASSETS = [
   ['USDC.POLYGON', 'USDC', 'POLYGON'], ['USDC.SOL', 'USDC', 'SOL'],
   ['USDC.BEP20', 'USDC', 'BEP20'], ['USDC.ERC20', 'USDC', 'ERC20'],
@@ -215,23 +216,6 @@ function providerConfigured(config, env, provider) {
     afribapay: ['AFRIBAPAY_API_KEY', 'AFRIBAPAY_SECRET_KEY', 'AFRIBAPAY_CLIENT_ID'],
   };
   return (envKeys[provider] || []).some(key => Boolean(String(env[key] || '').trim()));
-}
-
-function paydunyaPayinConfigured(config, env) {
-  if (!config?.enabled) return false;
-  const credentialsReady = Boolean(
-    (config.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
-    && (config.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
-    && (config.token_encrypted || env.PAYDUNYA_TOKEN),
-  );
-  const modes = config.modes && typeof config.modes === 'object' ? config.modes : {};
-  const enabledModes = Object.entries(modes).filter(([, value]) => (
-    value === true || value?.enabled === true
-  )).map(([name]) => name);
-  const supportedModes = enabledModes.filter(name => (
-    ['psr', 'par_redirect'].includes(name)
-  ));
-  return credentialsReady && enabledModes.length === 1 && supportedModes.length === 1;
 }
 
 function operatorFee(operator, fallback, key) {
@@ -533,7 +517,7 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
         const seen = new Set();
         for (const { name, config } of providerConfigs) {
           const configured = name === 'paydunya'
-            ? paydunyaPayinConfigured(config, env)
+            ? paydunyaPayinReady(config, env)
             : providerConfigured(config, env, name);
           if (!configured) continue;
           if (name === 'afribapay' && depositConfig?.mobile_money?.enabled !== true) continue;

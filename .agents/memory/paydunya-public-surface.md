@@ -11,11 +11,11 @@ The customer-facing deposit surface must not receive or display provider mode na
 
 Payment links follow the same boundary: their public page exposes the link's own logo, title, description, amount and payment choices, never the owner's name or username. The fee bearer is read from the stored link configuration; public requests cannot override it.
 
-When multiple Mobile Money providers are enabled, provider selection must be capability-aware for the requested country, operator, currency, and payment flow. An enabled but unusable route must not shadow another ready provider.
+Admins may enable all supported Mobile Money providers at once. Provider selection must be capability-aware for the requested country, operator, currency, and payment flow. An enabled but unusable route must not shadow another ready provider. PayDunya SoftPay direct is the default supported mode; otherwise PSR or PAR redirect is usable only when exactly one is enabled.
 
-**Why:** A fixed provider priority can hide Mobile Money or fail a transaction even though another enabled provider can serve the selected operator.
+**Why:** A fixed provider priority can hide Mobile Money or fail a transaction even though another enabled provider can serve the selected operator. Pay Junior was hidden because its default SoftPay direct mode was omitted from readiness checks; choosing arbitrarily between PSR and PAR would also make the payment flow unpredictable.
 
-**How to apply:** Use the same readiness and flow checks for public catalog visibility and runtime dispatch. Keep arbitration and failure messages provider-neutral, and preserve existing idempotency barriers when adding fallback behavior.
+**How to apply:** Use the same readiness checks for public catalog visibility and runtime dispatch. Return phone instructions for SoftPay direct, a popup for PSR, and a redirect only for PAR; fail closed when PSR and PAR are both enabled without SoftPay. Keep provider/mode details private and preserve existing idempotency barriers.
 
 Public payment links normally stay on the Biz-transPay page. The only redirect exception is a pending MbiyoPay Côte d'Ivoire Wave payment when Mbiyo returns a valid HTTPS checkout URL. Do not expose provider identity or checkout URLs for other providers or operators. A redirect or browser return is not proof of payment; signed callback verification, server-side status lookup, and the idempotent finalizer remain the settlement gate. A `UNIVERSAL` link must resolve the operator's actual catalog currency rather than filtering by the literal link currency.
 

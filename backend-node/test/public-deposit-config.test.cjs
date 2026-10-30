@@ -4,7 +4,15 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createPublicConfigRoutes } = require('../src/public-config-routes.cjs');
 
-function setup({ afriCredentials = false, paydunyaReady = true } = {}) {
+function setup({
+  afriCredentials = false,
+  paydunyaReady = true,
+  paydunyaModes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  },
+} = {}) {
   const settings = [
     {
       id: 'deposit_config',
@@ -23,7 +31,7 @@ function setup({ afriCredentials = false, paydunyaReady = true } = {}) {
         master_key_encrypted: 'private-key',
         private_key_encrypted: 'private-key',
         token_encrypted: 'private-token',
-        modes: { psr: { enabled: true }, par_redirect: { enabled: false } },
+        modes: paydunyaModes,
       } : { master_key_encrypted: 'private-key' }),
       catalog: [
         { country: 'TG', country_label: 'Togo', code: 'moov_tg', name: 'Moov Togo', currency: 'XOF', active: true, payment_flow: { kind: 'ussd' } },
@@ -120,6 +128,38 @@ test('dashboard hides PayDunya routes without a complete supported payment setup
   const service = setup({ paydunyaReady: false });
   const dashboard = await call(service, '/api/deposits/config');
   assert.equal(dashboard.body.catalog.some(country => country.country === 'TG'), false);
+});
+
+test('dashboard shows Pay Junior operators with the default SoftPay direct mode', async () => {
+  const service = setup();
+  const dashboard = await call(service, '/api/deposits/config');
+
+  assert.equal(dashboard.status, 200);
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'TG'), true);
+});
+
+test('dashboard keeps ambiguous PSR/PAR-only setup hidden rather than choosing a flow', async () => {
+  const service = setup({
+    paydunyaModes: {
+      softpay_direct: { enabled: false },
+      psr: { enabled: true },
+      par_redirect: { enabled: true },
+    },
+  });
+  const dashboard = await call(service, '/api/deposits/config');
+
+  assert.equal(dashboard.status, 200);
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'TG'), false);
+});
+
+test('Pay Junior and AfriBaPay catalogs can be available at the same time', async () => {
+  const service = setup({ afriCredentials: true });
+  const dashboard = await call(service, '/api/deposits/config');
+  const operators = dashboard.body.catalog.flatMap(country => country.operators);
+
+  assert.equal(dashboard.status, 200);
+  assert.equal(operators.some(operator => operator.code === 'moov_tg'), true);
+  assert.equal(operators.some(operator => operator.code === 'orange_cm'), true);
 });
 
 test('deposit config rejects unknown surfaces', async () => {

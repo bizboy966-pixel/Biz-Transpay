@@ -39,7 +39,23 @@ const transferConfig = {
         operator: 'orange', currency: 'XOF', name: 'Orange Money',
         active: true,
       },
+      {
+        provider: 'afribapay', country: 'GN', country_label: 'Guinée',
+        code: 'afribapay_mtn_gn', public_code: 'mtn_gn',
+        operator: 'mtn', currency: 'GNF', name: 'MTN Money',
+        active: false,
+      },
+      {
+        provider: 'afribapay', country: 'CD', country_label: 'RDC',
+        code: 'afribapay_mtn_cd', public_code: 'mtn_cd',
+        operator: 'mtn', currency: 'CDF', name: 'MTN Mobile Money',
+        active: false,
+      },
     ],
+  },
+  payout_capabilities: {
+    currencies: ['XOF', 'XAF', 'GNF', 'CDF'],
+    currency_by_country: { TG: 'XOF', BJ: 'XOF', SN: 'XOF', GN: 'GNF', CD: 'CDF' },
   },
   mbiyo: {
     enabled: true,
@@ -155,8 +171,52 @@ describe('AdminMobileMoneyWithdrawals', () => {
     });
 
     const savedOperators = api.patch.mock.calls[0][1].mobile_money.operators;
-    expect(savedOperators.length).toBe(4);
+    expect(savedOperators.length).toBe(6);
     expect(savedOperators.every((operator) => operator.active === false)).toBe(true);
+  });
+
+  test('allows AfriBaPay MTN routes for Guinea GNF and DR Congo CDF', async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<AdminMobileMoneyWithdrawals />);
+      await Promise.resolve();
+    });
+
+    const afriBaPayTab = Array.from(container.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Afrika Pay'));
+    await act(async () => afriBaPayTab.click());
+
+    const guineaRoute = container.querySelector(
+      '[data-testid="mobile-money-operator-afribapay_mtn_gn"]',
+    );
+    const congoRoute = container.querySelector(
+      '[data-testid="mobile-money-operator-afribapay_mtn_cd"]',
+    );
+    const guineaToggle = guineaRoute.querySelector('input[type="checkbox"]');
+    const congoToggle = congoRoute.querySelector('input[type="checkbox"]');
+
+    expect(guineaRoute.textContent).toContain('GNF');
+    expect(congoRoute.textContent).toContain('CDF');
+    expect(guineaRoute.textContent).not.toContain('Devise indisponible au retrait');
+    expect(congoRoute.textContent).not.toContain('Devise indisponible au retrait');
+    expect(guineaToggle.disabled).toBe(false);
+    expect(congoToggle.disabled).toBe(false);
+
+    await act(async () => {
+      guineaToggle.click();
+      congoToggle.click();
+    });
+    const saveButton = container.querySelector(
+      '[data-testid="btn-save-mobile-money-withdrawals"]',
+    );
+    await act(async () => {
+      saveButton.click();
+      await Promise.resolve();
+    });
+
+    const savedOperators = api.patch.mock.calls[0][1].mobile_money.operators;
+    expect(savedOperators.find(row => row.country === 'GN').active).toBe(true);
+    expect(savedOperators.find(row => row.country === 'CD').active).toBe(true);
   });
 
   test('shows a zero maximum as unlimited', async () => {

@@ -434,6 +434,64 @@ test('AfriBaPay payout authenticates then submits once to its configured payout 
   assert.equal(payload.merchant_key, 'merchant-id');
 });
 
+test('AfriBaPay accepts mapped GNF and CDF payout routes with their exact wallet currencies', async () => {
+  for (const route of [
+    { country: 'GN', currency: 'GNF', code: 'mtn_gn', operator: 'mtn', wallet: 'balance_gnf' },
+    { country: 'CD', currency: 'CDF', code: 'mtn_cd', operator: 'mtn', wallet: 'balance_cdf' },
+  ]) {
+    const db = new MemoryDb();
+    db.rows.settings.get('transfer_config').mobile_money.operators[0] = {
+      provider: 'afribapay',
+      country: route.country,
+      code: route.code,
+      operator: route.operator,
+      currency: route.currency,
+      active: true,
+      min: 100,
+      max: 100_000,
+    };
+    db.rows.settings.get('app_features')[`wallet_${route.currency.toLowerCase()}_enabled`] = true;
+    db.rows.settings.get('app_features')[`withdrawal_${route.currency.toLowerCase()}_enabled`] = true;
+    db.rows.users.get('merchant-1')[route.wallet] = 5_000;
+    db.rows.settings.set('payment_provider_afribapay', {
+      id: 'payment_provider_afribapay', enabled: true, mode: 'live',
+      api_user: 'merchant-user', api_key: 'merchant-key',
+      merchant_key: 'merchant-id',
+      live_api_base_url: 'https://api.afribapay.test',
+      live_payout_base_url: 'https://payout.afribapay.test',
+    });
+    const requests = [];
+    const service = createMobileMoneyPayoutService({
+      db, sessionSecret: 'test-session-secret',
+      env: { OFFICIAL_DOMAIN: 'https://biz-transpay.com' },
+      fetchImpl: async (url, options) => {
+        requests.push({ url: String(url), options });
+        return requests.length === 1
+          ? providerResponse({ data: { access_token: 'af-token' } })
+          : providerResponse({ data: { transaction_id: `af-${route.currency}`, status: 'pending' } });
+      },
+    });
+
+    const result = await service.createIntegrationPayout(
+      'merchant-1',
+      payout({
+        country: route.country,
+        currency: route.currency,
+        operator: route.code,
+        amount: 500,
+      }),
+      `idempotency-afribapay-${route.currency.toLowerCase()}`,
+    );
+    const payload = JSON.parse(requests[1].options.body);
+
+    assert.equal(result.transaction.currency, route.currency);
+    assert.equal(result.transaction.metadata.wallet_field, route.wallet);
+    assert.equal(payload.country, route.country);
+    assert.equal(payload.currency, route.currency);
+    assert.equal(payload.operator, route.operator);
+  }
+});
+
 test('an explicit provider rejection refunds immediately and never leaves a false pending payout', async () => {
   const db = new MemoryDb();
   const service = createMobileMoneyPayoutService({

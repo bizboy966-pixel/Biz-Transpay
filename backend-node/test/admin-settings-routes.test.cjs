@@ -242,6 +242,10 @@ test('Tchad AfriBaPay payout routes are available but inactive until an admin en
   const { service, collections } = setup();
   const fetched = await call(service, 'GET', '/api/admin/transfer/config');
   assert.equal(fetched.status, 200);
+  assert.equal(fetched.body.payout_capabilities.currency_by_country.GN, 'GNF');
+  assert.equal(fetched.body.payout_capabilities.currency_by_country.CD, 'CDF');
+  assert.equal(fetched.body.payout_capabilities.currencies.includes('GNF'), true);
+  assert.equal(fetched.body.payout_capabilities.currencies.includes('CDF'), true);
   const chad = fetched.body.mobile_money.operators.filter(row => row.country === 'TD');
   assert.deepEqual(chad.map(row => [row.operator, row.currency, row.active]).sort(), [
     ['airtel', 'XAF', false],

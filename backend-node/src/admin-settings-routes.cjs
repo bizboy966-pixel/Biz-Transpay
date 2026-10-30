@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
 const { getAppFeatures, getPlatformConfig } = require('./public-config-routes.cjs');
 const { isResendConfigured, publicAppUrl } = require('./auth-recovery-routes.cjs');
+const {
+  FIAT_WALLET_CURRENCIES, MOBILE_MONEY_COUNTRY_CURRENCY,
+} = require('./supported-currencies.cjs');
 
 const FEATURE_BOOLEAN_KEYS = [
   'mobile_money_enabled', 'crypto_enabled',
@@ -347,6 +350,16 @@ function withChadAfriBaPayPayoutRoutes(config) {
   return { ...config, mobile_money: { ...mobileMoney, operators } };
 }
 
+function payoutConfigView(config) {
+  return {
+    ...withChadAfriBaPayPayoutRoutes(config),
+    payout_capabilities: {
+      currencies: [...FIAT_WALLET_CURRENCIES],
+      currency_by_country: { ...MOBILE_MONEY_COUNTRY_CURRENCY },
+    },
+  };
+}
+
 function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -413,7 +426,7 @@ function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
         const config = await getConfigDocument(db,
           isDepositConfig ? 'deposit_config' : 'transfer_config',
           ['mobile_money', 'crypto']);
-        reply(res, 200, isTransferConfig ? withChadAfriBaPayPayoutRoutes(config) : config);
+        reply(res, 200, isTransferConfig ? payoutConfigView(config) : config);
         return true;
       }
       if (!isWrite && !isConversion && !isPlatform) {
@@ -534,7 +547,8 @@ function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
           created_at: new Date().toISOString(),
           ip: '',
         });
-        reply(res, 200, await getConfigDocument(db, id, Object.keys(updates)));
+        const saved = await getConfigDocument(db, id, Object.keys(updates));
+        reply(res, 200, isTransferConfig ? payoutConfigView(saved) : saved);
         return true;
       }
 

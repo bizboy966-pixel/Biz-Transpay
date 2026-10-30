@@ -25,4 +25,4 @@ Customer Mobile Money payouts may use only the supported fiat wallet currencies:
 
 **Why:** Users asked to withdraw from the wallet matching the selected country. A payout must never debit a different currency wallet, and provider catalogues can include currencies for which the app has no customer balance.
 
-**How to apply:** Keep the supported fiat list and country-to-currency map consistent across dashboard display, public operator catalogues, and server payout validation. Preserve unsupported provider entries for admin editing, but do not expose them or accept a payout unless the exact local wallet exists and the configured country route matches.
+**How to apply:** Keep the supported fiat list and country-to-currency map consistent across dashboard display, public operator catalogues, and server payout validation. Have admin screens consume the server's payout capability map rather than a narrower duplicated currency list. Preserve unsupported provider entries for admin editing, but do not expose them or accept a payout unless the exact local wallet exists and the configured country route matches.

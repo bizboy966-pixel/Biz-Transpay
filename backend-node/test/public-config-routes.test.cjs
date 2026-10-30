@@ -191,6 +191,20 @@ test('fee configuration is authenticated, provider-neutral, and uses configured 
           name: 'Airtel Money',
           currency: 'UGX',
           active: true,
+        }, {
+          provider: 'afribapay',
+          country: 'GN',
+          code: 'mtn_gn',
+          name: 'MTN Money Guinée',
+          currency: 'GNF',
+          active: true,
+        }, {
+          provider: 'afribapay',
+          country: 'CD',
+          code: 'mtn_cd',
+          name: 'MTN Mobile Money RDC',
+          currency: 'CDF',
+          active: true,
         }],
       },
       crypto: { enabled: true, fees: { BTC: 2.5 } },
@@ -251,6 +265,18 @@ test('fee configuration is authenticated, provider-neutral, and uses configured 
   assert.equal(
     result.body.withdrawal.mobile_money.operators.some(
       operator => operator.currency === 'UGX' && operator.country === 'UG',
+    ),
+    true,
+  );
+  assert.equal(
+    result.body.withdrawal.mobile_money.operators.some(
+      operator => operator.currency === 'GNF' && operator.country === 'GN',
+    ),
+    true,
+  );
+  assert.equal(
+    result.body.withdrawal.mobile_money.operators.some(
+      operator => operator.currency === 'CDF' && operator.country === 'CD',
     ),
     true,
   );
