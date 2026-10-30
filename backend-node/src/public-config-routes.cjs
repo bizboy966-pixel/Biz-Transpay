@@ -544,7 +544,8 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
             const code = String(raw.public_code || raw.code || '').trim();
             const currency = String(raw.currency || 'XOF').trim().toUpperCase();
             if (!/^[A-Z]{2,3}$/.test(country) || !/^[A-Za-z0-9_-]{1,64}$/.test(code)
-                || !/^[A-Z]{3,5}$/.test(currency)) continue;
+                || !FIAT_WALLET_CURRENCY_SET.has(currency)
+                || MOBILE_MONEY_COUNTRY_CURRENCY[country] !== currency) continue;
             const keyCode = code.toLowerCase().replace(/^mbiyo_/, '');
             const identity = `${country}:${keyCode}:${currency}`;
             if (seen.has(identity)) continue;

@@ -98,6 +98,18 @@ function setupAfriBaPay({ fetchImpl } = {}) {
           min: 100,
           max: 0,
           gateway_fee_pct: 1,
+        }, {
+          provider: 'afribapay',
+          country: 'TD',
+          country_label: 'Tchad',
+          code: 'airtel_td',
+          public_code: 'airtel_td',
+          operator: 'airtel',
+          name: 'Airtel Money Tchad',
+          currency: 'XAF',
+          active: true,
+          min: 500,
+          max: 0,
         }],
       },
       {
@@ -396,6 +408,56 @@ test('generic Mobile Money selects ready AfriBaPay when overlapping routes are u
   assert.equal(stored.status, 'pending');
   assert.equal(requests.length, 2);
   assert.equal(JSON.stringify(requests).includes('must-never-be-sent'), false);
+});
+
+test('AfriBaPay Chad pay-in uses the documented Airtel operator and credits XAF', async () => {
+  const requests = [];
+  const { service, collections } = setupAfriBaPay({
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith('/v1/token')) {
+        return {
+          ok: true,
+          async json() { return { data: { access_token: 'mock-afri-token' } }; },
+        };
+      }
+      const submitted = JSON.parse(options.body);
+      assert.deepEqual({
+        operator: submitted.operator,
+        phone_number: submitted.phone_number,
+        country: submitted.country,
+        amount: submitted.amount,
+        currency: submitted.currency,
+      }, {
+        operator: 'airtel',
+        phone_number: '235661234567',
+        country: 'TD',
+        amount: 1000,
+        currency: 'XAF',
+      });
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { data: { transaction_id: 'td-afri-tx', status: 'pending' } }; },
+      };
+    },
+  });
+  const result = await call(service, '/api/deposits/mobile-money/start', {
+    ...depositRequest,
+    amount: 1000,
+    currency: 'XAF',
+    country: 'TD',
+    operator: 'airtel_td',
+    phone_number: '+235661234567',
+    idempotency_key: 'afri-td-airtel-001',
+  }, 'afri-td-airtel-001');
+  const saved = collections.momo_deposits.rows[0];
+
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(saved.country, 'TD');
+  assert.equal(saved.currency, 'XAF');
+  assert.equal(saved.operator_snapshot.operator, 'airtel');
+  assert.equal(requests.length, 2);
 });
 
 test('AfriBaPay network uncertainty stays pending and idempotency prevents a duplicate pay-in', async () => {

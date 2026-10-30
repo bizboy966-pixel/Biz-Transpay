@@ -5,6 +5,7 @@ export const COUNTRIES = [
   { code: 'ML', name: 'Mali', dial: '+223', flag: '🇲🇱', currency: 'XOF' },
   { code: 'BF', name: 'Burkina Faso', dial: '+226', flag: '🇧🇫', currency: 'XOF' },
   { code: 'CM', name: 'Cameroun', dial: '+237', flag: '🇨🇲', currency: 'XAF' },
+  { code: 'TD', name: 'Tchad', dial: '+235', flag: '🇹🇩', currency: 'XAF' },
   { code: 'BJ', name: 'Bénin', dial: '+229', flag: '🇧🇯', currency: 'XOF' },
   { code: 'CG', name: 'Congo-Brazzaville', dial: '+242', flag: '🇨🇬', currency: 'XAF' },
   { code: 'CD', name: 'Congo-Kinshasa', dial: '+243', flag: '🇨🇩', currency: 'CDF' },

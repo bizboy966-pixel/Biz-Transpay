@@ -238,6 +238,26 @@ test('admin deposit and transfer configs preserve partial nested updates', async
   assert.equal(collections.settings.rows.some(row => row.id === 'deposit_config'), true);
 });
 
+test('Tchad AfriBaPay payout routes are available but inactive until an admin enables them', async () => {
+  const { service, collections } = setup();
+  const fetched = await call(service, 'GET', '/api/admin/transfer/config');
+  assert.equal(fetched.status, 200);
+  const chad = fetched.body.mobile_money.operators.filter(row => row.country === 'TD');
+  assert.deepEqual(chad.map(row => [row.operator, row.currency, row.active]).sort(), [
+    ['airtel', 'XAF', false],
+    ['moov', 'XAF', false],
+  ]);
+
+  const saved = await call(service, 'PATCH', '/api/admin/transfer/config', {
+    mobile_money: fetched.body.mobile_money,
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(
+    collections.settings.rows[0].mobile_money.operators.filter(row => row.country === 'TD').length,
+    2,
+  );
+});
+
 test('admin payout config rejects ambiguous active routes and invalid fee values', async () => {
   const { service, collections } = setup();
   const duplicate = await call(service, 'PATCH', '/api/admin/transfer/config', {
@@ -309,7 +329,12 @@ test('admin payout config saves provider rows with valid local currency codes', 
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.deepEqual(
     collections.settings.rows[0].mobile_money.operators.map(operator => operator.currency),
-    ['UGX', 'GHS'],
+    ['UGX', 'GHS', 'XAF', 'XAF'],
+  );
+  assert.equal(
+    collections.settings.rows[0].mobile_money.operators
+      .filter(operator => operator.country === 'TD').every(operator => operator.active === false),
+    true,
   );
 });
 

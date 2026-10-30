@@ -7,7 +7,9 @@ const crypto = require('node:crypto');
 const security = require('../src/security.cjs');
 const { createAfriBaPayWebhookRoutes } = require('../src/afribapay-webhook-routes.cjs');
 
-function createDb({ providerStatus, providerTransactionId = '' } = {}) {
+function createDb({
+  providerStatus, providerTransactionId = '', country = 'CI', currency = 'XOF',
+} = {}) {
   const sessionSecret = 'webhook-test-session-secret';
   const key = security.fernetKey(sessionSecret);
   const apiKey = 'test-afribapay-key';
@@ -23,8 +25,8 @@ function createDb({ providerStatus, providerTransactionId = '' } = {}) {
     user_id: 'user-1',
     provider: 'afribapay',
     status: 'pending',
-    country: 'CI',
-    currency: 'XOF',
+    country,
+    currency,
     ...(providerTransactionId ? { afribapay_transaction_id: providerTransactionId } : {}),
     operator: 'orange',
     phone_number: '0000000000',
@@ -35,7 +37,8 @@ function createDb({ providerStatus, providerTransactionId = '' } = {}) {
     platform_fee: 25,
     created_at: '2026-01-01T00:00:00.000Z',
   }]]);
-  const docs = new Map([['users:user-1', { id: 'user-1', balance_xof: 1000 }]]);
+  const balanceField = `balance_${currency.toLowerCase()}`;
+  const docs = new Map([['users:user-1', { id: 'user-1', [balanceField]: 1000 }]]);
   let providerCalls = 0;
   const db = {
     collection(name) {
@@ -108,8 +111,8 @@ function createDb({ providerStatus, providerTransactionId = '' } = {}) {
         status: 'success',
         order_id: 'order-1',
         original_amount: '2000',
-        currency: 'XOF',
-        country_code: 'CI',
+        currency,
+        country_code: country,
         transaction_id: 'provider-tx-1',
       },
     }) };
@@ -170,6 +173,21 @@ test('AfribaPAY verifies the raw HMAC and provider status before one atomic cred
   assert.equal(ledger.amount, 1950);
   assert.equal(ledger.metadata.wallet_snapshot.balance_before, 1000);
   assert.equal(ledger.metadata.wallet_snapshot.balance_after, 2950);
+});
+
+test('AfribaPAY Tchad pay-in callback credits only the XAF wallet', async () => {
+  const fixture = createDb({ country: 'TD', currency: 'XAF' });
+  const service = createAfriBaPayWebhookRoutes({
+    db: fixture.db,
+    env: { SESSION_SECRET: fixture.sessionSecret },
+    fetchImpl: fixture.fetchImpl,
+  });
+  const result = await send(service, JSON.stringify({ order_id: 'order-1', status: 'success' }), fixture.apiKey);
+
+  assert.equal(result.statusCode, 200);
+  assert.equal(fixture.docs.get('users:user-1').balance_xaf, 2950);
+  assert.equal(Object.hasOwn(fixture.docs.get('users:user-1'), 'balance_xof'), false);
+  assert.equal(fixture.deposits.get('order-1').status, 'approved');
 });
 
 test('AfribaPAY invalid signatures never call the provider or credit the wallet', async () => {

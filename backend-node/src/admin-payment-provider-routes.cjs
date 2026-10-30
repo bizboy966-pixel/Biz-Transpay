@@ -17,6 +17,48 @@ const FEE_FIELDS = [
   'gateway_fee_pct', 'gateway_fee_fixed', 'platform_fee_pct',
   'platform_fee_fixed', 'fee_pct', 'fee_fixed', 'min', 'max',
 ];
+const CHAD_AFRIBAPAY_ROUTES = [
+  {
+    id: 'afribapay_td_airtel',
+    provider: 'afribapay',
+    country: 'TD',
+    country_label: 'Tchad',
+    code: 'airtel_td',
+    public_code: 'airtel_td',
+    operator: 'airtel',
+    name: 'Airtel Money Tchad',
+    currency: 'XAF',
+    active: false,
+  },
+  {
+    id: 'afribapay_td_moov',
+    provider: 'afribapay',
+    country: 'TD',
+    country_label: 'Tchad',
+    code: 'moov_td',
+    public_code: 'moov_td',
+    operator: 'moov',
+    name: 'Moov Money Tchad',
+    currency: 'XAF',
+    active: false,
+  },
+];
+
+function withChadAfriBaPayRoutes(catalog) {
+  const rows = Array.isArray(catalog) ? [...catalog] : [];
+  for (const route of CHAD_AFRIBAPAY_ROUTES) {
+    const aliases = new Set([route.code.toLowerCase(), route.operator.toLowerCase()]);
+    const exists = rows.some(row => (
+      row && String(row.country || '').toUpperCase() === route.country
+        && String(row.currency || '').toUpperCase() === route.currency
+        && [row.code, row.public_code, row.operator].some(value => (
+          aliases.has(String(value || '').trim().toLowerCase())
+        ))
+    ));
+    if (!exists) rows.push({ ...route });
+  }
+  return rows;
+}
 const PROVIDERS = {
   paydunya: {
     id: 'payment_provider_paydunya',
@@ -295,7 +337,9 @@ function providerDefaults(provider) {
     };
   }
   if (provider === 'mbiyo') return { ...base, enabled: true, mode: 'test', setup_version: 3 };
-  if (provider === 'afribapay') return { ...base, mode: 'sandbox' };
+  if (provider === 'afribapay') {
+    return { ...base, mode: 'sandbox', catalog: withChadAfriBaPayRoutes(base.catalog) };
+  }
   return base;
 }
 
@@ -315,8 +359,14 @@ function createAdminPaymentProviderRoutes({ db, sessionService, sessionSecret = 
         sensitive: isWrite,
       });
       const collection = db.collection('settings');
-      const current = await collection.find_one({ id: PROVIDERS[provider].id }, { _id: 0 })
+      let current = await collection.find_one({ id: PROVIDERS[provider].id }, { _id: 0 })
         || providerDefaults(provider);
+      if (provider === 'afribapay') {
+        current = {
+          ...current,
+          catalog: withChadAfriBaPayRoutes(current.catalog),
+        };
+      }
       if (!isWrite) {
         reply(res, 200, publicConfig(provider, current, env));
         return true;

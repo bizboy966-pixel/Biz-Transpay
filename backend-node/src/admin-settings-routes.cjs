@@ -19,6 +19,32 @@ const SUPPORTED_CONVERSION_PAIRS = [
   ['USDT', 'XOF'], ['USDT', 'XAF'], ['XOF', 'USDT'],
   ['XAF', 'USDT'], ['XOF', 'XAF'], ['XAF', 'XOF'],
 ];
+const CHAD_AFRIBAPAY_PAYOUT_ROUTES = [
+  {
+    id: 'afribapay_td_airtel',
+    provider: 'afribapay',
+    country: 'TD',
+    country_label: 'Tchad',
+    code: 'airtel_td',
+    public_code: 'airtel_td',
+    operator: 'airtel',
+    name: 'Airtel Money Tchad',
+    currency: 'XAF',
+    active: false,
+  },
+  {
+    id: 'afribapay_td_moov',
+    provider: 'afribapay',
+    country: 'TD',
+    country_label: 'Tchad',
+    code: 'moov_td',
+    public_code: 'moov_td',
+    operator: 'moov',
+    name: 'Moov Money Tchad',
+    currency: 'XAF',
+    active: false,
+  },
+];
 const OBJECT_CONFIG_KEYS = [
   'conversion_rates', 'conversion_limits', 'conversion_pairs_enabled', 'conversion_fee',
 ];
@@ -303,6 +329,24 @@ async function getConfigDocument(db, id, sections) {
   return result;
 }
 
+function withChadAfriBaPayPayoutRoutes(config) {
+  const mobileMoney = config.mobile_money || {};
+  const operators = Array.isArray(mobileMoney.operators) ? [...mobileMoney.operators] : [];
+  for (const route of CHAD_AFRIBAPAY_PAYOUT_ROUTES) {
+    const aliases = new Set([route.code.toLowerCase(), route.operator.toLowerCase()]);
+    const exists = operators.some(row => (
+      row && String(row.provider || '').toLowerCase() === 'afribapay'
+        && String(row.country || '').toUpperCase() === route.country
+        && String(row.currency || '').toUpperCase() === route.currency
+        && [row.code, row.public_code, row.operator].some(value => (
+          aliases.has(String(value || '').trim().toLowerCase())
+        ))
+    ));
+    if (!exists) operators.push({ ...route });
+  }
+  return { ...config, mobile_money: { ...mobileMoney, operators } };
+}
+
 function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -366,9 +410,10 @@ function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
         return true;
       }
       if (isFeeCatalog && !isWrite) {
-        reply(res, 200, await getConfigDocument(db,
+        const config = await getConfigDocument(db,
           isDepositConfig ? 'deposit_config' : 'transfer_config',
-          ['mobile_money', 'crypto']));
+          ['mobile_money', 'crypto']);
+        reply(res, 200, isTransferConfig ? withChadAfriBaPayPayoutRoutes(config) : config);
         return true;
       }
       if (!isWrite && !isConversion && !isPlatform) {
@@ -460,11 +505,13 @@ function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
         for (const [section, value] of Object.entries(body)) {
           if (!allowedSections.has(section)) continue;
           objectConfig(value, `${section} doit être un objet`);
+          let normalizedValue = value;
           if (section === 'mobile_money' && isTransferConfig) {
-            validateWithdrawalCatalog(value);
+            normalizedValue = withChadAfriBaPayPayoutRoutes({ mobile_money: value }).mobile_money;
+            validateWithdrawalCatalog(normalizedValue);
           }
-          if (section === 'crypto') validateCryptoConfig(value);
-          updates[section] = value;
+          if (section === 'crypto') validateCryptoConfig(normalizedValue);
+          updates[section] = normalizedValue;
         }
         if (!Object.keys(updates).length) throw fail(400, 'Aucune modification');
         const id = isDepositConfig ? 'deposit_config' : 'transfer_config';

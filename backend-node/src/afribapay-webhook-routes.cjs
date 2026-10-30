@@ -4,13 +4,13 @@ const crypto = require('node:crypto');
 const Decimal = require('decimal.js');
 const security = require('./security.cjs');
 const { applyWalletOperation } = require('./wallet.cjs');
+const { MOBILE_MONEY_COUNTRY_CURRENCY } = require('./supported-currencies.cjs');
 
 const MAX_BODY_BYTES = 256 * 1024;
 const SANDBOX_API_BASE_URL = 'https://api-sandbox.afribapay.com';
-const COUNTRY_CURRENCIES = {
-  BJ: ['XOF'], BF: ['XOF'], CI: ['XOF'], CD: ['CDF'], CM: ['XAF'],
-  GA: ['XAF'], GN: ['GNF'], ML: ['XOF'], NE: ['XOF'], SN: ['XOF'], TG: ['XOF'],
-};
+const COUNTRY_CURRENCIES = Object.fromEntries(
+  Object.entries(MOBILE_MONEY_COUNTRY_CURRENCY).map(([country, currency]) => [country, [currency]]),
+);
 
 function reply(res, status, body) {
   res.writeHead(status, {

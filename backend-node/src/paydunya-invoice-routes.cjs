@@ -5,6 +5,9 @@ const { Readable } = require('node:stream');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
+const {
+  FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
+} = require('./supported-currencies.cjs');
 const { decryptSetting } = require('./provider-settings.cjs');
 const { loadAfriBaPayConfig, submitAfriBaPayin } = require('./afribapay-payin.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
@@ -350,7 +353,9 @@ function createPaydunyaInvoiceRoutes({
         }
       }
       const currency = String(selected.currency || 'XOF').toUpperCase();
-      if (!['XOF', 'XAF'].includes(currency)
+      if (!FIAT_WALLET_CURRENCY_SET.has(currency)
+          || MOBILE_MONEY_COUNTRY_CURRENCY[country] !== currency
+          || (provider === 'paydunya' && !['XOF', 'XAF'].includes(currency))
           || (body.currency && String(body.currency).toUpperCase() !== currency)) {
         throw httpError(400, 'Devise invalide pour cet opérateur.');
       }

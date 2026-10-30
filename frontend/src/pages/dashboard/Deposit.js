@@ -12,6 +12,7 @@ import { OperatorLogo } from '@/components/PaymentBrand';
 import SelectionMenu from '@/components/SelectionMenu';
 import DashboardPageLogo from '@/components/DashboardPageLogo';
 import { COUNTRIES } from '@/constants/countries';
+import { DASHBOARD_FIAT_CURRENCIES } from '../../constants/walletCurrencies';
 import { ACTIVE_MOMO_DEPOSIT_KEY, MOMO_PENDING_SECONDS } from '@/constants/payment';
 import { mobileMoneyFeePreview } from '@/lib/mobileMoneyFees';
 
@@ -22,6 +23,14 @@ const PSR_ASSET_IDS = {
 };
 const EMPTY_CRYPTO_ASSETS = [];
 let psrAssetsPromise;
+
+function mobileMoneyDepositEnabled(features = {}) {
+  return DASHBOARD_FIAT_CURRENCIES.some((currency) => {
+    const key = currency.toLowerCase();
+    return features[`wallet_${key}_enabled`] !== false
+      && features[`deposit_${key}_enabled`] !== false;
+  });
+}
 
 function loadExternalAsset({ id, tag, url, attributes = {} }) {
     if (typeof document === 'undefined') return Promise.reject(new Error('Le paiement est indisponible dans ce navigateur.'));
@@ -199,10 +208,7 @@ export default function Deposit() {
 
       {step === 1 && features && (() => {
         const cryptoOn = features.wallet_crypto_enabled !== false && features.deposit_crypto_enabled !== false;
-        const mmOn = (features.wallet_xof_enabled !== false && features.deposit_xof_enabled !== false)
-                    || (features.wallet_xaf_enabled !== false && features.deposit_xaf_enabled !== false)
-                    || features.wallet_gnf_enabled !== false || features.wallet_cdf_enabled !== false
-                    || features.wallet_usd_enabled !== false;
+        const mmOn = mobileMoneyDepositEnabled(features);
         if (!cryptoOn && !mmOn) {
           return (
             <ComingSoon
@@ -216,10 +222,7 @@ export default function Deposit() {
       })()}
       {step === 2 && method === 'crypto' && features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false && <CryptoDepositForm onSuccess={handleDepositCreated} />}
       {step === 2 && method === 'mobile_money' && (
-        (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
-        || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
-        || features?.wallet_gnf_enabled !== false || features?.wallet_cdf_enabled !== false
-        || features?.wallet_usd_enabled !== false
+        mobileMoneyDepositEnabled(features)
       ) && <MobileMoneyForm onSuccess={(d) => {
         sessionStorage.setItem(ACTIVE_MOMO_DEPOSIT_KEY, d.id);
         handleDepositCreated(d, true);
@@ -241,16 +244,10 @@ export default function Deposit() {
 }
 
 function MethodPicker({ features, onPick }) {
-  // A wallet method is offered only when BOTH the parent wallet AND the
-  // deposit toggle for its underlying currency are enabled. For Mobile Money
-  // we need at least one of XOF/XAF to be depositable.
+  // A wallet method is offered only when both the wallet and deposit toggles
+  // for at least one supported fiat currency are enabled.
   const cryptoOn = features?.wallet_crypto_enabled !== false && features?.deposit_crypto_enabled !== false;
-  const mmOn = (
-    (features?.wallet_xof_enabled !== false && features?.deposit_xof_enabled !== false)
-    || (features?.wallet_xaf_enabled !== false && features?.deposit_xaf_enabled !== false)
-    || features?.wallet_gnf_enabled !== false || features?.wallet_cdf_enabled !== false
-    || features?.wallet_usd_enabled !== false
-  );
+  const mmOn = mobileMoneyDepositEnabled(features);
   const { data: depositConfig } = useQuery({
     queryKey: ['deposit-config'],
     queryFn: async () => {

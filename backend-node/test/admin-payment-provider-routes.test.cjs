@@ -134,6 +134,20 @@ test('all four admin provider settings pages have authenticated read routes', as
   const afribapay = await call(service, 'GET', '/api/admin/payment-providers/afribapay');
   assert.equal(afribapay.body.payin_available, true);
   assert.equal(afribapay.body.api_key_configured, true);
+  const chadRoutes = afribapay.body.catalog.filter(row => row.country === 'TD');
+  assert.deepEqual(chadRoutes.map(row => [row.operator, row.currency, row.active]).sort(), [
+    ['airtel', 'XAF', false],
+    ['moov', 'XAF', false],
+  ]);
+  const savedAfriBaPay = await call(
+    service, 'PUT', '/api/admin/payment-providers/afribapay',
+    { catalog: afribapay.body.catalog },
+  );
+  assert.equal(savedAfriBaPay.status, 200, JSON.stringify(savedAfriBaPay.body));
+  assert.equal(
+    savedAfriBaPay.body.catalog.filter(row => row.country === 'TD').length,
+    2,
+  );
   const mbiyo = await call(service, 'GET', '/api/admin/payment-providers/mbiyo');
   assert.equal(mbiyo.body.secret_key_configured, true);
 });

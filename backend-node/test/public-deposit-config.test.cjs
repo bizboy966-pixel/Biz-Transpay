@@ -43,6 +43,9 @@ function setup({ afriCredentials = false, paydunyaReady = true } = {}) {
       catalog: [
         { country: 'BF', code: 'afribapay_moov', name: 'Moov Burkina', currency: 'XOF', active: true },
         { country: 'CM', code: 'orange_cm', name: 'Orange Cameroun', currency: 'XAF', active: true },
+        { country: 'TD', code: 'airtel_td', public_code: 'airtel_td', operator: 'airtel', name: 'Airtel Money Tchad', currency: 'XAF', active: true },
+        { country: 'TD', code: 'moov_td', public_code: 'moov_td', operator: 'moov', name: 'Moov Money Tchad', currency: 'XAF', active: true },
+        { country: 'TD', code: 'wrong_currency_td', public_code: 'wrong_currency_td', name: 'Route invalide', currency: 'XOF', active: true },
       ],
       ...(afriCredentials ? {
         api_user_encrypted: 'encrypted-user',
@@ -108,6 +111,9 @@ test('AfriBaPay dashboard routes appear only with all credentials and a valid co
   const service = setup({ afriCredentials: true });
   const dashboard = await call(service, '/api/deposits/config');
   assert.equal(dashboard.body.catalog.some(country => country.country === 'CM'), true);
+  const chad = dashboard.body.catalog.find(country => country.country === 'TD');
+  assert.deepEqual(chad.operators.map(operator => operator.code).sort(), ['airtel_td', 'moov_td']);
+  assert.equal(chad.operators.every(operator => operator.currency === 'XAF'), true);
 });
 
 test('dashboard hides PayDunya routes without a complete supported payment setup', async () => {

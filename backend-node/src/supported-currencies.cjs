@@ -9,7 +9,7 @@ const FIAT_WALLET_CURRENCY_SET = new Set(FIAT_WALLET_CURRENCIES);
 
 const MOBILE_MONEY_COUNTRY_CURRENCY = Object.freeze({
   TG: 'XOF', SN: 'XOF', CI: 'XOF', ML: 'XOF', BF: 'XOF', BJ: 'XOF', NE: 'XOF',
-  CM: 'XAF', CG: 'XAF', CD: 'CDF', GM: 'GMD', GN: 'GNF', UG: 'UGX',
+  CM: 'XAF', CG: 'XAF', TD: 'XAF', CD: 'CDF', GM: 'GMD', GN: 'GNF', UG: 'UGX',
   TZ: 'TZS', KE: 'KES', RW: 'RWF', GH: 'GHS', NG: 'NGN', ZA: 'ZAR',
   ZM: 'ZMW', EG: 'EGP', US: 'USD',
 });
