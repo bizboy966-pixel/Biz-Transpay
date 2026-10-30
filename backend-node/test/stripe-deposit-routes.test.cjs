@@ -164,6 +164,16 @@ test('Stripe checkout is owner-authenticated, idempotent, and does not credit be
   assert.equal(db.collection('transactions').rows.length, 1);
   assert.equal(db.collection('users').rows[0].balance_xof, 0);
   assert.ok(calls[0].options.headers['Idempotency-Key']);
+
+  const status = await call(service, request(
+    'GET', '/api/payments/status/cs_test_123', '', {
+      authorization: 'Bearer valid-session',
+    },
+  ));
+  assert.equal(status.status, 200, JSON.stringify(status.body));
+  assert.equal(status.body.session_id, 'cs_test_123');
+  assert.equal(status.body.payment_status, 'paid');
+  assert.equal(db.collection('users').rows[0].balance_xof, 600);
 });
 
 test('Stripe webhook verifies signature and provider status before exactly-once credit', async () => {

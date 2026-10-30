@@ -154,6 +154,34 @@ test('reset request returns a generic message, rate limits, and sends a one-time
   }
 });
 
+test('user PIN reset request creates a purpose-bound one-time token', async () => {
+  const db = new MemoryDatabase();
+  await db.collection('settings').insert_one({
+    id: 'transaction_email_settings', sender_email: 'no-reply@biz-transpay.example',
+  });
+  await db.collection('users').insert_one(userRecord({
+    user_pin_hash: 'existing-test-pin-hash',
+  }));
+  const sent = [];
+  const app = await start(db, async (_env, message) => { sent.push(message); });
+  try {
+    const response = await post(app.base, '/api/auth/user-pin/reset/request', {
+      email: 'PERSON@example.invalid', turnstile_token: 'valid',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).message,
+      'Si cette adresse est liée à un compte, un lien de réinitialisation sera envoyé.');
+    for (let attempt = 0; attempt < 30 && sent.length === 0; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(sent.length, 1);
+    assert.equal(db.collection('password_reset_tokens').documents[0].purpose, 'user_pin');
+    assert.deepEqual(app.verifiedActions(), ['password_reset']);
+  } finally {
+    await app.close();
+  }
+});
+
 test('password reset consumes its token once, updates credentials, and revokes sessions', async () => {
   const db = new MemoryDatabase();
   const oldHash = await bcrypt.hash('OldStrongPassword123!', 12);

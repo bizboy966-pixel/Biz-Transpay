@@ -122,10 +122,14 @@ test('PayDunya PAR creates a pending local record before the provider request an
   collections = dbCollections;
   const first = await call(service, '/api/deposits/paydunya/par', depositRequest);
   const retry = await call(service, '/api/deposits/mobile-money/par-redirect', depositRequest);
+  const paydunyaAlias = await call(service, '/api/deposits/paydunya/par-redirect', depositRequest);
   assert.equal(first.status, 200);
   assert.equal(first.body.status, 'pending');
   assert.equal(first.body.charged_amount, 1010);
   assert.equal(retry.body.id, first.body.id);
+  assert.equal(paydunyaAlias.handled, true);
+  assert.equal(paydunyaAlias.status, 200);
+  assert.equal(paydunyaAlias.body.id, first.body.id);
   assert.equal(providerCalls, 1);
   assert.equal(dbCollections.momo_deposits.rows.length, 1);
   assert.equal(dbCollections.momo_deposits.rows[0].initiation_state, 'ready');

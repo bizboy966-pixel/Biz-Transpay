@@ -709,7 +709,7 @@
       "source": "backend/server.py",
       "handler": "finalize_momo_deposit",
       "status": "needs_review",
-      "review_note": "Finalization currently rechecks PayDunya only; Mbiyo and AfriBaPay provider confirmation must be ported before claiming parity."
+      "review_note": "The dashboard finalize route accepts only PayDunya; the separate link OTP finalizer supports Mbiyo, but AfriBaPay and direct Mbiyo confirmation are not wired here."
     },
     {
       "method": "POST",
@@ -1095,7 +1095,7 @@
       "source": "backend/server.py",
       "handler": "start_link_payment_momo",
       "status": "needs_review",
-      "note": "Node handler supports PayDunya link payments; Mbiyo link pay-in parity still needs implementation."
+      "note": "The Node link-payment handler is PayDunya-only, while public deposit configuration can expose Mbiyo on the public-link surface; add a verified adapter or stop advertising unsupported methods."
     },
     {
       "method": "GET",
