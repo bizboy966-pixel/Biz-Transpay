@@ -134,14 +134,20 @@ function createMobileMoneyPayoutService({
       throw failure(403, 'Compte vérifié et actif requis pour un retrait.');
     }
     const settings = db.collection('settings');
-    const [transferConfig, paydunya, mbiyo, afribapay] = await Promise.all([
+    const [transferConfig, paydunya, mbiyo, afribapay, features] = await Promise.all([
       settings.find_one({ id: 'transfer_config' }, { _id: 0 }),
       settings.find_one({ id: 'payment_provider_paydunya' }, { _id: 0 }),
       settings.find_one({ id: 'payment_provider_mbiyo' }, { _id: 0 }),
       settings.find_one({ id: 'payment_provider_afribapay' }, { _id: 0 }),
+      settings.find_one({ id: 'app_features' }, { _id: 0 }),
     ]);
     const section = transferConfig?.mobile_money || {};
     if (!section.enabled) throw failure(403, 'Les retraits Mobile Money sont désactivés.');
+    const walletFlag = `wallet_${currency.toLowerCase()}_enabled`;
+    const withdrawalFlag = `withdrawal_${currency.toLowerCase()}_enabled`;
+    if (features?.[walletFlag] === false || features?.[withdrawalFlag] === false) {
+      throw failure(403, 'Les retraits ne sont pas activés pour ce portefeuille.');
+    }
     const candidates = (Array.isArray(section.operators) ? section.operators : [])
       .filter(row => row && row.active !== false && !row.archived && !row.hidden
         && String(row.country || '').toUpperCase() === country
@@ -154,6 +160,11 @@ function createMobileMoneyPayoutService({
     };
     const operator = candidates.find(row => enabledProvider[String(row.provider || 'paydunya').toLowerCase()]);
     if (!operator) throw failure(422, 'Opérateur Mobile Money non disponible pour ce pays.');
+    const minimum = Number(operator.min) > 0 ? Number(operator.min) : 100;
+    const maximum = Number(operator.max) > 0 ? Number(operator.max) : Infinity;
+    if (amount < minimum || amount > maximum) {
+      throw failure(422, `Le montant doit être compris entre ${minimum} et ${Number.isFinite(maximum) ? maximum : 'sans plafond'} ${currency}.`);
+    }
     const provider = String(operator.provider || 'paydunya').toLowerCase();
     const walletField = `balance_${currency.toLowerCase()}`;
     if (!Object.hasOwn(user, walletField)) throw failure(422, 'Portefeuille non disponible.');
@@ -380,16 +391,25 @@ function createMobileMoneyPayoutService({
       const failed = await refundRejectedPayout(saved, status);
       return { transaction: failed, pending_manual: false };
     }
+    const confirmed = [
+      'success', 'successful', 'completed', 'confirmed', 'paid', 'approved',
+    ].includes(status);
+    const resolvedAt = new Date().toISOString();
     await transactions.update_one({ id: txId, status: 'pending' }, { $set: {
       'metadata.provider_transaction_id': upstreamId || null,
       'metadata.provider_status': status,
       'metadata.submission_phase': upstreamId ? 'provider_id_persisted' : 'response_without_provider_id',
-      'metadata.manual_review_required': !upstreamId,
-      updated_at: new Date().toISOString(),
+      'metadata.manual_review_required': !upstreamId && !confirmed,
+      ...(confirmed ? {
+        status: 'completed',
+        completed_at: resolvedAt,
+        'metadata.provider_verified_at': resolvedAt,
+      } : {}),
+      updated_at: resolvedAt,
     } });
     const saved = await transactions.find_one({ id: txId, user_id: ownerId }, { _id: 0 });
     if (!saved) throw failure(503, 'Retrait enregistré mais transaction introuvable.');
-    return { transaction: saved, pending_manual: !upstreamId };
+    return { transaction: saved, pending_manual: !upstreamId && !confirmed };
   }
 
   async function refreshPayoutStatus(transactionId, userId) {

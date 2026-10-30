@@ -112,9 +112,11 @@ function configuredProvider(providerConfig, env, provider) {
 function createTransferRoutes({
   db, sessionService, sessionSecret = '', env = process.env,
   verifyBot = verifyTurnstile, verifyPinFn = verifyPin,
-  cryptoCatalog, notify = async () => {}, sendEmailFn = sendResendEmail,
+  cryptoCatalog, createMobileMoneyPayout, refreshMobileMoneyPayout,
+  notify = async () => {}, sendEmailFn = sendResendEmail,
 } = {}) {
   const rateBuckets = new Map();
+  const payoutStatusBuckets = new Map();
 
   function enforceRateLimit(userId) {
     const now = Date.now();
@@ -125,6 +127,19 @@ function createTransferRoutes({
     }
     recent.push(now);
     rateBuckets.set(userId, recent);
+  }
+
+  function enforcePayoutStatusRateLimit(userId, transactionId) {
+    const key = `${userId}:${transactionId}`;
+    const now = Date.now();
+    const recent = (payoutStatusBuckets.get(key) || [])
+      .filter(time => time > now - TRANSFER_WINDOW_MS);
+    if (recent.length >= 6) {
+      payoutStatusBuckets.set(key, recent);
+      throw httpError(429, 'Trop de vérifications. Réessayez dans une minute.', 'RATE_LIMITED');
+    }
+    recent.push(now);
+    payoutStatusBuckets.set(key, recent);
   }
 
   async function authenticate(req) {
@@ -295,7 +310,9 @@ function createTransferRoutes({
     if (body.transfer_type === 'biz_to_bank') {
       throw httpError(410, 'Le transfert bancaire n’est plus disponible sur Biz-transPay.');
     }
-    if (body.transfer_type !== 'biz_to_biz') {
+    const transferType = String(body.transfer_type || '');
+    const isMobileMoneyPayout = transferType === 'biz_to_mobile';
+    if (transferType !== 'biz_to_biz' && !isMobileMoneyPayout) {
       throw httpError(503, 'Ce type de transfert n’est pas encore migré vers Node.js.',
         'MIGRATION_INCOMPLETE');
     }
@@ -305,7 +322,6 @@ function createTransferRoutes({
     if (user.kyc_status !== 'verified') throw httpError(403, 'La vérification KYC est requise.');
     if (user.is_banned || user.is_blocked) throw httpError(403, 'Compte suspendu');
 
-    const transferType = String(body.transfer_type || '');
     const recipient = typeof body.recipient === 'string' ? body.recipient.trim() : '';
     const recipientPhone = typeof body.recipient_phone === 'string' ? body.recipient_phone.trim() : '';
     const currency = typeof body.currency === 'string' ? body.currency.trim().toUpperCase() : '';
@@ -330,6 +346,53 @@ function createTransferRoutes({
       }
       const validPin = await verifyPinFn(db, user, body.pin || '', 'user_pin', sessionSecret);
       if (!validPin) throw httpError(401, 'Code PIN incorrect. Vérifiez-le avant de confirmer.', 'USER_PIN_INVALID');
+    }
+
+    if (isMobileMoneyPayout) {
+      if (typeof createMobileMoneyPayout !== 'function') {
+        throw httpError(503, 'Le service de retrait Mobile Money est indisponible.', 'MIGRATION_INCOMPLETE');
+      }
+      const emailSettings = await db.collection('settings').find_one(
+        { id: 'transaction_email_settings' }, { _id: 0 },
+      );
+      const requestFingerprint = fingerprintRequest(String(userId), body);
+      if (emailSettings?.withdrawal_otp_enabled) {
+        const challengeId = typeof body.withdrawal_otp_challenge_id === 'string'
+          ? body.withdrawal_otp_challenge_id.trim() : '';
+        const code = typeof body.withdrawal_otp_code === 'string'
+          ? body.withdrawal_otp_code.trim() : '';
+        if (!challengeId && !code) {
+          reply(res, 200, await startEmailOtp(user, requestFingerprint, emailSettings.sender_email));
+          return true;
+        }
+        if (!challengeId || !/^\d{6}$/.test(code)) {
+          throw httpError(400, 'Code de confirmation invalide.');
+        }
+        await consumeEmailOtp(String(userId), challengeId, code, requestFingerprint);
+      }
+
+      const payout = await createMobileMoneyPayout(String(userId), body, idempotencyKey);
+      const transaction = payout?.transaction;
+      if (!transaction?.id || String(transaction.user_id) !== String(userId)) {
+        throw httpError(503, 'Le résultat du retrait doit être vérifié avant confirmation.');
+      }
+      if (transaction.status === 'failed') {
+        throw httpError(422, 'Le prestataire a refusé le retrait; le montant a été remboursé.');
+      }
+      const pending = transaction.status === 'pending';
+      reply(res, 200, {
+        transaction,
+        fee: Number(transaction.metadata?.fee || 0),
+        recipient_gets: Number(transaction.metadata?.recipient_gets || 0),
+        pending_manual: Boolean(payout.pending_manual),
+        ...(pending ? {
+          message: payout.pending_manual
+            ? 'La demande est réservée et nécessite une vérification. Ne relancez pas ce retrait.'
+            : 'Le prestataire traite le retrait. Son statut sera actualisé automatiquement.',
+        } : {}),
+        idempotent_replay: Boolean(payout.idempotent_replay),
+      });
+      return true;
     }
 
     const needle = recipient.toLowerCase();
@@ -516,6 +579,38 @@ function createTransferRoutes({
 
   async function handleRoute(req, res) {
     const path = new URL(req.url || '/', 'http://localhost').pathname;
+    const payoutStatusMatch = /^\/api\/transfers\/payouts\/([^/]+)\/status$/.exec(path);
+    if (req.method === 'GET' && payoutStatusMatch) {
+      if (!db || !sessionService || typeof refreshMobileMoneyPayout !== 'function') {
+        reply(res, 503, { detail: 'Vérification du retrait indisponible.', code: 'MIGRATION_INCOMPLETE' });
+        return true;
+      }
+      try {
+        const identity = await authenticate(req);
+        const transactionId = decodeURIComponent(payoutStatusMatch[1]);
+        if (!/^wd_[a-f0-9]{32}$/i.test(transactionId)) {
+          throw httpError(422, 'Identifiant de retrait invalide.');
+        }
+        enforcePayoutStatusRateLimit(String(identity.userId), transactionId);
+        const transaction = await refreshMobileMoneyPayout(transactionId, String(identity.userId));
+        if (!transaction) throw httpError(404, 'Retrait introuvable.');
+        reply(res, 200, {
+          transaction,
+          pending_manual: Boolean(transaction.metadata?.manual_review_required),
+          ...(transaction.status === 'pending' ? {
+            message: transaction.metadata?.manual_review_required
+              ? 'La demande nécessite une vérification.'
+              : 'Le prestataire traite le retrait.',
+          } : {}),
+        });
+      } catch (error) {
+        reply(res, error.status || 500, {
+          detail: error.code ? { code: error.code, message: error.message }
+            : error.message || 'Vérification du retrait impossible.',
+        });
+      }
+      return true;
+    }
     if (req.method === 'GET' && path === '/api/transfer/config') {
       if (!db || !sessionService) {
         reply(res, 503, { detail: 'Service indisponible.', code: 'MIGRATION_INCOMPLETE' });

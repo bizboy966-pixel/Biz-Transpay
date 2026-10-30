@@ -205,12 +205,14 @@ function createServer({
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
   });
-  const transfers = createTransferRoutes({
-    db, sessionService, sessionSecret, env, verifyBot, cryptoCatalog,
-    notify: notifications.notify,
-  });
   const mobileMoneyPayout = createMobileMoneyPayoutService({
     db, sessionSecret, env, fetchImpl,
+  });
+  const transfers = createTransferRoutes({
+    db, sessionService, sessionSecret, env, verifyBot, cryptoCatalog,
+    createMobileMoneyPayout: mobileMoneyPayout.createIntegrationPayout,
+    refreshMobileMoneyPayout: mobileMoneyPayout.refreshPayoutStatus,
+    notify: notifications.notify,
   });
   const adminUserRoutes = createAdminUserRoutes({
     db, sessionService, cryptoCatalog, env,

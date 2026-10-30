@@ -76,6 +76,7 @@ class AtomicStore {
 function setup({
   kycStatus = 'verified', validPin = true, withdrawalOtp = false,
   emailSender = 'no-reply@example.test', settingsExtra = [],
+  createMobileMoneyPayout = null, refreshMobileMoneyPayout = null,
 } = {}) {
   const sentEmails = [];
   const store = new AtomicStore({
@@ -118,6 +119,8 @@ function setup({
     verifyPinFn: async () => validPin,
     sendEmailFn: async (_env, message) => sentEmails.push(message),
     cryptoCatalog: { async activeExchangeAssets() { return new Map(); } },
+    createMobileMoneyPayout,
+    refreshMobileMoneyPayout,
     notify: async (...args) => sentNotifications.push(args),
   });
   return { store, service, sentNotifications, sentEmails };
@@ -245,13 +248,142 @@ test('transfer enforces KYC, PIN, and idempotency key before changing balances',
   assert.equal(missingKey.status, 400);
 });
 
-test('legacy payout types stay fail-closed until their provider routes are migrated', async () => {
+test('Mobile Money withdrawal routes to the provider service after KYC, Turnstile, and PIN checks', async () => {
+  const calls = [];
+  const payoutTransaction = {
+    id: `wd_${'a'.repeat(32)}`,
+    user_id: 'sender',
+    type: 'withdrawal',
+    direction: 'out',
+    amount: 500,
+    currency: 'XOF',
+    status: 'pending',
+    counterparty: '90123456',
+    reference: 'BTP-WD-TEST',
+    metadata: { fee: 18, recipient_gets: 500 },
+  };
+  const { service } = setup({
+    createMobileMoneyPayout: async (...args) => {
+      calls.push(args);
+      return {
+        transaction: payoutTransaction,
+        pending_manual: false,
+        idempotent_replay: false,
+      };
+    },
+  });
+  const result = await call(service, transferBody({
+    transfer_type: 'biz_to_mobile',
+    recipient: '90123456',
+    country: 'TG',
+    operator: 'tmoney_tg',
+    fee_bearer: 'sender',
+    amount: 500,
+    currency: 'XOF',
+  }));
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.transaction.status, 'pending');
+  assert.equal(result.body.fee, 18);
+  assert.equal(result.body.recipient_gets, 500);
+  assert.match(result.body.message, /actualisé automatiquement/i);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'sender');
+  assert.equal(calls[0][1].operator, 'tmoney_tg');
+  assert.equal(calls[0][2], 'transfer-request-01');
+});
+
+test('Mobile Money withdrawal fails closed when payout service is unavailable', async () => {
   const { store, service } = setup();
   const result = await call(service, transferBody({ transfer_type: 'biz_to_mobile' }));
   assert.equal(result.status, 503);
   assert.equal(result.body.detail.code, 'MIGRATION_INCOMPLETE');
   assert.equal(store.docs.users.get('sender').balance_xof, 1000);
   assert.equal(store.docs.users.get('recipient').balance_xof, 50);
+});
+
+test('Mobile Money KYC and PIN failures never invoke the payout provider', async () => {
+  let providerCalls = 0;
+  const createMobileMoneyPayout = async () => {
+    providerCalls += 1;
+    throw new Error('must not be called');
+  };
+  const mobileBody = transferBody({
+    transfer_type: 'biz_to_mobile',
+    recipient: '90123456',
+    country: 'TG',
+    operator: 'tmoney_tg',
+    fee_bearer: 'sender',
+    currency: 'XOF',
+  });
+  const deniedKyc = await call(setup({
+    kycStatus: 'pending', createMobileMoneyPayout,
+  }).service, mobileBody);
+  assert.equal(deniedKyc.status, 403);
+  const deniedPin = await call(setup({
+    validPin: false, createMobileMoneyPayout,
+  }).service, mobileBody);
+  assert.equal(deniedPin.status, 401);
+  assert.equal(providerCalls, 0);
+});
+
+test('withdrawal email OTP is consumed before starting a Mobile Money payout', async () => {
+  const calls = [];
+  const { service, sentEmails } = setup({
+    withdrawalOtp: true,
+    createMobileMoneyPayout: async (...args) => {
+      calls.push(args);
+      return {
+        transaction: {
+          id: `wd_${'b'.repeat(32)}`, user_id: 'sender', status: 'completed',
+          amount: 200, currency: 'XOF', metadata: { fee: 0, recipient_gets: 200 },
+        },
+        pending_manual: false,
+      };
+    },
+  });
+  const mobileBody = transferBody({
+    transfer_type: 'biz_to_mobile',
+    recipient: '90123456',
+    country: 'TG',
+    operator: 'tmoney_tg',
+    fee_bearer: 'sender',
+    amount: 200,
+    currency: 'XOF',
+  });
+  const challenge = await call(service, mobileBody);
+  assert.equal(challenge.status, 200);
+  assert.equal(challenge.body.withdrawal_otp_required, true);
+  assert.equal(calls.length, 0);
+  const code = sentEmails[0].text.match(/ : (\d{6})/)[1];
+  const confirmed = await call(service, {
+    ...mobileBody,
+    withdrawal_otp_challenge_id: challenge.body.challenge_id,
+    withdrawal_otp_code: code,
+  });
+  assert.equal(confirmed.status, 200, JSON.stringify(confirmed.body));
+  assert.equal(confirmed.body.transaction.status, 'completed');
+  assert.equal(calls.length, 1);
+});
+
+test('payout status refresh is authenticated and restricted to the transaction owner', async () => {
+  const transactionId = `wd_${'c'.repeat(32)}`;
+  const calls = [];
+  const transaction = {
+    id: transactionId, user_id: 'sender', status: 'completed',
+    metadata: { transfer_type: 'biz_to_mobile' },
+  };
+  const { service } = setup({
+    refreshMobileMoneyPayout: async (...args) => {
+      calls.push(args);
+      return transaction;
+    },
+  });
+  const result = await call(
+    service, undefined, `/api/transfers/payouts/${transactionId}/status`, 'GET',
+  );
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.transaction.status, 'completed');
+  assert.deepEqual(calls, [[transactionId, 'sender']]);
 });
 
 test('email OTP setting blocks rather than bypassing confirmation during migration', async () => {

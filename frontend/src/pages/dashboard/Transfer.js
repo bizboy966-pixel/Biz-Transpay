@@ -83,7 +83,9 @@ export default function Transfer() {
       setTransferFeedback((current) => (
         current?.status === 'processing'
           ? {
-            status: data?.pending_manual ? 'pending' : 'success',
+            status: data?.pending_manual || data?.transaction?.status === 'pending'
+              ? 'pending'
+              : data?.transaction?.status === 'failed' ? 'failed' : 'success',
             transferType: meta.type,
           }
           : current
@@ -100,6 +102,64 @@ export default function Transfer() {
       queryKey: ['conversion-crypto-wallets', user?.id],
     });
   };
+
+  useEffect(() => {
+    const transactionId = done?.transaction?.id;
+    if (done?.meta?.type !== 'biz_to_mobile'
+        || done?.transaction?.status !== 'pending'
+        || done?.pending_manual
+        || !transactionId) return undefined;
+
+    let active = true;
+    let timer;
+    let attempts = 0;
+    const pollStatus = async () => {
+      if (!active || attempts >= 24) return;
+      attempts += 1;
+      try {
+        const { data } = await api.get(
+          `/transfers/payouts/${encodeURIComponent(transactionId)}/status`,
+        );
+        const latest = data?.transaction;
+        if (!active || !latest) return;
+        setDone((current) => (
+          current?.transaction?.id === transactionId
+            ? { ...current, ...data, meta: current.meta }
+            : current
+        ));
+        if (latest.status === 'completed' || latest.status === 'failed') {
+          setTransferFeedback({
+            status: latest.status === 'completed' ? 'success' : 'failed',
+            transferType: 'biz_to_mobile',
+          });
+          refresh();
+          queryClient.invalidateQueries({ queryKey: ['transactions'] });
+          queryClient.invalidateQueries({
+            queryKey: ['dashboard-recent-transactions', user?.id],
+          });
+          return;
+        }
+      } catch (error) {
+        if ([401, 404].includes(error.response?.status)) return;
+      }
+      if (active && attempts < 24) {
+        timer = window.setTimeout(pollStatus, 12_000);
+      }
+    };
+    timer = window.setTimeout(pollStatus, 12_000);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [
+    done?.transaction?.id,
+    done?.transaction?.status,
+    done?.meta?.type,
+    done?.pending_manual,
+    refresh,
+    queryClient,
+    user?.id,
+  ]);
 
   return (
     <div className="max-w-2xl mx-auto space-y-4 sm:space-y-5" data-testid="page-transfer">
@@ -193,17 +253,31 @@ export default function Transfer() {
 
       {step === 3 && done && (
         <div className="bg-white border border-slate-100 rounded-2xl p-6 sm:p-8 text-center" data-testid="transfer-success">
-          <div className="mx-auto w-12 h-12 sm:w-14 sm:h-14 rounded-full bg-emerald-50 flex items-center justify-center"><CheckCircle2 className="w-6 h-6 sm:w-7 sm:h-7 text-emerald-500" /></div>
+          <div className={`mx-auto w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center ${done.transaction?.status === 'failed' ? 'bg-red-50' : done.transaction?.status === 'pending' || done.pending_manual ? 'bg-amber-50' : 'bg-emerald-50'}`}>
+            {done.transaction?.status === 'failed'
+              ? <span className="text-xl font-bold text-red-500">×</span>
+              : done.transaction?.status === 'pending' || done.pending_manual
+                ? <span className="text-xl font-bold text-amber-600">…</span>
+                : <CheckCircle2 className="w-6 h-6 sm:w-7 sm:h-7 text-emerald-500" />}
+          </div>
           <h2 className="mt-3 sm:mt-4 font-cabinet text-lg sm:text-xl font-extrabold text-slate-900">
-            {done.pending_manual ? 'Transfert en attente' : 'Transfert effectué !'}
+            {done.transaction?.status === 'failed'
+              ? 'Retrait échoué'
+              : done.pending_manual || done.transaction?.status === 'pending'
+                ? 'Retrait en attente'
+                : 'Transfert effectué !'}
           </h2>
           <div className="mt-2 sm:mt-3 font-cabinet text-2xl sm:text-3xl font-extrabold text-[#2563EB]">
             {done.transaction.amount.toLocaleString()} <span className="text-sm sm:text-base text-slate-500">{done.transaction.currency}</span>
           </div>
           <div className="mt-1 text-xs sm:text-sm text-slate-500 truncate">→ {done.recipient?.full_name || done.transaction.counterparty}</div>
           <div className="mt-1 text-[10px] sm:text-[11px] text-slate-400 font-mono">{done.transaction.reference}</div>
-          {done.pending_manual && (
-            <div className="mt-3 p-3 bg-amber-50 border border-amber-100 rounded-xl text-[11px] sm:text-xs text-amber-800">{done.message}</div>
+          {(done.pending_manual || done.transaction?.status === 'pending' || done.transaction?.status === 'failed') && (
+            <div className={`mt-3 p-3 rounded-xl text-[11px] sm:text-xs ${done.transaction?.status === 'failed' ? 'bg-red-50 border border-red-100 text-red-800' : 'bg-amber-50 border border-amber-100 text-amber-800'}`}>
+              {done.message || (done.transaction?.status === 'failed'
+                ? 'Le prestataire a refusé le retrait; le montant a été remboursé.'
+                : 'Le prestataire traite le retrait. Ne relancez pas cette demande.')}
+            </div>
           )}
           {done.fee > 0 && (
             <div className="mt-3 text-[11px] sm:text-xs text-slate-500 space-y-0.5">

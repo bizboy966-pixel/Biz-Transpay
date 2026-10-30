@@ -21,6 +21,9 @@ class MemoryDb {
         full_name: 'Test Merchant',
       }]]),
       settings: new Map([
+        ['app_features', {
+          id: 'app_features', wallet_xof_enabled: true, withdrawal_xof_enabled: true,
+        }],
         ['transfer_config', {
           id: 'transfer_config',
           mobile_money: {
@@ -139,6 +142,59 @@ test('Mbiyo payout debits atomically and duplicate requests submit once', async 
   assert.equal(first.transaction.metadata.provider_transaction_id, 'mb-100');
   assert.equal(first.transaction.metadata.balance_before, 10_000);
   assert.equal(first.transaction.metadata.balance_after, 8_850);
+});
+
+test('a provider-confirmed success is recorded as completed immediately', async () => {
+  const db = new MemoryDb();
+  let calls = 0;
+  const service = createMobileMoneyPayoutService({
+    db, sessionSecret: 'test-session-secret',
+    env: { OFFICIAL_DOMAIN: 'https://biz-transpay.com' },
+    fetchImpl: async () => {
+      calls += 1;
+      return providerResponse({
+        data: { transaction_id: 'mb-completed', status: 'successful' },
+      });
+    },
+  });
+  const result = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-key-success-1',
+  );
+  assert.equal(result.transaction.status, 'completed');
+  assert.equal(result.pending_manual, false);
+  assert.equal(result.transaction.metadata.provider_status, 'successful');
+  assert.ok(result.transaction.metadata.provider_verified_at);
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 8_850);
+  assert.equal(calls, 1);
+});
+
+test('payout enforces server-side amount limits and wallet withdrawal toggles', async () => {
+  const db = new MemoryDb();
+  let providerCalls = 0;
+  const service = createMobileMoneyPayoutService({
+    db, sessionSecret: 'test-session-secret',
+    env: { OFFICIAL_DOMAIN: 'https://biz-transpay.com' },
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return providerResponse({ data: { transaction_id: 'mb-limits', status: 'pending' } });
+    },
+  });
+  await assert.rejects(
+    service.createIntegrationPayout('merchant-1', payout({ amount: 99 }), 'idempotency-min-001'),
+    error => error.status === 422,
+  );
+  await assert.rejects(
+    service.createIntegrationPayout('merchant-1', payout({ amount: 500_001 }), 'idempotency-max-001'),
+    error => error.status === 422,
+  );
+  db.rows.settings.get('app_features').withdrawal_xof_enabled = false;
+  await assert.rejects(
+    service.createIntegrationPayout('merchant-1', payout(), 'idempotency-toggle-001'),
+    error => error.status === 403,
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
+  assert.equal(db.rows.transactions.size, 0);
 });
 
 test('a reused payout key with different details is rejected without a second debit', async () => {
