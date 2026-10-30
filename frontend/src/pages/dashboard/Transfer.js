@@ -14,6 +14,7 @@ import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidge
 import DashboardPageLogo from '@/components/DashboardPageLogo';
 import TransferStatusModal from '@/components/TransferStatusModal';
 import UserPinPrompt from '@/components/UserPinPrompt';
+import { getMobileMoneyWithdrawalBlockers } from './mobileMoneyWithdrawalValidation';
 
 export default function Transfer() {
   const { t } = useTranslation();
@@ -632,11 +633,21 @@ function BizToMobileForm({
   const fee = Math.round(amt * feePct / 100 + feeFixed);
   const totalDebit = feeBearer === 'sender' ? amt + fee : amt;
   const recipientGets = feeBearer === 'sender' ? amt : amt - fee;
-  const bal = balance ? (balance[`balance_${currency.toLowerCase()}`] || 0) : 0;
+  const bal = Number(balance?.[`balance_${currency.toLowerCase()}`]) || 0;
   const min = Number(op?.min) || 100;
   const max = op?.max === '' || op?.max == null ? 10 ** 12 : (Number(op.max) || 10 ** 12);
-  const canSubmit = op && currency && phone && amt >= min && amt <= max
-    && recipientGets > 0 && totalDebit <= bal && turnstileToken;
+  const blockers = getMobileMoneyWithdrawalBlockers({
+    operator: op,
+    currency,
+    phone,
+    amount: amt,
+    min,
+    max,
+    recipientGets,
+    totalDebit,
+    balance: bal,
+  });
+  const canSubmit = blockers.length === 0 && Boolean(turnstileToken);
 
   const submit = async (pin) => {
     if (!turnstileToken) {
@@ -770,7 +781,7 @@ function BizToMobileForm({
 
       <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 sm:gap-3">
         <Field label="Montant">
-          <input data-testid="mm-amount" type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="5000" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
+          <input data-testid="mm-amount" type="number" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="5000" min={min} max={max} className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-xs sm:text-sm" />
           {op && <div className="mt-1 text-[9px] sm:text-[10px] text-slate-500">Min {min.toLocaleString()} · Max {op.max === '' || op.max == null ? 'illimité' : max.toLocaleString()} · Solde : {bal.toLocaleString()} {currency}</div>}
         </Field>
         <div className="flex items-end">
@@ -798,9 +809,28 @@ function BizToMobileForm({
         onToken={setTurnstileToken}
       />
       {turnstileToken && (
-        <button disabled={!canSubmit} onClick={() => setConfirmOpen(true)} data-testid="btn-mm-continue" className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50">
-          Continuer
-        </button>
+        <>
+          <button
+            type="button"
+            disabled={!canSubmit}
+            onClick={() => setConfirmOpen(true)}
+            aria-describedby={blockers.length ? 'mm-withdrawal-blockers' : undefined}
+            data-testid="btn-mm-continue"
+            className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold py-3 sm:py-3.5 rounded-xl text-xs sm:text-sm disabled:opacity-50"
+          >
+            Continuer
+          </button>
+          {blockers.length > 0 && (
+            <p
+              id="mm-withdrawal-blockers"
+              role="status"
+              data-testid="mm-withdrawal-blocker"
+              className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800"
+            >
+              {blockers.join(' ')}
+            </p>
+          )}
+        </>
       )}
 
       {confirmOpen && !transferFeedback && (
