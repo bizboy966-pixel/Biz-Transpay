@@ -74,7 +74,8 @@ function reply(res, status, body) {
 
 function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
-  executeExchange, createPaymentLink, createCryptoDeposit,
+  executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
+  createCryptoPayout,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -90,6 +91,10 @@ function createIntegrationApiRoutes({
       && url.pathname === '/api/integration/v1/links';
     const cryptoDepositStart = req.method === 'POST'
       && url.pathname === '/api/integration/v1/crypto/deposits';
+    const mobileMoneyDepositStart = req.method === 'POST'
+      && url.pathname === '/api/integration/v1/deposits';
+    const cryptoPayoutStart = req.method === 'POST'
+      && url.pathname === '/api/integration/v1/crypto/payouts';
     const listPaths = {
       '/api/integration/v1/deposits': 'deposit',
       '/api/integration/v1/payouts': 'payout',
@@ -116,10 +121,12 @@ function createIntegrationApiRoutes({
       ? /^\/api\/integration\/v1\/crypto\/payouts\/([^/]+)$/.exec(url.pathname) : null;
     const isDetail = exchangeMatch || linkPaymentsMatch || linkMatch || payoutMatch
       || depositMatch || cryptoDepositMatch || cryptoPayoutMatch;
-    if ((req.method !== 'GET' && !exchangeExecution && !linkCreation && !cryptoDepositStart)
+    if ((req.method !== 'GET' && !exchangeExecution && !linkCreation
+          && !cryptoDepositStart && !mobileMoneyDepositStart && !cryptoPayoutStart)
         || (!kind && !isTransactions && !isDetail && !cryptoAssetCatalog
           && !mobileMoneyOperatorCatalog && !exchangeQuote
-          && !exchangeExecution && !linkCreation && !cryptoDepositStart)) return false;
+          && !exchangeExecution && !linkCreation && !cryptoDepositStart
+          && !mobileMoneyDepositStart && !cryptoPayoutStart)) return false;
     try {
       const rawLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
       if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 500) {
@@ -127,6 +134,181 @@ function createIntegrationApiRoutes({
         return true;
       }
       const credential = await authenticateIntegrationApi({ db, req, now });
+      if (mobileMoneyDepositStart) {
+        if (credential.environment !== 'live'
+            || !Array.isArray(credential.scopes)
+            || !credential.scopes.includes('deposits:write')) {
+          reply(res, 403, { detail: 'Live deposit scope is required.' });
+          return true;
+        }
+        if (typeof createMobileMoneyDeposit !== 'function') {
+          reply(res, 503, { detail: 'Mobile Money deposit service unavailable.' });
+          return true;
+        }
+        const idempotencyKey = String(req.headers?.['idempotency-key'] || '').trim();
+        if (idempotencyKey.length < 8 || idempotencyKey.length > 120) {
+          reply(res, 422, { detail: 'A valid Idempotency-Key header is required.' });
+          return true;
+        }
+        let body;
+        try {
+          body = await readJson(req, 32 * 1024);
+        } catch (error) {
+          reply(res, error.status || 400, { detail: error.message || 'Invalid request body.' });
+          return true;
+        }
+        const requestFingerprint = crypto.createHash('sha256')
+          .update(stableJson(body), 'utf8').digest('hex');
+        const operationId = `deposit:${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex')}`;
+        const operations = db.collection('integration_operations');
+        const existing = await operations.find_one({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+        }, { _id: 0 });
+        if (existing) {
+          if (existing.request_fingerprint !== requestFingerprint) {
+            reply(res, 409, { detail: 'Idempotency key was used with a different request.' });
+            return true;
+          }
+          if (existing.response) {
+            reply(res, 200, existing.response);
+            return true;
+          }
+        }
+        const internalKey = `btpi_${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex').slice(0, 48)}`;
+        const result = await createMobileMoneyDeposit(
+          credential.user_id, body, internalKey,
+        );
+        if (!result?.handled) {
+          reply(res, 503, { detail: 'Mobile Money deposit service did not handle the request.' });
+          return true;
+        }
+        if (result.status !== 200 || !result.body?.id) {
+          reply(res, result.status || 502, result.body || { detail: 'Deposit creation failed.' });
+          return true;
+        }
+        const deposit = result.body;
+        const response = {
+          id: String(deposit.id),
+          status: String(deposit.status || 'pending'),
+          deposit,
+        };
+        const timestamp = new Date(now()).toISOString();
+        await operations.replace_one(
+          { id: operationId },
+          {
+            id: operationId,
+            user_id: String(credential.user_id),
+            environment: credential.environment,
+            kind: 'deposit',
+            business_id: response.id,
+            status: response.status,
+            request_fingerprint: requestFingerprint,
+            reference: body.reference || null,
+            response,
+            created_at: existing?.created_at || timestamp,
+            updated_at: timestamp,
+          },
+          true,
+        );
+        reply(res, 200, response);
+        return true;
+      }
+      if (cryptoPayoutStart) {
+        if (credential.environment !== 'live'
+            || !Array.isArray(credential.scopes)
+            || !credential.scopes.includes('payouts:write')
+            || credential.payout_opt_in !== true) {
+          reply(res, 403, {
+            detail: 'Live payouts:write scope and explicit payout opt-in are required.',
+          });
+          return true;
+        }
+        if (typeof createCryptoPayout !== 'function') {
+          reply(res, 503, { detail: 'Crypto payout service unavailable.' });
+          return true;
+        }
+        const payoutOwner = await db.collection('users').find_one(
+          { id: String(credential.user_id) }, { _id: 0, kyc_status: 1 },
+        );
+        if (!payoutOwner || payoutOwner.kyc_status !== 'verified') {
+          reply(res, 403, { detail: 'Verified KYC is required for payouts.' });
+          return true;
+        }
+        const idempotencyKey = String(req.headers?.['idempotency-key'] || '').trim();
+        if (idempotencyKey.length < 8 || idempotencyKey.length > 120) {
+          reply(res, 422, { detail: 'A valid Idempotency-Key header is required.' });
+          return true;
+        }
+        let body;
+        try {
+          body = await readJson(req, 32 * 1024);
+        } catch (error) {
+          reply(res, error.status || 400, { detail: error.message || 'Invalid request body.' });
+          return true;
+        }
+        const requestFingerprint = crypto.createHash('sha256')
+          .update(stableJson(body), 'utf8').digest('hex');
+        const operationId = `crypto_payout:${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex')}`;
+        const operations = db.collection('integration_operations');
+        const existing = await operations.find_one({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+        }, { _id: 0 });
+        if (existing) {
+          if (existing.request_fingerprint !== requestFingerprint) {
+            reply(res, 409, { detail: 'Idempotency key was used with a different request.' });
+            return true;
+          }
+          if (existing.response) {
+            reply(res, 200, existing.response);
+            return true;
+          }
+        }
+        const internalKey = `btpi_${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex').slice(0, 48)}`;
+        const payout = await createCryptoPayout(
+          credential.user_id, body, internalKey,
+        );
+        if (!payout?.id || payout.status !== 'pending') {
+          reply(res, 502, { detail: 'The crypto payout was not safely recorded.' });
+          return true;
+        }
+        const response = {
+          id: String(payout.id),
+          status: String(payout.status),
+          payout: publicCryptoPayout(payout),
+        };
+        const timestamp = new Date(now()).toISOString();
+        await operations.replace_one(
+          { id: operationId },
+          {
+            id: operationId,
+            user_id: String(credential.user_id),
+            environment: credential.environment,
+            kind: 'crypto_payout',
+            business_id: response.id,
+            status: response.status,
+            request_fingerprint: requestFingerprint,
+            reference: body.reference || null,
+            response,
+            created_at: existing?.created_at || timestamp,
+            updated_at: timestamp,
+          },
+          true,
+        );
+        reply(res, 200, response);
+        return true;
+      }
       if (cryptoDepositStart) {
         if (credential.environment !== 'live'
             || !Array.isArray(credential.scopes)

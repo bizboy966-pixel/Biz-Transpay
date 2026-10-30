@@ -223,7 +223,7 @@
       "path": "/api/admin/platform/reset",
       "source": "backend/server.py",
       "handler": "admin_platform_reset",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -419,14 +419,14 @@
       "path": "/api/admin/users/cleanup-test-users",
       "source": "backend/server.py",
       "handler": "admin_cleanup_test_users",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "DELETE",
       "path": "/api/admin/users/{user_id}",
       "source": "backend/server.py",
       "handler": "admin_delete_user",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -863,7 +863,7 @@
       "path": "/api/integration/v1/crypto/payouts",
       "source": "backend/integration_api.py",
       "handler": "start_crypto_payout",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -884,7 +884,7 @@
       "path": "/api/integration/v1/deposits",
       "source": "backend/integration_api.py",
       "handler": "start_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

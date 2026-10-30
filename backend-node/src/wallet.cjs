@@ -28,10 +28,12 @@ function legacyFloat(value) {
 function operationSignature(input) {
   const entries = Object.keys(input.increments).sort()
     .map(key => `${asciiJson(key)}:${legacyFloat(input.increments[key])}`).join(',');
+  const requestFingerprint = input.requestFingerprint === undefined
+    ? '' : `,"request_fingerprint":${asciiJson(input.requestFingerprint)}`;
   const serialized = `{"direction":${asciiJson(input.direction)},"increments":{${entries}},`
     + `"required_balance_amount":${legacyFloat(input.requiredBalanceAmount ?? 0)},`
     + `"required_balance_field":${asciiJson(input.requiredBalanceField ?? null)},`
-    + `"user_id":${asciiJson(String(input.userId))}}`;
+    + `"user_id":${asciiJson(String(input.userId))}${requestFingerprint}}`;
   return createHash('sha256').update(serialized).digest('hex');
 }
 
@@ -43,6 +45,9 @@ function validInput(input) {
   if (input.requiredBalanceField && !fieldPattern.test(input.requiredBalanceField)) return false;
   if (!Number.isFinite(Number(input.requiredBalanceAmount ?? 0))
       || Number(input.requiredBalanceAmount ?? 0) < 0) return false;
+  if (input.requestFingerprint !== undefined
+      && (typeof input.requestFingerprint !== 'string'
+        || !/^[a-f0-9]{64}$/.test(input.requestFingerprint))) return false;
   return Object.entries(input.increments).every(([key, amount]) =>
     fieldPattern.test(key) && typeof amount === 'number' && Number.isFinite(amount) && amount !== 0);
 }

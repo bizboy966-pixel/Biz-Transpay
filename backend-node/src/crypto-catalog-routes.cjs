@@ -6,6 +6,7 @@ const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
 const { getAppFeatures, getPlatformConfig } = require('./public-config-routes.cjs');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
+const { applyWalletOperation } = require('./wallet.cjs');
 
 const ASSET_SPECS = [
   { id: 'USDC.POLYGON', coin: 'USDC', name: 'USD Coin', network: 'POLYGON', networkName: 'Polygon', aliases: ['POLYGON', 'MATIC'], addressRegex: '^0x[a-fA-F0-9]{40}$' },
@@ -906,6 +907,174 @@ function createCryptoCatalogRoutes({
     return result;
   }
 
+  async function createCryptoPayoutRequest(userId, body, idempotencyKey) {
+    const ownerId = String(userId || '');
+    const amount = Number(body.amount);
+    const requestedAsset = String(body.asset_code || '').trim().toUpperCase();
+    const networkCode = String(body.network_code || '').trim().toUpperCase();
+    const address = String(body.wallet_address || '').trim();
+    const memo = String(body.destination_memo || '').trim();
+    const feeBearer = String(body.fee_bearer || 'sender').trim().toLowerCase();
+    const description = String(body.description || '').trim().slice(0, 500);
+    const recipientName = String(body.recipient_name || '').trim().slice(0, 180);
+    const key = String(idempotencyKey || body.idempotency_key || '').trim();
+    if (!ownerId || !Number.isFinite(amount) || amount <= 0 || amount > 1e12
+        || !/^[A-Za-z0-9._-]{8,128}$/.test(key)
+        || !address || address.length > 256
+        || !['sender', 'receiver'].includes(feeBearer)) {
+      throw httpError(422, 'Informations du retrait crypto invalides');
+    }
+    if (Number(amount.toFixed(8)) !== amount) {
+      throw httpError(400, 'Le montant crypto accepte au maximum 8 décimales');
+    }
+    const features = await getAppFeatures(db);
+    if (features.wallet_crypto_enabled === false
+        || features.withdrawal_crypto_enabled === false) {
+      throw httpError(403, 'Les retraits crypto sont désactivés');
+    }
+    const section = await getTransferCryptoConfig();
+    if (section.enabled === false) throw httpError(403, 'Les retraits crypto sont désactivés');
+    const providerConfig = await credentials();
+    if (!providerConfig.configured) throw httpError(503, 'Passerelle crypto non configurée');
+    const assets = await providerAssets(providerConfig);
+    const catalog = catalogMap(assets || []);
+    const spec = ASSET_SPECS.find(candidate => {
+      const providerCode = String(catalog.get(candidate.id)?.assetCode || '')
+        .trim().toUpperCase();
+      const aliasesMatch = candidate.coin === requestedAsset
+        && (!networkCode || networkMatches(candidate, networkCode));
+      return candidate.id === requestedAsset
+        || `${candidate.coin}.${candidate.network}` === requestedAsset
+        || providerCode === requestedAsset
+        || aliasesMatch;
+    });
+    if (!spec) throw httpError(400, 'Cryptomonnaie ou réseau non pris en charge');
+    const asset = catalog.get(spec.id);
+    if (!asset?.isActive || !assetEnabled(section, spec)) {
+      throw httpError(400, 'Cet actif ou réseau n’est pas activé pour les retraits');
+    }
+    if (networkCode && !networkMatches(spec, networkCode)) {
+      throw httpError(400, 'Le réseau ne correspond pas à l’actif sélectionné');
+    }
+    let addressRegex;
+    try { addressRegex = new RegExp(spec.addressRegex); } catch {
+      throw httpError(503, 'Configuration du réseau crypto invalide');
+    }
+    if (!addressRegex.test(address)) throw httpError(400, 'Adresse crypto invalide pour ce réseau');
+    if ((asset.memoRequired || spec.memoRequired) && !memo) {
+      throw httpError(400, 'Le mémo/tag de destination est requis pour ce réseau');
+    }
+    const minimum = numeric(asset.minimum);
+    const maximum = numeric(asset.maximum, 1e12) || 1e12;
+    if (amount < minimum || amount > maximum) {
+      throw httpError(400, `Montant hors limites (${minimum} - ${maximum} ${spec.coin})`);
+    }
+    const wallet = walletField(spec);
+    if (!wallet) throw httpError(400, 'Portefeuille crypto/réseau invalide');
+    const feeSplit = feePercentSplit(section, spec.coin, spec.id);
+    const feePct = feeSplit.gateway + feeSplit.platform;
+    const gatewayFixed = fixedFee(section, 'fees_gateway_fixed', spec);
+    const platformFixed = fixedFee(section, 'fees_platform_fixed', spec);
+    const fee = Math.round(
+      ((amount * feePct / 100) + gatewayFixed + platformFixed + Number.EPSILON) * 1e8,
+    ) / 1e8;
+    if (feePct >= 100 || fee >= amount) {
+      throw httpError(503, 'Configuration des frais crypto invalide');
+    }
+    const totalDebit = Math.round(
+      (amount + (feeBearer === 'sender' ? fee : 0) + Number.EPSILON) * 1e8,
+    ) / 1e8;
+    const recipientGets = feeBearer === 'sender' ? amount : Math.round(
+      (amount - fee + Number.EPSILON) * 1e8,
+    ) / 1e8;
+    if (recipientGets <= 0) throw httpError(503, 'Le montant net après frais est invalide');
+    const requestFingerprint = createHash('sha256').update(JSON.stringify({
+      asset_code: spec.id,
+      network_code: spec.network,
+      amount,
+      address,
+      memo,
+      fee_bearer: feeBearer,
+      recipient_name: recipientName,
+      description,
+    })).digest('hex');
+    const stableId = createHash('sha256')
+      .update(`crypto-payout:${ownerId}:${key}`).digest('hex').slice(0, 32);
+    const operationId = `crypto-transfer:${stableId}`;
+    const transactionId = `crypto-${stableId}`;
+    const reference = `BTP-CRY-${stableId.slice(0, 16).toUpperCase()}`;
+    const timestamp = new Date().toISOString();
+    const mutation = await applyWalletOperation(db, {
+      userId: ownerId,
+      operationId,
+      requestFingerprint,
+      direction: 'debit',
+      primaryField: wallet,
+      increments: { [wallet]: -totalDebit },
+      requiredBalanceField: wallet,
+      requiredBalanceAmount: totalDebit,
+      ledger: {
+        id: transactionId,
+        user_id: ownerId,
+        type: 'transfer',
+        direction: 'out',
+        amount: totalDebit,
+        currency: spec.id,
+        status: 'pending',
+        reference,
+        counterparty: address,
+        description: description || 'Retrait crypto en attente de traitement manuel',
+        created_at: timestamp,
+        metadata: {
+          transfer_type: 'biz_to_crypto',
+          amount_gross: amount,
+          operation_id: operationId,
+          wallet_operation_id: operationId,
+          request_fingerprint: requestFingerprint,
+          asset_code: spec.id,
+          coin: spec.coin,
+          network: spec.network,
+          wallet_address: address,
+          destination_address: address,
+          destination_memo: memo || null,
+          recipient_name: recipientName || null,
+          amount_requested: amount,
+          amount_net: recipientGets,
+          fee,
+          fee_pct: feePct,
+          gateway_fee: Math.round((amount * feeSplit.gateway / 100
+            + gatewayFixed + Number.EPSILON) * 1e8) / 1e8,
+          platform_fee: Math.round((amount * feeSplit.platform / 100
+            + platformFixed + Number.EPSILON) * 1e8) / 1e8,
+          total_debit: totalDebit,
+          fee_bearer: feeBearer,
+          idempotency_key: key,
+          manual_review_required: true,
+          auto_withdrawals_disabled: true,
+          pending_manual: true,
+        },
+      },
+    });
+    if (mutation.state === 'insufficient') throw httpError(400, 'Solde crypto insuffisant (frais inclus)');
+    if (mutation.state === 'missing_user') throw httpError(404, 'Utilisateur introuvable');
+    if (mutation.state === 'idempotency_conflict' || mutation.state === 'duplicate_event') {
+      throw httpError(409, 'Cette clé d’idempotence est déjà associée à un autre retrait');
+    }
+    if (!['applied', 'already'].includes(mutation.state)) {
+      throw httpError(503, 'Le retrait crypto n’a pas pu être enregistré');
+    }
+    const transaction = await db.collection('transactions').find_one(
+      { id: transactionId, user_id: ownerId }, { _id: 0 },
+    );
+    if (!transaction) throw httpError(503, 'Le retrait crypto enregistré est introuvable');
+    return {
+      ...transaction,
+      pending_manual: true,
+      recipient_gets: recipientGets,
+      total_debit: totalDebit,
+    };
+  }
+
   async function integrationExchangeQuote(fromCurrency, toCurrency, amount) {
     const query = new URLSearchParams({
       from_currency: String(fromCurrency ?? ''),
@@ -936,6 +1105,7 @@ function createCryptoCatalogRoutes({
     integrationExchangeQuote,
     getPayout,
     createCryptoDepositIntent,
+    createCryptoPayoutRequest,
     activeExchangeAssets,
     providerAssets,
     exchangeRateContext,

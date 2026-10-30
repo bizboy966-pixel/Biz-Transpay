@@ -397,7 +397,7 @@ export default function AdminPlatform() {
             </div>
             <div className="p-5 space-y-3.5">
               <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-[12px] text-red-900 leading-relaxed">
-                Vous êtes sur le point de supprimer <b>toutes les données</b> de la plateforme : utilisateurs (sauf super_admin), transactions, liens, webhooks, notifications, KYC, journaux, clés API, dépôts crypto. Les soldes des super_admin sont remis à zéro.
+                  Vous êtes sur le point de supprimer <b>les données d’exploitation et financières</b> de la plateforme : comptes non super-admin, transactions, liens, webhooks, notifications, KYC, clés API et dépôts. Les comptes super_admin et le compte propriétaire protégé sont conservés, leurs soldes sont remis à zéro. Les paramètres et le journal d’audit sont conservés.
               </div>
               <div>
                 <label className="text-xs font-bold text-slate-700 mb-1.5 block">
@@ -432,6 +432,7 @@ export default function AdminPlatform() {
                     toast.success(`Plateforme réinitialisée — ${data.deleted_users} utilisateurs supprimés`);
                     setResetOpen(false);
                     setResetInput('');
+                    window.location.href = '/login';
                   } catch (err) {
                     toast.error(err.response?.data?.detail || 'Erreur pendant la réinitialisation');
                   } finally {
@@ -456,17 +457,19 @@ export default function AdminPlatform() {
               <div className="flex items-center gap-2.5 text-white">
                 <AlertTriangle className="w-5 h-5" />
                 <div>
-                  <h3 className="font-cabinet font-bold text-base">Supprimer toute la base utilisateur</h3>
-                  <p className="text-[11px] text-red-100/80">Action définitive — aucun compte ne sera conservé</p>
+                  <h3 className="font-cabinet font-bold text-base">Supprimer les données de la plateforme</h3>
+                  <p className="text-[11px] text-red-100/80">Action définitive — le compte propriétaire reste protégé</p>
                 </div>
               </div>
               <button onClick={() => !fullWiping && setFullWipeOpen(false)} disabled={fullWiping} className="text-red-100 hover:text-white"><X className="w-4 h-4" /></button>
             </div>
             <div className="p-5 space-y-3.5">
               <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-[12px] text-red-950 leading-relaxed">
-                Cette action supprime définitivement <b>tous les comptes</b>, sessions, clés API,
+                Cette action supprime définitivement les comptes et données de la plateforme,
+                y compris sessions, clés API,
                 transactions, liens de paiement, KYC, notifications, journaux et données financières.
-                Vous serez déconnecté et devrez créer le premier compte à nouveau.
+                Le compte propriétaire est conservé, mais ses soldes sont remis à zéro.
+                Les paramètres et le journal d’audit sont conservés. Vous serez déconnecté.
                 <br /><b>Cette action est irréversible. Vérifiez vos sauvegardes avant de continuer.</b>
               </div>
               <div>
@@ -500,8 +503,8 @@ export default function AdminPlatform() {
                       confirmation: 'SUPPRIMER_TOUT',
                       delete_all: true,
                     });
-                    toast.success(`${data.deleted_users} comptes supprimés. Vous pouvez refaire la première inscription.`);
-                    window.location.href = '/register';
+                    toast.success(`${data.deleted_users} comptes supprimés. Le compte propriétaire est conservé.`);
+                    window.location.href = '/login';
                   } catch (err) {
                     toast.error(err.response?.data?.detail || 'Erreur pendant la suppression complète');
                     setFullWiping(false);

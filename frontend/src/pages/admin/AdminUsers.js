@@ -376,13 +376,15 @@ function ResetPasswordModal({ user, onClose }) {
 function DeleteUserModal({ user, onClose, onDeleted }) {
   const [confirm, setConfirm] = useState('');
   const [saving, setSaving] = useState(false);
-  const expected = user.username || user.email;
+  const expected = `SUPPRIMER ${user.username || user.email}`;
 
   const doDelete = async () => {
     if (confirm !== expected) { toast.error('Confirmation incorrecte'); return; }
     setSaving(true);
     try {
-      const { data } = await api.delete(`/admin/users/${user.id}`);
+      const { data } = await api.delete(`/admin/users/${user.id}`, {
+        data: { confirmation: expected },
+      });
       toast.success(`Utilisateur supprimé (${Object.values(data.deleted || {}).reduce((a, b) => a + b, 0)} enregistrements)`);
       onDeleted();
     } catch (e) { toast.error(e?.response?.data?.detail || 'Erreur'); }
@@ -398,7 +400,7 @@ function DeleteUserModal({ user, onClose, onDeleted }) {
         </div>
       </div>
       <p className="text-xs text-slate-700">Vous êtes sur le point de supprimer <b>{user.full_name}</b> (<span className="font-mono">@{user.username}</span>).</p>
-      <p className="text-xs text-slate-500 mt-3 mb-1">Pour confirmer, tapez <span className="font-mono font-bold text-red-600">{expected}</span> ci-dessous :</p>
+      <p className="text-xs text-slate-500 mt-3 mb-1">Pour confirmer la suppression et l’historique associé, tapez <span className="font-mono font-bold text-red-600">{expected}</span> ci-dessous :</p>
       <input value={confirm} onChange={(e) => setConfirm(e.target.value)} data-testid="delete-confirm-input" className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs outline-none focus:border-red-500" placeholder={expected} />
       <div className="mt-4 flex justify-end gap-2">
         <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-xs font-semibold hover:bg-slate-50" data-testid="delete-cancel">Annuler</button>

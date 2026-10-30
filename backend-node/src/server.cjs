@@ -236,6 +236,8 @@ function createServer({
     executeExchange: exchange.handleIntegration,
     createPaymentLink: paymentLinks.handleIntegration,
     createCryptoDeposit: cryptoCatalog.createCryptoDepositIntent,
+    createCryptoPayout: cryptoCatalog.createCryptoPayoutRequest,
+    createMobileMoneyDeposit: paydunyaInvoiceRoutes.handleIntegrationDeposit,
     getMobileMoneyOperators: (direction, userId) => (
       direction === 'deposit'
         ? publicConfig.integrationMobileMoneyOperators(direction, userId)

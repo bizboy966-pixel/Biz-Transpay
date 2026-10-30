@@ -61,6 +61,7 @@ const now = 1_800_000_000_000;
 
 function setup({
   active = true, accountType = 'merchant', blocked = false, enabled = true,
+  payoutOptIn = false, kycStatus = 'verified',
   initialRateCount = 0,
   getCryptoAssets = async direction => [{
     asset_code: direction === 'payout' ? 'USDT.BEP20' : 'USDT.TRC20',
@@ -76,7 +77,8 @@ function setup({
   }),
   scopes = ['transactions:read'],
   environment = 'live',
-  executeExchange, createPaymentLink, createCryptoDeposit,
+  executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
+  createCryptoPayout,
 } = {}) {
   const selectedPublicKey = environment === 'test' ? 'pk_test_demo' : publicKey;
   const selectedSecretKey = environment === 'test' ? 'sk_test_demo' : secretKey;
@@ -91,10 +93,11 @@ function setup({
     integration_credentials: new Collection([{
       id: selectedCredentialId, user_id: 'merchant-1', environment,
       public_key: selectedPublicKey, secret_hash: selectedSecretHash, active,
-      scopes, created_at: '2026-01-01T00:00:00.000Z',
+      scopes, payout_opt_in: payoutOptIn, created_at: '2026-01-01T00:00:00.000Z',
     }]),
     users: new Collection([{
       id: 'merchant-1', account_type: accountType, is_banned: blocked, is_blocked: false,
+      kyc_status: kycStatus,
     }]),
     integration_rate_limits: new Collection(initialRateCount ? [{
       id: rateId, count: initialRateCount,
@@ -176,7 +179,8 @@ function setup({
   const db = { collection: name => collections[name] };
   const service = createIntegrationApiRoutes({
     db, now: () => now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
-    executeExchange, createPaymentLink, createCryptoDeposit,
+    executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
+    createCryptoPayout,
   });
   return { service, collections };
 }
@@ -321,6 +325,139 @@ test('integration crypto deposit is live-scope guarded and idempotent', async ()
     authorization: 'Bearer sk_test_demo',
     key: 'pk_test_demo',
   })).status, 403);
+});
+
+test('integration Mobile Money deposit is Live-only and reuses the same provider request on retry', async () => {
+  const created = [];
+  const createMobileMoneyDeposit = async (userId, body, idempotencyKey) => {
+    created.push({ userId, body, idempotencyKey });
+    return {
+      handled: true,
+      status: 200,
+      body: { id: 'momo-deposit-1', status: 'pending', charged_amount: 3000 },
+    };
+  };
+  const { service, collections } = setup({
+    scopes: ['transactions:read', 'deposits:write'],
+    createMobileMoneyDeposit,
+  });
+  const request = {
+    method: 'POST',
+    url: '/api/integration/v1/deposits',
+    idempotencyKey: 'momo-api-request-001',
+    body: {
+      amount: 3000,
+      country: 'TG',
+      operator: 'tmoney_tg',
+      phone_number: '+22890000000',
+      full_name: 'Merchant Client',
+      email: 'client@example.com',
+      reference: 'external-ref-1',
+    },
+  };
+  const first = await call(service, request);
+  const retry = await call(service, request);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.id, 'momo-deposit-1');
+  assert.deepEqual(retry.body, first.body);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].userId, 'merchant-1');
+  assert.equal(created[0].body.fee_bearer, undefined);
+  assert.match(created[0].idempotencyKey, /^btpi_[a-f0-9]{48}$/);
+  assert.equal(collections.integration_operations.rows.filter(
+    row => row.id.startsWith('deposit:'),
+  ).length, 1);
+
+  const testEnvironment = setup({
+    environment: 'test',
+    scopes: ['deposits:write'],
+    createMobileMoneyDeposit,
+  });
+  assert.equal((await call(testEnvironment.service, {
+    ...request,
+    authorization: 'Bearer sk_test_demo',
+    key: 'pk_test_demo',
+  })).status, 403);
+  assert.equal(created.length, 1);
+});
+
+test('integration crypto payout requires live opt-in, KYC, scope and idempotency', async () => {
+  const created = [];
+  const createCryptoPayout = async (userId, body, idempotencyKey) => {
+    created.push({ userId, body, idempotencyKey });
+    return {
+      id: 'crypto-payout-1',
+      status: 'pending',
+      amount: 12.5,
+      currency: 'USDT.TRC20',
+      reference: 'BTP-CRY-123',
+      counterparty: 'T1234567890123456789012345678901234',
+      created_at: '2026-10-30T10:00:00.000Z',
+      metadata: {
+        amount_gross: 12.5,
+        asset_code: 'USDT.TRC20',
+        coin: 'USDT',
+        network: 'TRC20',
+        wallet_address: 'T1234567890123456789012345678901234',
+        fee: 0.2,
+        fee_bearer: 'sender',
+        recipient_gets: 12.5,
+        total_debit: 12.7,
+        manual_review_required: true,
+      },
+    };
+  };
+  const { service, collections } = setup({
+    scopes: ['payouts:write'],
+    payoutOptIn: true,
+    createCryptoPayout,
+  });
+  const request = {
+    method: 'POST',
+    url: '/api/integration/v1/crypto/payouts',
+    idempotencyKey: 'crypto-payout-request-01',
+    body: {
+      amount: 12.5,
+      asset_code: 'USDT.TRC20',
+      network_code: 'TRC20',
+      wallet_address: 'T1234567890123456789012345678901234',
+      fee_bearer: 'sender',
+      reference: 'merchant-ref-1',
+    },
+  };
+  const first = await call(service, request);
+  const retry = await call(service, request);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.id, 'crypto-payout-1');
+  assert.equal(first.body.payout.pending_manual, true);
+  assert.equal(Object.hasOwn(first.body.payout, 'user_id'), false);
+  assert.deepEqual(retry.body, first.body);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].userId, 'merchant-1');
+  assert.match(created[0].idempotencyKey, /^btpi_[a-f0-9]{48}$/);
+  assert.equal(collections.integration_operations.rows.filter(
+    row => row.kind === 'crypto_payout' && row.id.startsWith('crypto_payout:'),
+  ).length, 1);
+  assert.equal((await call(service, {
+    ...request,
+    body: { ...request.body, amount: 13 },
+  })).status, 409);
+  assert.equal(created.length, 1);
+
+  const noOptIn = setup({
+    scopes: ['payouts:write'], createCryptoPayout,
+  });
+  assert.equal((await call(noOptIn.service, request)).status, 403);
+  const noKyc = setup({
+    scopes: ['payouts:write'], payoutOptIn: true, kycStatus: 'pending',
+    createCryptoPayout,
+  });
+  assert.equal((await call(noKyc.service, request)).status, 403);
+  const noScope = setup({
+    payoutOptIn: true, createCryptoPayout,
+  });
+  assert.equal((await call(noScope.service, request)).status, 403);
+  assert.equal(created.length, 1);
 });
 
 test('integration payment-link creation requires scope and persists an owner-scoped result', async () => {

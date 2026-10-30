@@ -23,6 +23,15 @@ class Collection {
     return { matched_count: 1 };
   }
   async insert_one(document) { this.rows.push(structuredClone(document)); }
+  async replace_one(query, replacement, upsert = false) {
+    const index = this.rows.findIndex(item => matches(item, query));
+    if (index === -1) {
+      if (upsert) this.rows.push(structuredClone(replacement));
+      return { matched_count: 0, upserted_count: upsert ? 1 : 0 };
+    }
+    this.rows[index] = structuredClone(replacement);
+    return { matched_count: 1, modified_count: 1 };
+  }
 }
 
 function makeResponse() {
@@ -49,6 +58,8 @@ function makeSetup({
     users: new Collection(users),
     admin_logs: new Collection(),
     crypto_deposits: new Collection(),
+    wallet_operations: new Collection(),
+    transactions: new Collection(),
   };
   let providerCalls = 0;
   const fetcher = fetchImpl || (async (url, options) => {
@@ -57,7 +68,25 @@ function makeSetup({
     assert.equal(options.headers.authorization, 'Bearer test-api-key');
     return { ok: true, status: 200, text: async () => JSON.stringify(providerAssets) };
   });
-  const db = { collection: name => collections[name] };
+  const db = {
+    collection: name => collections[name],
+    async transaction(callback) {
+      const repo = {
+        async lockWallets() {},
+        async get(collection, id) {
+          return collections[collection].find_one({ id: String(id) });
+        },
+        async replace(collection, id, document) {
+          return collections[collection].replace_one({ id: String(id) }, document, true);
+        },
+        async insert(collection, id, document) {
+          assert.equal(String(document.id), String(id));
+          return collections[collection].insert_one(document);
+        },
+      };
+      return callback(repo);
+    },
+  };
   const service = createCryptoCatalogRoutes({
     db,
     sessionService: {
@@ -297,6 +326,80 @@ test('crypto deposit rejects unsupported amounts before creating a provider inte
   assert.equal(result.status, 400);
   assert.equal(providerPostCount, 0);
   assert.equal(collections.crypto_deposits.rows.length, 0);
+});
+
+test('crypto payout reserves the exact network wallet atomically and binds idempotency to the destination', async () => {
+  const providerAssets = [{
+    assetCode: 'USDT.TRC20',
+    coinCode: 'USDT',
+    network: 'TRC20',
+    isActive: true,
+    minimum: 1,
+    maximum: 1000,
+  }];
+  const { service, collections, getProviderCalls } = makeSetup({
+    settings: [
+      providerSettings(),
+      {
+        id: 'app_features',
+        wallet_crypto_enabled: true,
+        withdrawal_crypto_enabled: true,
+      },
+      {
+        id: 'transfer_config',
+        crypto: {
+          enabled: true,
+          fees: { USDT: 2 },
+          fees_gateway: { USDT: 2 },
+          fees_platform: {},
+          fees_gateway_fixed: { USDT: 0.1 },
+          fees_platform_fixed: {},
+          disabled_assets: [],
+          hidden_coins: [],
+        },
+      },
+    ],
+    users: [{
+      id: 'user-1',
+      balance_crypto_usdt_trc20: 20,
+      wallet_debit_operation_ids: [],
+    }],
+    providerAssets,
+  });
+  const request = {
+    amount: 10,
+    asset_code: 'USDT.TRC20',
+    network_code: 'TRC20',
+    wallet_address: 'T123456789123456789123456789123456',
+    fee_bearer: 'sender',
+    description: 'Payout test',
+  };
+  const first = await service.createCryptoPayoutRequest(
+    'user-1', request, 'btpi_0123456789abcdef0123456789abcdef0123456789abcdef',
+  );
+  assert.equal(first.status, 'pending');
+  assert.equal(first.currency, 'USDT.TRC20');
+  assert.equal(first.pending_manual, true);
+  assert.equal(first.amount, 10.3);
+  assert.equal(first.metadata.wallet_snapshot.balance_before, 20);
+  assert.equal(first.metadata.wallet_snapshot.balance_after, 9.7);
+  assert.equal(collections.users.rows[0].balance_crypto_usdt_trc20, 9.7);
+
+  const replay = await service.createCryptoPayoutRequest(
+    'user-1', request, 'btpi_0123456789abcdef0123456789abcdef0123456789abcdef',
+  );
+  assert.equal(replay.id, first.id);
+  assert.equal(collections.users.rows[0].balance_crypto_usdt_trc20, 9.7);
+
+  await assert.rejects(service.createCryptoPayoutRequest(
+    'user-1',
+    { ...request, wallet_address: 'T987654321987654321987654321987654' },
+    'btpi_0123456789abcdef0123456789abcdef0123456789abcdef',
+  ), error => error.status === 409);
+  assert.equal(collections.users.rows[0].balance_crypto_usdt_trc20, 9.7);
+  assert.equal(collections.transactions.rows.length, 1);
+  assert.equal(collections.wallet_operations.rows.length, 1);
+  assert.equal(getProviderCalls(), 1);
 });
 
 test('conversion quote returns the configured fee, rate, bounds, and received amount', async () => {

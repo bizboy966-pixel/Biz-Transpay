@@ -1,9 +1,11 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
+const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 
 const ROUTES = new Map([
   ['/api/deposits/mobile-money/par', 'par_redirect'],
@@ -235,7 +237,9 @@ function createPaydunyaInvoiceRoutes({
     if (!routeFlow && !genericMobileMoney) return false;
 
     try {
-      const identity = await sessionService.authenticate(sessionToken(req));
+      const identity = req[INTEGRATION_USER]
+        ? { userId: String(req[INTEGRATION_USER]) }
+        : await sessionService.authenticate(sessionToken(req));
       const userId = String(identity?.userId || '');
       if (!userId) throw httpError(401, 'Session requise.');
 
@@ -507,7 +511,29 @@ function createPaydunyaInvoiceRoutes({
     return true;
   }
 
-  return { handleRoute };
+  async function handleIntegrationDeposit(userId, body, idempotencyKey) {
+    const payload = {
+      ...body,
+      fee_bearer: 'merchant',
+      idempotency_key: String(idempotencyKey || ''),
+    };
+    const req = Readable.from([Buffer.from(JSON.stringify(payload))]);
+    req.method = 'POST';
+    req.url = '/api/deposits/mobile-money';
+    req.headers = {};
+    req[INTEGRATION_USER] = String(userId || '');
+    const res = {
+      status: 500,
+      writeHead(status) { this.status = status; },
+      end(text) {
+        try { this.body = JSON.parse(String(text || '{}')); } catch { this.body = {}; }
+      },
+    };
+    const handled = await handleRoute(req, res);
+    return { handled, status: res.status, body: res.body || {} };
+  }
+
+  return { handleRoute, handleIntegrationDeposit };
 }
 
 module.exports = {
