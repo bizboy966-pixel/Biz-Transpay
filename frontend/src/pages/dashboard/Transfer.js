@@ -15,11 +15,17 @@ import DashboardPageLogo from '@/components/DashboardPageLogo';
 import TransferStatusModal from '@/components/TransferStatusModal';
 import UserPinPrompt from '@/components/UserPinPrompt';
 import { getMobileMoneyWithdrawalBlockers } from './mobileMoneyWithdrawalValidation';
+import {
+  isUserPinSetupRequired,
+  USER_PIN_MIGRATION_NOTICE,
+  USER_PIN_MIGRATION_SETUP_PATH,
+  USER_PIN_SETUP_REQUIRED_CODE,
+} from '@/constants/userPinMigration';
 
 export default function Transfer() {
   const { t } = useTranslation();
   const nav = useNavigate();
-  const { refresh, user } = useAuth();
+  const { refresh, user, logout } = useAuth();
   const queryClient = useQueryClient();
   const turnstile = useTurnstileConfig();
   const features = useFeatures();
@@ -44,6 +50,13 @@ export default function Transfer() {
   };
   const confirmUserPin = async (pin) => {
     const result = await pinActionRef.current?.(pin);
+    if (result?.code === USER_PIN_SETUP_REQUIRED_CODE) {
+      pinActionRef.current = null;
+      setTransferFeedback(null);
+      setPinPromptOpen(false);
+      await logout(USER_PIN_MIGRATION_SETUP_PATH);
+      return { ok: false, close: true, message: USER_PIN_MIGRATION_NOTICE };
+    }
     if (result?.ok) {
       pinActionRef.current = null;
       setPinPromptOpen(false);
@@ -553,15 +566,19 @@ function BizToBizForm({
     } catch (err) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : detail?.message || 'Erreur';
+      const pinSetupRequired = isUserPinSetupRequired(err);
       const pinFailure = ['USER_PIN_INVALID', 'USER_PIN_LOCKED'].includes(detail?.code);
-      onTransferFeedback(pinFailure ? null : {
+      onTransferFeedback(pinFailure || pinSetupRequired ? null : {
         status: err.response ? 'failed' : 'pending',
         transferType: 'biz_to_biz',
       });
       setTurnstileToken('');
       turnstileRef.current?.reset();
-      if (!pinFailure) toast.error(message);
-      return { ok: false, close: !pinFailure, message };
+      if (!pinFailure && !pinSetupRequired) toast.error(message);
+      return {
+        ok: false, close: !pinFailure, message,
+        ...(pinSetupRequired ? { code: USER_PIN_SETUP_REQUIRED_CODE } : {}),
+      };
     }
     finally { setPending(false); }
   };
@@ -746,8 +763,9 @@ function BizToMobileForm({
     } catch (err) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : detail?.message || 'Erreur';
+      const pinSetupRequired = isUserPinSetupRequired(err);
       const pinFailure = ['USER_PIN_INVALID', 'USER_PIN_LOCKED'].includes(detail?.code);
-      onTransferFeedback(pinFailure ? null : {
+      onTransferFeedback(pinFailure || pinSetupRequired ? null : {
         status: err.response ? 'failed' : 'pending',
         transferType: 'biz_to_mobile',
       });
@@ -758,8 +776,11 @@ function BizToMobileForm({
         setIdempotencyKey(window.crypto?.randomUUID?.()
           || `${Date.now()}-${Math.random().toString(16).slice(2)}`);
       }
-      if (!pinFailure) toast.error(message);
-      return { ok: false, close: !pinFailure, message };
+      if (!pinFailure && !pinSetupRequired) toast.error(message);
+      return {
+        ok: false, close: !pinFailure, message,
+        ...(pinSetupRequired ? { code: USER_PIN_SETUP_REQUIRED_CODE } : {}),
+      };
     }
     finally { setPending(false); }
   };
@@ -1059,19 +1080,23 @@ function BizToCryptoForm({
     } catch (err) {
       const detail = err.response?.data?.detail;
       const message = typeof detail === 'string' ? detail : detail?.message || 'Erreur';
+      const pinSetupRequired = isUserPinSetupRequired(err);
       const pinFailure = ['USER_PIN_INVALID', 'USER_PIN_LOCKED'].includes(detail?.code);
-      onTransferFeedback(pinFailure ? null : {
+      onTransferFeedback(pinFailure || pinSetupRequired ? null : {
         status: err.response ? 'failed' : 'pending',
         transferType: 'biz_to_crypto',
       });
       setTurnstileToken('');
       turnstileRef.current?.reset();
-      if (!pinFailure) toast.error(message);
+      if (!pinFailure && !pinSetupRequired) toast.error(message);
       if (err.response?.status && err.response.status < 500
           && err.response.status !== 409) {
         idempotencyRef.current = { fingerprint: '', key: '' };
       }
-      return { ok: false, close: !pinFailure, message };
+      return {
+        ok: false, close: !pinFailure, message,
+        ...(pinSetupRequired ? { code: USER_PIN_SETUP_REQUIRED_CODE } : {}),
+      };
     }
     finally { setPending(false); }
   };

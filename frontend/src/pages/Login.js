@@ -7,11 +7,14 @@ import { Logo } from '@/components/Logo';
 import { useAuth } from '@/context/AuthContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
 import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidget';
+import { USER_PIN_MIGRATION_NOTICE } from '@/constants/userPinMigration';
 
 export default function Login() {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { login, confirmTwoFactor } = useAuth();
+  const pinSetupRequiredAfterMigration = new URLSearchParams(window.location.search)
+    .get('pin_setup_required') === '1';
   const turnstile = useTurnstileConfig();
   const turnstileRef = useRef(null);
   const [email, setEmail] = useState('');
@@ -201,6 +204,12 @@ export default function Login() {
             <h1 className="mt-2 font-cabinet text-3xl font-extrabold tracking-tight text-slate-900">{t('login.title')}</h1>
             <p className="mt-2 text-slate-600 text-sm">{t('login.subtitle')}</p>
           </div>
+
+          {pinSetupRequiredAfterMigration && (
+            <div role="status" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-900">
+              {USER_PIN_MIGRATION_NOTICE}
+            </div>
+          )}
 
           {step === 'setup' ? (
             <div className="space-y-4">

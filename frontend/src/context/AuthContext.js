@@ -54,14 +54,17 @@ export function AuthProvider({ children }) {
     return data;
   }, []);
 
-  const logout = useCallback(async () => {
+  const logout = useCallback(async (redirectTo = '/') => {
     // Keep the opted-in browser registered so push notifications still work
     // while the user is signed out and do not need to be enabled again.
     await api.post('/auth/logout').catch(() => {});
     sessionStorage.removeItem(ACTIVE_MOMO_DEPOSIT_KEY);
     sessionStorage.removeItem(PUSH_OPT_IN_DISMISSED_KEY);
     setUser(null);
-    window.location.href = '/';
+    const safeRedirect = typeof redirectTo === 'string'
+      && redirectTo.startsWith('/') && !redirectTo.startsWith('//')
+      ? redirectTo : '/';
+    window.location.href = safeRedirect;
   }, []);
 
   const refresh = loadMe;

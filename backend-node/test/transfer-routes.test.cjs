@@ -74,7 +74,7 @@ class AtomicStore {
 }
 
 function setup({
-  kycStatus = 'verified', validPin = true, withdrawalOtp = false,
+  kycStatus = 'verified', validPin = true, pinConfigured = true, withdrawalOtp = false,
   emailSender = 'no-reply@example.test', settingsExtra = [],
   createMobileMoneyPayout = null, refreshMobileMoneyPayout = null,
 } = {}) {
@@ -84,7 +84,8 @@ function setup({
       {
         id: 'sender', username: 'alice', email: 'alice@example.test',
         full_name: 'Alice Example', kyc_status: kycStatus,
-        user_pin_hash: 'configured', balance_xof: 1000,
+        ...(pinConfigured ? { user_pin_hash: 'configured' } : {}),
+        balance_xof: 1000,
       },
       {
         id: 'recipient', username: 'bob', email: 'bob@example.test',
@@ -323,6 +324,25 @@ test('Mobile Money KYC and PIN failures never invoke the payout provider', async
     validPin: false, createMobileMoneyPayout,
   }).service, mobileBody);
   assert.equal(deniedPin.status, 401);
+  assert.equal(providerCalls, 0);
+});
+
+test('Mobile Money withdrawal requires a PIN enrolled on the current backend', async () => {
+  let providerCalls = 0;
+  const result = await call(setup({
+    pinConfigured: false,
+    createMobileMoneyPayout: async () => { providerCalls += 1; },
+  }).service, transferBody({
+    transfer_type: 'biz_to_mobile',
+    recipient: '90123456',
+    country: 'TG',
+    operator: 'tmoney_tg',
+    fee_bearer: 'sender',
+    currency: 'XOF',
+  }));
+
+  assert.equal(result.status, 428);
+  assert.equal(result.body.detail.code, 'USER_PIN_SETUP_REQUIRED');
   assert.equal(providerCalls, 0);
 });
 

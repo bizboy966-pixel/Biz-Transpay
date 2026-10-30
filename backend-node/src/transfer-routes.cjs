@@ -342,7 +342,8 @@ function createTransferRoutes({
     if (!isAdmin(user)) {
       if (!user.user_pin_hash) {
         throw httpError(428,
-          'Activez votre code PIN avant de confirmer un transfert.', 'USER_PIN_SETUP_REQUIRED');
+          'Aucun code PIN n’est enregistré pour ce compte sur le serveur actuel. Reconnectez-vous pour en configurer un avant un transfert.',
+          'USER_PIN_SETUP_REQUIRED');
       }
       const validPin = await verifyPinFn(db, user, body.pin || '', 'user_pin', sessionSecret);
       if (!validPin) throw httpError(401, 'Code PIN incorrect. Vérifiez-le avant de confirmer.', 'USER_PIN_INVALID');

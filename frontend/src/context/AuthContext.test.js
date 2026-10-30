@@ -79,4 +79,16 @@ describe('AuthContext push enrollment', () => {
     expect(sessionStorage.getItem('btp_push_opt_in_dismissed')).toBeNull();
     expect(window.location.href).toBe('/');
   });
+
+  it('allows an internal redirect after logout when PIN setup must be repeated', async () => {
+    await act(async () => {
+      root.render(<AuthProvider><CaptureAuth /></AuthProvider>);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    await act(async () => auth.logout('/login?pin_setup_required=1'));
+
+    expect(api.post).toHaveBeenCalledWith('/auth/logout');
+    expect(window.location.href).toBe('/login?pin_setup_required=1');
+  });
 });
