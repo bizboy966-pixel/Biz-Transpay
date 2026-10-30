@@ -305,3 +305,20 @@ test('admin home summary preserves channel and KYC counters', async () => {
   assert.equal(summary.transactions.withdrawals.rejected.count, 1);
   assert.equal(summary.transactions.operations.exchanges.count, 1);
 });
+
+test('admin home summary route returns the authenticated dashboard snapshot', async () => {
+  const { service } = setup({
+    users: [admin, { id: 'user-1', kyc_status: 'verified' }],
+    transactions: [{
+      id: 'deposit-1', user_id: 'user-1', type: 'deposit',
+      direction: 'in', status: 'completed', amount: 500, currency: 'XOF',
+      created_at: new Date().toISOString(), metadata: {},
+    }],
+  });
+  const result = await call(service, '/api/admin/stats?period=week');
+  assert.equal(result.handled, true);
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.period, 'week');
+  assert.equal(result.body.users.total, 2);
+  assert.equal(result.body.transactions.deposits_by_channel.mobile_money.valid.count, 1);
+});

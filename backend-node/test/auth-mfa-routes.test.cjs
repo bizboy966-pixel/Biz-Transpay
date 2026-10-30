@@ -193,6 +193,42 @@ test('user 2FA can be disabled only with the password and a valid authenticator 
   }
 });
 
+test('reauthentication verifies the current password and rotates the session', async () => {
+  const db = new MemoryDatabase();
+  const user = {
+    id: 'reauth-user',
+    role: 'user',
+    email: 'reauth@example.invalid',
+    password_hash: await bcrypt.hash('StrongPassword123!', 12),
+    two_fa_enabled: false,
+  };
+  await db.collection('users').insert_one(user);
+  const app = await start(db);
+  try {
+    const issue = await app.sessionService.issue(user.id, {
+      userPinRequired: false, userPinAuthenticated: false,
+    });
+    const origin = new URL(app.base).origin.replace('http:', 'https:');
+    const response = await fetch(`${app.base}/api/auth/reauth`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: cookieHeader(issue),
+        origin,
+        'x-csrf-token': issue.csrfToken,
+      },
+      body: JSON.stringify({ current_password: 'StrongPassword123!' }),
+    });
+    const body = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.ok, true);
+    assert.ok(Number.isFinite(body.expires_in));
+    assert.ok(response.headers.get('set-cookie'));
+  } finally {
+    await app.close();
+  }
+});
+
 test('mutating authenticated routes reject missing CSRF before touching credentials', async () => {
   const db = new MemoryDatabase();
   const user = adminUser();

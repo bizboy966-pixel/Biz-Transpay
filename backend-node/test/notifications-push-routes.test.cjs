@@ -159,6 +159,23 @@ test('notifications list, mark-read and unread count are scoped to the current u
   assert.equal((await call(service, 'POST', '/api/notifications/other/read')).status, 404);
 });
 
+test('pending-confirmation notifications include only the current user’s unread confirmations', async () => {
+  const { db, service } = setup();
+  for (const notification of [
+    { id: 'mine-confirmation', user_id: 'owner', read: false, requires_confirmation: true },
+    { id: 'mine-ordinary', user_id: 'owner', read: false, requires_confirmation: false },
+    { id: 'mine-confirmed', user_id: 'owner', read: true, requires_confirmation: true },
+    { id: 'other-confirmation', user_id: 'other', read: false, requires_confirmation: true },
+  ]) {
+    await db.collection('notifications').insert_one({
+      ...notification, title: notification.id, created_at: '2026-01-02T00:00:00Z',
+    });
+  }
+  const result = await call(service, 'GET', '/api/notifications/pending-confirmation');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.map(item => item.id), ['mine-confirmation']);
+});
+
 test('read-all and delete-all preserve unread notifications requiring confirmation', async () => {
   const { db, service } = setup();
   for (const item of [
