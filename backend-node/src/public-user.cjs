@@ -18,6 +18,7 @@ const ROLE_PERMISSIONS = {
   ],
   SUPER_ADMIN: ['*'],
 };
+const { FIAT_WALLET_CURRENCIES } = require('./supported-currencies.cjs');
 
 const ASSETS = [
   ['USDC.POLYGON', 'USDC', 'USD Coin', 'POLYGON', 'Polygon'],
@@ -77,12 +78,10 @@ function publicUser(user) {
   }));
   const cryptoBalances = Object.fromEntries(
     cryptoWallets.map(wallet => [wallet.id, wallet.balance]));
-  const currencies = [
-    'cdf', 'usd', 'gmd', 'gnf', 'ugx', 'tzs', 'kes',
-    'rwf', 'ghs', 'ngn', 'zar', 'zmw', 'egp',
-  ];
-  const balances = Object.fromEntries(currencies.map(code => [
-    `balance_${code}`, numberOrZero(user[`balance_${code}`]),
+  const balances = Object.fromEntries(FIAT_WALLET_CURRENCIES
+    .filter(code => !['XOF', 'XAF'].includes(code))
+    .map(code => [
+    `balance_${code.toLowerCase()}`, numberOrZero(user[`balance_${code.toLowerCase()}`]),
   ]));
 
   return {

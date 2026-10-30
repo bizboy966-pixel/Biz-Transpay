@@ -21,8 +21,8 @@ Merchant integrations must discover operator codes independently for deposits an
 
 **How to apply:** Present direction-specific enabled catalogues and examples. Treat the serving environment's catalogue as the authority for new operations; keep provider routing and credentials private.
 
-Provider payout catalogues may contain ISO local currencies beyond the customer wallets the app currently supports. These rows must remain editable and saveable in admin, while customer-facing payout catalogues include only currencies backed by the withdrawal flow (currently XOF and XAF).
+Customer Mobile Money payouts may use only the supported fiat wallet currencies: XOF, XAF, CDF, USD, GMD, GNF, UGX, TZS, KES, RWF, GHS, NGN, ZAR, ZMW, and EGP. The selected country determines the currency, and the payout must debit that exact `balance_<currency>` wallet. Provider catalogue rows with an unsupported currency or a country/currency mismatch remain editable in admin but are not exposed to customers.
 
-**Why:** Rejecting a complete catalogue because one provider row uses a valid local currency prevents unrelated provider settings from being saved; exposing unsupported currencies would instead offer a withdrawal the wallet cannot execute.
+**Why:** Users asked to withdraw from the wallet matching the selected country. A payout must never debit a different currency wallet, and provider catalogues can include currencies for which the app has no customer balance.
 
-**How to apply:** Validate currency-code shape for stored provider rows, preserve all provider entries, and filter unsupported payout currencies from every customer and integration catalogue until wallet and settlement support is implemented.
+**How to apply:** Keep the supported fiat list and country-to-currency map consistent across dashboard display, public operator catalogues, and server payout validation. Preserve unsupported provider entries for admin editing, but do not expose them or accept a payout unless the exact local wallet exists and the configured country route matches.

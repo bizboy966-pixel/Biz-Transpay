@@ -1,5 +1,15 @@
+import { COUNTRIES } from '../../constants/countries';
+
 function formatAmount(value) {
   return Number(value).toLocaleString('fr-FR', { maximumFractionDigits: 0 });
+}
+
+export function getMobileMoneyCountryCurrency(countryCode, operators = []) {
+  const country = String(countryCode || '').trim().toUpperCase();
+  return COUNTRIES.find((item) => item.code === country)?.currency
+    || operators.find((operator) => String(operator.country || '').toUpperCase() === country)
+      ?.currency?.toUpperCase()
+    || '';
 }
 
 export function getMobileMoneyWithdrawalBlockers({

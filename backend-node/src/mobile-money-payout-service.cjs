@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const security = require('./security.cjs');
 const { applyWalletOperation } = require('./wallet.cjs');
 const { calculateFees, loadCredentials } = require('./paydunya-invoice-routes.cjs');
+const {
+  FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
+} = require('./supported-currencies.cjs');
 
 function failure(status, message, code) {
   return Object.assign(new Error(message), { status, code });
@@ -123,7 +126,8 @@ function createMobileMoneyPayoutService({
     const feeBearer = String(body.fee_bearer || 'sender').trim().toLowerCase();
     const key = String(idempotencyKey || '').trim();
     if (!ownerId || !/^[A-Z]{2}$/.test(country) || !operatorCode
-        || !['XOF', 'XAF'].includes(currency) || !recipient
+        || !FIAT_WALLET_CURRENCY_SET.has(currency)
+        || MOBILE_MONEY_COUNTRY_CURRENCY[country] !== currency || !recipient
         || recipient.length > 40 || !Number.isSafeInteger(amount) || amount <= 0
         || !['sender', 'receiver'].includes(feeBearer)
         || !/^[A-Za-z0-9._-]{8,128}$/.test(key)) {

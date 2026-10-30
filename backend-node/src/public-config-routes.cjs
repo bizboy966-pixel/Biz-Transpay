@@ -1,6 +1,9 @@
 'use strict';
 
 const { sessionToken } = require('./auth-session-routes.cjs');
+const {
+  FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
+} = require('./supported-currencies.cjs');
 const CRYPTO_FEE_ASSETS = [
   ['USDC.POLYGON', 'USDC', 'POLYGON'], ['USDC.SOL', 'USDC', 'SOL'],
   ['USDC.BEP20', 'USDC', 'BEP20'], ['USDC.ERC20', 'USDC', 'ERC20'],
@@ -328,13 +331,16 @@ function publicWithdrawalOperators(transferConfig, providers, env) {
   const operators = (Array.isArray(mobileMoney.operators) ? mobileMoney.operators : [])
     .filter(operator => {
       const provider = String(operator.provider || 'paydunya').toLowerCase();
+      const country = String(operator.country || '').toUpperCase();
+      const currency = String(operator.currency || '').toUpperCase();
       if (!Object.hasOwn(ready, provider) || !ready[provider]
-          || operator.active === false || operator.archived || operator.hidden
-          || !['XOF', 'XAF'].includes(String(operator.currency || '').toUpperCase())) return false;
+           || operator.active === false || operator.archived || operator.hidden
+           || !FIAT_WALLET_CURRENCY_SET.has(currency)
+           || MOBILE_MONEY_COUNTRY_CURRENCY[country] !== currency) return false;
       const key = [
-        String(operator.country || '').toUpperCase(),
+        country,
         String(operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
-        String(operator.currency || '').toUpperCase(),
+        currency,
       ].join(':');
       if (seen.has(key)) return false;
       seen.add(key);

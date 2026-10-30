@@ -4,6 +4,10 @@ const crypto = require('node:crypto');
 const { applyInternalTransfer, operationIdentity } = require('./wallet.cjs');
 const { getAppFeatures } = require('./public-config-routes.cjs');
 const { sessionToken } = require('./auth-session-routes.cjs');
+const {
+  FIAT_WALLET_CURRENCY_SET: FIAT_WALLETS,
+  MOBILE_MONEY_COUNTRY_CURRENCY,
+} = require('./supported-currencies.cjs');
 const { sendResendEmail } = require('./auth-recovery-routes.cjs');
 const {
   verifyTurnstile, verifyPin,
@@ -16,11 +20,6 @@ const EMAIL_OTP_TTL_MS = 10 * 60 * 1000;
 const EMAIL_OTP_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_OTP_MAX_REQUESTS = 3;
 const EMAIL_OTP_MAX_ATTEMPTS = 5;
-const FIAT_WALLETS = new Set([
-  'XOF', 'XAF', 'CDF', 'USD', 'GMD', 'GNF', 'UGX', 'TZS',
-  'KES', 'RWF', 'GHS', 'NGN', 'ZAR', 'ZMW', 'EGP',
-]);
-
 function httpError(status, message, code) {
   const error = new Error(message);
   error.status = status;
@@ -636,14 +635,17 @@ function createTransferRoutes({
         const operators = (Array.isArray(mm.operators) ? mm.operators : [])
           .filter(operator => {
             const provider = String(operator.provider || 'paydunya').toLowerCase();
+            const country = String(operator.country || '').toUpperCase();
+            const currency = String(operator.currency || '').toUpperCase();
             if (!mm.enabled || !providerReady[provider]
                 || operator.active === false || operator.archived || operator.hidden
-                || !['XOF', 'XAF'].includes(String(operator.currency || '').toUpperCase())
+                || !FIAT_WALLETS.has(currency)
+                || MOBILE_MONEY_COUNTRY_CURRENCY[country] !== currency
                 || !['paydunya', 'mbiyo', 'afribapay'].includes(provider)) return false;
             const identity = [
-              String(operator.country || '').toUpperCase(),
+              country,
               String(operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
-              String(operator.currency || '').toUpperCase(),
+              currency,
             ].join(':');
             if (seen.has(identity)) return false;
             seen.add(identity);

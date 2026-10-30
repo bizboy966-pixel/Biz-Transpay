@@ -1,4 +1,7 @@
-import { getMobileMoneyWithdrawalBlockers } from './mobileMoneyWithdrawalValidation';
+import {
+  getMobileMoneyCountryCurrency,
+  getMobileMoneyWithdrawalBlockers,
+} from './mobileMoneyWithdrawalValidation';
 
 const validWithdrawal = {
   operator: { code: 'orange_cm' },
@@ -13,6 +16,22 @@ const validWithdrawal = {
 };
 
 describe('Mobile Money withdrawal form validation', () => {
+  test.each([
+    ['TG', 'XOF'],
+    ['CM', 'XAF'],
+    ['CD', 'CDF'],
+    ['GN', 'GNF'],
+    ['UG', 'UGX'],
+  ])('detects the %s wallet currency as %s', (country, expected) => {
+    expect(getMobileMoneyCountryCurrency(country, [])).toBe(expected);
+  });
+
+  test('uses the configured country route for countries outside the built-in list', () => {
+    expect(getMobileMoneyCountryCurrency('US', [
+      { country: 'US', currency: 'USD' },
+    ])).toBe('USD');
+  });
+
   test('explains the fee-inclusive balance shortfall and how to proceed', () => {
     expect(getMobileMoneyWithdrawalBlockers({
       ...validWithdrawal,

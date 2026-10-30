@@ -91,7 +91,7 @@ function user(id, overrides = {}) {
   return {
     id, email: `${id}@example.invalid`, username: id,
     role: 'user', account_type: 'personal', country: 'TG', phone: '+22890000000',
-    balance_xof: 500, balance_xaf: 0, balance_cdf: 0, balance_gnf: 0,
+    balance_xof: 500, balance_xaf: 0, balance_cdf: 0, balance_gnf: 0, balance_ugx: 1200,
     balance_usdt: 3.5, balance_crypto_usdt_bep20: 2.25,
     created_at: '2026-01-01T00:00:00.000Z', kyc_status: 'verified',
     ...overrides,
@@ -115,6 +115,8 @@ test('wallet summary returns only the signed-in user balances and transaction co
     assert.equal(response.status, 200);
     const summary = await response.json();
     assert.equal(summary.balance_xof, 500);
+    assert.equal(summary.balance_ugx, 1200);
+    assert.equal(summary.balance_usd, 0);
     assert.equal(summary.balance_usdt, 3.5);
     assert.equal(summary.transactions_count, 2);
     assert.equal(summary.kyc_status, 'verified');

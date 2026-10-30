@@ -14,7 +14,10 @@ import TurnstileWidget, { useTurnstileConfig } from '@/components/TurnstileWidge
 import DashboardPageLogo from '@/components/DashboardPageLogo';
 import TransferStatusModal from '@/components/TransferStatusModal';
 import UserPinPrompt from '@/components/UserPinPrompt';
-import { getMobileMoneyWithdrawalBlockers } from './mobileMoneyWithdrawalValidation';
+import {
+  getMobileMoneyCountryCurrency,
+  getMobileMoneyWithdrawalBlockers,
+} from './mobileMoneyWithdrawalValidation';
 import {
   isUserPinSetupRequired,
   USER_PIN_MIGRATION_NOTICE,
@@ -708,17 +711,23 @@ function BizToMobileForm({
   useEffect(() => {
     if (!country || !countries.includes(country)) setCountry(countries[0] || '');
   }, [countries, country]);
-  const countryOps = useMemo(
+  const rawCountryOps = useMemo(
     () => operators.filter((o) => o.country === country),
     [operators, country],
+  );
+  const detectedCountryCurrency = getMobileMoneyCountryCurrency(country, rawCountryOps);
+  const countryOps = useMemo(
+    () => rawCountryOps.filter((o) => String(o.currency || '').toUpperCase()
+      === String(detectedCountryCurrency).toUpperCase()),
+    [rawCountryOps, detectedCountryCurrency],
   );
   useEffect(() => { setOperator(countryOps[0]?.code || ''); }, [countryOps]);
   const op = countryOps.find((o) => o.code === operator);
 
   const amt = parseFloat(amount) || 0;
-  // Currency is a property of the configured operator. It must not be
-  // user-selectable because XOF and XAF balances are not interchangeable.
-  const currency = op?.currency || '';
+  // The selected country determines the local payout currency. The client
+  // cannot switch the withdrawal to a different wallet currency.
+  const currency = detectedCountryCurrency || op?.currency || '';
   const feePct = Number(op?.fee_pct) || 0;
   const feeFixed = Number(op?.fee_fixed) || 0;
   const fee = Math.round(amt * feePct / 100 + feeFixed);
@@ -881,7 +890,7 @@ function BizToMobileForm({
         </Field>
         <div className="flex items-end">
           <div className="w-full px-3 sm:px-4 py-2.5 sm:py-3 border border-slate-200 rounded-xl bg-slate-50 text-xs sm:text-sm font-semibold text-slate-700" data-testid="mm-currency">
-            Devise : {currency || '—'}
+            Devise détectée : {currency || '—'}
           </div>
         </div>
       </div>

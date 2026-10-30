@@ -2,6 +2,7 @@
 
 const { URL } = require('node:url');
 const { sessionToken } = require('./auth-session-routes.cjs');
+const { FIAT_WALLET_CURRENCIES } = require('./supported-currencies.cjs');
 const { publicUser } = require('./public-user.cjs');
 const { operationIdentity } = require('./wallet.cjs');
 const { reply } = require('./auth-login.cjs');
@@ -280,10 +281,11 @@ function createUserDataRoutes({ db, sessionService }) {
         });
         const safe = publicUser(user);
         reply(res, 200, {
-          balance_xof: user.balance_xof ?? 0,
-          balance_xaf: user.balance_xaf ?? 0,
-          balance_cdf: user.balance_cdf ?? 0,
-          balance_gnf: user.balance_gnf ?? 0,
+          ...Object.fromEntries(FIAT_WALLET_CURRENCIES.map(currency => [
+            `balance_${currency.toLowerCase()}`,
+            Number.isFinite(Number(user[`balance_${currency.toLowerCase()}`]))
+              ? Number(user[`balance_${currency.toLowerCase()}`]) : 0,
+          ])),
           balance_usdt: user.balance_usdt ?? 0,
           crypto_wallets: safe.crypto_wallets,
           crypto_wallet_balances: safe.crypto_wallet_balances,

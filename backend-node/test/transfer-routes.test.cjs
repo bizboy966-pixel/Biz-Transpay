@@ -181,7 +181,7 @@ test('transfer config requires a session and exposes only active, configured pay
   assert.equal(result.status, 200);
   assert.equal(result.body.mobile_money.enabled, true);
   assert.deepEqual(result.body.mobile_money.operators.map(item => item.code), [
-    'moov_tg', 'orange_tg', 'moov',
+    'moov_tg', 'orange_tg', 'moov', 'airtel_ug',
   ]);
   assert.equal(JSON.stringify(result.body).includes('encrypted'), false);
 

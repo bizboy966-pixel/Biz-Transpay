@@ -249,8 +249,10 @@ test('fee configuration is authenticated, provider-neutral, and uses configured 
   assert.equal(result.body.deposit.crypto.assets.some(asset => asset.asset_id === 'USDC.POLYGON'), false);
   assert.equal(result.body.withdrawal.mobile_money.operators[0].fee_pct, 3);
   assert.equal(
-    result.body.withdrawal.mobile_money.operators.some(operator => operator.currency === 'UGX'),
-    false,
+    result.body.withdrawal.mobile_money.operators.some(
+      operator => operator.currency === 'UGX' && operator.country === 'UG',
+    ),
+    true,
   );
   assert.deepEqual(result.body.conversion, {
     enabled: true,

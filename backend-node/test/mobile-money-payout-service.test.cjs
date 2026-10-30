@@ -197,6 +197,60 @@ test('payout enforces server-side amount limits and wallet withdrawal toggles', 
   assert.equal(db.rows.transactions.size, 0);
 });
 
+test('Mobile Money payout uses the country currency wallet instead of XOF', async () => {
+  const db = new MemoryDb();
+  const user = db.rows.users.get('merchant-1');
+  user.balance_gnf = 5000;
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    country: 'GN', code: 'mtn_gn', public_code: 'mtn_gn',
+    operator: 'mtn', currency: 'GNF', name: 'MTN Guinée',
+    min: 100, max: 100_000,
+  };
+  db.rows.settings.get('app_features').wallet_gnf_enabled = true;
+  db.rows.settings.get('app_features').withdrawal_gnf_enabled = true;
+  const service = createMobileMoneyPayoutService({
+    db, sessionSecret: 'test-session-secret',
+    env: { OFFICIAL_DOMAIN: 'https://biz-transpay.com' },
+    fetchImpl: async () => providerResponse({
+      data: { transaction_id: 'mb-gnf-1', status: 'pending' },
+    }),
+  });
+
+  const result = await service.createIntegrationPayout(
+    'merchant-1',
+    payout({ country: 'GN', operator: 'mtn_gn', currency: 'GNF', amount: 500 }),
+    'idempotency-key-gnf-001',
+  );
+
+  assert.equal(user.balance_xof, 10_000);
+  assert.equal(db.rows.users.get('merchant-1').balance_gnf, 4_400);
+  assert.equal(result.transaction.currency, 'GNF');
+  assert.equal(result.transaction.metadata.wallet_field, 'balance_gnf');
+});
+
+test('Mobile Money payout rejects a currency that does not belong to the selected country', async () => {
+  const db = new MemoryDb();
+  let providerCalls = 0;
+  const service = createMobileMoneyPayoutService({
+    db, sessionSecret: 'test-session-secret',
+    env: { OFFICIAL_DOMAIN: 'https://biz-transpay.com' },
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return providerResponse({});
+    },
+  });
+  await assert.rejects(
+    service.createIntegrationPayout(
+      'merchant-1', payout({ country: 'TG', currency: 'GNF' }), 'idempotency-key-bad-cur',
+    ),
+    error => error.status === 422,
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
+});
+
 test('a reused payout key with different details is rejected without a second debit', async () => {
   const db = new MemoryDb();
   let calls = 0;

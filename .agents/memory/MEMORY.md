@@ -6,7 +6,7 @@
 - [PayDunya fee catalog](paydunya-fee-catalog.md) — PayDunya pay-in uses an admin-managed country/operator catalog and lets the payer choose who bears the fees.
 - [Moov Burkina confirmation](paydunya-moov-burkina-confirmation.md) — PayDunya pay-in requires dialing *555*6# after initiation; do not promise an automatic notification.
 - [PayDunya callback reconciliation](paydunya-callback-reconciliation.md) — IPN uses nested PHP form fields; verification must continue independently of browser and API status reads.
-- [Mobile Money withdrawal routing](mobile-money-withdrawal-routing.md) — payout stays separate from pay-in; validate ranges only for active routes, and treat zero maximum as unbounded.
+- [Mobile Money withdrawal routing](mobile-money-withdrawal-routing.md) — payout is country-currency mapped to its matching fiat wallet; validate ranges only for active routes.
 - [Customer payment routing](paydunya-public-surface.md) — payment-provider route selection stays server-side; the client receives only a generic payment action.
 - [Public payment CSRF boundary](public-payment-csrf.md) — anonymous payment-link mutations must not depend on a browser session CSRF token; Turnstile and payment validations remain active.
 - [PayDunya callback hosting](paydunya-callback-hosting.md) — PUSH rejects temporary Replit preview callbacks; use a public production deployment accepting GET, POST, and HEAD.

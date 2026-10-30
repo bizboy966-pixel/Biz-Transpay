@@ -12,9 +12,9 @@ import ReferralBanner from '@/components/ReferralBanner';
 import TransactionDetailModal from './TransactionDetailModal';
 import TransactionListItem from './TransactionListItem';
 import walletReferenceCard from '@/assets/wallet-reference-card.jpg';
+import { DASHBOARD_FIAT_CURRENCIES } from '@/constants/walletCurrencies';
 
 const RECENT_TRANSACTIONS_LIMIT = 5;
-const OFFICIAL_LOCAL_CURRENCIES = ['CDF', 'USD', 'GMD', 'GNF', 'UGX', 'TZS', 'KES', 'RWF', 'GHS', 'NGN', 'ZAR', 'ZMW', 'EGP'];
 
 export default function DashboardHome() {
   const { t } = useTranslation();
@@ -47,6 +47,10 @@ export default function DashboardHome() {
     enabled: Boolean(user?.id),
   });
   const [selectedCryptoWallet, setSelectedCryptoWallet] = useState('');
+  const [selectedFiatCurrency, setSelectedFiatCurrency] = useState(() => {
+    const saved = localStorage.getItem('btp_dashboard_fiat_currency');
+    return DASHBOARD_FIAT_CURRENCIES.includes(saved) && saved !== 'XAF' ? saved : 'XOF';
+  });
 
   useEffect(() => {
     const refreshDashboard = () => {
@@ -104,10 +108,33 @@ export default function DashboardHome() {
     (wallet) => wallet.id === selectedCryptoWallet,
   );
 
-  const wallets = [
-    { key: 'xof', curr: 'XOF', bal: user?.balance_xof ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
-    { key: 'xaf', curr: 'XAF', bal: user?.balance_xaf ?? 0, gradient: 'from-[#3B82F6] via-[#2563EB] to-[#1D4ED8]', shadow: 'shadow-[0_12px_32px_-12px_rgba(37,99,235,0.45)]' },
-    {
+  const fiatWalletOptions = useMemo(
+    () => DASHBOARD_FIAT_CURRENCIES
+      .filter((currency) => currency !== 'XAF'
+        && (!features || features[`wallet_${currency.toLowerCase()}_enabled`] !== false))
+      .map((currency) => ({
+        currency,
+        balance: Number(user?.[`balance_${currency.toLowerCase()}`] ?? 0) || 0,
+      })),
+    [features, user],
+  );
+  useEffect(() => {
+    if (fiatWalletOptions.some((wallet) => wallet.currency === selectedFiatCurrency)) return;
+    setSelectedFiatCurrency(fiatWalletOptions[0]?.currency || 'XOF');
+  }, [fiatWalletOptions, selectedFiatCurrency]);
+  const selectedFiatWallet = fiatWalletOptions.find(
+    (wallet) => wallet.currency === selectedFiatCurrency,
+  ) || fiatWalletOptions[0];
+
+  const xafWallet = features?.wallet_xaf_enabled === false ? null : {
+    key: 'xaf', curr: 'XAF', bal: user?.balance_xaf ?? 0,
+  };
+  const fiatWallet = selectedFiatWallet ? {
+    key: selectedFiatWallet.currency.toLowerCase(),
+    curr: selectedFiatWallet.currency,
+    bal: selectedFiatWallet.balance,
+  } : null;
+  const cryptoDashboardWallet = {
       key: 'crypto',
       curr: selectedWallet?.coin || 'CRYPTO',
       network: selectedWallet?.network_name || selectedWallet?.network
@@ -115,13 +142,18 @@ export default function DashboardHome() {
       bal: selectedWallet?.balance ?? 0,
       gradient: 'from-emerald-500 via-emerald-600 to-teal-700',
       shadow: 'shadow-[0_12px_32px_-12px_rgba(16,185,129,0.45)]',
-    },
-    ...OFFICIAL_LOCAL_CURRENCIES
-      .map((curr) => ({ key: curr.toLowerCase(), curr, bal: user?.[`balance_${curr.toLowerCase()}`] ?? 0 }))
-      .filter((w) => Number.isFinite(Number(w.bal)) && Number(w.bal) !== 0),
-  ].filter((w) => !features || features[`wallet_${w.key}_enabled`] !== false);
+  };
+  const wallets = [
+    ...(fiatWallet ? [fiatWallet] : []),
+    ...(xafWallet ? [xafWallet] : []),
+    ...(!features || features.wallet_crypto_enabled !== false ? [cryptoDashboardWallet] : []),
+  ];
 
   const mask = (v) => hidden ? '••••••' : v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const selectFiatCurrency = (currency) => {
+    setSelectedFiatCurrency(currency);
+    localStorage.setItem('btp_dashboard_fiat_currency', currency);
+  };
   const balanceFontSize = (wallet) => {
     const characterCount = `${mask(wallet.bal)} ${wallet.curr}`.length;
     return `clamp(0.9rem, ${Math.min(24, 165 / characterCount)}cqw, 2.75rem)`;
@@ -222,6 +254,25 @@ export default function DashboardHome() {
                     <option key={wallet.id} value={wallet.id} className="text-slate-900">
                       {wallet.coin} · {wallet.network_name || wallet.network}
                     </option>
+                  ))}
+                </select>
+              )}
+              {b.key === selectedFiatWallet?.currency.toLowerCase()
+                && fiatWalletOptions.length > 1 && (
+                <select
+                  aria-label="Sélectionner un portefeuille en devise"
+                  data-testid="select-dashboard-fiat-wallet"
+                  value={selectedFiatWallet.currency}
+                  onChange={(event) => selectFiatCurrency(event.target.value)}
+                  className="absolute bottom-1.5 left-1/2 z-20 max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none transition-colors hover:bg-[#0A65D8] focus-visible:ring-2 focus-visible:ring-white/70 sm:bottom-3 sm:px-2 sm:text-[10px]"
+                >
+                  {fiatWalletOptions.map((wallet) => (
+                    <option
+                      key={wallet.currency}
+                      value={wallet.currency}
+                      label={`${wallet.currency} · ${mask(wallet.balance)}`}
+                      className="text-slate-900"
+                    />
                   ))}
                 </select>
               )}
