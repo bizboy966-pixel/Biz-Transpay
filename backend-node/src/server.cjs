@@ -11,6 +11,7 @@ const { createUserDataRoutes } = require('./user-data-routes.cjs');
 const { createDepositStatusRoutes } = require('./deposit-status-routes.cjs');
 const { createPaydunyaInvoiceRoutes } = require('./paydunya-invoice-routes.cjs');
 const { createPaydunyaWebhookRoutes } = require('./paydunya-webhook-routes.cjs');
+const { createPaydunyaDisbursementRoutes } = require('./paydunya-disbursement-routes.cjs');
 const { createStripeDepositRoutes } = require('./stripe-deposit-routes.cjs');
 const { createTelegramNotifier } = require('./telegram-notifications.cjs');
 const { createKycRoutes } = require('./kyc-routes.cjs');
@@ -131,7 +132,7 @@ async function serveStatic(req, res, root) {
 function createServer({
   db = null, sessionService = null, jwtSecret = '', sessionSecret = '',
   env = process.env, verifyBot, sendEmail, onAuthRecoveryError,
-  sendTelegramNotification,
+  sendTelegramNotification, fetchImpl = globalThis.fetch,
 } = {}, {
   staticRoot: configuredStaticRoot = '',
   healthState = null,
@@ -174,6 +175,13 @@ function createServer({
     db, sessionService, sessionSecret,
   });
   const notifications = createNotificationsPushRoutes({ db, sessionService, env });
+  const paydunyaDisbursementRoutes = createPaydunyaDisbursementRoutes({
+    db,
+    sessionSecret: env.SESSION_SECRET || '',
+    env,
+    fetchImpl,
+    notify: notifications.notify,
+  });
   const referrals = createReferralRoutes({ db, sessionService });
   const support = createSupportRoutes({ db, sessionService, env });
   const publicConfig = createPublicConfigRoutes({ db, sessionService, env });
@@ -298,6 +306,7 @@ function createServer({
         || path === '/api/auth/user-pin/reset/confirm'
         || path === '/api/webhooks/afribapay'
         || path === '/api/webhook/stripe'
+        || path === '/api/webhooks/paydunya/disbursement'
         || path === '/api/links/pay'
         || path === '/api/links/pay/mobile-money'
         || (path.startsWith('/api/links/payments/')
@@ -322,6 +331,7 @@ function createServer({
       if (await depositStatusRoutes.handleRoute(req, res)) return;
       if (await paydunyaInvoiceRoutes.handleRoute(req, res)) return;
       if (await paydunyaWebhookRoutes.handleRoute(req, res)) return;
+      if (await paydunyaDisbursementRoutes.handleRoute(req, res)) return;
       if (await handleKyc(req, res)) return;
       if (await handleUserSettings(req, res)) return;
       if (await notifications.handleRoute(req, res)) return;

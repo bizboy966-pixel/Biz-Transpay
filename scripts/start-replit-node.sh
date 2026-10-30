@@ -5,11 +5,19 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_PID=""
 FRONTEND_PID=""
 
+terminate_tree() {
+  local pid="$1"
+  local child
+  while IFS= read -r child; do
+    [[ -n "$child" ]] && terminate_tree "$child"
+  done < <(ps -o pid= --ppid "$pid" 2>/dev/null || true)
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   for pid in "$FRONTEND_PID" "$API_PID"; do
     if [[ -n "$pid" ]]; then
-      pkill -TERM -P "$pid" 2>/dev/null || true
-      kill "$pid" 2>/dev/null || true
+      terminate_tree "$pid"
       wait "$pid" 2>/dev/null || true
     fi
   done
@@ -30,8 +38,11 @@ export JWT_SECRET="${JWT_SECRET:-${SESSION_SECRET:-}}"
 node "$ROOT_DIR/backend-node/app.js" &
 API_PID=$!
 
+API_HTTP_STATUS="000"
 for _ in {1..40}; do
-  if curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1; then
+  API_HTTP_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' \
+    --max-time 1 http://127.0.0.1:8000/healthz 2>/dev/null || true)"
+  if [[ "$API_HTTP_STATUS" =~ ^[1-5][0-9][0-9]$ ]]; then
     break
   fi
   if ! kill -0 "$API_PID" 2>/dev/null; then
@@ -40,9 +51,12 @@ for _ in {1..40}; do
   fi
   sleep 0.25
 done
-if ! curl -fsS http://127.0.0.1:8000/healthz >/dev/null 2>&1; then
+if [[ ! "$API_HTTP_STATUS" =~ ^[1-5][0-9][0-9]$ ]]; then
   echo "Node API did not become ready on port 8000." >&2
   exit 1
+fi
+if [[ "$API_HTTP_STATUS" == "503" ]]; then
+  echo "Node API is running in diagnostic mode; database-backed operations remain blocked." >&2
 fi
 
 cd "$ROOT_DIR/frontend"
