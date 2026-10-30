@@ -9,7 +9,13 @@ For the Node.js port, use the user's split-table ZIP layout as the MySQL target:
 
 **Why:** The user explicitly requires a Preview-first migration and says production must remain untouched until the new environment works and is approved. They also directed that Node.js routes be implemented before Python is removed.
 
-**How to apply:** Keep the Node adapter and its tests aligned with the split-table schema. Preserve Python until Node has route parity and passing regression tests; only then remove Python and update every build/start script. Initially use only Preview/development data and a temporary hostname. Do not access, export, modify, publish, or redirect production, DNS apex, or payment-provider callbacks during this phase. Ensure the Plesk build/start setup matches the app's actual generated frontend directory and has its Preview database and secrets configured. Only plan a separate production migration after Preview is validated and the user authorizes it.
+**How to apply:** Keep the Node adapter and tests aligned with the split-table schema. Do not restore the Python runtime; use the legacy API only as a behavior reference and port those features into the current Node/Plesk/MySQL architecture. Initially use only Preview/development data and a temporary hostname. Do not access, export, modify, publish, or redirect production, DNS apex, or payment-provider callbacks during this phase. Ensure the Plesk build/start setup matches the app's actual generated frontend directory and has its Preview database and secrets configured. Only plan a separate production migration after Preview is validated and the user authorizes it.
+
+The user states that the legacy API works fully and wants its complete behavior ported into the current Node.js API for Plesk/MySQL; they do not want the Python runtime restored.
+
+**Why:** The user clarified that the goal is full behavioral parity in the existing deployment architecture, not switching the live app back to Python.
+
+**How to apply:** Treat the legacy API as the compatibility specification, keep implementation in Node.js, and do not claim completion until route parity and isolated Plesk/MySQL regressions pass.
 
 The user chose to test the Node app on Plesk. `localhost` in `MYSQL_DATABASE_URL` is local to the machine running Node: from Replit Preview it does not reach Plesk and produces `ECONNREFUSED`; on the Plesk host it can reach that host's MySQL service.
 
