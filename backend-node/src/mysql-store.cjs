@@ -1,5 +1,5 @@
 'use strict';
-const { safeCollection } = require('./document-store.cjs');
+const { Collection, safeCollection, matches } = require('./document-store.cjs');
 
 // Deliberately has no default DATABASE_URL: cannot accidentally use the existing app DB.
 function createPreviewPool(url) {
@@ -97,17 +97,27 @@ class MySqlStore {
           for (const name of ['users', 'wallet_operations']) await repo.lockCollection(name);
         },
         get: async (collection, id) => {
-          const { Collection } = require('./document-store.cjs');
           return new Collection(this, collection)._getById(id, connection, true);
         },
         replace: async (collection, id, doc) => {
-          const { Collection } = require('./document-store.cjs');
           return new Collection(this, collection)._updateDocument(id, id, doc, connection);
         },
         insert: async (collection, id, doc) => {
-          const { Collection } = require('./document-store.cjs');
           return new Collection(this, collection)._insertDocument(id, doc, connection);
         },
+        find: async (collection, query = {}) => {
+          const table = new Collection(this, collection);
+          const candidate = Object.fromEntries(Object.entries(query).filter(([field, value]) => (
+            /^[A-Za-z0-9_]+$/.test(field) && typeof value === 'string'
+          )));
+          const docs = await table._all(
+            Object.keys(candidate).length ? candidate : null, connection,
+          );
+          return docs.filter(document => matches(document, query));
+        },
+        deleteMany: async (collection, query = {}) => (
+          new Collection(this, collection)._delete(query, true, connection)
+        ),
       };
       const result = await callback(repo, connection);
       await connection.commit();

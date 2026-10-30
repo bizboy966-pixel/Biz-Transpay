@@ -4,6 +4,7 @@ const { randomUUID } = require('node:crypto');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
 const { readJson } = require('./auth-login.cjs');
 const { passwordPolicyErrors } = require('./security.cjs');
+const { SPLIT_COLLECTIONS } = require('./document-store.cjs');
 
 const SECRET_FIELDS = {
   _id: 0,
@@ -46,6 +47,10 @@ function adminUpdateError(res, error) {
       ? { code: error.code, message: error.message }
       : status >= 500 ? 'Erreur interne.' : error.message,
   });
+}
+
+function isSuperAdmin(admin) {
+  return String(admin?._effective_role || admin?.role || '').toLowerCase() === 'super_admin';
 }
 
 function createAdminUserRoutes({
@@ -312,6 +317,257 @@ function createAdminUserRoutes({
     return true;
   }
 
+  async function requireDestructiveAdmin(req, action) {
+    const { admin } = await authorizeAdmin(req, {
+      db, sessionService, env, permission: 'users:write',
+      action, sensitive: true,
+    });
+    if (!isSuperAdmin(admin)) {
+      throw Object.assign(new Error('Réservé au super administrateur.'), { status: 403 });
+    }
+    if (typeof db.transaction !== 'function') {
+      throw Object.assign(new Error('Opération indisponible sans transaction atomique.'), { status: 503 });
+    }
+    return admin;
+  }
+
+  function destructiveLocks(extra = []) {
+    const names = new Set([
+      'users', 'wallet_operations', 'admin_logs', ...SPLIT_COLLECTIONS, ...extra,
+    ]);
+    return [
+      'users', 'wallet_operations',
+      ...[...names].filter(name => !['users', 'wallet_operations'].includes(name)).sort(),
+    ];
+  }
+
+  async function deleteUserRecords(repo, userId, linkIds = null) {
+    const counts = {};
+    const ownedLinks = linkIds || (await repo.find('payment_links', { user_id: userId }))
+      .map(link => String(link.id || '')).filter(Boolean);
+    if (ownedLinks.length) {
+      counts.link_payments = (await repo.deleteMany(
+        'link_payments', { link_id: { $in: ownedLinks } },
+      )).deleted_count;
+    }
+    const userFieldByCollection = {
+      merchant_payments: 'merchant_id',
+      support_messages: 'conversation_id',
+    };
+    const skip = new Set(['users', 'payment_links', 'link_payments', 'admin_logs',
+      'settings', 'platform_bootstrap']);
+    for (const collection of SPLIT_COLLECTIONS) {
+      if (skip.has(collection)) continue;
+      const field = userFieldByCollection[collection] || 'user_id';
+      const result = await repo.deleteMany(collection, { [field]: userId });
+      if (result.deleted_count) counts[collection] = result.deleted_count;
+    }
+    if (ownedLinks.length) {
+      counts.payment_links = (await repo.deleteMany(
+        'payment_links', { id: { $in: ownedLinks } },
+      )).deleted_count;
+    }
+    counts.user = (await repo.deleteMany('users', { id: userId })).deleted_count;
+    return counts;
+  }
+
+  async function handleUserDelete(req, res, match) {
+    try {
+      const admin = await requireDestructiveAdmin(req, 'admin_delete_user');
+      let userId;
+      try { userId = decodeURIComponent(match[1]); } catch {
+        reply(res, 400, { detail: 'Identifiant utilisateur invalide' });
+        return true;
+      }
+      if (!userId || userId.length > 160) {
+        reply(res, 422, { detail: 'Identifiant utilisateur invalide' });
+        return true;
+      }
+      const body = await readJson(req, 8 * 1024);
+      const result = await db.transaction(async repo => {
+        for (const name of destructiveLocks()) await repo.lockCollection(name);
+        const target = await repo.get('users', userId);
+        if (!target) return { status: 404, detail: 'Utilisateur introuvable' };
+        if (String(target.id) === String(admin.id)) {
+          return { status: 403, detail: 'Vous ne pouvez pas supprimer votre propre compte.' };
+        }
+        if (target.role === 'super_admin' || isProtectedPlatformOwner(target, env)) {
+          return { status: 403, detail: 'Le compte propriétaire ou super administrateur est protégé.' };
+        }
+        const expected = `SUPPRIMER ${String(target.username || target.email || '').trim()}`;
+        if (String(body.confirmation || '') !== expected) {
+          return { status: 428, detail: {
+            code: 'ADMIN_CONFIRMATION_REQUIRED',
+            message: `Saisissez exactement « ${expected} » pour confirmer.`,
+          } };
+        }
+        const links = await repo.find('payment_links', { user_id: userId });
+        const counts = await deleteUserRecords(
+          repo, userId, links.map(link => String(link.id || '')).filter(Boolean),
+        );
+        const timestamp = new Date().toISOString();
+        const logId = randomUUID();
+        await repo.insert('admin_logs', logId, {
+          id: logId,
+          admin_id: admin.id,
+          admin_username: admin.username || '',
+          action: 'delete_user',
+          target_user_id: userId,
+          target_username: target.username || '',
+          details: { deleted: counts },
+          created_at: timestamp,
+        });
+        return { status: 200, deleted: counts };
+      });
+      const { status, ...payload } = result;
+      reply(res, status, payload);
+    } catch (error) {
+      adminUpdateError(res, error);
+    }
+    return true;
+  }
+
+  async function handleCleanupTestUsers(req, res) {
+    try {
+      const admin = await requireDestructiveAdmin(req, 'admin_cleanup_test_users');
+      const body = await readJson(req, 8 * 1024);
+      if (String(body.confirmation || '') !== 'SUPPRIMER LES COMPTES NON-SUPERADMIN') {
+        reply(res, 428, {
+          detail: {
+            code: 'ADMIN_CONFIRMATION_REQUIRED',
+            message: 'Saisissez exactement SUPPRIMER LES COMPTES NON-SUPERADMIN.',
+          },
+        });
+        return true;
+      }
+      const result = await db.transaction(async repo => {
+        for (const name of destructiveLocks()) await repo.lockCollection(name);
+        const allUsers = await repo.find('users', {});
+        const victims = allUsers.filter(user => (
+          user.role !== 'super_admin' && !isProtectedPlatformOwner(user, env)
+        ));
+        const victimIds = victims.map(user => String(user.id)).filter(Boolean);
+        if (!victimIds.length) return { deleted: 0, kept: allUsers.length };
+        const counts = {};
+        const links = await repo.find('payment_links', {});
+        const ownedLinkIds = links.filter(link => victimIds.includes(String(link.user_id)))
+          .map(link => String(link.id || '')).filter(Boolean);
+        if (ownedLinkIds.length) {
+          counts.link_payments = (await repo.deleteMany(
+            'link_payments', { link_id: { $in: ownedLinkIds } },
+          )).deleted_count;
+        }
+        const fieldByCollection = {
+          merchant_payments: 'merchant_id',
+          support_messages: 'conversation_id',
+        };
+        const skip = new Set([
+          'users', 'payment_links', 'link_payments', 'admin_logs',
+          'settings', 'platform_bootstrap',
+        ]);
+        for (const collection of SPLIT_COLLECTIONS) {
+          if (skip.has(collection)) continue;
+          const field = fieldByCollection[collection] || 'user_id';
+          const deleted = await repo.deleteMany(collection, { [field]: { $in: victimIds } });
+          if (deleted.deleted_count) counts[collection] = deleted.deleted_count;
+        }
+        if (ownedLinkIds.length) {
+          counts.payment_links = (await repo.deleteMany(
+            'payment_links', { id: { $in: ownedLinkIds } },
+          )).deleted_count;
+        }
+        counts.users = (await repo.deleteMany('users', { id: { $in: victimIds } })).deleted_count;
+        const timestamp = new Date().toISOString();
+        const logId = randomUUID();
+        await repo.insert('admin_logs', logId, {
+          id: logId,
+          admin_id: admin.id,
+          admin_username: admin.username || '',
+          action: 'cleanup_test_users',
+          details: { deleted: counts, kept_super_admins: allUsers.length - victims.length },
+          created_at: timestamp,
+        });
+        return { deleted: counts.users, kept: allUsers.length - victims.length, counts };
+      });
+      reply(res, 200, result);
+    } catch (error) {
+      adminUpdateError(res, error);
+    }
+    return true;
+  }
+
+  async function handlePlatformReset(req, res) {
+    try {
+      const admin = await requireDestructiveAdmin(req, 'admin_platform_reset');
+      const body = await readJson(req, 8 * 1024);
+      const fullWipe = body.delete_all === true;
+      const expected = fullWipe ? 'SUPPRIMER_TOUT' : 'RÉINITIALISER';
+      if (String(body.confirmation || '') !== expected) {
+        reply(res, 428, {
+          detail: { code: 'ADMIN_CONFIRMATION_REQUIRED', message: `Saisissez exactement ${expected}.` },
+        });
+        return true;
+      }
+      const preservedCollections = new Set([
+        'users', 'settings', 'platform_bootstrap', 'admin_logs',
+      ]);
+      const wipeCollections = [...SPLIT_COLLECTIONS]
+        .filter(name => !preservedCollections.has(name));
+      const result = await db.transaction(async repo => {
+        for (const name of destructiveLocks(wipeCollections)) await repo.lockCollection(name);
+        const allUsers = await repo.find('users', {});
+        const keep = allUsers.filter(user => (
+          isProtectedPlatformOwner(user, env)
+            || (!fullWipe && user.role === 'super_admin')
+        ));
+        const keepIds = new Set(keep.map(user => String(user.id)));
+        const victimIds = allUsers.map(user => String(user.id))
+          .filter(id => id && !keepIds.has(id));
+        const wiped = {};
+        for (const collection of wipeCollections) {
+          wiped[collection] = (await repo.deleteMany(collection, {})).deleted_count;
+        }
+        wiped.users = victimIds.length
+          ? (await repo.deleteMany('users', { id: { $in: victimIds } })).deleted_count : 0;
+        for (const user of keep) {
+          const reset = { ...user };
+          for (const key of Object.keys(reset)) {
+            if (key.startsWith('balance_')) reset[key] = 0;
+          }
+          reset.wallet_credit_operation_ids = [];
+          reset.wallet_operation_ids = [];
+          await repo.replace('users', String(user.id), reset);
+        }
+        const timestamp = new Date().toISOString();
+        const logId = randomUUID();
+        await repo.insert('admin_logs', logId, {
+          id: logId,
+          admin_id: admin.id,
+          admin_username: admin.username || '',
+          action: 'platform_reset',
+          details: {
+            delete_all: fullWipe,
+            deleted_users: wiped.users,
+            kept_super_admins: keep.length,
+            wiped,
+          },
+          created_at: timestamp,
+        });
+        return {
+          deleted_users: wiped.users,
+          kept_super_admins: keep.length,
+          kept_platform_owner: keep.some(user => isProtectedPlatformOwner(user, env)),
+          wiped,
+          balances_reset: true,
+        };
+      });
+      reply(res, 200, result);
+    } catch (error) {
+      adminUpdateError(res, error);
+    }
+    return true;
+  }
+
   async function handleKycRoute(req, res, url, decisionMatch) {
     const list = !decisionMatch;
     try {
@@ -446,6 +702,15 @@ function createAdminUserRoutes({
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { return false; }
+    if (req.method === 'POST' && url.pathname === '/api/admin/platform/reset') {
+      return handlePlatformReset(req, res);
+    }
+    if (req.method === 'POST' && url.pathname === '/api/admin/users/cleanup-test-users') {
+      return handleCleanupTestUsers(req, res);
+    }
+    const deleteUser = req.method === 'DELETE'
+      ? /^\/api\/admin\/users\/([^/]+)$/.exec(url.pathname) : null;
+    if (deleteUser) return handleUserDelete(req, res, deleteUser);
     const createAdmin = req.method === 'POST' && url.pathname === '/api/admin/admins';
     if (createAdmin) {
       try {

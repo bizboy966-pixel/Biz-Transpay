@@ -431,8 +431,8 @@ class Collection {
   }
   async delete_one(query) { return this._delete(query, false); }
   async delete_many(query) { return this._delete(query, true); }
-  async _delete(query, many) {
-    return this._mutate(async connection => {
+  async _delete(query, many, executor = null) {
+    const remove = async connection => {
       const rows = await this._all(simpleCandidate(query), connection);
       const chosen = rows.filter(doc => matches(doc, query)).slice(0, many ? undefined : 1);
       for (const doc of chosen) {
@@ -440,7 +440,8 @@ class Collection {
           [String(doc.id ?? doc._id)]);
       }
       return { deleted_count: chosen.length };
-    });
+    };
+    return executor ? remove(executor) : this._mutate(remove);
   }
   async count_documents(query = {}) {
     return (await this._all(simpleCandidate(query))).filter(doc => matches(doc, query)).length;
