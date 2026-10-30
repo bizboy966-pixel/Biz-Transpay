@@ -173,8 +173,24 @@ test('PayDunya invoice initiation refuses disabled modes and never credits a wal
   });
   const result = await call(service, '/api/deposits/paydunya/par', depositRequest);
   assert.equal(result.status, 503);
+  assert.equal(result.body.detail, 'Ce mode de paiement Mobile Money est désactivé.');
   assert.equal(providerCalls, 0);
   assert.equal(collections.momo_deposits.rows.length, 0);
+});
+
+test('PayDunya returns sanitized actionable provider errors instead of a generic deposit failure', async () => {
+  const { service } = setup({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      async json() { return { message: 'sensitive upstream payload' }; },
+    }),
+  });
+  const result = await call(service, '/api/deposits/paydunya/par', depositRequest);
+
+  assert.equal(result.status, 502);
+  assert.equal(result.body.detail, 'PayDunya a refusé la création de facture.');
+  assert.doesNotMatch(JSON.stringify(result.body), /sensitive upstream payload/);
 });
 
 test('generic Mobile Money start uses the only enabled PayDunya flow', async () => {

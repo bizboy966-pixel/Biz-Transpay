@@ -25,6 +25,9 @@ const GENERIC_MOBILE_MONEY_ROUTES = new Set([
 function httpError(status, message) {
   const error = new Error(message);
   error.status = status;
+  // All messages created by this helper are fixed, sanitized guidance. Keep
+  // them visible to the payer; unexpected errors remain masked by the route.
+  error.safePublicMessage = true;
   return error;
 }
 
@@ -511,7 +514,9 @@ function createPaydunyaInvoiceRoutes({
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 500;
       reply(res, status, {
-        detail: status >= 500 ? 'Impossible de démarrer le dépôt.' : error.message,
+        detail: error.safePublicMessage
+          ? error.message
+          : status >= 500 ? 'Impossible de démarrer le dépôt.' : error.message,
       });
     }
     return true;

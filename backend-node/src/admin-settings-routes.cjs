@@ -213,6 +213,15 @@ function withdrawalNetwork(operator) {
   })[network] || network;
 }
 
+function withdrawalIdentifier(operator, provider) {
+  const candidates = provider === 'paydunya'
+    ? [operator.withdraw_mode, operator.code]
+    : provider === 'mbiyo'
+      ? [operator.network, operator.code]
+      : [operator.operator, operator.public_code, operator.code];
+  return String(candidates.find(value => typeof value === 'string' && value.trim()) || '').trim();
+}
+
 function validateWithdrawalCatalog(section) {
   objectConfig(section, 'mobile_money doit être un objet');
   if (section.enabled !== undefined && typeof section.enabled !== 'boolean') {
@@ -225,16 +234,17 @@ function validateWithdrawalCatalog(section) {
   }
   const seenRows = new Set();
   const seenActiveRoutes = new Set();
-  for (const operator of operators) {
+  for (const [index, operator] of operators.entries()) {
     objectConfig(operator, 'Chaque opérateur doit être un objet');
     const provider = String(operator.provider || 'paydunya').trim().toLowerCase();
     const country = String(operator.country || '').trim().toUpperCase();
     const currency = String(operator.currency || '').trim().toUpperCase();
-    const code = String(operator.code || '').trim();
+    const code = withdrawalIdentifier(operator, provider);
     if (!['paydunya', 'mbiyo', 'afribapay'].includes(provider)
         || !/^[A-Z]{2}$/.test(country) || !['XOF', 'XAF'].includes(currency)
         || !code || code.length > 120) {
-      throw fail(422, 'Pays, devise, code ou prestataire Mobile Money invalide');
+      const label = String(operator.name || operator.country_label || '').trim().slice(0, 80);
+      throw fail(422, `Opérateur ${label || `n° ${index + 1}`} (ligne ${index + 1}) : pays, devise, identifiant ou prestataire Mobile Money invalide.`);
     }
     if (provider === 'paydunya' && currency !== (country === 'CM' ? 'XAF' : 'XOF')) {
       throw fail(422, 'La devise ne correspond pas au pays');

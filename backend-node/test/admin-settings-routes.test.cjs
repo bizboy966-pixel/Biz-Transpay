@@ -265,6 +265,45 @@ test('admin payout config rejects ambiguous active routes and invalid fee values
   assert.equal(collections.settings.rows.length, 0);
 });
 
+test('admin payout config accepts provider-specific withdrawal identifiers without generic code', async () => {
+  const { service, collections } = setup();
+  const result = await call(service, 'PATCH', '/api/admin/transfer/config', {
+    mobile_money: {
+      enabled: true,
+      operators: [
+        {
+          provider: 'mbiyo', country: 'TG', currency: 'XOF',
+          network: 'tmoney', active: true,
+        },
+        {
+          provider: 'afribapay', country: 'CM', currency: 'XAF',
+          operator: 'orange', active: true,
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(collections.settings.rows[0].mobile_money.operators[0].network, 'tmoney');
+  assert.equal(collections.settings.rows[0].mobile_money.operators[1].operator, 'orange');
+});
+
+test('admin payout config identifies the exact incomplete operator row', async () => {
+  const { service } = setup();
+  const result = await call(service, 'PATCH', '/api/admin/transfer/config', {
+    mobile_money: {
+      enabled: true,
+      operators: [{
+        provider: 'afribapay', country: 'CM', currency: '',
+        operator: 'orange', name: 'Orange Cameroun', active: true,
+      }],
+    },
+  });
+
+  assert.equal(result.status, 422);
+  assert.match(result.body.detail, /Orange Cameroun.*ligne 1/);
+});
+
 test('admin referral rate preserves the allowed range and requires recent authentication', async () => {
   const { service, collections, authChecks } = setup();
   const getDefault = await call(service, 'GET', '/api/admin/referrals/config');
