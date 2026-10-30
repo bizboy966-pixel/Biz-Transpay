@@ -9,6 +9,12 @@ Every financial wallet mutation must carry a stable operation identifier and use
 
 **How to apply:** Derive the operation id from the local operation or client idempotency key, and bind trusted provider event aliases to that operation atomically. Keep ledger writes deterministic and retryable after a process crash; never treat a generic database error as a duplicate delivery. Show historical before/after balances only when an authoritative persisted snapshot exists.
 
+Provider acceptance is not settlement. Keep a payout pending until a provider response, authenticated callback, or status lookup reports a recognized terminal success or failure; never show success for an accepted-but-pending request. A confirmed rejection refunds the exact reserved wallet once, while an ambiguous outcome stays reserved for reconciliation.
+
+**Why:** A provider may acknowledge a payout request before sending the Mobile Money value, and network timeouts can occur after the provider has acted. Treating either as success or an automatic refund can mislead the customer or create a duplicate payout.
+
+**How to apply:** Map provider-specific statuses explicitly, scope user status refreshes to the transaction owner, and keep retries idempotent. Do not send real provider requests in automated tests.
+
 Withdrawals queued for manual fulfilment must reserve funds from the exact source wallet immediately, including the selected crypto/network wallet. Store that wallet identity and the reserved native amount on the transaction; rejection refunds that same wallet exactly once.
 
 **Why:** A pending payout must not leave the amount spendable while the platform still owes the requested transfer. Converting it to a generic USDT balance also breaks asset/network separation.
