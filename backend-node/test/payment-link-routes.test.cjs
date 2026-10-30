@@ -313,3 +313,80 @@ test('Mobile Money link finalization is capability-bound, one-use and leaves set
   assert.equal(replay.status, 403);
   assert.equal(finalized, 1);
 });
+
+test('crypto payment-link route verifies Turnstile, claims single-use links and replays idempotently', async () => {
+  let db;
+  let createCalls = 0;
+  let refreshCalls = 0;
+  const setupResult = setup({
+    verifyBot: async token => assert.equal(token, 'valid-turnstile'),
+    createLinkCryptoPaymentIntent: async paymentId => {
+      createCalls += 1;
+      await db.collection('link_payments').update_one(
+        { id: paymentId },
+        { $set: {
+          status: 'pending',
+          izipay_intent_id: 'intent-public-1',
+          asset_code: 'USDT.TRC20',
+          coin: 'USDT',
+          network: 'TRC20',
+          deposit_address: 'TPublicDepositAddress',
+          amount_to_send: '10.2',
+        } },
+      );
+    },
+    refreshCryptoLinkPayment: async paymentId => {
+      refreshCalls += 1;
+      await db.collection('link_payments').update_one(
+        { id: paymentId }, { $set: {
+          status: 'paid', balance_before: 5, balance_after: 15,
+        } },
+      );
+    },
+  });
+  db = setupResult.db;
+  const handle = setupResult.handle;
+  await db.collection('payment_links').insert_one({
+    id: 'crypto-link-1', slug: 'crypto-order', user_id: 'merchant-1',
+    title: 'Crypto order', active: true, single_use: true,
+    amount_type: 'fixed', amount: 10, crypto_amount: 10,
+    currency: 'USDT', fee_bearer: 'merchant',
+  });
+  const body = {
+    slug: 'crypto-order',
+    asset_code: 'USDT.TRC20',
+    full_name: 'Buyer Example',
+    email: 'buyer@example.com',
+    refund_address: 'TBuyerRefundAddress',
+    idempotency_key: 'crypto-link-key-001',
+    turnstile_token: 'valid-turnstile',
+    fee_bearer: 'customer',
+  };
+  const first = await call(handle, 'POST', '/api/links/pay', body, null);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.method, 'crypto');
+  assert.equal(first.body.status, 'pending');
+  assert.equal(first.body.amount, 10);
+  assert.equal(first.body.deposit_address, 'TPublicDepositAddress');
+  assert.equal(Object.hasOwn(first.body, 'izipay_intent_id'), false);
+  assert.equal(createCalls, 1);
+  const payment = await db.collection('link_payments').find_one({ id: first.body.id });
+  assert.equal(payment.fee_bearer, 'merchant');
+  assert.equal(payment.amount_currency, 'USDT');
+  assert.equal((await db.collection('payment_links').find_one({ id: 'crypto-link-1' }))
+    .single_use_claim_id, first.body.id);
+
+  const replay = await call(handle, 'POST', '/api/links/pay', body, null);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.id, first.body.id);
+  assert.equal(createCalls, 1);
+
+  const status = await call(
+    handle, 'GET', `/api/links/payments/${first.body.id}`, undefined, null,
+  );
+  assert.equal(status.status, 200);
+  assert.equal(status.body.status, 'paid');
+  assert.equal(status.body.balance_before, 5);
+  assert.equal(status.body.balance_after, 15);
+  assert.equal(refreshCalls, 1);
+});

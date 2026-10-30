@@ -193,13 +193,15 @@ function createServer({
   const referrals = createReferralRoutes({ db, sessionService });
   const support = createSupportRoutes({ db, sessionService, env });
   const publicConfig = createPublicConfigRoutes({ db, sessionService, env });
+  const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env, fetchImpl });
   const paymentLinks = createPaymentLinkRoutes({
     db, sessionService, env, verifyBot,
     createLinkMobileMoneyDeposit: paydunyaInvoiceRoutes.handleLinkPaymentDeposit,
+    createLinkCryptoPaymentIntent: cryptoCatalog.createCryptoLinkPaymentIntent,
+    refreshCryptoLinkPayment: cryptoCatalog.refreshCryptoLinkPayment,
     finalizeLinkMobileMoney: paydunyaInvoiceRoutes.finalizeLinkMobileMoney,
     settlePaydunyaDepositById: paydunyaWebhookRoutes.settleDepositById,
   });
-  const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env });
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
   });

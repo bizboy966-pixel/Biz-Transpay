@@ -1087,7 +1087,7 @@
       "path": "/api/links/pay",
       "source": "backend/server.py",
       "handler": "start_link_payment",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",

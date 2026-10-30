@@ -60,6 +60,8 @@ function makeSetup({
     crypto_deposits: new Collection(),
     wallet_operations: new Collection(),
     transactions: new Collection(),
+    link_payments: new Collection(),
+    payment_links: new Collection(),
   };
   let providerCalls = 0;
   const fetcher = fetchImpl || (async (url, options) => {
@@ -304,6 +306,218 @@ test('crypto deposit uses a stable idempotency key and never credits before prov
   assert.equal(replay.body.id, first.body.id);
   assert.equal(providerCalls.filter(call => call.options.method === 'POST').length, 1);
   assert.equal(Object.hasOwn(collections.users.rows[0] || {}, 'balance_crypto_usdt_trc20'), false);
+});
+
+test('crypto link payment verifies IziPay status and credits the merchant once', async () => {
+  let providerStatus = 'unavailable';
+  const providerCalls = [];
+  const { service, collections } = makeSetup({
+    settings: [
+      providerSettings(),
+      { id: 'deposit_config', crypto: {
+        enabled: true,
+        fees_gateway: { 'USDT.TRC20': 2 },
+        fees_platform: {},
+        fees_gateway_fixed: {},
+        fees_platform_fixed: {},
+      } },
+      { id: 'platform_config', crypto_usdt_rates: { USDT: 1 } },
+    ],
+    users: [{ id: 'merchant-1', balance_usdt: 10 }],
+    providerAssets: [
+      { assetCode: 'USDT.TRC20', isActive: true, minimum: 1, maximum: 5000 },
+    ],
+    fetchImpl: async (url, options = {}) => {
+      providerCalls.push({ url, options });
+      if (String(url).endsWith('/v1/assets')) {
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify([
+            { assetCode: 'USDT.TRC20', isActive: true, minimum: 1, maximum: 5000 },
+          ]),
+        };
+      }
+      if (String(url).endsWith('/v1/payment-intents/direct')) {
+        const request = JSON.parse(options.body);
+        assert.equal(request.merchantReference, 'link-payment-1');
+        assert.equal(request.amount, '102.000000');
+        assert.equal(options.headers['idempotency-key'], 'izipay-link-link-payment-1');
+        return {
+          ok: true, status: 201,
+          text: async () => JSON.stringify({
+            id: 'intent-link-1',
+            status: 'pending',
+            depositAddress: 'TLinkDepositAddress',
+            amountToSend: '102',
+            expiresAt: '2030-01-01T00:00:00Z',
+          }),
+        };
+      }
+      if (String(url).endsWith('/v1/payment-intents/intent-link-1')) {
+        if (providerStatus === 'unavailable') return { ok: false, status: 503 };
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify({
+            id: 'intent-link-1',
+            merchantReference: 'link-payment-1',
+            requestedCoin: 'USDT.TRC20',
+            status: providerStatus,
+            txHash: 'chain-tx-link-1',
+          }),
+        };
+      }
+      throw new Error(`Unexpected IziPay URL: ${url}`);
+    },
+  });
+  collections.payment_links.rows.push({
+    id: 'link-1', user_id: 'merchant-1', title: 'Order',
+    active: true, single_use: true, single_use_claim_id: 'link-payment-1',
+    payments_received: 0, total_received: 0,
+  });
+  collections.link_payments.rows.push({
+    id: 'link-payment-1', link_id: 'link-1', user_id: 'merchant-1',
+    method: 'crypto', status: 'creating', amount: 100,
+    amount_currency: 'USDT', asset_code: 'USDT.TRC20',
+    customer_name: 'Test User', customer_email: 'test@example.com',
+    refund_address: 'TTestRefundAddress', fee_bearer: 'customer',
+    request_fingerprint: 'a'.repeat(64), created_at: '2026-01-01T00:00:00.000Z',
+  });
+
+  const initiated = await service.createCryptoLinkPaymentIntent('link-payment-1');
+  assert.equal(initiated.status, 'pending');
+  assert.equal(initiated.deposit_address, 'TLinkDepositAddress');
+  assert.equal(initiated.wallet_credit_amount, 100);
+  assert.equal(providerCalls.filter(call => String(call.url).endsWith('/direct')).length, 1);
+  await service.createCryptoLinkPaymentIntent('link-payment-1');
+  assert.equal(providerCalls.filter(call => String(call.url).endsWith('/direct')).length, 1);
+
+  const uncertain = await service.refreshCryptoLinkPayment('link-payment-1');
+  assert.equal(uncertain.status, 'pending');
+  assert.equal(collections.users.rows[0].balance_usdt, 10);
+
+  providerStatus = 'completed';
+  await service.refreshCryptoLinkPayment('link-payment-1');
+  assert.equal(collections.users.rows[0].balance_usdt, 110);
+  assert.equal(collections.transactions.rows.length, 1);
+  assert.equal(collections.transactions.rows[0].type, 'link_payment');
+  assert.equal(collections.transactions.rows[0].amount, 100);
+  assert.equal(collections.transactions.rows[0].metadata.wallet_snapshot.balance_before, 10);
+  assert.equal(collections.transactions.rows[0].metadata.wallet_snapshot.balance_after, 110);
+  assert.equal(collections.payment_links.rows[0].total_received, 100);
+  assert.equal(collections.payment_links.rows[0].active, false);
+  assert.equal(collections.link_payments.rows[0].status, 'paid');
+
+  // Simulate a repeated provider notification after the local response was lost.
+  await collections.link_payments.update_one(
+    { id: 'link-payment-1' }, { $set: { status: 'pending' } },
+  );
+  await service.refreshCryptoLinkPayment('link-payment-1');
+  assert.equal(collections.users.rows[0].balance_usdt, 110);
+  assert.equal(collections.transactions.rows.length, 1);
+  assert.equal(collections.payment_links.rows[0].total_received, 100);
+});
+
+test('crypto link payment expires without credit and releases its single-use link', async () => {
+  let providerStatus = 'expired';
+  const { service, collections } = makeSetup({
+    settings: [
+      providerSettings(),
+      { id: 'deposit_config', crypto: { enabled: true, fees: { 'USDT.TRC20': 2 } } },
+      { id: 'platform_config', crypto_usdt_rates: { USDT: 1 } },
+    ],
+    users: [{ id: 'merchant-1', balance_usdt: 10 }],
+    providerAssets: [
+      { assetCode: 'USDT.TRC20', isActive: true, minimum: 1, maximum: 5000 },
+    ],
+    fetchImpl: async url => {
+      if (String(url).endsWith('/v1/assets')) {
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify([
+            { assetCode: 'USDT.TRC20', isActive: true, minimum: 1, maximum: 5000 },
+          ]),
+        };
+      }
+      if (String(url).endsWith('/v1/payment-intents/direct')) {
+        return {
+          ok: true, status: 201,
+          text: async () => JSON.stringify({
+            id: 'intent-link-expired',
+            depositAddress: 'TLinkDepositAddress',
+            amountToSend: '102',
+          }),
+        };
+      }
+      if (String(url).endsWith('/v1/payment-intents/intent-link-expired')) {
+        return {
+          ok: true, status: 200,
+          text: async () => JSON.stringify({
+            id: 'intent-link-expired',
+            merchantReference: 'link-payment-expired',
+            requestedCoin: 'USDT.TRC20',
+            status: providerStatus,
+          }),
+        };
+      }
+      throw new Error(`Unexpected IziPay URL: ${url}`);
+    },
+  });
+  collections.payment_links.rows.push({
+    id: 'link-1', user_id: 'merchant-1', title: 'Order',
+    active: true, single_use: true, single_use_claim_id: 'link-payment-expired',
+  });
+  collections.link_payments.rows.push({
+    id: 'link-payment-expired', link_id: 'link-1', user_id: 'merchant-1',
+    method: 'crypto', status: 'creating', amount: 100, amount_currency: 'USDT',
+    asset_code: 'USDT.TRC20', customer_name: 'Test User',
+    customer_email: 'test@example.com', refund_address: 'TTestRefundAddress',
+    fee_bearer: 'customer', request_fingerprint: 'b'.repeat(64),
+  });
+  await service.createCryptoLinkPaymentIntent('link-payment-expired');
+  await service.refreshCryptoLinkPayment('link-payment-expired');
+  assert.equal(collections.link_payments.rows[0].status, 'expired');
+  assert.equal(collections.users.rows[0].balance_usdt, 10);
+  assert.equal(collections.transactions.rows.length, 0);
+  assert.equal(Object.hasOwn(collections.payment_links.rows[0], 'single_use_claim_id'), false);
+});
+
+test('crypto link payment refuses a completed IziPay intent with another merchant reference', async () => {
+  const { service, collections } = makeSetup({
+    settings: [
+      providerSettings(),
+      { id: 'deposit_config', crypto: { enabled: true } },
+      { id: 'platform_config', crypto_usdt_rates: { USDT: 1 } },
+    ],
+    users: [{ id: 'merchant-1', balance_usdt: 10 }],
+    fetchImpl: async url => {
+      assert.match(String(url), /\/v1\/payment-intents\/intent-link-mismatch$/);
+      return {
+        ok: true, status: 200,
+        text: async () => JSON.stringify({
+          id: 'intent-link-mismatch',
+          merchantReference: 'another-payment',
+          requestedCoin: 'USDT.TRC20',
+          status: 'completed',
+        }),
+      };
+    },
+  });
+  collections.payment_links.rows.push({
+    id: 'link-1', user_id: 'merchant-1', title: 'Order',
+    active: true, single_use: true, single_use_claim_id: 'link-payment-mismatch',
+  });
+  collections.link_payments.rows.push({
+    id: 'link-payment-mismatch', link_id: 'link-1', user_id: 'merchant-1',
+    method: 'crypto', status: 'pending', amount: 100,
+    asset_code: 'USDT.TRC20', izipay_intent_id: 'intent-link-mismatch',
+    deposit_address: 'TLinkDepositAddress', single_use_claim_id: 'link-payment-mismatch',
+  });
+  const result = await service.refreshCryptoLinkPayment('link-payment-mismatch');
+  assert.equal(result.status, 'failed');
+  assert.equal(result.settlement_error, 'izipay_merchant_reference_mismatch');
+  assert.equal(collections.users.rows[0].balance_usdt, 10);
+  assert.equal(collections.transactions.rows.length, 0);
+  assert.equal(Object.hasOwn(collections.payment_links.rows[0], 'single_use_claim_id'), false);
 });
 
 test('crypto deposit rejects unsupported amounts before creating a provider intent', async () => {

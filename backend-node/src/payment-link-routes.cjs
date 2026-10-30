@@ -157,6 +157,7 @@ function publicLinkPaymentStatus(payment) {
   const result = {};
   for (const key of [
     'id', 'method', 'status', 'amount', 'currency', 'network', 'amount_to_send',
+    'asset_code', 'coin',
     'deposit_address', 'memo', 'memo_type', 'expires_at', 'created_at',
     'pending_expires_at', 'charged_amount', 'amount_to_pay', 'fee',
     'gateway_fee', 'platform_fee', 'instructions', 'payment_flow',
@@ -187,8 +188,9 @@ async function releaseSingleUseClaim(db, payment) {
 }
 
 function createPaymentLinkRoutes({
-  db, sessionService, createLinkMobileMoneyDeposit, verifyBot,
-  settlePaydunyaDepositById, finalizeLinkMobileMoney, env = process.env,
+  db, sessionService, createLinkMobileMoneyDeposit, createLinkCryptoPaymentIntent,
+  refreshCryptoLinkPayment, verifyBot, settlePaydunyaDepositById,
+  finalizeLinkMobileMoney, env = process.env,
 }) {
   async function handlePaymentLinks(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -200,12 +202,13 @@ function createPaymentLinkRoutes({
       && /^\/api\/links\/payments\/([^/]+)$/.exec(path);
     const finalizeMatch = req.method === 'POST'
       && /^\/api\/links\/payments\/([^/]+)\/(?:mobile-money\/)?finalize$/.exec(path);
+    const cryptoStart = req.method === 'POST' && path === '/api/links/pay';
     const mobileMoneyStart = req.method === 'POST' && path === '/api/links/pay/mobile-money';
     const itemMatch = /^\/api\/links\/([^/]+)$/.exec(path);
     const update = req.method === 'PATCH' && itemMatch;
     const remove = req.method === 'DELETE' && itemMatch;
     if (!list && !create && !publicMatch && !paymentStatusMatch && !finalizeMatch
-        && !mobileMoneyStart && !update && !remove) return false;
+        && !cryptoStart && !mobileMoneyStart && !update && !remove) return false;
     try {
       if (finalizeMatch) {
         const paymentId = decodeURIComponent(finalizeMatch[1]);
@@ -296,6 +299,13 @@ function createPaymentLinkRoutes({
           { id: paymentId }, { _id: 0 },
         );
         if (!payment) throw error(404, 'Paiement introuvable');
+        if (payment.method === 'crypto' && payment.status !== 'paid'
+            && typeof refreshCryptoLinkPayment === 'function') {
+          await refreshCryptoLinkPayment(paymentId);
+          payment = await db.collection('link_payments').find_one(
+            { id: paymentId }, { _id: 0 },
+          ) || payment;
+        }
         if (payment.method === 'mobile_money' && payment.status === 'pending'
             && payment.momo_deposit_id && typeof settlePaydunyaDepositById === 'function') {
           const deposit = await settlePaydunyaDepositById(payment.momo_deposit_id);
@@ -326,6 +336,181 @@ function createPaymentLinkRoutes({
           payment = await db.collection('link_payments').find_one({ id: paymentId }, { _id: 0 });
         }
         reply(res, 200, publicLinkPaymentStatus(payment));
+        return true;
+      }
+      if (cryptoStart) {
+        const body = await readJson(req);
+        if (typeof createLinkCryptoPaymentIntent !== 'function') {
+          throw error(503, 'Le paiement crypto par lien n’est pas disponible.');
+        }
+        if (typeof verifyBot !== 'function' || !body.turnstile_token) {
+          throw error(403, 'La vérification anti-robot est requise.');
+        }
+        await verifyBot(body.turnstile_token, req, 'payment', env);
+        const slug = String(body.slug || '').trim();
+        const link = await db.collection('payment_links').find_one({ slug }, { _id: 0 });
+        if (!link || link.active === false) throw error(404, 'Lien de paiement indisponible.');
+        if (link.expires_at && Date.parse(link.expires_at) <= Date.now()) {
+          throw error(410, 'Ce lien de paiement a expiré.');
+        }
+        if (!['USDT', 'UNIVERSAL'].includes(String(link.currency || '').toUpperCase())) {
+          throw error(400, 'Ce lien n’accepte pas les paiements crypto.');
+        }
+        const assetCode = String(body.asset_code || '').trim().toUpperCase();
+        const fullName = String(body.full_name || '').trim();
+        const email = String(body.email || '').trim().toLowerCase();
+        const refundAddress = String(body.refund_address || '').trim();
+        const key = String(body.idempotency_key || '').trim();
+        if (!/^[A-Z0-9._-]{3,32}$/.test(assetCode)
+            || fullName.length < 2 || fullName.length > 200
+            || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+            || !refundAddress || refundAddress.length > 256
+            || !/^[A-Za-z0-9._-]{8,128}$/.test(key)) {
+          throw error(422, 'Informations de paiement crypto invalides.');
+        }
+        const isFree = String(link.amount_type || 'fixed') === 'free';
+        const configuredCryptoAmount = Number(link.crypto_amount);
+        const fixedCryptoAmount = Number.isFinite(configuredCryptoAmount)
+          && configuredCryptoAmount > 0 ? configuredCryptoAmount : link.amount;
+        const amount = isFree
+          ? numeric(body.amount, 'Montant USDT')
+          : numeric(fixedCryptoAmount, 'Montant USDT');
+        const minimum = Number(link.crypto_min_amount ?? link.min_amount ?? 0);
+        const maximum = Number(link.crypto_max_amount ?? link.max_amount ?? 0);
+        if (amount <= 0 || amount > 1e12
+            || (isFree && amount < minimum)
+            || (isFree && maximum > 0 && amount > maximum)
+            || Number(amount.toFixed(6)) !== amount) {
+          throw error(422, 'Montant USDT en dehors des limites de ce lien.');
+        }
+        const fingerprint = crypto.createHash('sha256').update(stableJson({
+          method: 'crypto',
+          link_id: String(link.id),
+          amount,
+          asset_code: assetCode,
+          full_name: fullName,
+          email,
+          refund_address: refundAddress,
+        }), 'utf8').digest('hex');
+        const paymentId = `lp_${crypto.createHash('sha256')
+          .update(`crypto:${link.id}:${key}`, 'utf8').digest('hex').slice(0, 32)}`;
+        let payment = await db.collection('link_payments').find_one(
+          { id: paymentId }, { _id: 0 },
+        );
+        if (payment && payment.request_fingerprint !== fingerprint) {
+          throw error(409, 'Cette clé d’idempotence est déjà utilisée pour un autre paiement.');
+        }
+        if (payment && (payment.deposit_address
+            || ['paid', 'expired', 'failed', 'canceled'].includes(payment.status))) {
+          reply(res, 200, publicLinkPaymentStatus(payment));
+          return true;
+        }
+        if (!payment) {
+          if (link.single_use) {
+            const claim = await db.collection('payment_links').update_one(
+              {
+                id: String(link.id), active: { $ne: false },
+                $or: [
+                  { single_use_claim_id: null },
+                  { single_use_claim_id: { $exists: false } },
+                  { single_use_claim_id: '' },
+                ],
+              },
+              { $set: { single_use_claim_id: paymentId } },
+            );
+            if (!claim.matched_count) {
+              const latestLink = await db.collection('payment_links').find_one(
+                { id: String(link.id) }, { _id: 0 },
+              );
+              if (latestLink?.single_use_claim_id !== paymentId) {
+                throw error(409, 'Ce lien à usage unique a déjà été utilisé ou réservé.');
+              }
+            }
+          }
+          payment = {
+            id: paymentId,
+            link_id: String(link.id),
+            user_id: String(link.user_id),
+            slug: String(link.slug || slug),
+            method: 'crypto',
+            status: 'creating',
+            amount,
+            amount_currency: 'USDT',
+            currency: 'USDT',
+            asset_code: assetCode,
+            customer_name: fullName,
+            customer_email: email,
+            refund_address: refundAddress,
+            fee_bearer: link.fee_bearer || 'customer',
+            idempotency_key: key,
+            request_fingerprint: fingerprint,
+            ...(link.single_use ? { single_use_claim_id: paymentId } : {}),
+            created_at: new Date().toISOString(),
+          };
+          try {
+            await db.collection('link_payments').insert_one(payment);
+          } catch (cause) {
+            const concurrent = await db.collection('link_payments').find_one(
+              { id: paymentId }, { _id: 0 },
+            );
+            if (concurrent?.request_fingerprint === fingerprint) {
+              payment = concurrent;
+            } else {
+              if (link.single_use) {
+                await db.collection('payment_links').update_one(
+                  { id: String(link.id), single_use_claim_id: paymentId },
+                  { $unset: { single_use_claim_id: '' } },
+                );
+              }
+              throw cause;
+            }
+          }
+        }
+        try {
+          await createLinkCryptoPaymentIntent(paymentId);
+        } catch (cause) {
+          const latest = await db.collection('link_payments').find_one(
+            { id: paymentId }, { _id: 0 },
+          );
+          const definitelyNotSubmitted = !latest?.provider_dispatch_started_at;
+          if (definitelyNotSubmitted) {
+            await db.collection('link_payments').delete_one({
+              id: paymentId,
+              provider_dispatch_started_at: { $exists: false },
+            });
+            if (link.single_use) {
+              await db.collection('payment_links').update_one(
+                { id: String(link.id), single_use_claim_id: paymentId },
+                { $unset: { single_use_claim_id: '' } },
+              );
+            }
+          } else if (Number(cause.status || 500) < 500) {
+            await db.collection('link_payments').update_one(
+              { id: paymentId, status: { $nin: ['paid', 'expired'] } },
+              { $set: {
+                status: 'failed',
+                failed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              } },
+            );
+            if (link.single_use) {
+              await db.collection('payment_links').update_one(
+                { id: String(link.id), single_use_claim_id: paymentId },
+                { $unset: { single_use_claim_id: '' } },
+              );
+            }
+          } else {
+            await db.collection('link_payments').update_one(
+              { id: paymentId, status: 'creating' },
+              { $set: { status: 'provider_unknown', updated_at: new Date().toISOString() } },
+            );
+          }
+          throw cause;
+        }
+        const fresh = await db.collection('link_payments').find_one(
+          { id: paymentId }, { _id: 0 },
+        );
+        reply(res, 200, publicLinkPaymentStatus(fresh || payment));
         return true;
       }
       if (mobileMoneyStart) {

@@ -709,6 +709,486 @@ function createCryptoCatalogRoutes({
     }));
   }
 
+  function roundCryptoAmount(value) {
+    return Math.round((Number(value) + Number.EPSILON) * 1_000_000) / 1_000_000;
+  }
+
+  async function createCryptoLinkPaymentIntent(paymentId) {
+    const payments = db.collection('link_payments');
+    let payment = await payments.find_one(
+      { id: String(paymentId), method: 'crypto' }, { _id: 0 },
+    );
+    if (!payment) throw httpError(404, 'Paiement crypto de lien introuvable');
+    if (payment.deposit_address || ['paid', 'expired', 'failed'].includes(payment.status)) {
+      return payment;
+    }
+    const link = await db.collection('payment_links').find_one(
+      { id: String(payment.link_id), user_id: String(payment.user_id) }, { _id: 0 },
+    );
+    if (!link) throw httpError(503, 'Lien marchand introuvable pour le paiement');
+
+    const alreadyDispatched = Boolean(payment.provider_dispatch_started_at);
+    const features = await getAppFeatures(db);
+    if (!alreadyDispatched && (features.wallet_crypto_enabled === false
+        || features.deposit_crypto_enabled === false)) {
+      throw httpError(403, 'Les paiements crypto sont désactivés');
+    }
+    const section = await getDepositCryptoConfig();
+    if (!alreadyDispatched && section.enabled === false) {
+      throw httpError(403, 'Les dépôts crypto sont désactivés');
+    }
+    const config = await credentials();
+    if (!config.configured) throw httpError(503, 'Passerelle crypto non configurée');
+
+    let requestSnapshot = payment.izipay_request_snapshot;
+    let accounting = null;
+    if (!requestSnapshot) {
+      const amount = Number(payment.amount);
+      const assetCode = String(payment.asset_code || '').trim().toUpperCase();
+      const fullName = String(payment.customer_name || '').trim();
+      const email = String(payment.customer_email || '').trim().toLowerCase();
+      const refundAddress = String(payment.refund_address || '').trim();
+      const providerRows = await providerAssets(config);
+      const catalog = catalogMap(providerRows || []);
+      const spec = ASSET_SPECS.find(candidate => {
+        const asset = catalog.get(candidate.id);
+        const providerCode = String(asset?.assetCode || '').trim().toUpperCase();
+        return candidate.id === assetCode
+          || `${candidate.coin}.${candidate.network}` === assetCode
+          || providerCode === assetCode;
+      });
+      const asset = spec ? catalog.get(spec.id) : null;
+      if (!spec || !asset) throw httpError(400, 'Cryptomonnaie ou réseau non pris en charge');
+      if (!asset.isActive || !assetEnabled(section, spec)) {
+        throw httpError(400, 'Cet actif ou réseau n’est pas activé');
+      }
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 1e12
+          || !fullName || fullName.length > 200
+          || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
+          || !refundAddress || refundAddress.length > 256) {
+        throw httpError(422, 'Informations de paiement crypto invalides');
+      }
+      const platform = await getPlatformConfig(db);
+      const rate = cryptoRate(platform, spec.coin);
+      if (!rate || rate <= 0) throw httpError(503, 'Le taux crypto est indisponible');
+      const baseCoin = roundCryptoAmount(amount / rate);
+      const minimum = numeric(asset.minimum);
+      const maximum = numeric(asset.maximum, 1e12) || 1e12;
+      if (baseCoin < minimum || baseCoin > maximum) {
+        throw httpError(400, 'Le montant du lien est hors des limites de cet actif crypto');
+      }
+
+      const feeSplit = feePercentSplit(section, spec.coin, spec.id);
+      const gatewayFixed = fixedFee(section, 'fees_gateway_fixed', spec);
+      const platformFixed = fixedFee(section, 'fees_platform_fixed', spec);
+      const feePct = feeSplit.gateway + feeSplit.platform;
+      const feeFixed = gatewayFixed + platformFixed;
+      const gatewayFee = roundCryptoAmount(
+        (baseCoin * feeSplit.gateway / 100 + gatewayFixed) * rate,
+      );
+      const platformFee = roundCryptoAmount(
+        (baseCoin * feeSplit.platform / 100 + platformFixed) * rate,
+      );
+      const fee = roundCryptoAmount(gatewayFee + platformFee);
+      if (feePct >= 100 || fee >= amount) {
+        throw httpError(503, 'Configuration de frais invalide pour cet actif');
+      }
+      const customerPaysFee = !['owner', 'merchant'].includes(
+        String(payment.fee_bearer || 'customer').toLowerCase(),
+      );
+      const chargedAmount = roundCryptoAmount(
+        (amount + (customerPaysFee ? fee : 0)) / rate,
+      );
+      const chargedAmountUsdt = roundCryptoAmount(chargedAmount * rate);
+      const walletCreditAmount = customerPaysFee
+        ? amount : roundCryptoAmount(amount - fee);
+      if (chargedAmount < minimum || chargedAmount > maximum || walletCreditAmount <= 0) {
+        throw httpError(400, 'Le montant crypto chargé est hors des limites de cet actif');
+      }
+      const parts = fullName.split(/\s+/);
+      const providerAssetCode = String(asset.assetCode || spec.id).trim().toUpperCase();
+      requestSnapshot = {
+        requestedCoin: providerAssetCode,
+        amount: chargedAmount.toFixed(6),
+        customer: {
+          firstName: parts[0] || 'Client',
+          lastName: parts.slice(1).join(' ') || parts[0] || 'Client',
+          email,
+          refundAddress,
+        },
+        merchantReference: String(payment.id),
+        metadata: { link_id: String(link.id), kind: 'link_payment' },
+      };
+      accounting = {
+        coin: spec.coin,
+        network: spec.network,
+        asset_code: providerAssetCode,
+        catalog_asset_id: spec.id,
+        credit_currency: 'USDT',
+        usdt_rate: rate,
+        charged_amount: chargedAmount,
+        charged_amount_usdt: chargedAmountUsdt,
+        amount_crypto: chargedAmount,
+        amount_crypto_currency: spec.coin,
+        wallet_credit_amount: walletCreditAmount,
+        amount_net: walletCreditAmount,
+        fee,
+        fee_currency: 'USDT',
+        fee_pct: feePct,
+        fee_fixed: feeFixed,
+        gateway_fee: gatewayFee,
+        platform_fee: platformFee,
+        gateway_fee_pct: feeSplit.gateway,
+        platform_fee_pct: feeSplit.platform,
+        gateway_fee_fixed: gatewayFixed,
+        platform_fee_fixed: platformFixed,
+      };
+    } else {
+      accounting = {
+        coin: payment.coin,
+        network: payment.network,
+        asset_code: payment.asset_code,
+        catalog_asset_id: payment.catalog_asset_id,
+        credit_currency: 'USDT',
+        usdt_rate: Number(payment.usdt_rate),
+        charged_amount: Number(payment.charged_amount),
+        charged_amount_usdt: Number(payment.charged_amount_usdt),
+        amount_crypto: Number(payment.charged_amount),
+        amount_crypto_currency: payment.coin,
+        wallet_credit_amount: Number(payment.wallet_credit_amount),
+        amount_net: Number(payment.wallet_credit_amount),
+        fee: Number(payment.fee),
+        fee_currency: 'USDT',
+        fee_pct: Number(payment.fee_pct),
+        fee_fixed: Number(payment.fee_fixed),
+        gateway_fee: Number(payment.gateway_fee),
+        platform_fee: Number(payment.platform_fee),
+        gateway_fee_pct: Number(payment.gateway_fee_pct),
+        platform_fee_pct: Number(payment.platform_fee_pct),
+        gateway_fee_fixed: Number(payment.gateway_fee_fixed),
+        platform_fee_fixed: Number(payment.platform_fee_fixed),
+      };
+    }
+
+    const timestamp = new Date().toISOString();
+    await payments.update_one(
+      { id: String(payment.id), status: { $in: ['creating', 'provider_unknown'] } },
+      { $set: {
+        ...accounting,
+        izipay_request_snapshot: requestSnapshot,
+        provider_dispatch_started_at: payment.provider_dispatch_started_at || timestamp,
+        updated_at: timestamp,
+      } },
+    );
+    payment = await payments.find_one({ id: String(payment.id) }, { _id: 0 });
+    if (payment.izipay_intent_id && payment.deposit_address) return payment;
+
+    let response;
+    try {
+      response = await fetchImpl(`${config.baseUrl}/v1/payment-intents/direct`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${config.apiKey}`,
+          accept: 'application/json',
+          'content-type': 'application/json',
+          'idempotency-key': `izipay-link-${payment.id}`,
+        },
+        body: JSON.stringify(requestSnapshot),
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch {
+      await payments.update_one(
+        { id: String(payment.id), status: { $in: ['creating', 'provider_unknown'] } },
+        { $set: { status: 'provider_unknown', updated_at: new Date().toISOString() } },
+      );
+      throw httpError(502, 'Résultat du paiement inconnu; réessayez avec la même clé.');
+    }
+
+    let payload;
+    try {
+      const text = await response.text();
+      if (text.length > 512_000) throw new Error('IziPay response too large');
+      payload = JSON.parse(text);
+    } catch {
+      await payments.update_one(
+        { id: String(payment.id), status: { $in: ['creating', 'provider_unknown'] } },
+        { $set: { status: 'provider_unknown', updated_at: new Date().toISOString() } },
+      );
+      throw httpError(502, 'Réponse IziPay invalide; réessayez avec la même clé.');
+    }
+    if (!response.ok) {
+      const rejected = response.status < 500;
+      await payments.update_one(
+        { id: String(payment.id), status: { $in: ['creating', 'provider_unknown'] } },
+        { $set: {
+          status: rejected ? 'failed' : 'provider_unknown',
+          provider_error_code: String(payload.code || payload.errorCode || '').slice(0, 80) || null,
+          ...(rejected ? { failed_at: new Date().toISOString() } : {}),
+          updated_at: new Date().toISOString(),
+        } },
+      );
+      throw httpError(rejected ? 400 : 502, rejected
+        ? 'IziPay a refusé la demande de paiement.'
+        : 'Résultat du paiement inconnu; réessayez avec la même clé.');
+    }
+    const intentId = String(payload.id || '').trim();
+    const depositAddress = String(payload.depositAddress || '').trim();
+    if (!intentId || !depositAddress) {
+      await payments.update_one(
+        { id: String(payment.id), status: { $in: ['creating', 'provider_unknown'] } },
+        { $set: {
+          status: 'provider_unknown',
+          ...(intentId ? { izipay_intent_id: intentId } : {}),
+          updated_at: new Date().toISOString(),
+        } },
+      );
+      throw httpError(502, 'Adresse IziPay indisponible; réessayez avec la même clé.');
+    }
+    const providerExpiry = payload.expiresAt || null;
+    const parsedExpiry = providerExpiry ? Date.parse(providerExpiry) : NaN;
+    const expiresAt = Number.isFinite(parsedExpiry)
+      ? new Date(parsedExpiry).toISOString()
+      : new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await payments.update_one(
+      { id: String(payment.id), status: { $in: ['creating', 'provider_unknown'] } },
+      { $set: {
+        status: 'pending',
+        izipay_intent_id: intentId,
+        izipay_status: String(payload.status || 'pending').toLowerCase().slice(0, 40),
+        deposit_address: depositAddress,
+        memo: payload.memo || null,
+        memo_type: payload.memoType || null,
+        amount_to_send: payload.amountToSend || payload.amountCryptoExpected || null,
+        expires_at: expiresAt,
+        izipay_expires_at: providerExpiry,
+        updated_at: new Date().toISOString(),
+      } },
+    );
+    return await payments.find_one({ id: String(payment.id) }, { _id: 0 });
+  }
+
+  async function settleCryptoLinkPayment(payment, providerIntent) {
+    const link = await db.collection('payment_links').find_one(
+      { id: String(payment.link_id), user_id: String(payment.user_id) }, { _id: 0 },
+    );
+    if (!link) throw httpError(503, 'Lien marchand introuvable pour le règlement');
+    const net = Number(payment.wallet_credit_amount);
+    const gross = Number(payment.charged_amount_usdt);
+    const fee = Number(payment.fee || 0);
+    const gatewayFee = Number(payment.gateway_fee || 0);
+    const platformFee = Number(payment.platform_fee || 0);
+    const rate = Number(payment.usdt_rate);
+    if (!Number.isFinite(net) || net <= 0 || !Number.isFinite(gross)
+        || gross <= 0 || net > gross || !Number.isFinite(fee) || fee < 0
+        || fee > gross || Math.abs(gatewayFee + platformFee - fee) > 0.00001
+        || Math.abs(gross - fee - net) > 0.00001
+        || !Number.isFinite(rate) || rate <= 0) {
+      throw httpError(503, 'Règlement crypto en revue: montants invalides');
+    }
+    const operationId = `izipay:link:${payment.id}`;
+    const intentId = String(providerIntent.id || payment.izipay_intent_id || '');
+    const txHash = String(
+      providerIntent.txHash || providerIntent.txhash || providerIntent.transactionHash || '',
+    ).slice(0, 200);
+    const completedAt = new Date().toISOString();
+    const mutation = await applyWalletOperation(db, {
+      userId: String(link.user_id),
+      operationId,
+      aliases: [`izipay:intent:${intentId}`],
+      direction: 'credit',
+      primaryField: 'balance_usdt',
+      increments: { balance_usdt: net },
+      ledger: {
+        id: `izipay-link-${payment.id}`,
+        user_id: String(link.user_id),
+        type: 'link_payment',
+        direction: 'in',
+        amount: net,
+        currency: 'USDT',
+        status: 'completed',
+        reference: `BTP-LINK-${String(payment.id).slice(-16).toUpperCase()}`,
+        description: `Paiement lien: ${String(link.title || '').slice(0, 150)} · ${payment.coin} ${payment.network}`,
+        counterparty: String(payment.customer_email || 'client').slice(0, 200),
+        created_at: payment.created_at || completedAt,
+        completed_at: completedAt,
+        metadata: {
+          operation_id: operationId,
+          wallet_operation_id: operationId,
+          provider: 'izipay',
+          link_id: String(link.id),
+          link_payment_id: String(payment.id),
+          izipay_intent_id: intentId,
+          tx_hash: txHash || null,
+          coin: payment.coin,
+          network: payment.network,
+          asset_code: payment.asset_code,
+          deposit_address: payment.deposit_address,
+          amount_gross: gross,
+          amount_crypto: Number(payment.charged_amount),
+          amount_crypto_currency: payment.coin,
+          usdt_rate: rate,
+          fee,
+          fee_currency: 'USDT',
+          fee_pct: Number(payment.fee_pct || 0),
+          gateway_fee: gatewayFee,
+          platform_fee: platformFee,
+          amount_net: net,
+          source: 'payment_link',
+        },
+      },
+    });
+    if (!['applied', 'already'].includes(mutation.state)) {
+      throw httpError(mutation.state === 'idempotency_conflict' ? 409 : 503,
+        'Le crédit crypto du paiement n’a pas pu être enregistré');
+    }
+    await db.collection('payment_links').update_one(
+      { id: String(link.id), link_payment_operation_ids: { $ne: String(payment.id) } },
+      {
+        $inc: { payments_received: 1, total_received: net },
+        $addToSet: { link_payment_operation_ids: String(payment.id) },
+      },
+    );
+    await db.collection('payment_links').update_one(
+      { id: String(link.id), single_use_claim_id: String(payment.id) },
+      { $set: { active: false } },
+    );
+    await db.collection('link_payments').update_one(
+      {
+        id: String(payment.id),
+        status: { $in: ['creating', 'provider_unknown', 'pending', 'confirming', 'settling'] },
+      },
+      { $set: {
+        status: 'paid',
+        paid_at: completedAt,
+        izipay_status: String(providerIntent.status || 'completed').toLowerCase().slice(0, 40),
+        izipay_intent_id: intentId,
+        tx_hash: txHash || null,
+        amount_gross: gross,
+        amount_gross_usdt: gross,
+        amount_crypto: Number(payment.charged_amount),
+        amount_crypto_currency: payment.coin,
+        fee,
+        amount_net: net,
+        amount_net_currency: 'USDT',
+        credit_operation_id: operationId,
+        ...(mutation.snapshot ? {
+          balance_before: mutation.snapshot.balance_before,
+          balance_after: mutation.snapshot.balance_after,
+        } : {}),
+        updated_at: completedAt,
+      } },
+    );
+    return db.collection('link_payments').find_one(
+      { id: String(payment.id) }, { _id: 0 },
+    );
+  }
+
+  async function refreshCryptoLinkPayment(paymentId) {
+    const payments = db.collection('link_payments');
+    const payment = await payments.find_one(
+      { id: String(paymentId), method: 'crypto' }, { _id: 0 },
+    );
+    if (!payment || ['paid', 'expired', 'failed'].includes(payment.status)
+        || !payment.izipay_intent_id) return payment;
+    let config;
+    try {
+      config = await credentials();
+      if (!config.configured) return payment;
+      const response = await fetchImpl(
+        `${config.baseUrl}/v1/payment-intents/${encodeURIComponent(payment.izipay_intent_id)}`,
+        {
+          method: 'GET',
+          headers: {
+            authorization: `Bearer ${config.apiKey}`,
+            accept: 'application/json',
+            'content-type': 'application/json',
+          },
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) return payment;
+      const text = await response.text();
+      if (text.length > 512_000) return payment;
+      const payload = JSON.parse(text);
+      const receivedId = String(payload.id || payload.intentId || '').trim();
+      const merchantReference = String(
+        payload.merchantReference || payload.merchant_reference || '',
+      ).trim();
+      if (receivedId && receivedId !== String(payment.izipay_intent_id)) {
+        await payments.update_one({ id: String(payment.id), status: { $ne: 'paid' } }, {
+          $set: { status: 'failed', settlement_error: 'izipay_intent_id_mismatch' },
+        });
+        await db.collection('payment_links').update_one(
+          { id: String(payment.link_id), single_use_claim_id: String(payment.id) },
+          { $unset: { single_use_claim_id: '' } },
+        );
+        return payments.find_one({ id: String(payment.id) }, { _id: 0 });
+      }
+      if (merchantReference && merchantReference !== String(payment.id)) {
+        await payments.update_one({ id: String(payment.id), status: { $ne: 'paid' } }, {
+          $set: { status: 'failed', settlement_error: 'izipay_merchant_reference_mismatch' },
+        });
+        await db.collection('payment_links').update_one(
+          { id: String(payment.link_id), single_use_claim_id: String(payment.id) },
+          { $unset: { single_use_claim_id: '' } },
+        );
+        return payments.find_one({ id: String(payment.id) }, { _id: 0 });
+      }
+      if (!receivedId || merchantReference !== String(payment.id)) return payment;
+      const providerCoin = String(payload.requestedCoin || payload.requested_coin || '')
+        .trim().toUpperCase();
+      const expectedAssetCode = String(
+        payment.izipay_request_snapshot?.requestedCoin || payment.asset_code || '',
+      ).toUpperCase();
+      if (providerCoin && providerCoin !== expectedAssetCode) {
+        await payments.update_one({ id: String(payment.id), status: { $ne: 'paid' } }, {
+          $set: { status: 'failed', settlement_error: 'izipay_asset_mismatch' },
+        });
+        await db.collection('payment_links').update_one(
+          { id: String(payment.link_id), single_use_claim_id: String(payment.id) },
+          { $unset: { single_use_claim_id: '' } },
+        );
+        return payments.find_one({ id: String(payment.id) }, { _id: 0 });
+      }
+      const status = String(payload.status || '').toLowerCase();
+      if (['completed', 'confirmed', 'paid', 'success', 'successful'].includes(status)) {
+        return await settleCryptoLinkPayment(payment, payload);
+      }
+      const failedStatuses = new Set([
+        'expired', 'failed', 'rejected', 'canceled', 'cancelled', 'irregular',
+      ]);
+      if (failedStatuses.has(status)) {
+        const terminal = status === 'expired' ? 'expired'
+          : ['canceled', 'cancelled'].includes(status) ? 'canceled' : 'failed';
+        await payments.update_one(
+          { id: String(payment.id), status: { $in: ['creating', 'provider_unknown', 'pending', 'confirming'] } },
+          { $set: {
+            status: terminal,
+            izipay_status: status,
+            failed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          } },
+        );
+        await db.collection('payment_links').update_one(
+          {
+            id: String(payment.link_id),
+            single_use_claim_id: String(payment.id),
+          },
+          { $unset: { single_use_claim_id: '' } },
+        );
+      } else if (['confirming', 'processing', 'partially_confirmed'].includes(status)) {
+        await payments.update_one(
+          { id: String(payment.id), status: { $in: ['pending', 'provider_unknown'] } },
+          { $set: { status: 'confirming', izipay_status: status, updated_at: new Date().toISOString() } },
+        );
+      }
+    } catch {
+      // Provider/network failures are transient: keep the payment pending and poll again.
+      return payment;
+    }
+    return payments.find_one({ id: String(payment.id) }, { _id: 0 });
+  }
+
   async function createCryptoDepositIntent(userId, body) {
     const amount = Number(body.amount);
     const assetCode = String(body.asset_code || '').trim().toUpperCase();
@@ -1105,6 +1585,8 @@ function createCryptoCatalogRoutes({
     integrationExchangeQuote,
     getPayout,
     createCryptoDepositIntent,
+    createCryptoLinkPaymentIntent,
+    refreshCryptoLinkPayment,
     createCryptoPayoutRequest,
     activeExchangeAssets,
     providerAssets,

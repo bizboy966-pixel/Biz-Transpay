@@ -223,7 +223,9 @@ function CryptoLinkForm({ link, turnstile, onSuccess }) {
   const feeBearer = link.fee_bearer || 'customer';
   const feeCoin = rate > 0 ? (amt / rate) * feePct / 100 + feeFixed : 0;
   const feeUsdt = feeCoin * rate;
-  const customerPaysFee = feeBearer !== 'owner';
+  const customerPaysFee = !['owner', 'merchant'].includes(
+    String(feeBearer).toLowerCase(),
+  );
   const chargedCoin = rate > 0 ? (amt + (customerPaysFee ? feeUsdt : 0)) / rate : 0;
   const belowMin = isFree && amt < (cryptoMin || 0);
   const aboveMax = isFree && amt > (cryptoMax || 0);
