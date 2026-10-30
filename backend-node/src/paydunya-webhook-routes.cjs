@@ -161,7 +161,7 @@ function providerReference(response, fallback) {
 
 function createPaydunyaWebhookRoutes({
   db, env = process.env, fetchImpl = globalThis.fetch, sessionService,
-  reconcileDeposit,
+  reconcileDeposit, reconcileMbiyoDeposit, finalizeMbiyoDeposit,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -191,6 +191,28 @@ function createPaydunyaWebhookRoutes({
         if (!deposit) {
           reply(res, 404, { detail: 'Dépôt introuvable.' });
           return true;
+        }
+        if (deposit.provider === 'mbiyo'
+            && (deposit.auth_mode === 'pin' || deposit.otp_required)) {
+          if (deposit.status === 'pending' && (deposit.auth_mode === 'pin' || deposit.otp_required)) {
+            if (typeof finalizeMbiyoDeposit !== 'function') {
+              reply(res, 503, { detail: 'La confirmation Mbiyo est indisponible.' });
+              return true;
+            }
+            let body;
+            try {
+              body = JSON.parse((await readRawBody(req)).toString('utf8'));
+            } catch {
+              reply(res, 400, { detail: 'Code de confirmation invalide.' });
+              return true;
+            }
+            await finalizeMbiyoDeposit(deposit, body?.otp);
+            deposit = await db.collection('momo_deposits').find_one(
+              { id: depositId, user_id: userId }, { _id: 0 },
+            ) || deposit;
+            reply(res, 200, publicMomoDeposit(deposit));
+            return true;
+          }
         }
         if (deposit.provider !== 'paydunya') {
           reply(res, 409, {

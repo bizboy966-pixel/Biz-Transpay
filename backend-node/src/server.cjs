@@ -40,6 +40,8 @@ const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
 const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
 const { createAfriBaPayWebhookRoutes } = require('./afribapay-webhook-routes.cjs');
 const { createAfriBaPayDepositWorker } = require('./afribapay-deposit-worker.cjs');
+const { createMbiyoWebhookRoutes } = require('./mbiyo-webhook-routes.cjs');
+const { createMbiyoDepositWorker } = require('./mbiyo-deposit-worker.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
 const { createMobileMoneyPayoutService } = require('./mobile-money-payout-service.cjs');
@@ -161,15 +163,23 @@ function createServer({
     onError: onAuthRecoveryError,
   });
   const handleUserData = createUserDataRoutes({ db, sessionService });
-  const depositStatusRoutes = createDepositStatusRoutes({ db, sessionService });
+  const mbiyoWebhookRoutes = createMbiyoWebhookRoutes({
+    db, env, sessionSecret: env.SESSION_SECRET || '', fetchImpl,
+  });
+  const depositStatusRoutes = createDepositStatusRoutes({
+    db, sessionService, reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
+  });
   const paydunyaInvoiceRoutes = createPaydunyaInvoiceRoutes({
     db,
     sessionService,
     sessionSecret: env.SESSION_SECRET || '',
     env,
+    reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
   });
   const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
     db, env, sessionService,
+    reconcileMbiyoDeposit: mbiyoWebhookRoutes.reconcileDepositById,
+    finalizeMbiyoDeposit: mbiyoWebhookRoutes.finalizeDepositById,
   });
   const stripeDepositRoutes = createStripeDepositRoutes({
     db, sessionService, env,
@@ -202,6 +212,14 @@ function createServer({
     refreshCryptoLinkPayment: cryptoCatalog.refreshCryptoLinkPayment,
     finalizeLinkMobileMoney: paydunyaInvoiceRoutes.finalizeLinkMobileMoney,
     settlePaydunyaDepositById: paydunyaWebhookRoutes.settleDepositById,
+    settleMobileMoneyDepositById: async id => {
+      const deposit = await db.collection('momo_deposits').find_one(
+        { id: String(id) }, { _id: 0 },
+      );
+      return deposit?.provider === 'mbiyo'
+        ? mbiyoWebhookRoutes.reconcileDepositById(String(id), { force: true })
+        : paydunyaWebhookRoutes.settleDepositById(String(id));
+    },
   });
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
@@ -266,6 +284,10 @@ function createServer({
     db,
     env,
     reconcileOrder: afriBaPayWebhookRoutes.reconcileOrder,
+  }) : null;
+  const mbiyoDepositWorker = typeof db?.collection === 'function' ? createMbiyoDepositWorker({
+    db,
+    reconcileOrder: mbiyoWebhookRoutes.reconcileOrder,
   }) : null;
   const adminPushRoutes = createAdminPushRoutes({
     db, sessionService, env,
@@ -392,6 +414,7 @@ function createServer({
       if (await integrationDocumentationRoutes.handleRoute(req, res)) return;
       if (await paydunyaDisbursementProbeRoutes.handleRoute(req, res)) return;
       if (await afriBaPayWebhookRoutes.handleRoute(req, res)) return;
+      if (await mbiyoWebhookRoutes.handleRoute(req, res)) return;
       if (await fedapayWebhookRoutes.handleRoute(req, res)) return;
       if (await webhookProbeRoutes.handleRoute(req, res)) return;
       if (await adminPushRoutes(req, res)) return;
@@ -408,6 +431,22 @@ function createServer({
     }
   });
   appServer.afriBaPayDepositWorker = afriBaPayDepositWorker;
+  appServer.mbiyoDepositWorker = mbiyoDepositWorker;
+  appServer.once('listening', async () => {
+    try {
+      const provider = await db?.collection?.('settings')?.find_one?.(
+        { id: 'payment_provider_mbiyo' }, { _id: 0 },
+      );
+      const hasApiKey = Boolean(provider?.api_key_encrypted || provider?.secret_key_encrypted
+        || env.MBIYO_API_KEY || env.MBIYO_SECRET_KEY);
+      const hasWebhookSecret = Boolean(provider?.webhook_secret_encrypted
+        || provider?.webhook_secret || env.MBIYO_WEBHOOK_SECRET);
+      if (provider?.enabled && hasApiKey && hasWebhookSecret) mbiyoDepositWorker?.start();
+    } catch {
+      // Diagnostic mode may start before the payment-provider tables are available.
+    }
+  });
+  appServer.once('close', () => mbiyoDepositWorker?.stop());
   return appServer;
 }
 

@@ -70,6 +70,17 @@ function publicMomoDeposit(deposit, now = Date.now()) {
   const flow = {
     ...(typeof rawFlow.kind === 'string' ? { kind: rawFlow.kind.slice(0, 64) } : {}),
     ...(flowInstructions ? { instructions: flowInstructions } : {}),
+    ...(typeof rawFlow.before_submit === 'boolean'
+      ? { before_submit: rawFlow.before_submit } : {}),
+    ...(typeof rawFlow.otp_required === 'boolean'
+      ? { otp_required: rawFlow.otp_required } : {}),
+    ...(['ussd_code', 'ussd_template', 'action_label', 'otp_label'].reduce((result, key) => {
+      const value = plainText(rawFlow[key]);
+      if (value) result[key] = value.slice(0, 180);
+      return result;
+    }, {})),
+    ...(Array.isArray(rawFlow.steps)
+      ? { steps: rawFlow.steps.map(plainText).filter(Boolean).slice(0, 8) } : {}),
   };
   const redirectUrl = safeRedirect(deposit.redirect_url || deposit.checkout_url);
   const directPaydunya = deposit.provider === 'paydunya'
@@ -142,10 +153,11 @@ function publicCryptoDeposit(deposit) {
   return result;
 }
 
-function createDepositStatusRoutes({ db, sessionService }) {
+function createDepositStatusRoutes({
+  db, sessionService, reconcileMbiyoDepositById,
+}) {
   async function handleRoute(req, res) {
-    // These handlers expose persisted owner-scoped snapshots only. They do not
-    // poll providers or settle funds; reconciliation/webhook ports remain separate.
+    // Owner-check first; Mbiyo status reads are throttled by the reconciler.
     if (req.method !== 'GET') return false;
     const url = new URL(req.url || '/', 'http://localhost');
     const pendingMomo = url.pathname === '/api/deposits/mobile-money/pending';
@@ -251,6 +263,13 @@ function createDepositStatusRoutes({ db, sessionService }) {
           reply(res, 404, { detail: 'Dépôt introuvable.' });
           return true;
         }
+      }
+      if (deposit?.provider === 'mbiyo' && deposit.status === 'pending'
+          && typeof reconcileMbiyoDepositById === 'function') {
+        try { await reconcileMbiyoDepositById(deposit.id); } catch { /* status snapshot stays available */ }
+        deposit = await db.collection('momo_deposits').find_one(
+          { id: deposit.id, user_id: userId }, { _id: 0 },
+        ) || deposit;
       }
       reply(res, 200, deposit ? publicMomoDeposit(deposit) : null);
     } catch (error) {

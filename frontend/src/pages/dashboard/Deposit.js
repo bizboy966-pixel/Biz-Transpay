@@ -659,8 +659,7 @@ export function MobileMoneyForm({ onSuccess }) {
     totalToPay,
     creditedAmount,
   } = mobileMoneyFeePreview(baseAmount, selectedOp, feeBearer);
-  const requiresMaliUssdAuthorization = country === 'ML'
-    && paymentFlow.kind === 'ussd'
+  const requiresPreSubmitUssdAuthorization = paymentFlow.kind === 'ussd'
     && paymentFlow.before_submit === true;
   const paymentFlowAuthorizationKey = [
     country, operator, phone.trim(), baseAmount, totalToPay,
@@ -707,7 +706,7 @@ export function MobileMoneyForm({ onSuccess }) {
       toast.error(`Saisissez ${paymentFlow.otp_label || 'le code de paiement'} avant de continuer.`);
       return;
     }
-    if (requiresMaliUssdAuthorization && !paymentFlowAuthorized) {
+    if (requiresPreSubmitUssdAuthorization && !paymentFlowAuthorized) {
       toast.error('Composez le code USSD et autorisez la demande sur votre téléphone avant de continuer.');
       return;
     }
@@ -977,7 +976,7 @@ export function MobileMoneyForm({ onSuccess }) {
          )}
       </div>
       <PaymentFlowCard flow={paymentFlow} amount={totalToPay} currency={currency} />
-      {requiresMaliUssdAuthorization && (
+      {requiresPreSubmitUssdAuthorization && (
         <label className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-left text-[11px] leading-relaxed text-amber-900">
           <input
             type="checkbox"
@@ -985,10 +984,10 @@ export function MobileMoneyForm({ onSuccess }) {
             onChange={(event) => setAuthorizedPaymentFlowKey(
               event.target.checked ? paymentFlowAuthorizationKey : '',
             )}
-            data-testid="momo-mali-ussd-authorized"
+            data-testid="momo-ussd-authorized"
             className="mt-0.5 accent-amber-600"
           />
-          <span>J’ai composé le code USSD affiché et suivi le menu Orange sur le téléphone associé au numéro indiqué.</span>
+          <span>J’ai composé le code USSD affiché et suivi le menu sur le téléphone associé au numéro indiqué.</span>
         </label>
       )}
       {flowNeedsOtp && (
@@ -1009,12 +1008,12 @@ export function MobileMoneyForm({ onSuccess }) {
       )}
       <button type="submit"
         disabled={loading || (flowNeedsOtp && !otp.trim())
-          || (requiresMaliUssdAuthorization && !paymentFlowAuthorized)}
+          || (requiresPreSubmitUssdAuthorization && !paymentFlowAuthorized)}
         data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
         {loading
           ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</>
-          : <>{requiresMaliUssdAuthorization
+          : <>{requiresPreSubmitUssdAuthorization
             ? (paymentFlow.action_label || 'J’ai autorisé la demande, lancer le paiement')
             : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
       </button>

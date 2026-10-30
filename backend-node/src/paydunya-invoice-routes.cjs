@@ -10,6 +10,7 @@ const {
 } = require('./supported-currencies.cjs');
 const { decryptSetting } = require('./provider-settings.cjs');
 const { loadAfriBaPayConfig, submitAfriBaPayin } = require('./afribapay-payin.cjs');
+const mbiyoPayin = require('./mbiyo-payin.cjs');
 const {
   paydunyaModeEnabled, preferredPaydunyaPayinMode,
 } = require('./paydunya-payin-capabilities.cjs');
@@ -66,16 +67,20 @@ function selectOperator(catalog, country, requestedCode, provider = 'paydunya') 
       && row.active !== false && row.enabled !== false
       && row.visible !== false && row.archived !== true
   ));
+  const codes = row => [row.code, row.public_code, row.operator, row.endpoint_slug]
+    .map(value => {
+      const code = String(value || '').toLowerCase();
+      return provider === 'mbiyo' ? code.replace(/^mbiyo_/, '') : code;
+    });
+  const requestedMbiyoCode = provider === 'mbiyo'
+    ? requested.toLowerCase().replace(/^mbiyo_/, '') : requested.toLowerCase();
   const exact = eligible.find(row => (
-    [row.code, row.public_code, row.operator, row.endpoint_slug].some(value => (
-      String(value || '').toLowerCase() === requested.toLowerCase()
-    ))
+    codes(row).some(value => value === requestedMbiyoCode)
   ));
   if (exact) return exact;
   const canonical = canonicalOperator(requested);
   return eligible.find(row => (
-    [row.code, row.public_code, row.operator, row.endpoint_slug]
-      .some(value => canonicalOperator(value) === canonical)
+    codes(row).some(value => canonicalOperator(value) === canonical)
   )) || null;
 }
 
@@ -118,8 +123,9 @@ function calculateFees(amount, operator, feeBearer) {
   };
 }
 
-function requestFingerprint(body, flow, fees, phone) {
+function requestFingerprint(body, flow, fees, phone, provider = 'paydunya') {
   const canonical = JSON.stringify({
+    ...(provider === 'mbiyo' ? { provider } : {}),
     flow,
     amount: fees.requested_amount,
     currency: fees.currency,
@@ -132,6 +138,45 @@ function requestFingerprint(body, flow, fees, phone) {
     return_url: String(body.return_url || ''),
   });
   return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+function loadMbiyoCredentials(config, sessionSecret, env) {
+  const apiKey = decryptSetting(config, 'api_key', sessionSecret)
+    || decryptSetting(config, 'secret_key', sessionSecret)
+    || String(env.MBIYO_API_KEY || env.MBIYO_SECRET_KEY || '').trim();
+  const webhookSecret = decryptSetting(config, 'webhook_secret', sessionSecret)
+    || String(env.MBIYO_WEBHOOK_SECRET || '').trim();
+  if (!config?.enabled || !apiKey || !webhookSecret) {
+    throw httpError(503, 'Mbiyo est activé mais sa configuration de paiement est incomplète.');
+  }
+  return {
+    apiKey,
+    webhookSecret,
+    baseUrl: config.base_url || env.MBIYO_BASE_URL || mbiyoPayin.BASE_URL,
+  };
+}
+
+function calculateMbiyoFees(amount, operator, feeBearer, country) {
+  const processedAmount = mbiyoPayin.normalizeAmount(country, amount);
+  if (!Number.isSafeInteger(processedAmount) || processedAmount <= 0) {
+    throw httpError(422, 'Montant invalide pour ce prestataire.');
+  }
+  const fees = calculateFees(processedAmount, operator, feeBearer);
+  if (fees.fee_bearer === 'client') {
+    const providerSubmittedAmount = mbiyoPayin.normalizeAmount(country, fees.charged_amount);
+    const roundedFee = Math.max(0, providerSubmittedAmount - processedAmount);
+    const gatewayFee = Math.min(fees.gateway_fee, roundedFee);
+    Object.assign(fees, {
+      charged_amount: providerSubmittedAmount,
+      gateway_fee: gatewayFee,
+      platform_fee: roundedFee - gatewayFee,
+      total_fee: roundedFee,
+      wallet_credit_amount: processedAmount,
+    });
+  } else {
+    fees.charged_amount = processedAmount;
+  }
+  return { fees, processedAmount };
 }
 
 function getInvoiceToken(payload) {
@@ -239,7 +284,7 @@ async function invokePayDunya({ config, credentials, invoice, fetchImpl }) {
 
 function createPaydunyaInvoiceRoutes({
   db, sessionService, sessionSecret = '', env = process.env,
-  fetchImpl = globalThis.fetch,
+  fetchImpl = globalThis.fetch, reconcileMbiyoDepositById,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -260,16 +305,18 @@ function createPaydunyaInvoiceRoutes({
       let provider = 'paydunya';
       let selected = null;
       let afriConfig = null;
+      let mbiyoCredentials = null;
       let settings = await db.collection('settings').find_one(
         { id: 'payment_provider_paydunya' }, { _id: 0 },
       );
-      const amount = Number(body.amount);
+      const inputAmount = Number(body.amount);
+      let amount = inputAmount;
       const country = String(body.country || '').trim().toUpperCase();
       const operatorCode = String(body.operator || '').trim();
       const fullName = String(body.full_name || '').trim();
       const email = String(body.email || '').trim().toLowerCase();
-      const phone = String(body.phone_number || '').replace(/[\s().-]/g, '');
-      if (!Number.isSafeInteger(amount) || amount <= 0
+      let phone = String(body.phone_number || '').replace(/[\s().-]/g, '');
+      if (!Number.isSafeInteger(inputAmount) || inputAmount <= 0
           || !/^[A-Z]{2}$/.test(country) || !operatorCode
           || fullName.length < 2 || fullName.length > 160
           || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
@@ -280,6 +327,23 @@ function createPaydunyaInvoiceRoutes({
       if (genericMobileMoney) {
         const paydunyaSelected = selectOperator(
           settings?.catalog, country, operatorCode, 'paydunya',
+        );
+        const mbiyoConfig = await db.collection('settings').find_one(
+          { id: 'payment_provider_mbiyo' }, { _id: 0 },
+        );
+        const mbiyoSelected = selectOperator(
+          mbiyoConfig?.catalog, country, operatorCode, 'mbiyo',
+        );
+        const mbiyoApiConfigured = Boolean(
+          mbiyoConfig?.api_key_encrypted || mbiyoConfig?.secret_key_encrypted
+          || env.MBIYO_API_KEY || env.MBIYO_SECRET_KEY,
+        );
+        const mbiyoWebhookConfigured = Boolean(
+          mbiyoConfig?.webhook_secret_encrypted || mbiyoConfig?.webhook_secret
+          || env.MBIYO_WEBHOOK_SECRET,
+        );
+        const mbiyoReady = Boolean(
+          mbiyoConfig?.enabled && mbiyoSelected && mbiyoApiConfigured && mbiyoWebhookConfigured,
         );
         afriConfig = await db.collection('settings').find_one(
           { id: 'payment_provider_afribapay' }, { _id: 0 },
@@ -298,11 +362,16 @@ function createPaydunyaInvoiceRoutes({
           && preferredPaydunyaMode,
         );
 
-        // Match the public catalogue: an unavailable PayDunya route cannot
-        // shadow a ready AfriBaPay route for the same operator.
+        // Match the public catalogue: unavailable providers cannot shadow a
+        // ready route for the same country, operator, and currency.
         if (paydunyaReady) {
           flow = preferredPaydunyaMode;
           selected = paydunyaSelected;
+        } else if (mbiyoReady) {
+          provider = 'mbiyo';
+          settings = mbiyoConfig;
+          selected = mbiyoSelected;
+          flow = 'mbiyo';
         } else if (afriConfig?.enabled && afriSelected) {
           provider = 'afribapay';
           settings = afriConfig;
@@ -328,7 +397,7 @@ function createPaydunyaInvoiceRoutes({
         }
         selected ||= selectOperator(settings.catalog, country, operatorCode, 'paydunya');
         if (!selected) throw httpError(400, 'Opérateur non disponible pour ce pays.');
-      } else {
+      } else if (provider === 'afribapay') {
         const depositConfig = await db.collection('settings').find_one(
           { id: 'deposit_config' }, { _id: 0 },
         );
@@ -346,6 +415,19 @@ function createPaydunyaInvoiceRoutes({
         if (!String(selected.operator || '').trim()) {
           throw httpError(503, 'AfriBaPay ne fournit pas le code prestataire de cet opérateur.');
         }
+      } else {
+        const depositConfig = await db.collection('settings').find_one(
+          { id: 'deposit_config' }, { _id: 0 },
+        );
+        if (depositConfig?.mobile_money?.enabled !== true) {
+          throw httpError(503, 'Les dépôts Mobile Money sont désactivés.');
+        }
+        if (!selected || !settings?.enabled) {
+          throw httpError(400, 'Opérateur Mbiyo non disponible pour ce pays.');
+        }
+        mbiyoCredentials = loadMbiyoCredentials(settings, sessionSecret, env);
+        amount = mbiyoPayin.normalizeAmount(country, inputAmount);
+        phone = mbiyoPayin.normalizePhoneNumber(country, phone);
       }
       const currency = String(selected.currency || 'XOF').toUpperCase();
       if (!FIAT_WALLET_CURRENCY_SET.has(currency)
@@ -359,8 +441,10 @@ function createPaydunyaInvoiceRoutes({
       if (amount < minimum || (maximum > 0 && amount > maximum)) {
         throw httpError(422, `Montant autorisé : ${minimum} à ${maximum || 'sans maximum'} ${currency}.`);
       }
-      const fees = calculateFees(amount, selected, body.fee_bearer);
-      const fingerprint = requestFingerprint(body, flow, fees, phone);
+      const fees = provider === 'mbiyo'
+        ? calculateMbiyoFees(amount, selected, body.fee_bearer, country).fees
+        : calculateFees(amount, selected, body.fee_bearer);
+      const fingerprint = requestFingerprint(body, flow, fees, phone, provider);
       const suppliedIdempotencyKey = String(
         req.headers?.['idempotency-key'] || body.idempotency_key || '',
       ).trim();
@@ -379,7 +463,8 @@ function createPaydunyaInvoiceRoutes({
         if (existing.request_fingerprint !== fingerprint) {
           throw httpError(409, 'Cette clé d’idempotence est déjà liée à une autre demande.');
         }
-        if (existing.initiation_state !== 'ready') {
+        if (existing.initiation_state !== 'ready'
+            && !(existing.provider === 'mbiyo' && existing.status === 'pending')) {
           throw httpError(409, 'La demande existe déjà et nécessite une vérification avant nouvelle tentative.');
         }
         const result = {
@@ -397,7 +482,19 @@ function createPaydunyaInvoiceRoutes({
           created_at: existing.created_at,
           pending_expires_at: existing.pending_expires_at,
         };
-        if (existing.provider === 'afribapay') {
+        if (existing.provider === 'mbiyo') {
+          result.payment_kind = existing.redirect_url ? 'redirect' : 'phone';
+          result.payment_flow = existing.payment_flow || {};
+          result.instructions = existing.instructions || [];
+          result.auth_mode = existing.auth_mode || null;
+          result.otp_required = Boolean(existing.otp_required || existing.auth_mode === 'pin');
+          result.prompt_sent = !existing.submission_unknown;
+          result.submission_unknown = Boolean(existing.submission_unknown);
+          result.message = existing.submission_unknown
+            ? 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié ici.'
+            : 'Suivez les instructions sur votre téléphone pour confirmer le paiement.';
+          if (existing.redirect_url) result.redirect_url = existing.redirect_url;
+        } else if (existing.provider === 'afribapay') {
           result.payment_kind = existing.redirect_url ? 'redirect' : 'phone';
           result.payment_flow = existing.payment_flow || {};
           result.prompt_sent = true;
@@ -447,13 +544,22 @@ function createPaydunyaInvoiceRoutes({
         ? `${origin}/api/webhooks/afribapay?ref=${encodeURIComponent(depositId)}`
         : '';
       const paymentFlow = selected.payment_flow && typeof selected.payment_flow === 'object'
-        && !Array.isArray(selected.payment_flow) ? selected.payment_flow : {};
+        && !Array.isArray(selected.payment_flow)
+        ? selected.payment_flow
+        : provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
+          ...selected, country, network: selected.network || operatorCode,
+        }, fees.charged_amount) : {};
       const userNameParts = fullName.split(/\s+/, 2);
       const document = {
         id: depositId,
         user_id: userId,
         amount,
         requested_amount: fees.requested_amount,
+        ...(provider === 'mbiyo' ? {
+          user_requested_amount: inputAmount,
+          processed_amount: amount,
+          provider_submitted_amount: fees.charged_amount,
+        } : {}),
         ...(provider === 'afribapay' ? {
           processed_amount: amount,
           provider_submitted_amount: fees.charged_amount,
@@ -484,13 +590,22 @@ function createPaydunyaInvoiceRoutes({
         request_fingerprint: fingerprint,
         status: 'pending',
         provider,
-        provider_mode: provider === 'afribapay' ? afriConfig.mode : config.mode,
+        provider_mode: provider === 'afribapay' ? afriConfig.mode
+          : provider === 'mbiyo' ? (settings.mode === 'live' ? 'live' : 'test')
+            : config.mode,
         ...(provider === 'afribapay' ? {
           afribapay_order_id: depositId,
           provider_status: 'pending',
           notify_url: notifyUrl,
           payment_flow: paymentFlow,
           afribapay_submission_phase: 'not_submitted',
+        } : provider === 'mbiyo' ? {
+          mbiyo_order_id: depositId,
+          provider_status: 'pending',
+          notify_url: `${origin}/api/webhooks/mbiyo?ref=${encodeURIComponent(depositId)}`,
+          payment_flow: paymentFlow,
+          otp_required: Boolean(paymentFlow.otp_required),
+          challenge_status: paymentFlow.otp_required ? 'required' : 'pending',
         } : { paydunya_flow: flow }),
         initiation_state: 'initiating',
         ...(req[INTEGRATION_LINK_PAYMENT] ? {
@@ -507,9 +622,149 @@ function createPaydunyaInvoiceRoutes({
         } : {}),
         created_at: now,
         pending_expires_at: provider === 'afribapay'
-          ? null : new Date(Date.now() + 30 * 60_000).toISOString(),
+          ? null : new Date(Date.now() + (provider === 'mbiyo' ? 10 : 30) * 60_000).toISOString(),
       };
       await deposits.insert_one(document);
+
+      if (provider === 'mbiyo') {
+        await deposits.update_one({ id: depositId, user_id: userId }, { $set: {
+          mbiyo_submission_phase: 'dispatching',
+          updated_at: new Date().toISOString(),
+        } });
+        let providerResponse;
+        try {
+          const providerPhone = mbiyoPayin.normalizePhoneNumber(country, phone);
+          const metadata = {
+            network: String(selected.network || canonicalOperator(operatorCode)).toLowerCase(),
+            phone_number: providerPhone,
+            country_code: country,
+          };
+          if (paymentFlow.before_submit && paymentFlow.otp_required && body.otp) {
+            metadata.om_otp = String(body.otp).trim().slice(0, 32);
+          }
+          providerResponse = await mbiyoPayin.requestMbiyo({
+            apiKey: mbiyoCredentials.apiKey,
+            baseUrl: mbiyoCredentials.baseUrl,
+            fetchImpl,
+            method: 'POST',
+            path: 'merchant/payin',
+            body: {
+              amount: fees.charged_amount,
+              currency,
+              payment_method: 'mobile_money',
+              order_id: depositId,
+              callback_url: document.notify_url,
+              metadata,
+            },
+          });
+        } catch (error) {
+          const rejected = Number(error.providerStatusCode) > 0
+            && Number(error.providerStatusCode) < 500;
+          const updatedAt = new Date().toISOString();
+          await deposits.update_one({ id: depositId, user_id: userId, status: 'pending' }, {
+            $set: {
+              status: rejected ? 'failed' : 'pending',
+              initiation_state: rejected ? 'rejected' : 'unknown',
+              initiation_error: rejected ? 'provider_rejected' : 'provider_outcome_unknown',
+              submission_unknown: !rejected,
+              provider_status: rejected ? 'rejected' : 'unknown',
+              mbiyo_submission_phase: rejected ? 'rejected' : 'outcome_unknown',
+              ...(rejected ? {} : { next_reconcile_at: null }),
+              ...(rejected ? { failed_reason: 'provider_rejected' } : {}),
+              updated_at: updatedAt,
+            },
+          });
+          if (rejected) throw httpError(400, 'Mbiyo a refusé la demande de dépôt.');
+          reply(res, 200, {
+            id: depositId,
+            status: 'pending',
+            amount: fees.requested_amount,
+            requested_amount: inputAmount,
+            charged_amount: fees.charged_amount,
+            gateway_fee: fees.gateway_fee,
+            platform_fee: fees.platform_fee,
+            total_fee: fees.total_fee,
+            fee_bearer: fees.fee_bearer,
+            currency,
+            payment_kind: 'phone',
+            payment_flow: paymentFlow,
+            submission_unknown: true,
+            prompt_sent: false,
+            message: 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié automatiquement.',
+            created_at: now,
+            pending_expires_at: document.pending_expires_at,
+          });
+          return true;
+        }
+
+        const status = mbiyoPayin.statusValue(providerResponse) || 'pending';
+        const providerId = mbiyoPayin.transactionId(providerResponse);
+        const fields = mbiyoPayin.mbiyoResponseFields(providerResponse);
+        if (!fields.instructions.length && !fields.redirect_url) {
+          fields.instructions = [
+            'Validez la notification Mobile Money reçue sur votre téléphone. Le statut sera vérifié automatiquement.',
+          ];
+        }
+        const responseIsFailed = mbiyoPayin.FAILURE_STATUSES.has(status);
+        const ambiguousResponse = !providerId && !responseIsFailed;
+        const receivedAt = new Date().toISOString();
+        await deposits.update_one({ id: depositId, user_id: userId }, { $set: {
+          ...fields,
+          ...(providerId ? {
+            mbiyo_transaction_id: providerId,
+            provider_transaction_id: providerId,
+            provider_reference: providerId,
+            provider_binding_verified: true,
+          } : {}),
+          status: responseIsFailed ? 'failed' : 'pending',
+          provider_status: status,
+          initiation_state: ambiguousResponse ? 'unknown' : 'ready',
+          submission_unknown: ambiguousResponse,
+          mbiyo_submission_phase: ambiguousResponse
+            ? 'response_without_transaction_id' : providerId ? 'provider_id_received' : 'rejected',
+          otp_required: Boolean(fields.auth_mode === 'pin' || paymentFlow.otp_required),
+          challenge_status: fields.auth_mode === 'pin' ? 'required' : 'pending',
+          mbiyo_response_received_at: receivedAt,
+          ...(!ambiguousResponse && !responseIsFailed
+            ? { next_reconcile_at: new Date(Date.now() + 10_000).toISOString() }
+            : { next_reconcile_at: null }),
+          ...(responseIsFailed ? { failed_reason: 'provider_failed' } : {}),
+          updated_at: receivedAt,
+        } });
+
+        if (status && mbiyoPayin.SUCCESS_STATUSES.has(status) && providerId
+            && typeof reconcileMbiyoDepositById === 'function') {
+          try {
+            await reconcileMbiyoDepositById(depositId, { force: true });
+          } catch { /* worker retries status reads */ }
+        }
+        const fresh = await deposits.find_one({ id: depositId, user_id: userId }, { _id: 0 })
+          || document;
+        const result = {
+          ...require('./deposit-status-routes.cjs').publicMomoDeposit(fresh),
+          amount: fees.requested_amount,
+          requested_amount: inputAmount,
+          charged_amount: fees.charged_amount,
+          gateway_fee: fees.gateway_fee,
+          platform_fee: fees.platform_fee,
+          total_fee: fees.total_fee,
+          fee_bearer: fees.fee_bearer,
+          payment_kind: fields.redirect_url ? 'redirect' : 'phone',
+          payment_flow: paymentFlow,
+          prompt_sent: Boolean(providerId && !responseIsFailed),
+          submission_unknown: ambiguousResponse,
+          message: fresh.status === 'approved'
+            ? 'Paiement confirmé et portefeuille crédité.'
+            : responseIsFailed
+              ? 'Le prestataire a refusé le paiement.'
+              : ambiguousResponse
+                ? 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié automatiquement.'
+                : 'Suivez les instructions sur votre téléphone pour confirmer le paiement.',
+        };
+        if (fields.redirect_url) result.redirect_url = fields.redirect_url;
+        reply(res, 200, result);
+        return true;
+      }
 
       if (provider === 'afribapay') {
         const providerPayload = {

@@ -190,7 +190,7 @@ async function releaseSingleUseClaim(db, payment) {
 function createPaymentLinkRoutes({
   db, sessionService, createLinkMobileMoneyDeposit, createLinkCryptoPaymentIntent,
   refreshCryptoLinkPayment, verifyBot, settlePaydunyaDepositById,
-  finalizeLinkMobileMoney, env = process.env,
+  settleMobileMoneyDepositById, finalizeLinkMobileMoney, env = process.env,
 }) {
   async function handlePaymentLinks(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -307,8 +307,11 @@ function createPaymentLinkRoutes({
           ) || payment;
         }
         if (payment.method === 'mobile_money' && payment.status === 'pending'
-            && payment.momo_deposit_id && typeof settlePaydunyaDepositById === 'function') {
-          const deposit = await settlePaydunyaDepositById(payment.momo_deposit_id);
+            && payment.momo_deposit_id
+            && (typeof settleMobileMoneyDepositById === 'function'
+              || typeof settlePaydunyaDepositById === 'function')) {
+          const settleDeposit = settleMobileMoneyDepositById || settlePaydunyaDepositById;
+          const deposit = await settleDeposit(payment.momo_deposit_id);
           if (deposit?.status === 'approved') {
             await db.collection('link_payments').update_one(
               { id: paymentId, status: 'pending' },

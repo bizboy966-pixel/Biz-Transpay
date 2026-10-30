@@ -5,6 +5,7 @@ const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
 const { paydunyaPayinReady } = require('./paydunya-payin-capabilities.cjs');
+const mbiyoPayin = require('./mbiyo-payin.cjs');
 const CRYPTO_FEE_ASSETS = [
   ['USDC.POLYGON', 'USDC', 'POLYGON'], ['USDC.SOL', 'USDC', 'SOL'],
   ['USDC.BEP20', 'USDC', 'BEP20'], ['USDC.ERC20', 'USDC', 'ERC20'],
@@ -455,7 +456,9 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
         const mbiyoConfigured = Boolean(
           mbiyo?.enabled
           && (mbiyo.secret_key_encrypted || mbiyo.api_key_encrypted
-            || env.MBIYO_SECRET_KEY || env.MBIYO_API_KEY),
+            || env.MBIYO_SECRET_KEY || env.MBIYO_API_KEY)
+          && (mbiyo.webhook_secret_encrypted || mbiyo.webhook_secret
+            || env.MBIYO_WEBHOOK_SECRET),
         );
         const mbiyoCatalog = mbiyoConfigured
           ? publicFeeProviderCatalog((mbiyo.catalog || []).filter(operator => (
@@ -506,11 +509,18 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
           settings.find_one({ id: 'payment_provider_afribapay' }, { _id: 0 }),
           settings.find_one({ id: 'transfer_config' }, { _id: 0 }),
         ]);
+        const mbiyoConfigured = Boolean(
+          mbiyo?.enabled
+          && (mbiyo.secret_key_encrypted || mbiyo.api_key_encrypted
+            || env.MBIYO_SECRET_KEY || env.MBIYO_API_KEY)
+          && (mbiyo.webhook_secret_encrypted || mbiyo.webhook_secret
+            || env.MBIYO_WEBHOOK_SECRET),
+        );
         const fees = Array.isArray(depositConfig?.mobile_money?.operators)
           ? depositConfig.mobile_money.operators : [];
         const providerConfigs = [
           { name: 'paydunya', config: paydunya },
-          ...(surface === 'public_link' ? [{ name: 'mbiyo', config: mbiyo }] : []),
+          { name: 'mbiyo', config: mbiyo },
           ...(surface === 'public_link' ? [] : [{ name: 'afribapay', config: afribapay }]),
         ];
         const grouped = new Map();
@@ -518,14 +528,17 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
         for (const { name, config } of providerConfigs) {
           const configured = name === 'paydunya'
             ? paydunyaPayinReady(config, env)
-            : providerConfigured(config, env, name);
+            : name === 'mbiyo' ? mbiyoConfigured
+              : providerConfigured(config, env, name);
           if (!configured) continue;
           if (name === 'afribapay' && depositConfig?.mobile_money?.enabled !== true) continue;
           for (const raw of Array.isArray(config.catalog) ? config.catalog : []) {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)
                 || raw.active === false || raw.archived === true || raw.hidden === true) continue;
             const country = String(raw.country || '').trim().toUpperCase();
-            const code = String(raw.public_code || raw.code || '').trim();
+            const internalCode = String(raw.public_code || raw.code || '').trim();
+            const code = name === 'mbiyo'
+              ? internalCode.replace(/^mbiyo_/i, '') : internalCode;
             const currency = String(raw.currency || 'XOF').trim().toUpperCase();
             if (!/^[A-Z]{2,3}$/.test(country) || !/^[A-Za-z0-9_-]{1,64}$/.test(code)
                 || !FIAT_WALLET_CURRENCY_SET.has(currency)
@@ -554,7 +567,11 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
               min: Math.max(0, Number(raw.min ?? feeEntry?.min ?? 100) || 0),
               max: Number(raw.max ?? feeEntry?.max ?? 0) || null,
               payment_flow: raw.payment_flow && typeof raw.payment_flow === 'object'
-                && !Array.isArray(raw.payment_flow) ? raw.payment_flow : {},
+                && !Array.isArray(raw.payment_flow)
+                ? raw.payment_flow
+                : name === 'mbiyo' ? mbiyoPayin.paymentFlow({
+                  ...raw, country, network: raw.network || code,
+                }) : {},
             };
             if (!grouped.has(country)) {
               grouped.set(country, {

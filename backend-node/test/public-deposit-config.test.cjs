@@ -41,6 +41,7 @@ function setup({
     {
       id: 'payment_provider_mbiyo',
       enabled: true, api_key_encrypted: 'private-api-key',
+      webhook_secret_encrypted: 'private-webhook-secret',
       catalog: [
         { country: 'BF', country_label: 'Burkina Faso', code: 'mbiyo_moov', name: 'Moov Burkina', currency: 'XOF', active: true },
       ],
@@ -99,8 +100,8 @@ test('deposit config returns grouped active catalogs, fees and the public-link p
   const dashboard = await call(service, '/api/deposits/config');
   assert.equal(dashboard.status, 200);
   assert.equal(dashboard.body.mobile_money_enabled, true);
-  assert.equal(dashboard.body.catalog.length, 1);
-  assert.equal(dashboard.body.catalog.some(country => country.country === 'BF'), false);
+  assert.equal(dashboard.body.catalog.length, 2);
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'BF'), true);
   const togo = dashboard.body.catalog.find(country => country.country === 'TG');
   assert.equal(togo.operators[0].fee_pct, 1.5);
   assert.equal(togo.operators[0].fee_fixed, 10);
