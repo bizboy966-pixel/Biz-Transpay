@@ -2,7 +2,7 @@
 
 const { randomUUID, createHash } = require('node:crypto');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
-const { readJson } = require('./auth-session-routes.cjs');
+const { readJson } = require('./auth-login.cjs');
 
 const OLD_COLLECTIONS = [
   'api_keys', 'merchant_keys', 'merchant_webhooks',

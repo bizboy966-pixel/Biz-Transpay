@@ -139,14 +139,14 @@
       "path": "/api/admin/maintenance/legacy-merchant-api",
       "source": "backend/server.py",
       "handler": "preview_legacy_merchant_cleanup",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/admin/maintenance/legacy-merchant-api",
       "source": "backend/server.py",
       "handler": "execute_legacy_merchant_cleanup",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

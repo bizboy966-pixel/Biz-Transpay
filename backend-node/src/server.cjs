@@ -25,6 +25,7 @@ const { createCryptoCatalogRoutes } = require('./crypto-catalog-routes.cjs');
 const { createExchangeRoutes } = require('./exchange-routes.cjs');
 const { createTransferRoutes } = require('./transfer-routes.cjs');
 const { createAdminUserRoutes } = require('./admin-user-routes.cjs');
+const { createAdminLegacyMerchantRoutes } = require('./admin-legacy-merchant-routes.cjs');
 const { createAdminBalanceRoutes } = require('./admin-balance-routes.cjs');
 const { createAdminTransactionRoutes } = require('./admin-transaction-routes.cjs');
 const { createAdminPaymentLinkRoutes } = require('./admin-payment-link-routes.cjs');
@@ -168,9 +169,6 @@ function createServer({
   const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
     db, env, sessionService,
   });
-  const fedapayWebhookRoutes = createFedaPayWebhookRoutes({
-    db, env, notify: notifications.notify,
-  });
   const stripeDepositRoutes = createStripeDepositRoutes({
     db, sessionService, env,
   });
@@ -181,6 +179,9 @@ function createServer({
     db, sessionService, sessionSecret,
   });
   const notifications = createNotificationsPushRoutes({ db, sessionService, env });
+  const fedapayWebhookRoutes = createFedaPayWebhookRoutes({
+    db, env, notify: notifications.notify,
+  });
   const paydunyaDisbursementRoutes = createPaydunyaDisbursementRoutes({
     db,
     sessionSecret: env.SESSION_SECRET || '',
@@ -204,6 +205,9 @@ function createServer({
     db, sessionService, cryptoCatalog, env,
     notify: notifications.notify,
     notifyAdminKyc: telegramNotifier.enqueueKycEvent,
+  });
+  const adminLegacyMerchantRoutes = createAdminLegacyMerchantRoutes({
+    db, sessionService, env,
   });
   const adminBalanceRoutes = createAdminBalanceRoutes({
     db, sessionService, cryptoCatalog, env,
@@ -355,6 +359,7 @@ function createServer({
       if (await adminPaymentProviderRoutes.handleRoute(req, res)) return;
       if (await adminBalanceRoutes.handleRoute(req, res)) return;
       if (await adminUserRoutes.handleRoute(req, res)) return;
+      if (await adminLegacyMerchantRoutes.handleRoute(req, res)) return;
       if (await adminSettingsRoutes.handleRoute(req, res)) return;
       if (await adminStatisticsRoutes.handleRoute(req, res)) return;
       if (await adminFundsRoutes.handleRoute(req, res)) return;
