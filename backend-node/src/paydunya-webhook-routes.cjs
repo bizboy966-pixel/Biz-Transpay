@@ -1,12 +1,22 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { Readable } = require('node:stream');
 const { applyWalletOperation } = require('./wallet.cjs');
 const { loadCredentials } = require('./paydunya-invoice-routes.cjs');
 
 function reply(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
+}
+
+function redirect(res, location) {
+  res.writeHead(303, {
+    Location: location,
+    'Cache-Control': 'no-store',
+    'Content-Length': '0',
+  });
+  res.end();
 }
 
 function safeEqualHex(left, right) {
@@ -150,6 +160,39 @@ function providerReference(response, fallback) {
 function createPaydunyaWebhookRoutes({ db, env = process.env, fetchImpl = globalThis.fetch }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
+    if (req.method === 'GET' && url.pathname === '/api/deposits/paydunya/return') {
+      try {
+        const reference = String(url.searchParams.get('ref') || '').trim();
+        const providerToken = String(url.searchParams.get('token') || '').trim();
+        let deposit = reference
+          ? await db.collection('momo_deposits').find_one({
+            provider: 'paydunya', id: reference,
+          }, { _id: 0 })
+          : null;
+        if (!deposit && providerToken) {
+          deposit = await db.collection('momo_deposits').find_one({
+            provider: 'paydunya', paydunya_token: providerToken,
+          }, { _id: 0 });
+        }
+        if (!deposit) {
+          redirect(res, '/dashboard?paydunya=not_found');
+          return true;
+        }
+        if (deposit.status !== 'approved' && deposit.paydunya_token) {
+          await settleDepositById(String(deposit.id));
+          deposit = await db.collection('momo_deposits').find_one(
+            { id: String(deposit.id) }, { _id: 0 },
+          ) || deposit;
+        }
+        const outcome = deposit.status === 'approved'
+          ? 'completed'
+          : deposit.status === 'failed' ? 'failed' : 'pending';
+        redirect(res, `/dashboard?paydunya=${outcome}`);
+      } catch {
+        redirect(res, '/dashboard?paydunya=pending');
+      }
+      return true;
+    }
     if (req.method !== 'POST' || url.pathname !== '/api/webhooks/paydunya') return false;
 
     let deposit = null;
@@ -365,7 +408,38 @@ function createPaydunyaWebhookRoutes({ db, env = process.env, fetchImpl = global
     return true;
   }
 
-  return { handleRoute };
+  async function settleDepositById(depositId) {
+    const deposit = await db.collection('momo_deposits').find_one(
+      { id: String(depositId), provider: 'paydunya' }, { _id: 0 },
+    );
+    if (!deposit?.paydunya_token || deposit.status === 'approved') return deposit;
+    const settings = await db.collection('settings').find_one(
+      { id: 'payment_provider_paydunya' }, { _id: 0 },
+    );
+    if (!settings) return deposit;
+    const credentials = loadCredentials(settings, env.SESSION_SECRET || '', env);
+    const hash = crypto.createHash('sha512')
+      .update(credentials.master_key, 'utf8').digest('hex');
+    const payload = Buffer.from(JSON.stringify({
+      hash,
+      data: { invoice: { token: deposit.paydunya_token } },
+    }));
+    const internalRequest = Readable.from([payload]);
+    internalRequest.method = 'POST';
+    internalRequest.url = '/api/webhooks/paydunya';
+    internalRequest.headers = { 'content-type': 'application/json' };
+    const internalResponse = {
+      statusCode: 500,
+      writeHead(status) { this.statusCode = status; },
+      end(text) { this.body = text ? JSON.parse(text) : null; },
+    };
+    await handleRoute(internalRequest, internalResponse);
+    return db.collection('momo_deposits').find_one(
+      { id: String(depositId) }, { _id: 0 },
+    ) || deposit;
+  }
+
+  return { handleRoute, settleDepositById };
 }
 
 module.exports = {

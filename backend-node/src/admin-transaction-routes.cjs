@@ -3,6 +3,8 @@
 const { authorizeAdmin } = require('./admin-authorization.cjs');
 const { escapeRegex } = require('./admin-user-routes.cjs');
 const { enrichWalletSnapshot } = require('./user-data-routes.cjs');
+const { readJson } = require('./auth-login.cjs');
+const { applyWalletOperation } = require('./wallet.cjs');
 
 const TX_SEARCH_FIELDS = [
   'id', 'reference', 'provider_reference', 'external_reference', 'counterparty',
@@ -33,7 +35,35 @@ function reply(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function createAdminTransactionRoutes({ db, sessionService, env = process.env }) {
+function transactionWalletField(tx, user) {
+  const currency = String(tx.currency || '').toLowerCase();
+  const meta = tx.metadata || {};
+  const field = String(meta.wallet_field || meta.walletField || `balance_${currency}`);
+  if (!/^balance_[a-z0-9_]{2,40}$/.test(field)
+      || (!Object.hasOwn(user, field)
+        && !['balance_xof', 'balance_xaf', 'balance_usdt'].includes(field))) {
+    return null;
+  }
+  return field;
+}
+
+function adminLog(admin, action, tx, details, now) {
+  return {
+    id: `admin-tx:${action}:${tx.id}`,
+    admin_id: String(admin.id),
+    admin_username: String(admin.username || ''),
+    action,
+    target_user_id: String(tx.user_id || ''),
+    target_username: null,
+    details: { tx_id: String(tx.id), type: String(tx.type || ''), ...details },
+    created_at: now,
+  };
+}
+
+function createAdminTransactionRoutes({
+  db, sessionService, env = process.env, notify,
+  authorizeAdminImpl = authorizeAdmin,
+}) {
   async function handleRoute(req, res) {
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
@@ -42,21 +72,27 @@ function createAdminTransactionRoutes({ db, sessionService, env = process.env })
     const listRoute = url.pathname === '/api/admin/transactions';
     const logsRoute = url.pathname === '/api/admin/logs';
     const detailMatch = /^\/api\/admin\/transactions\/([^/]+)$/.exec(url.pathname);
+    const actionMatch = req.method === 'POST'
+      ? /^\/api\/admin\/transactions\/([^/]+)\/(approve|reject)$/.exec(url.pathname)
+      : null;
     if (!((req.method === 'GET' && (listRoute || conversionsRoute || logsRoute))
-        || (req.method === 'GET' && detailMatch))) {
+        || (req.method === 'GET' && detailMatch) || actionMatch)) {
       return false;
     }
 
-    const action = logsRoute ? 'read_admin_logs'
+    const action = actionMatch ? `admin_transaction_${actionMatch[2]}`
+      : logsRoute ? 'read_admin_logs'
       : conversionsRoute ? 'admin_conversions_list'
       : detailMatch ? 'admin_transaction_detail' : 'admin_transactions_list';
     let authorized;
     try {
-      authorized = await authorizeAdmin(req, {
+      authorized = await authorizeAdminImpl(req, {
         db, sessionService, env,
-        permission: logsRoute ? 'audit:read'
+        permission: actionMatch ? 'transactions:write'
+          : logsRoute ? 'audit:read'
           : conversionsRoute ? 'finance:read' : 'transactions:read',
         action,
+        ...(actionMatch ? { sensitive: true } : {}),
       });
     } catch (error) {
       reply(res, error.status || 500, {
@@ -67,6 +103,231 @@ function createAdminTransactionRoutes({ db, sessionService, env = process.env })
     void authorized;
 
     try {
+      if (actionMatch) {
+        const body = await readJson(req, 16 * 1024);
+        if (String(body.confirmation || '').trim() !== 'CONFIRMER') {
+          reply(res, 422, { detail: 'Confirmation requise.' });
+          return true;
+        }
+        const txId = decodeURIComponent(actionMatch[1]);
+        const tx = await db.collection('transactions').find_one({ id: txId }, { _id: 0 });
+        if (!tx) {
+          reply(res, 404, { detail: 'Transaction introuvable' });
+          return true;
+        }
+        if (tx.status !== 'pending') {
+          reply(res, 409, { detail: `Transaction déjà ${tx.status || 'traitée'}.` });
+          return true;
+        }
+        const admin = authorized.admin;
+        const now = new Date().toISOString();
+        const metadata = tx.metadata || {};
+        const type = String(tx.type || '').toLowerCase();
+        const direction = String(tx.direction || '').toLowerCase();
+        const amount = Number(tx.amount || 0);
+        if (!Number.isFinite(amount) || amount <= 0 || !tx.user_id) {
+          reply(res, 422, { detail: 'Transaction invalide.' });
+          return true;
+        }
+        const user = await db.collection('users').find_one(
+          { id: String(tx.user_id) }, { _id: 0 },
+        );
+        if (!user) {
+          reply(res, 404, { detail: 'Utilisateur introuvable.' });
+          return true;
+        }
+
+        const isApprove = actionMatch[2] === 'approve';
+        const isDeposit = type === 'deposit';
+        const isOutgoing = direction === 'out' || [
+          'withdrawal', 'transfer', 'exchange', 'payout', 'crypto_payout',
+        ].includes(type);
+        if (isApprove && isOutgoing) {
+          const kyc = await db.collection('kyc').find_one(
+            { user_id: String(tx.user_id) }, { _id: 0 },
+          );
+          const kycStatus = String(user.kyc_status || kyc?.status || '').toLowerCase();
+          if (!user.kyc_verified && !user.is_kyc_verified
+              && !['approved', 'verified', 'complete', 'completed'].includes(kycStatus)) {
+            reply(res, 403, { detail: 'KYC approuvé requis avant validation du retrait.' });
+            return true;
+          }
+        }
+
+        const providerOutcome = String(body.provider_outcome || '').trim();
+        const evidenceReference = String(body.provider_outcome_evidence_reference || '').trim();
+        if (providerOutcome && (
+          ![
+            'provider_confirmed_paid', 'operator_verified_manual_completion',
+            'provider_confirmed_not_paid', 'provider_confirmed_rejected',
+          ].includes(providerOutcome)
+          || evidenceReference.length > 240
+          || body.provider_outcome_attested !== true
+        )) {
+          reply(res, 422, { detail: 'Attestation prestataire invalide.' });
+          return true;
+        }
+
+        let walletResult = null;
+        let refunded = 0;
+        let operationId = '';
+        let field = '';
+        if (isApprove && isDeposit) {
+          field = transactionWalletField(tx, user);
+          const creditAmount = Number(metadata.amount_net ?? tx.amount);
+          if (!field || !Number.isFinite(creditAmount) || creditAmount <= 0) {
+            reply(res, 422, { detail: 'Portefeuille ou montant du dépôt invalide.' });
+            return true;
+          }
+          operationId = `manual-approve:${txId}`;
+          const log = adminLog(admin, 'tx_approve', tx, {
+            operation_id: operationId,
+            amount,
+            ...(providerOutcome ? {
+              provider_outcome: providerOutcome,
+              provider_outcome_evidence_reference: evidenceReference,
+              provider_outcome_attested: true,
+            } : {}),
+          }, now);
+          walletResult = await applyWalletOperation(db, {
+            userId: String(tx.user_id),
+            operationId,
+            direction: 'credit',
+            primaryField: field,
+            increments: { [field]: creditAmount },
+            ledger: {
+              id: `manual-approve-ledger:${txId}`,
+              user_id: String(tx.user_id),
+              type: 'deposit',
+              direction: 'in',
+              amount: creditAmount,
+              currency: String(tx.currency || 'XOF').toUpperCase(),
+              status: 'completed',
+              reference: tx.reference || `BTP-MANUAL-${txId.slice(0, 16)}`,
+              description: `Validation administrative du dépôt ${tx.reference || txId}`,
+              created_at: tx.created_at || now,
+              completed_at: now,
+              metadata: {
+                ...metadata,
+                operation_id: operationId,
+                wallet_operation_id: operationId,
+                source_transaction_id: txId,
+              },
+            },
+            adminLog: log,
+          });
+          if (!['applied', 'already'].includes(walletResult.state)) {
+            reply(res, 409, { detail: 'Crédit du dépôt refusé; aucun statut n’a été changé.' });
+            return true;
+          }
+        } else if (!isApprove && ['withdrawal', 'transfer'].includes(type)
+          && direction === 'out') {
+          field = transactionWalletField(tx, user);
+          refunded = Number(metadata.total_debit ?? (amount + Number(metadata.fee || 0)));
+          if (!field || !Number.isFinite(refunded) || refunded <= 0) {
+            reply(res, 422, { detail: 'Portefeuille ou montant du remboursement invalide.' });
+            return true;
+          }
+          operationId = `manual-reject:${txId}`;
+          const log = adminLog(admin, 'tx_reject', tx, {
+            operation_id: operationId,
+            reason: String(body.reason || '').slice(0, 500),
+            refunded,
+            ...(providerOutcome ? {
+              provider_outcome: providerOutcome,
+              provider_outcome_evidence_reference: evidenceReference,
+              provider_outcome_attested: true,
+            } : {}),
+          }, now);
+          walletResult = await applyWalletOperation(db, {
+            userId: String(tx.user_id),
+            operationId,
+            direction: 'credit',
+            primaryField: field,
+            increments: { [field]: refunded },
+            ledger: {
+              id: `manual-reject-refund:${txId}`,
+              user_id: String(tx.user_id),
+              type: 'refund',
+              direction: 'in',
+              amount: refunded,
+              currency: String(tx.currency || 'XOF').toUpperCase(),
+              status: 'completed',
+              reference: tx.reference || `BTP-REFUND-${txId.slice(0, 16)}`,
+              description: `Remboursement administratif ${tx.reference || txId}`,
+              created_at: now,
+              completed_at: now,
+              metadata: {
+                source_transaction_id: txId,
+                operation_id: operationId,
+                wallet_operation_id: operationId,
+                reason: String(body.reason || '').slice(0, 500),
+              },
+            },
+            adminLog: log,
+          });
+          if (!['applied', 'already'].includes(walletResult.state)) {
+            reply(res, 409, { detail: 'Remboursement refusé; le statut reste en attente.' });
+            return true;
+          }
+        }
+
+        const status = isApprove ? 'completed' : 'failed';
+        const set = isApprove ? {
+          status,
+          approved_at: now,
+          completed_at: now,
+          approved_by: admin.username,
+          manual_action: 'approved',
+          ...(walletResult?.snapshot ? {
+            wallet_snapshot: walletResult.snapshot,
+            balance_before: walletResult.snapshot.balance_before,
+            balance_after: walletResult.snapshot.balance_after,
+          } : {}),
+        } : {
+          status,
+          rejected_at: now,
+          rejected_by: admin.username,
+          manual_action: 'rejected',
+          rejection_reason: String(body.reason || '').slice(0, 500),
+          refunded_amount: refunded || null,
+        };
+        if (!walletResult) {
+          await db.collection('admin_logs').insert_one(adminLog(
+            admin, isApprove ? 'tx_approve' : 'tx_reject', tx, {
+              ...(isApprove ? { amount } : {}),
+              ...(isApprove ? {} : { reason: String(body.reason || '').slice(0, 500) }),
+              ...(providerOutcome ? {
+                provider_outcome: providerOutcome,
+                provider_outcome_evidence_reference: evidenceReference,
+                provider_outcome_attested: true,
+              } : {}),
+            }, now,
+          ));
+        }
+        await db.collection('transactions').update_one(
+          { id: txId, status: 'pending' }, { $set: set },
+        );
+        const updated = await db.collection('transactions').find_one({ id: txId }, { _id: 0 });
+        if (typeof notify === 'function') {
+          try {
+            const title = isApprove ? 'Transaction validée' : 'Transaction rejetée';
+            const message = isApprove
+                ? `Votre transaction ${tx.reference || txId} a été validée.`
+                : `Votre transaction ${tx.reference || txId} a été rejetée.`;
+            await notify(
+              String(tx.user_id),
+              isApprove ? 'transaction_approved' : 'transaction_rejected',
+              title,
+              message,
+              { kind: isApprove ? 'success' : 'warning', tx_id: txId, type },
+            );
+          } catch { /* Notification failure must not replay financial settlement. */ }
+        }
+        reply(res, 200, { ok: true, ...(refunded ? { refunded } : {}), tx: updated });
+        return true;
+      }
+
       if (logsRoute) {
         const rawLimit = url.searchParams.get('limit');
         const limit = rawLimit == null ? 200 : Number(rawLimit);

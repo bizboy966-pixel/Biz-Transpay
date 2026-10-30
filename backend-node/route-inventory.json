@@ -377,7 +377,7 @@
       "path": "/api/admin/transactions/{tx_id}/approve",
       "source": "backend/server.py",
       "handler": "admin_approve_transaction",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -391,7 +391,7 @@
       "path": "/api/admin/transactions/{tx_id}/reject",
       "source": "backend/server.py",
       "handler": "admin_reject_transaction",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -629,7 +629,7 @@
       "path": "/api/deposits/checkout",
       "source": "backend/server.py",
       "handler": "create_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -741,7 +741,7 @@
       "path": "/api/deposits/paydunya/return",
       "source": "backend/server.py",
       "handler": "paydunya_payment_return",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -1189,7 +1189,7 @@
       "path": "/api/payments/status/{session_id}",
       "source": "backend/server.py",
       "handler": "payment_status",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1352,7 +1352,7 @@
       "path": "/api/webhook/stripe",
       "source": "backend/server.py",
       "handler": "stripe_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

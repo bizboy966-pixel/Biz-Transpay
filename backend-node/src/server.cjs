@@ -11,6 +11,7 @@ const { createUserDataRoutes } = require('./user-data-routes.cjs');
 const { createDepositStatusRoutes } = require('./deposit-status-routes.cjs');
 const { createPaydunyaInvoiceRoutes } = require('./paydunya-invoice-routes.cjs');
 const { createPaydunyaWebhookRoutes } = require('./paydunya-webhook-routes.cjs');
+const { createStripeDepositRoutes } = require('./stripe-deposit-routes.cjs');
 const { createTelegramNotifier } = require('./telegram-notifications.cjs');
 const { createKycRoutes } = require('./kyc-routes.cjs');
 const { createUserSettingsRoutes } = require('./user-settings-routes.cjs');
@@ -163,6 +164,9 @@ function createServer({
     env,
   });
   const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({ db, env });
+  const stripeDepositRoutes = createStripeDepositRoutes({
+    db, sessionService, env,
+  });
   const handleKyc = createKycRoutes({
     db, sessionService, notifyAdminKyc: telegramNotifier.enqueueKycEvent,
   });
@@ -192,6 +196,7 @@ function createServer({
   });
   const adminTransactionRoutes = createAdminTransactionRoutes({
     db, sessionService, env,
+    notify: notifications.notify,
   });
   const adminPaymentLinkRoutes = createAdminPaymentLinkRoutes({
     db, sessionService, env,
@@ -292,6 +297,7 @@ function createServer({
         || path === '/api/auth/user-pin/reset/request'
         || path === '/api/auth/user-pin/reset/confirm'
         || path === '/api/webhooks/afribapay'
+        || path === '/api/webhook/stripe'
         || path === '/api/links/pay'
         || path === '/api/links/pay/mobile-money'
         || (path.startsWith('/api/links/payments/')
@@ -326,6 +332,7 @@ function createServer({
       if (await cryptoCatalog.handleRoute(req, res)) return;
       if (await transfers.handleRoute(req, res)) return;
       if (await exchange.handleRoute(req, res)) return;
+      if (await stripeDepositRoutes.handleRoute(req, res)) return;
       if (await adminTransactionRoutes.handleRoute(req, res)) return;
       if (await adminPaymentLinkRoutes.handleRoute(req, res)) return;
       if (await adminPaymentProviderRoutes.handleRoute(req, res)) return;

@@ -159,6 +159,21 @@ async function call(service, payload, { contentType = 'application/json', body }
   return { handled, status: res.status, body: res.body };
 }
 
+async function callReturn(service, path) {
+  const req = Readable.from([]);
+  req.method = 'GET';
+  req.url = path;
+  req.headers = {};
+  const res = {
+    status: 500,
+    headers: {},
+    writeHead(status, headers) { this.status = status; this.headers = headers; },
+    end() {},
+  };
+  const handled = await service.handleRoute(req, res);
+  return { handled, status: res.status, location: res.headers.Location };
+}
+
 test('PayDunya nested form webhook verifies with the provider and credits once atomically', async () => {
   const { db, service, providerCalls } = setup();
   const form = new URLSearchParams({
@@ -218,4 +233,13 @@ test('an existing PayDunya invoice still settles after new checkouts are disable
   assert.equal(result.status, 200);
   assert.equal(db.collection('users').rows[0].balance_xof, 980);
   assert.equal(db.collection('momo_deposits').rows[0].status, 'approved');
+});
+
+test('PayDunya browser return independently verifies before redirecting to completed', async () => {
+  const { db, service, providerCalls } = setup();
+  const result = await callReturn(service, '/api/deposits/paydunya/return?ref=deposit-1');
+  assert.equal(result.status, 303);
+  assert.equal(result.location, '/dashboard?paydunya=completed');
+  assert.equal(providerCalls(), 1);
+  assert.equal(db.collection('users').rows[0].balance_xof, 980);
 });
