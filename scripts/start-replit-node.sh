@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -m
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 API_PID=""
 FRONTEND_PID=""
 
-terminate_tree() {
+stop_job() {
   local pid="$1"
-  local child
-  while IFS= read -r child; do
-    [[ -n "$child" ]] && terminate_tree "$child"
-  done < <(ps -o pid= --ppid "$pid" 2>/dev/null || true)
-  kill -TERM "$pid" 2>/dev/null || true
+  # With monitor mode enabled, each background service owns its process group,
+  # so its package-manager and framework children are stopped with it.
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
 }
 
 cleanup() {
   for pid in "$FRONTEND_PID" "$API_PID"; do
     if [[ -n "$pid" ]]; then
-      terminate_tree "$pid"
+      stop_job "$pid"
       wait "$pid" 2>/dev/null || true
     fi
   done
