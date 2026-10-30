@@ -384,7 +384,7 @@
       "path": "/api/admin/transactions/{tx_id}/refresh",
       "source": "backend/server.py",
       "handler": "admin_refresh_transaction",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -657,7 +657,8 @@
       "path": "/api/deposits/mobile-money",
       "source": "backend/server.py",
       "handler": "create_mobile_money_deposit",
-      "status": "pending"
+      "status": "needs_review",
+      "review_note": "Current Node handler supports only one explicitly enabled PayDunya PSR/PAR flow; other providers need their own verified adapters."
     },
     {
       "method": "POST",
@@ -692,7 +693,8 @@
       "path": "/api/deposits/mobile-money/start",
       "source": "backend/server.py",
       "handler": "start_mobile_money_deposit",
-      "status": "pending"
+      "status": "needs_review",
+      "review_note": "Current Node handler supports only one explicitly enabled PayDunya PSR/PAR flow; other providers need their own verified adapters."
     },
     {
       "method": "GET",
@@ -706,7 +708,8 @@
       "path": "/api/deposits/mobile-money/{deposit_id}/finalize",
       "source": "backend/server.py",
       "handler": "finalize_momo_deposit",
-      "status": "pending"
+      "status": "needs_review",
+      "review_note": "Finalization currently rechecks PayDunya only; Mbiyo and AfriBaPay provider confirmation must be ported before claiming parity."
     },
     {
       "method": "POST",

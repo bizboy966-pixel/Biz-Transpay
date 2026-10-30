@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
 const { applyWalletOperation } = require('./wallet.cjs');
 const { loadCredentials } = require('./paydunya-invoice-routes.cjs');
+const { sessionToken } = require('./auth-session-routes.cjs');
+const { publicMomoDeposit } = require('./deposit-status-routes.cjs');
 
 function reply(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -157,9 +159,61 @@ function providerReference(response, fallback) {
   return String(data.transaction_id || data.payment_id || invoice.reference || fallback || '');
 }
 
-function createPaydunyaWebhookRoutes({ db, env = process.env, fetchImpl = globalThis.fetch }) {
+function createPaydunyaWebhookRoutes({
+  db, env = process.env, fetchImpl = globalThis.fetch, sessionService,
+  reconcileDeposit,
+}) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
+    const finalizeMatch = req.method === 'POST'
+      ? /^\/api\/deposits\/mobile-money\/([^/]+)\/finalize$/.exec(url.pathname)
+      : null;
+    if (finalizeMatch) {
+      try {
+        if (!sessionService?.authenticate) {
+          reply(res, 503, { detail: 'Service de session indisponible.' });
+          return true;
+        }
+        const identity = await sessionService.authenticate(sessionToken(req));
+        const userId = String(identity?.userId || '');
+        if (!userId) {
+          reply(res, 401, { detail: 'Session requise.' });
+          return true;
+        }
+        const depositId = decodeURIComponent(finalizeMatch[1]);
+        if (!depositId || depositId.length > 160) {
+          reply(res, 422, { detail: 'Identifiant de dépôt invalide.' });
+          return true;
+        }
+        let deposit = await db.collection('momo_deposits').find_one(
+          { id: depositId, user_id: userId }, { _id: 0 },
+        );
+        if (!deposit) {
+          reply(res, 404, { detail: 'Dépôt introuvable.' });
+          return true;
+        }
+        if (deposit.provider !== 'paydunya') {
+          reply(res, 409, {
+            detail: 'Ce dépôt doit être confirmé par le prestataire qui l’a initié.',
+          });
+          return true;
+        }
+        if (deposit.status === 'pending') {
+          const reconcile = typeof reconcileDeposit === 'function'
+            ? reconcileDeposit : settleDepositById;
+          await reconcile(depositId);
+          deposit = await db.collection('momo_deposits').find_one(
+            { id: depositId, user_id: userId }, { _id: 0 },
+          ) || deposit;
+        }
+        reply(res, 200, publicMomoDeposit(deposit));
+      } catch (error) {
+        reply(res, error.status || 500, {
+          detail: error.status ? error.message : 'Impossible de vérifier le dépôt.',
+        });
+      }
+      return true;
+    }
     if (req.method === 'GET' && url.pathname === '/api/deposits/paydunya/return') {
       try {
         const reference = String(url.searchParams.get('ref') || '').trim();

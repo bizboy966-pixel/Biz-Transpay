@@ -164,7 +164,9 @@ function createServer({
     sessionSecret: env.SESSION_SECRET || '',
     env,
   });
-  const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({ db, env });
+  const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
+    db, env, sessionService,
+  });
   const stripeDepositRoutes = createStripeDepositRoutes({
     db, sessionService, env,
   });
@@ -205,6 +207,7 @@ function createServer({
   const adminTransactionRoutes = createAdminTransactionRoutes({
     db, sessionService, env,
     notify: notifications.notify,
+    getCryptoPayout: cryptoCatalog.getPayout,
   });
   const adminPaymentLinkRoutes = createAdminPaymentLinkRoutes({
     db, sessionService, env,

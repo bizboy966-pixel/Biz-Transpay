@@ -61,7 +61,7 @@ function adminLog(admin, action, tx, details, now) {
 }
 
 function createAdminTransactionRoutes({
-  db, sessionService, env = process.env, notify,
+  db, sessionService, env = process.env, notify, getCryptoPayout,
   authorizeAdminImpl = authorizeAdmin,
 }) {
   async function handleRoute(req, res) {
@@ -73,7 +73,7 @@ function createAdminTransactionRoutes({
     const logsRoute = url.pathname === '/api/admin/logs';
     const detailMatch = /^\/api\/admin\/transactions\/([^/]+)$/.exec(url.pathname);
     const actionMatch = req.method === 'POST'
-      ? /^\/api\/admin\/transactions\/([^/]+)\/(approve|reject)$/.exec(url.pathname)
+      ? /^\/api\/admin\/transactions\/([^/]+)\/(approve|reject|refresh)$/.exec(url.pathname)
       : null;
     if (!((req.method === 'GET' && (listRoute || conversionsRoute || logsRoute))
         || (req.method === 'GET' && detailMatch) || actionMatch)) {
@@ -103,6 +103,178 @@ function createAdminTransactionRoutes({
     void authorized;
 
     try {
+      if (actionMatch?.[2] === 'refresh') {
+        const txId = decodeURIComponent(actionMatch[1]);
+        if (!txId || txId.length > 160) {
+          reply(res, 422, { detail: 'Identifiant de transaction invalide.' });
+          return true;
+        }
+        const tx = await db.collection('transactions').find_one({ id: txId }, { _id: 0 });
+        if (!tx) {
+          reply(res, 404, { detail: 'Transaction introuvable.' });
+          return true;
+        }
+        if (tx.status !== 'pending') {
+          reply(res, 200, {
+            ok: true, unchanged: true, reason: `status=${tx.status || 'unknown'}`, tx,
+          });
+          return true;
+        }
+        const metadata = tx.metadata || {};
+        const payoutId = String(metadata.izipay_payout_id || '').trim();
+        if (!payoutId) {
+          reply(res, 409, {
+            detail: 'Cette transaction ne possède pas de référence de payout vérifiable.',
+          });
+          return true;
+        }
+        if (typeof getCryptoPayout !== 'function') {
+          reply(res, 503, { detail: 'La vérification des payouts crypto est indisponible.' });
+          return true;
+        }
+
+        let providerResponse;
+        try {
+          providerResponse = await getCryptoPayout(payoutId);
+        } catch (error) {
+          reply(res, error.status || 502, {
+            detail: error.message || 'Statut du payout indisponible; aucun solde n’a été modifié.',
+          });
+          return true;
+        }
+        const providerData = providerResponse?.data && typeof providerResponse.data === 'object'
+          ? providerResponse.data : providerResponse;
+        const upstreamStatus = String(providerData?.status || '').trim().toLowerCase();
+        if (!upstreamStatus) {
+          reply(res, 502, { detail: 'Le prestataire n’a pas retourné de statut vérifiable.' });
+          return true;
+        }
+        const successful = ['completed', 'confirmed', 'success', 'successful', 'sent_success'];
+        const failed = ['failed', 'rejected', 'error', 'canceled', 'cancelled'];
+        if (!successful.includes(upstreamStatus) && !failed.includes(upstreamStatus)) {
+          reply(res, 200, {
+            ok: true, unchanged: true, upstream_status: upstreamStatus, tx,
+          });
+          return true;
+        }
+
+        const now = new Date().toISOString();
+        const updates = { 'metadata.izipay_status': upstreamStatus };
+        const txHash = String(providerData.txHash || providerData.txhash || '').trim();
+        if (txHash && txHash.length <= 256) updates['metadata.tx_hash'] = txHash;
+        if (successful.includes(upstreamStatus)) {
+          updates.status = 'completed';
+          updates.completed_at = now;
+          updates['metadata.izipay_confirmed_at'] = now;
+          const changed = await db.collection('transactions').update_one(
+            { id: txId, status: 'pending' }, { $set: updates },
+          );
+          if (!changed.modified_count) {
+            const current = await db.collection('transactions').find_one({ id: txId }, { _id: 0 });
+            reply(res, 200, { ok: true, unchanged: true, tx: current || tx });
+            return true;
+          }
+          await db.collection('admin_logs').insert_one(adminLog(
+            authorized.admin, 'tx_refresh_completed', tx,
+            { payout_id: payoutId, upstream_status: upstreamStatus }, now,
+          ));
+          if (typeof notify === 'function') {
+            try {
+              await notify(
+                String(tx.user_id), 'withdrawal_success', 'Retrait crypto confirmé',
+                'Votre retrait crypto a été confirmé par le prestataire.',
+                {
+                  transaction_id: tx.id,
+                  reference: tx.reference || null,
+                  amount: tx.amount,
+                  currency: tx.currency,
+                  tx_hash: txHash || null,
+                },
+              );
+            } catch { /* Notification delivery does not undo provider settlement. */ }
+          }
+        } else {
+          // Re-read immediately before the refund. The wallet operation shares
+          // the same stable refund id used by administrative rejection.
+          const latest = await db.collection('transactions').find_one({ id: txId }, { _id: 0 });
+          if (!latest || latest.status !== 'pending') {
+            reply(res, 200, { ok: true, unchanged: true, tx: latest || tx });
+            return true;
+          }
+          const userId = String(latest.user_id || '');
+          const user = userId
+            ? await db.collection('users').find_one({ id: userId }, { _id: 0 }) : null;
+          const field = user && transactionWalletField(latest, user);
+          const totalDebit = Number(latest.metadata?.total_debit ?? latest.amount);
+          if (!field || !Number.isFinite(totalDebit) || totalDebit <= 0) {
+            reply(res, 409, {
+              detail: 'Le portefeuille source ou le montant réservé est introuvable; aucun remboursement effectué.',
+            });
+            return true;
+          }
+          updates.status = 'failed';
+          updates.failed_at = now;
+          updates['metadata.refunded'] = true;
+          const operationId = `manual-reject:${txId}`;
+          const walletResult = await applyWalletOperation(db, {
+            userId,
+            operationId,
+            direction: 'credit',
+            primaryField: field,
+            increments: { [field]: totalDebit },
+            legacyMarkers: [['wallet_credit_operation_ids', `transaction:${txId}`]],
+            ledger: {
+              id: `crypto-payout-refund:${txId}`,
+              user_id: userId,
+              type: 'refund',
+              direction: 'in',
+              amount: totalDebit,
+              currency: String(latest.currency || 'USDT').toUpperCase(),
+              status: 'completed',
+              reference: latest.reference || `BTP-REFUND-${txId.slice(0, 16)}`,
+              description: `Remboursement du payout crypto ${latest.reference || txId}`,
+              created_at: now,
+              completed_at: now,
+              metadata: {
+                source_transaction_id: txId,
+                operation_id: operationId,
+                wallet_operation_id: operationId,
+                provider_reference: payoutId,
+                provider_status: upstreamStatus,
+              },
+            },
+            adminLog: adminLog(authorized.admin, 'tx_refresh_failed', latest, {
+              operation_id: operationId,
+              payout_id: payoutId,
+              upstream_status: upstreamStatus,
+              refunded: totalDebit,
+            }, now),
+          });
+          if (!['applied', 'already'].includes(walletResult.state)) {
+            reply(res, 409, {
+              detail: 'Le remboursement atomique a échoué; le statut de la transaction reste inchangé.',
+            });
+            return true;
+          }
+          if (walletResult.snapshot) {
+            updates.wallet_snapshot = walletResult.snapshot;
+            updates.balance_before = walletResult.snapshot.balance_before;
+            updates.balance_after = walletResult.snapshot.balance_after;
+          }
+          await db.collection('transactions').update_one(
+            { id: txId, status: 'pending' }, { $set: updates },
+          );
+        }
+        const refreshed = await db.collection('transactions').find_one({ id: txId }, { _id: 0 });
+        reply(res, 200, {
+          ok: true,
+          tx: refreshed || tx,
+          upstream_status: upstreamStatus,
+          mapped_status: successful.includes(upstreamStatus) ? 'completed' : 'failed',
+        });
+        return true;
+      }
+
       if (actionMatch) {
         const body = await readJson(req, 16 * 1024);
         if (String(body.confirmation || '').trim() !== 'CONFIRMER') {

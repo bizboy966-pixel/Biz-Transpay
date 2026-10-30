@@ -13,6 +13,10 @@ const ROUTES = new Map([
   ['/api/deposits/mobile-money/psr', 'psr'],
   ['/api/deposits/paydunya/psr', 'psr'],
 ]);
+const GENERIC_MOBILE_MONEY_ROUTES = new Set([
+  '/api/deposits/mobile-money',
+  '/api/deposits/mobile-money/start',
+]);
 
 function httpError(status, message) {
   const error = new Error(message);
@@ -225,8 +229,10 @@ function createPaydunyaInvoiceRoutes({
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
-    const flow = req.method === 'POST' ? ROUTES.get(url.pathname) : null;
-    if (!flow) return false;
+    const routeFlow = req.method === 'POST' ? ROUTES.get(url.pathname) : null;
+    const genericMobileMoney = req.method === 'POST'
+      && GENERIC_MOBILE_MONEY_ROUTES.has(url.pathname);
+    if (!routeFlow && !genericMobileMoney) return false;
 
     try {
       const identity = await sessionService.authenticate(sessionToken(req));
@@ -234,6 +240,30 @@ function createPaydunyaInvoiceRoutes({
       if (!userId) throw httpError(401, 'Session requise.');
 
       const body = await readJson(req, 16 * 1024);
+      let flow = routeFlow;
+      const settings = await db.collection('settings').find_one(
+        { id: 'payment_provider_paydunya' }, { _id: 0 },
+      );
+      if (genericMobileMoney) {
+        if (!settings?.enabled) {
+          throw httpError(503, 'Aucun prestataire Mobile Money disponible.');
+        }
+        const modes = settings.modes && typeof settings.modes === 'object'
+          ? settings.modes : {};
+        const enabledModes = Object.entries(modes).filter(([, value]) => (
+          value === true || value?.enabled === true
+        )).map(([name]) => name);
+        const supportedModes = enabledModes.filter(name => (
+          ['psr', 'par_redirect'].includes(name)
+        ));
+        if (enabledModes.length !== 1 || supportedModes.length !== 1) {
+          throw httpError(
+            503,
+            'Le parcours Mobile Money sélectionné n’est pas disponible dans cette version.',
+          );
+        }
+        flow = supportedModes[0];
+      }
       const amount = Number(body.amount);
       const country = String(body.country || '').trim().toUpperCase();
       const operatorCode = String(body.operator || '').trim();
@@ -248,9 +278,6 @@ function createPaydunyaInvoiceRoutes({
         throw httpError(422, 'Informations de dépôt invalides.');
       }
 
-      const settings = await db.collection('settings').find_one(
-        { id: 'payment_provider_paydunya' }, { _id: 0 },
-      );
       if (!settings?.enabled) throw httpError(503, 'Passerelle Mobile Money non configurée.');
       const modeSetting = settings.modes?.[flow];
       if (!settings.modes || !(modeSetting === true || modeSetting?.enabled === true)) {

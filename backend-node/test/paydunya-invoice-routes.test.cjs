@@ -172,3 +172,45 @@ test('PayDunya invoice initiation refuses disabled modes and never credits a wal
   assert.equal(providerCalls, 0);
   assert.equal(collections.momo_deposits.rows.length, 0);
 });
+
+test('generic Mobile Money start uses the only enabled PayDunya flow', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { response_code: '00', token: 'provider-psr-token' }; },
+      };
+    },
+  });
+  collections.settings.rows[0].modes = {
+    psr: { enabled: true },
+    par_redirect: { enabled: false },
+  };
+
+  const result = await call(
+    service, '/api/deposits/mobile-money/start', depositRequest, 'generic-mobile-money-001',
+  );
+  assert.equal(result.status, 200);
+  assert.equal(collections.momo_deposits.rows[0].provider, 'paydunya');
+  assert.equal(collections.momo_deposits.rows[0].status, 'pending');
+  assert.equal(providerCalls, 1);
+});
+
+test('generic Mobile Money start fails closed when multiple PayDunya flows are enabled', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    fetchImpl: async () => {
+      providerCalls += 1;
+      throw new Error('must not choose a payment flow arbitrarily');
+    },
+  });
+  const result = await call(
+    service, '/api/deposits/mobile-money', depositRequest, 'generic-mobile-money-002',
+  );
+  assert.equal(result.status, 503);
+  assert.equal(providerCalls, 0);
+  assert.equal(collections.momo_deposits.rows.length, 0);
+});

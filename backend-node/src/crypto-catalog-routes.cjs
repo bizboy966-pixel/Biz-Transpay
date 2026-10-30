@@ -195,6 +195,44 @@ function createCryptoCatalogRoutes({
     return assets;
   }
 
+  async function getPayout(payoutId) {
+    const id = String(payoutId || '').trim();
+    if (!id || id.length > 200 || /[\u0000-\u001f\u007f]/.test(id)) {
+      throw httpError(422, 'Identifiant de payout invalide');
+    }
+    const config = await credentials();
+    if (!config.apiKey) throw httpError(503, 'Passerelle crypto non configurée');
+    let response;
+    try {
+      response = await fetchImpl(
+        `${config.baseUrl}/v1/payouts/${encodeURIComponent(id)}`,
+        {
+          method: 'GET',
+          headers: {
+            authorization: `Bearer ${config.apiKey}`,
+            accept: 'application/json',
+          },
+          signal: AbortSignal.timeout(20_000),
+        },
+      );
+    } catch {
+      throw httpError(502, 'Statut du payout indisponible; aucun solde n’a été modifié.');
+    }
+    let text;
+    try { text = await response.text(); } catch {
+      throw httpError(502, 'Réponse du payout invalide; aucun solde n’a été modifié.');
+    }
+    if (text.length > 512_000) throw httpError(502, 'Réponse du payout trop volumineuse');
+    let payload;
+    try { payload = JSON.parse(text); } catch {
+      throw httpError(502, 'Réponse du payout invalide; aucun solde n’a été modifié.');
+    }
+    if (!response.ok || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw httpError(502, 'Impossible de vérifier le payout auprès du prestataire.');
+    }
+    return payload;
+  }
+
   async function getDepositCryptoConfig() {
     const deposit = await db.collection('settings').find_one(
       { id: 'deposit_config' },
@@ -677,6 +715,7 @@ function createCryptoCatalogRoutes({
     handleRoute,
     integrationCryptoAssets,
     integrationExchangeQuote,
+    getPayout,
     activeExchangeAssets,
     providerAssets,
     exchangeRateContext,
