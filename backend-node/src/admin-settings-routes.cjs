@@ -240,11 +240,16 @@ function validateWithdrawalCatalog(section) {
     const country = String(operator.country || '').trim().toUpperCase();
     const currency = String(operator.currency || '').trim().toUpperCase();
     const code = withdrawalIdentifier(operator, provider);
-    if (!['paydunya', 'mbiyo', 'afribapay'].includes(provider)
-        || !/^[A-Z]{2}$/.test(country) || !['XOF', 'XAF'].includes(currency)
-        || !code || code.length > 120) {
+    const invalidFields = [];
+    if (!['paydunya', 'mbiyo', 'afribapay'].includes(provider)) {
+      invalidFields.push('prestataire');
+    }
+    if (!/^[A-Z]{2}$/.test(country)) invalidFields.push('pays');
+    if (!['XOF', 'XAF'].includes(currency)) invalidFields.push('devise');
+    if (!code || code.length > 120) invalidFields.push('identifiant');
+    if (invalidFields.length) {
       const label = String(operator.name || operator.country_label || '').trim().slice(0, 80);
-      throw fail(422, `Opérateur ${label || `n° ${index + 1}`} (ligne ${index + 1}) : pays, devise, identifiant ou prestataire Mobile Money invalide.`);
+      throw fail(422, `Opérateur ${label || `n° ${index + 1}`} (ligne ${index + 1}) : champ invalide — ${invalidFields.join(', ')}.`);
     }
     if (provider === 'paydunya' && currency !== (country === 'CM' ? 'XAF' : 'XOF')) {
       throw fail(422, 'La devise ne correspond pas au pays');

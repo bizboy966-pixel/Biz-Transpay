@@ -301,7 +301,7 @@ test('admin payout config identifies the exact incomplete operator row', async (
   });
 
   assert.equal(result.status, 422);
-  assert.match(result.body.detail, /Orange Cameroun.*ligne 1/);
+  assert.match(result.body.detail, /Orange Cameroun.*ligne 1.*devise/);
 });
 
 test('admin referral rate preserves the allowed range and requires recent authentication', async () => {
