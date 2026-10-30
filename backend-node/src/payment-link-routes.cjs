@@ -152,6 +152,27 @@ function publicLink(document) {
   };
 }
 
+function publicLinkPaymentStatus(payment) {
+  const result = {};
+  for (const key of [
+    'id', 'method', 'status', 'amount', 'currency', 'network', 'amount_to_send',
+    'deposit_address', 'memo', 'memo_type', 'expires_at', 'created_at',
+    'pending_expires_at',
+  ]) {
+    if (payment[key] !== undefined && payment[key] !== null) result[key] = payment[key];
+  }
+  if (payment.method === 'mobile_money') {
+    result.country = payment.country || '';
+    result.operator = {
+      code: String(payment.operator || ''),
+      label: String(payment.operator_name || ''),
+    };
+    result.operator_name = String(payment.operator_name || '');
+    result.customer_phone = String(payment.customer_phone || '');
+  }
+  return result;
+}
+
 function createPaymentLinkRoutes({ db, sessionService }) {
   async function handlePaymentLinks(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -159,11 +180,23 @@ function createPaymentLinkRoutes({ db, sessionService }) {
     const list = req.method === 'GET' && path === '/api/links';
     const create = req.method === 'POST' && path === '/api/links';
     const publicMatch = req.method === 'GET' && /^\/api\/links\/public\/([^/]+)$/.exec(path);
+    const paymentStatusMatch = req.method === 'GET'
+      && /^\/api\/links\/payments\/([^/]+)$/.exec(path);
     const itemMatch = /^\/api\/links\/([^/]+)$/.exec(path);
     const update = req.method === 'PATCH' && itemMatch;
     const remove = req.method === 'DELETE' && itemMatch;
-    if (!list && !create && !publicMatch && !update && !remove) return false;
+    if (!list && !create && !publicMatch && !paymentStatusMatch && !update && !remove) return false;
     try {
+      if (paymentStatusMatch) {
+        const paymentId = decodeURIComponent(paymentStatusMatch[1]);
+        if (!paymentId || paymentId.length > 160) throw error(404, 'Paiement introuvable');
+        const payment = await db.collection('link_payments').find_one(
+          { id: paymentId }, { _id: 0 },
+        );
+        if (!payment) throw error(404, 'Paiement introuvable');
+        reply(res, 200, publicLinkPaymentStatus(payment));
+        return true;
+      }
       if (publicMatch) {
         const slug = decodeURIComponent(publicMatch[1]);
         const document = await db.collection('payment_links').find_one({ slug }, { _id: 0 });
@@ -341,4 +374,6 @@ function createPaymentLinkRoutes({ db, sessionService }) {
   return handlePaymentLinks;
 }
 
-module.exports = { createPaymentLinkRoutes, publicLink, validateLinkAmounts };
+module.exports = {
+  createPaymentLinkRoutes, publicLink, publicLinkPaymentStatus, validateLinkAmounts,
+};

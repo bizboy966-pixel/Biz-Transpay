@@ -20,7 +20,7 @@
       "path": "/api/admin/admins",
       "source": "backend/server.py",
       "handler": "admin_create_admin",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -664,14 +664,14 @@
       "path": "/api/deposits/mobile-money/par",
       "source": "backend/server.py",
       "handler": "create_paydunya_par",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/deposits/mobile-money/par-redirect",
       "source": "backend/server.py",
       "handler": "create_paydunya_par",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -685,7 +685,7 @@
       "path": "/api/deposits/mobile-money/psr",
       "source": "backend/server.py",
       "handler": "create_paydunya_psr",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -713,21 +713,21 @@
       "path": "/api/deposits/paydunya/par",
       "source": "backend/server.py",
       "handler": "create_paydunya_par",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/deposits/paydunya/par-redirect",
       "source": "backend/server.py",
       "handler": "create_paydunya_par",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
       "path": "/api/deposits/paydunya/psr",
       "source": "backend/server.py",
       "handler": "create_paydunya_psr",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1098,7 +1098,7 @@
       "path": "/api/links/payments/{payment_id}",
       "source": "backend/server.py",
       "handler": "get_link_payment_status",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
@@ -1387,7 +1387,7 @@
       "path": "/api/webhooks/paydunya",
       "source": "backend/server.py",
       "handler": "paydunya_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",

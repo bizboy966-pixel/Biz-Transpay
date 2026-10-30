@@ -9,6 +9,8 @@ const { createAuthMfaRoutes } = require('./auth-mfa-routes.cjs');
 const { createAuthRecoveryRoutes } = require('./auth-recovery-routes.cjs');
 const { createUserDataRoutes } = require('./user-data-routes.cjs');
 const { createDepositStatusRoutes } = require('./deposit-status-routes.cjs');
+const { createPaydunyaInvoiceRoutes } = require('./paydunya-invoice-routes.cjs');
+const { createPaydunyaWebhookRoutes } = require('./paydunya-webhook-routes.cjs');
 const { createTelegramNotifier } = require('./telegram-notifications.cjs');
 const { createKycRoutes } = require('./kyc-routes.cjs');
 const { createUserSettingsRoutes } = require('./user-settings-routes.cjs');
@@ -154,6 +156,13 @@ function createServer({
   });
   const handleUserData = createUserDataRoutes({ db, sessionService });
   const depositStatusRoutes = createDepositStatusRoutes({ db, sessionService });
+  const paydunyaInvoiceRoutes = createPaydunyaInvoiceRoutes({
+    db,
+    sessionService,
+    sessionSecret: env.SESSION_SECRET || '',
+    env,
+  });
+  const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({ db, env });
   const handleKyc = createKycRoutes({
     db, sessionService, notifyAdminKyc: telegramNotifier.enqueueKycEvent,
   });
@@ -305,6 +314,8 @@ function createServer({
       if (await handleAuthSession(req, res)) return;
       if (await handleUserData(req, res)) return;
       if (await depositStatusRoutes.handleRoute(req, res)) return;
+      if (await paydunyaInvoiceRoutes.handleRoute(req, res)) return;
+      if (await paydunyaWebhookRoutes.handleRoute(req, res)) return;
       if (await handleKyc(req, res)) return;
       if (await handleUserSettings(req, res)) return;
       if (await notifications.handleRoute(req, res)) return;

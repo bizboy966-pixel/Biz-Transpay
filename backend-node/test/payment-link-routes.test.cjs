@@ -166,3 +166,35 @@ test('integration payment-link creation binds ownership and replays the same ide
   assert.equal(conflict.status, 409);
   assert.equal(db.collection('payment_links').rows.length, 1);
 });
+
+test('public link-payment status returns a customer-safe snapshot only', async () => {
+  const { db, handle } = setup();
+  await db.collection('link_payments').insert_one({
+    id: 'link-payment-public-1',
+    user_id: 'merchant-secret',
+    method: 'mobile_money',
+    status: 'pending',
+    amount: 1200,
+    currency: 'XOF',
+    country: 'TG',
+    operator: 'tmoney',
+    operator_name: 'T-Money',
+    customer_phone: '+22890000000',
+    provider_token: 'must-not-leak',
+    internal_error: 'must-not-leak',
+    created_at: '2026-05-01T10:00:00.000Z',
+  });
+  const status = await call(
+    handle, 'GET', '/api/links/payments/link-payment-public-1', undefined, null,
+  );
+  assert.equal(status.status, 200);
+  assert.equal(status.body.status, 'pending');
+  assert.equal(status.body.customer_phone, '+22890000000');
+  assert.equal(Object.hasOwn(status.body, 'user_id'), false);
+  assert.equal(Object.hasOwn(status.body, 'provider_token'), false);
+  assert.equal(Object.hasOwn(status.body, 'internal_error'), false);
+  const missing = await call(
+    handle, 'GET', '/api/links/payments/missing', undefined, null,
+  );
+  assert.equal(missing.status, 404);
+});

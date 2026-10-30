@@ -446,6 +446,113 @@ function createAdminUserRoutes({
     let url;
     try { url = new URL(req.url || '/', 'http://localhost'); }
     catch { return false; }
+    const createAdmin = req.method === 'POST' && url.pathname === '/api/admin/admins';
+    if (createAdmin) {
+      try {
+        const { admin } = await authorizeAdmin(req, {
+          db, sessionService, env,
+          permission: 'admin_users:write',
+          action: 'admin_create_admin',
+          sensitive: true,
+        });
+        if (admin._effective_role !== 'SUPER_ADMIN') {
+          reply(res, 403, { detail: "Seul l'administrateur principal peut ajouter un admin" });
+          return true;
+        }
+        const body = await readJson(req, 16 * 1024);
+        if (String(body.confirmation || '').trim().toUpperCase() !== 'CONFIRMER') {
+          reply(res, 422, {
+            detail: { code: 'ADMIN_CONFIRMATION_REQUIRED', message: 'Saisissez CONFIRMER.' },
+          });
+          return true;
+        }
+        const fullName = String(body.full_name || '').trim();
+        const username = String(body.username || '').trim().toLowerCase();
+        const email = String(body.email || '').trim().toLowerCase();
+        const country = String(body.country || 'TG').trim().toUpperCase();
+        const phone = String(body.phone || '').trim();
+        const password = String(body.password || '');
+        const adminRole = String(body.admin_role || 'general').trim();
+        const allowedRoles = new Set(['general', 'finance', 'operations', 'support', 'compliance']);
+        if (fullName.length < 2 || fullName.length > 120
+            || !/^[a-z0-9_.-]{3,40}$/.test(username)
+            || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+            || !/^[A-Z]{2}$/.test(country) || phone.length > 32
+            || !allowedRoles.has(adminRole)) {
+          reply(res, 422, { detail: 'Informations administrateur invalides.' });
+          return true;
+        }
+        const passwordErrors = passwordPolicyErrors(password, true);
+        if (passwordErrors.length) {
+          reply(res, 422, {
+            detail: `Mot de passe insuffisant : ${passwordErrors.join(', ')}`,
+          });
+          return true;
+        }
+        const users = db.collection('users');
+        if (await users.find_one({ $or: [{ email }, { username }] }, { _id: 0, id: 1 })) {
+          reply(res, 409, { detail: 'Cet e-mail ou cet identifiant est déjà utilisé.' });
+          return true;
+        }
+        const createdAt = new Date().toISOString();
+        const user = {
+          id: randomUUID(),
+          full_name: fullName,
+          username,
+          account_type: 'merchant',
+          country,
+          phone,
+          email,
+          password_hash: await require('bcryptjs').hash(password, 12),
+          password_policy_version: 1,
+          kyc_status: 'verified',
+          balance_xof: 0,
+          balance_xaf: 0,
+          balance_usdt: 0,
+          balance_gnf: 0,
+          balance_cdf: 0,
+          balance_usd: 0,
+          created_at: createdAt,
+          two_fa_enabled: false,
+          language: 'fr',
+          default_currency: 'XOF',
+          role: 'admin',
+          admin_role: adminRole,
+          is_active: true,
+          is_blocked: false,
+          is_banned: false,
+          withdrawals_blocked: false,
+        };
+        try {
+          await users.insert_one(user);
+        } catch (error) {
+          if (['ER_DUP_ENTRY', 11000].includes(error.code)) {
+            reply(res, 409, { detail: 'Cet e-mail ou cet identifiant est déjà utilisé.' });
+            return true;
+          }
+          throw error;
+        }
+        await db.collection('admin_logs').insert_one({
+          id: randomUUID(),
+          admin_id: admin.id,
+          admin_username: admin.username || '',
+          action: 'create_admin',
+          target_user_id: user.id,
+          target_username: username,
+          details: { admin_role: adminRole },
+          created_at: createdAt,
+        });
+        const safeUser = { ...user };
+        for (const key of Object.keys(SECRET_FIELDS)) delete safeUser[key];
+        reply(res, 201, safeUser);
+      } catch (error) {
+        const status = Number.isInteger(error.status) ? error.status : 500;
+        reply(res, status, {
+          detail: status >= 500 ? 'Impossible de créer le compte administrateur.' : error.message,
+        });
+      }
+      return true;
+    }
     const kycList = req.method === 'GET' && url.pathname === '/api/admin/kyc';
     const kycDecision = req.method === 'POST'
       ? /^\/api\/admin\/kyc\/([^/]+)\/decision$/.exec(url.pathname)
