@@ -29,6 +29,7 @@
 - [Staged Plesk/MySQL migration](staged-plesk-mysql-migration.md) — migrate Preview first; keep production, apex DNS, and live provider callbacks untouched until validation and explicit approval.
 - [Plesk MySQL Preview reachability](plesk-preview-mysql-connectivity.md) — a Plesk-local `localhost` MySQL address is not reachable from Replit Preview; keep Preview diagnostic-only until a reachable test DB is configured.
 - [VM publish readiness](vm-publish-readiness.md) — production must serve the prebuilt frontend quickly on the public port; do not start CRA compilation in the VM run command.
+- [Plesk dist delivery](plesk-dist-delivery.md) — build and commit the app source plus `dist`; the user pushes to GitHub and restarts Plesk.
 - [Financial idempotency and wallet routing](financial-idempotency.md) — keep wallet mutations atomic and crypto transfers bound to exact enabled networks.
 - [Provider liquidity review](provider-liquidity-review.md) — provider-fund failures keep the customer debit reserved for manual payout review; local wallet insufficiency remains a normal rejection.
 - [Treasury vs. customer-wallet statistics](provider-country-treasury-statistics.md) — Treasury views use provider balances; the all-user Statistics card totals customer wallets in configured XOF equivalents.

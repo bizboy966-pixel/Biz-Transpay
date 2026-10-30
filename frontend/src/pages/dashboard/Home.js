@@ -243,7 +243,7 @@ export default function DashboardHome() {
                   value={selectedWallet?.id || ''}
                   onChange={(event) => setSelectedCryptoWallet(event.target.value)}
                   disabled={!cryptoWalletOptions.length}
-                  className="absolute bottom-1.5 left-1/2 z-20 max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none transition-colors hover:bg-[#0A65D8] focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-80 sm:bottom-3 sm:px-2 sm:text-[10px]"
+                  className="absolute bottom-1.5 left-1/2 z-20 w-[58%] max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none transition-colors hover:bg-[#0A65D8] focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-not-allowed disabled:opacity-80 sm:bottom-3 sm:px-2 sm:text-[10px]"
                 >
                   <option value="" disabled className="text-slate-900">
                     {cryptoWalletsLoading
@@ -264,7 +264,7 @@ export default function DashboardHome() {
                   data-testid="select-dashboard-fiat-wallet"
                   value={selectedFiatWallet.currency}
                   onChange={(event) => selectFiatCurrency(event.target.value)}
-                  className="absolute bottom-1.5 left-1/2 z-20 max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none transition-colors hover:bg-[#0A65D8] focus-visible:ring-2 focus-visible:ring-white/70 sm:bottom-3 sm:px-2 sm:text-[10px]"
+                  className="absolute bottom-1.5 left-1/2 z-20 w-[58%] max-w-[92%] -translate-x-1/2 truncate rounded-md border border-white/30 bg-[#0647B6]/90 px-1.5 py-1 text-[8px] font-semibold text-white outline-none transition-colors hover:bg-[#0A65D8] focus-visible:ring-2 focus-visible:ring-white/70 sm:bottom-3 sm:px-2 sm:text-[10px]"
                 >
                   {fiatWalletOptions.map((wallet) => (
                     <option

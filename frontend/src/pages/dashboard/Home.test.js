@@ -67,6 +67,11 @@ describe('DashboardHome fiat wallet selector', () => {
     await act(async () => root.render(<DashboardHome />));
 
     const selector = container.querySelector('[data-testid="select-dashboard-fiat-wallet"]');
+    const cryptoSelector = container.querySelector(
+      '[data-testid="select-dashboard-crypto-wallet"]',
+    );
+    expect(selector.className).toContain('w-[58%]');
+    expect(cryptoSelector.className).toContain('w-[58%]');
     expect(selector.value).toBe('XOF');
     expect([...selector.options].map(option => option.value)).toContain('UGX');
     expect([...selector.options].map(option => option.value)).toContain('USD');
