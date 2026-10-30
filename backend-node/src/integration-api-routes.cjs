@@ -75,7 +75,7 @@ function reply(res, status, body) {
 function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-  createCryptoPayout,
+  createCryptoPayout, createMobileMoneyPayout,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -95,6 +95,8 @@ function createIntegrationApiRoutes({
       && url.pathname === '/api/integration/v1/deposits';
     const cryptoPayoutStart = req.method === 'POST'
       && url.pathname === '/api/integration/v1/crypto/payouts';
+    const mobileMoneyPayoutStart = req.method === 'POST'
+      && url.pathname === '/api/integration/v1/payouts';
     const listPaths = {
       '/api/integration/v1/deposits': 'deposit',
       '/api/integration/v1/payouts': 'payout',
@@ -122,11 +124,13 @@ function createIntegrationApiRoutes({
     const isDetail = exchangeMatch || linkPaymentsMatch || linkMatch || payoutMatch
       || depositMatch || cryptoDepositMatch || cryptoPayoutMatch;
     if ((req.method !== 'GET' && !exchangeExecution && !linkCreation
-          && !cryptoDepositStart && !mobileMoneyDepositStart && !cryptoPayoutStart)
+          && !cryptoDepositStart && !mobileMoneyDepositStart && !cryptoPayoutStart
+          && !mobileMoneyPayoutStart)
         || (!kind && !isTransactions && !isDetail && !cryptoAssetCatalog
           && !mobileMoneyOperatorCatalog && !exchangeQuote
           && !exchangeExecution && !linkCreation && !cryptoDepositStart
-          && !mobileMoneyDepositStart && !cryptoPayoutStart)) return false;
+          && !mobileMoneyDepositStart && !cryptoPayoutStart
+          && !mobileMoneyPayoutStart)) return false;
     try {
       const rawLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
       if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 500) {
@@ -212,6 +216,104 @@ function createIntegrationApiRoutes({
             reference: body.reference || null,
             response,
             created_at: existing?.created_at || timestamp,
+            updated_at: timestamp,
+          },
+          true,
+        );
+        reply(res, 200, response);
+        return true;
+      }
+      if (mobileMoneyPayoutStart) {
+        if (credential.environment !== 'live'
+            || !Array.isArray(credential.scopes)
+            || !credential.scopes.includes('payouts:write')
+            || credential.payout_opt_in !== true) {
+          reply(res, 403, {
+            detail: 'Live payouts:write scope and explicit payout opt-in are required.',
+          });
+          return true;
+        }
+        if (typeof createMobileMoneyPayout !== 'function') {
+          reply(res, 503, { detail: 'Mobile Money payout service unavailable.' });
+          return true;
+        }
+        const owner = await db.collection('users').find_one(
+          { id: String(credential.user_id) }, { _id: 0, kyc_status: 1 },
+        );
+        if (!owner || owner.kyc_status !== 'verified') {
+          reply(res, 403, { detail: 'Verified KYC is required for payouts.' });
+          return true;
+        }
+        const idempotencyKey = String(req.headers?.['idempotency-key'] || '').trim();
+        if (idempotencyKey.length < 8 || idempotencyKey.length > 120) {
+          reply(res, 422, { detail: 'A valid Idempotency-Key header is required.' });
+          return true;
+        }
+        let body;
+        try {
+          body = await readJson(req, 32 * 1024);
+        } catch (error) {
+          reply(res, error.status || 400, { detail: error.message || 'Invalid request body.' });
+          return true;
+        }
+        const requestFingerprint = crypto.createHash('sha256')
+          .update(stableJson(body), 'utf8').digest('hex');
+        const operationId = `mobile_payout:${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex')}`;
+        const operations = db.collection('integration_operations');
+        const existing = await operations.find_one({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+        }, { _id: 0 });
+        if (existing) {
+          if (existing.request_fingerprint !== requestFingerprint) {
+            reply(res, 409, { detail: 'Idempotency key was used with a different request.' });
+            return true;
+          }
+          if (existing.response) {
+            reply(res, 200, existing.response);
+            return true;
+          }
+        }
+        const internalKey = `btpi_${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex').slice(0, 48)}`;
+        const result = await createMobileMoneyPayout(
+          credential.user_id, body, internalKey,
+        );
+        const transaction = result?.transaction || result;
+        if (!transaction?.id || !['pending', 'completed'].includes(String(transaction.status))) {
+          reply(res, 502, { detail: 'The payout was not safely recorded.' });
+          return true;
+        }
+        const response = {
+          id: String(transaction.id),
+          status: String(transaction.status),
+          payout: {
+            id: String(transaction.id),
+            reference: String(transaction.reference || ''),
+            status: String(transaction.status),
+            amount: Number(transaction.amount),
+            currency: String(transaction.currency || '').toUpperCase(),
+            ...(result?.pending_manual ? { pending_manual: true } : {}),
+          },
+        };
+        const timestamp = new Date(now()).toISOString();
+        await operations.replace_one(
+          { id: operationId },
+          {
+            id: operationId,
+            user_id: String(credential.user_id),
+            environment: credential.environment,
+            kind: 'payout',
+            business_id: response.id,
+            status: response.status,
+            request_fingerprint: requestFingerprint,
+            reference: body.reference || null,
+            response,
+            created_at: existing?.created_at || transaction.created_at || timestamp,
             updated_at: timestamp,
           },
           true,
