@@ -288,6 +288,31 @@ test('admin payout config accepts provider-specific withdrawal identifiers witho
   assert.equal(collections.settings.rows[0].mobile_money.operators[1].operator, 'orange');
 });
 
+test('admin payout config saves provider rows with valid local currency codes', async () => {
+  const { service, collections } = setup();
+  const result = await call(service, 'PATCH', '/api/admin/transfer/config', {
+    mobile_money: {
+      enabled: true,
+      operators: [
+        {
+          provider: 'afribapay', country: 'UG', currency: 'UGX',
+          operator: 'airtel', code: 'airtel_ug', name: 'Airtel Money', active: true,
+        },
+        {
+          provider: 'mbiyo', country: 'GH', currency: 'GHS',
+          network: 'mtn', code: 'mtn_gh', name: 'MTN Mobile Money', active: true,
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.deepEqual(
+    collections.settings.rows[0].mobile_money.operators.map(operator => operator.currency),
+    ['UGX', 'GHS'],
+  );
+});
+
 test('admin payout config identifies the exact incomplete operator row', async () => {
   const { service } = setup();
   const result = await call(service, 'PATCH', '/api/admin/transfer/config', {

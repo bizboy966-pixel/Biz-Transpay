@@ -20,3 +20,9 @@ Merchant integrations must discover operator codes independently for deposits an
 **Why:** Official Burkina collection and disbursement contracts use different Moov route identifiers, and deployments may configure different public aliases. Assuming one universal code breaks otherwise valid integrations.
 
 **How to apply:** Present direction-specific enabled catalogues and examples. Treat the serving environment's catalogue as the authority for new operations; keep provider routing and credentials private.
+
+Provider payout catalogues may contain ISO local currencies beyond the customer wallets the app currently supports. These rows must remain editable and saveable in admin, while customer-facing payout catalogues include only currencies backed by the withdrawal flow (currently XOF and XAF).
+
+**Why:** Rejecting a complete catalogue because one provider row uses a valid local currency prevents unrelated provider settings from being saved; exposing unsupported currencies would instead offer a withdrawal the wallet cannot execute.
+
+**How to apply:** Validate currency-code shape for stored provider rows, preserve all provider entries, and filter unsupported payout currencies from every customer and integration catalogue until wallet and settlement support is implemented.

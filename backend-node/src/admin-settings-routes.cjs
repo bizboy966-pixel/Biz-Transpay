@@ -245,7 +245,11 @@ function validateWithdrawalCatalog(section) {
       invalidFields.push('prestataire');
     }
     if (!/^[A-Z]{2}$/.test(country)) invalidFields.push('pays');
-    if (!['XOF', 'XAF'].includes(currency)) invalidFields.push('devise');
+    // Provider catalogues can include local currencies outside the two
+    // customer wallets currently supported for Mobile Money payouts. Keep
+    // those rows editable in admin, but only expose executable wallet routes
+    // from the payout catalogue.
+    if (!/^[A-Z]{3}$/.test(currency)) invalidFields.push('devise');
     if (!code || code.length > 120) invalidFields.push('identifiant');
     if (invalidFields.length) {
       const label = String(operator.name || operator.country_label || '').trim().slice(0, 80);

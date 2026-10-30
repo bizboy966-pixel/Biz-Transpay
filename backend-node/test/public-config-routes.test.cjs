@@ -184,6 +184,13 @@ test('fee configuration is authenticated, provider-neutral, and uses configured 
           platform_fee_pct: 2,
           min: 100,
           max: 500000,
+        }, {
+          provider: 'afribapay',
+          country: 'UG',
+          code: 'airtel_ug',
+          name: 'Airtel Money',
+          currency: 'UGX',
+          active: true,
         }],
       },
       crypto: { enabled: true, fees: { BTC: 2.5 } },
@@ -207,7 +214,14 @@ test('fee configuration is authenticated, provider-neutral, and uses configured 
       }],
     },
     { id: 'payment_provider_mbiyo', enabled: false },
-    { id: 'payment_provider_afribapay', enabled: false },
+    {
+      id: 'payment_provider_afribapay',
+      enabled: true,
+      api_user_encrypted: 'encrypted-user',
+      api_key_encrypted: 'encrypted-key',
+      merchant_key_encrypted: 'encrypted-merchant',
+      agent_id_encrypted: 'encrypted-agent',
+    },
     {
       id: 'platform_config',
       conversion_fee: { enabled: true, type: 'fixed', value: 25, min_fee: 5, max_fee: 100 },
@@ -234,6 +248,10 @@ test('fee configuration is authenticated, provider-neutral, and uses configured 
   assert.equal(usdt.fee_fixed, 0.25);
   assert.equal(result.body.deposit.crypto.assets.some(asset => asset.asset_id === 'USDC.POLYGON'), false);
   assert.equal(result.body.withdrawal.mobile_money.operators[0].fee_pct, 3);
+  assert.equal(
+    result.body.withdrawal.mobile_money.operators.some(operator => operator.currency === 'UGX'),
+    false,
+  );
   assert.deepEqual(result.body.conversion, {
     enabled: true,
     type: 'fixed',

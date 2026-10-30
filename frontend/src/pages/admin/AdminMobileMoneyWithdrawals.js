@@ -11,6 +11,7 @@ const PROVIDERS = [
   { value: 'mbiyo', label: 'Biya Pay' },
   { value: 'afribapay', label: 'Afrika Pay' },
 ];
+const PAYOUT_CURRENCIES = new Set(['XOF', 'XAF']);
 const PAYDUNYA_WITHDRAWAL_NETWORKS = {
   'orange-money-senegal': 'orange',
   'free-money-senegal': 'free',
@@ -294,6 +295,7 @@ export default function AdminMobileMoneyWithdrawals() {
             <h2 className="font-cabinet font-bold text-slate-900">Catalogue des opérateurs</h2>
             <p className="text-[11px] text-slate-500 mt-0.5">Choisissez un prestataire pour voir et gérer uniquement ses pays et opérateurs. Activer un itinéraire le désactive chez les autres prestataires.</p>
             <p className="text-[11px] text-slate-500 mt-1">Les limites encadrent le montant d’un retrait. Un maximum vide signifie « sans plafond » ; les limites n’empêchent pas d’enregistrer un opérateur désactivé.</p>
+            <p className="text-[11px] text-amber-700 mt-1">Les devises autres que XOF/XAF peuvent être enregistrées, mais ne sont pas encore disponibles dans les portefeuilles de retrait.</p>
           </div>
         </div>
 
@@ -351,13 +353,14 @@ function WithdrawalOperator({ operator, onChange, onArchive }) {
               <span className="font-bold text-sm text-slate-900">{operator.name || 'Sans nom'}</span>
               <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${providerColor}`}>{providerLabel}</span>
               {operator.archived && <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[9px] font-bold">ARCHIVÉ</span>}
+              {!PAYOUT_CURRENCIES.has(String(operator.currency || '').toUpperCase()) && <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 text-[9px] font-bold">Devise indisponible au retrait</span>}
             </div>
             <div className="text-[10px] text-slate-500">{operator.country_label || operator.country} · {operator.code} · {operator.currency}</div>
           </div>
         </div>
         <div className="grid grid-cols-2 sm:flex items-center gap-2">
           <label className="inline-flex items-center gap-1.5 text-[10px] font-bold text-slate-600">
-            <input type="checkbox" checked={operator.active === true} disabled={operator.archived} onChange={(e) => onChange('active', e.target.checked)} className="accent-emerald-500" />
+            <input type="checkbox" checked={operator.active === true} disabled={operator.archived || (!PAYOUT_CURRENCIES.has(String(operator.currency || '').toUpperCase()) && operator.active !== true)} onChange={(e) => onChange('active', e.target.checked)} className="accent-emerald-500" />
             {operator.active ? 'Actif' : 'Inactif'}
           </label>
           <button type="button" onClick={() => setExpanded((value) => !value)} className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 text-[10px] font-bold text-slate-700"><ChevronDown className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} /> Modifier</button>

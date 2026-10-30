@@ -157,11 +157,20 @@ test('transfer config requires a session and exposes only active, configured pay
             { provider: 'paydunya', country: 'TG', code: 'orange_tg', name: 'Orange Togo', currency: 'XOF', active: true },
             { provider: 'mbiyo', country: 'BF', code: 'mbiyo_moov', name: 'Moov Burkina', currency: 'XOF', fee_pct: 2, active: true },
             { provider: 'afribapay', country: 'BF', code: 'afribapay_moov', name: 'Duplicate route', currency: 'XOF', active: false },
+            { provider: 'afribapay', country: 'UG', code: 'airtel_ug', name: 'Airtel Money', currency: 'UGX', active: true },
           ],
         },
       },
       { id: 'payment_provider_paydunya', enabled: true, master_key_encrypted: 'encrypted' },
       { id: 'payment_provider_mbiyo', enabled: true, secret_key_encrypted: 'encrypted' },
+      {
+        id: 'payment_provider_afribapay',
+        enabled: true,
+        api_user_encrypted: 'encrypted-user',
+        api_key_encrypted: 'encrypted-key',
+        merchant_key_encrypted: 'encrypted-merchant',
+        agent_id_encrypted: 'encrypted-agent',
+      },
     ],
   });
   const result = await call(service, undefined, '/api/transfer/config', 'GET');

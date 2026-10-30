@@ -542,6 +542,7 @@ function createTransferRoutes({
             const provider = String(operator.provider || 'paydunya').toLowerCase();
             if (!mm.enabled || !providerReady[provider]
                 || operator.active === false || operator.archived || operator.hidden
+                || !['XOF', 'XAF'].includes(String(operator.currency || '').toUpperCase())
                 || !['paydunya', 'mbiyo', 'afribapay'].includes(provider)) return false;
             const identity = [
               String(operator.country || '').toUpperCase(),

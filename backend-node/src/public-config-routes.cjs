@@ -329,7 +329,8 @@ function publicWithdrawalOperators(transferConfig, providers, env) {
     .filter(operator => {
       const provider = String(operator.provider || 'paydunya').toLowerCase();
       if (!Object.hasOwn(ready, provider) || !ready[provider]
-          || operator.active === false || operator.archived || operator.hidden) return false;
+          || operator.active === false || operator.archived || operator.hidden
+          || !['XOF', 'XAF'].includes(String(operator.currency || '').toUpperCase())) return false;
       const key = [
         String(operator.country || '').toUpperCase(),
         String(operator.code || '').toLowerCase().replace(/^mbiyo_/, ''),
