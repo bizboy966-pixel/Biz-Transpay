@@ -2,6 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { Readable } = require('node:stream');
 const { createCryptoCatalogRoutes } = require('../src/crypto-catalog-routes.cjs');
 const security = require('../src/security.cjs');
 const { matches, project, applyUpdate } = require('../src/document-store.cjs');
@@ -47,6 +48,7 @@ function makeSetup({
     settings: new Collection(settings),
     users: new Collection(users),
     admin_logs: new Collection(),
+    crypto_deposits: new Collection(),
   };
   let providerCalls = 0;
   const fetcher = fetchImpl || (async (url, options) => {
@@ -63,12 +65,23 @@ function makeSetup({
         if (token === 'valid-session') return { userId: 'user-1' };
         throw Object.assign(new Error('Session requise'), { status: 401 });
       },
+      requireRecentAuth(authenticated) { return authenticated.userId; },
     },
     sessionSecret: 'test-session-secret',
     env: { IZIPAY_BASE_URL: 'https://mock.izipay.test', ...env },
     fetchImpl: fetcher,
   });
   return { service, collections, getProviderCalls: () => providerCalls };
+}
+
+async function post(service, path, body, authorization = 'Bearer valid-session') {
+  const req = Readable.from([Buffer.from(JSON.stringify(body))]);
+  req.method = 'POST';
+  req.url = path;
+  req.headers = { authorization, 'content-type': 'application/json' };
+  const res = makeResponse();
+  const handled = await service.handleRoute(req, res);
+  return { handled, status: res.status, body: res.body ? JSON.parse(res.body) : null };
 }
 
 function providerSettings(secret = 'test-session-secret') {
@@ -195,6 +208,95 @@ test('conversion crypto wallets require a session and only return active rate-co
       network_name: 'Tron (TRC20)', balance: 8, value_usdt: 8,
     },
   ]);
+});
+
+test('crypto deposit uses a stable idempotency key and never credits before provider confirmation', async () => {
+  const providerCalls = [];
+  const { service, collections } = makeSetup({
+    settings: [
+      providerSettings(),
+      {
+        id: 'deposit_config',
+        crypto: {
+          enabled: true,
+          fees_gateway: { 'USDT.TRC20': 2 },
+          fees_platform: { 'USDT.TRC20': 1 },
+          fees_gateway_fixed: { 'USDT.TRC20': 0.1 },
+          fees_platform_fixed: { 'USDT.TRC20': 0.05 },
+        },
+      },
+      { id: 'platform_config', crypto_usdt_rates: { USDT: 1 } },
+    ],
+    providerAssets: [
+      { assetCode: 'USDT.TRC20', isActive: true, minimum: 5, maximum: 5000 },
+    ],
+    fetchImpl: async (url, options = {}) => {
+      providerCalls.push({ url, options });
+      if (String(url).endsWith('/v1/assets')) {
+        return { ok: true, status: 200, text: async () => JSON.stringify([
+          { assetCode: 'USDT.TRC20', isActive: true, minimum: 5, maximum: 5000 },
+        ]) };
+      }
+      return {
+        ok: true,
+        status: 201,
+        text: async () => JSON.stringify({
+          id: 'provider-intent-1',
+          status: 'pending',
+          depositAddress: 'TTestDepositAddress',
+          amountToSend: '100',
+          expiresAt: '2030-01-01T00:00:00Z',
+        }),
+      };
+    },
+  });
+  const body = {
+    amount: 100,
+    asset_code: 'USDT.TRC20',
+    full_name: 'Test User',
+    email: 'test@example.com',
+    refund_address: 'TTestRefundAddress',
+    idempotency_key: 'crypto-deposit-001',
+  };
+
+  const first = await post(service, '/api/deposits/crypto', body);
+  assert.equal(first.handled, true);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.status, 'pending');
+  assert.equal(first.body.deposit_address, 'TTestDepositAddress');
+  assert.equal(first.body.wallet_field, 'balance_crypto_usdt_trc20');
+  assert.equal(collections.crypto_deposits.rows.length, 1);
+  assert.equal(providerCalls.filter(call => call.options.method === 'POST').length, 1);
+  assert.equal(providerCalls.find(call => call.options.method === 'POST')
+    .options.headers['idempotency-key'], `izipay-deposit-${first.body.id}`);
+
+  const replay = await post(service, '/api/deposits/crypto', body);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.id, first.body.id);
+  assert.equal(providerCalls.filter(call => call.options.method === 'POST').length, 1);
+  assert.equal(Object.hasOwn(collections.users.rows[0] || {}, 'balance_crypto_usdt_trc20'), false);
+});
+
+test('crypto deposit rejects unsupported amounts before creating a provider intent', async () => {
+  let providerPostCount = 0;
+  const { service, collections } = makeSetup({
+    settings: [providerSettings()],
+    fetchImpl: async () => {
+      providerPostCount += 1;
+      throw new Error('provider must not be called');
+    },
+  });
+  const result = await post(service, '/api/deposits/crypto', {
+    amount: 0,
+    asset_code: 'USDT.TRC20',
+    full_name: 'Test User',
+    email: 'test@example.com',
+    refund_address: 'TTestRefundAddress',
+    idempotency_key: 'crypto-deposit-002',
+  });
+  assert.equal(result.status, 400);
+  assert.equal(providerPostCount, 0);
+  assert.equal(collections.crypto_deposits.rows.length, 0);
 });
 
 test('conversion quote returns the configured fee, rate, bounds, and received amount', async () => {

@@ -10,6 +10,16 @@ function pickFields(document, fields) {
     .map(field => [field, document[field]]));
 }
 
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => (
+      `${JSON.stringify(key)}:${stableJson(value[key])}`
+    )).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function publicCryptoDeposit(document) {
   const result = pickFields(document, [
     'id', 'status', 'amount', 'asset_code', 'coin', 'network', 'credit_currency',
@@ -64,7 +74,7 @@ function reply(res, status, body) {
 
 function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
-  executeExchange, createPaymentLink,
+  executeExchange, createPaymentLink, createCryptoDeposit,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -78,6 +88,8 @@ function createIntegrationApiRoutes({
       && url.pathname === '/api/integration/v1/exchanges';
     const linkCreation = req.method === 'POST'
       && url.pathname === '/api/integration/v1/links';
+    const cryptoDepositStart = req.method === 'POST'
+      && url.pathname === '/api/integration/v1/crypto/deposits';
     const listPaths = {
       '/api/integration/v1/deposits': 'deposit',
       '/api/integration/v1/payouts': 'payout',
@@ -104,10 +116,10 @@ function createIntegrationApiRoutes({
       ? /^\/api\/integration\/v1\/crypto\/payouts\/([^/]+)$/.exec(url.pathname) : null;
     const isDetail = exchangeMatch || linkPaymentsMatch || linkMatch || payoutMatch
       || depositMatch || cryptoDepositMatch || cryptoPayoutMatch;
-    if ((req.method !== 'GET' && !exchangeExecution && !linkCreation)
+    if ((req.method !== 'GET' && !exchangeExecution && !linkCreation && !cryptoDepositStart)
         || (!kind && !isTransactions && !isDetail && !cryptoAssetCatalog
           && !mobileMoneyOperatorCatalog && !exchangeQuote
-          && !exchangeExecution && !linkCreation)) return false;
+          && !exchangeExecution && !linkCreation && !cryptoDepositStart)) return false;
     try {
       const rawLimit = url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 100;
       if (!Number.isInteger(rawLimit) || rawLimit < 1 || rawLimit > 500) {
@@ -115,6 +127,83 @@ function createIntegrationApiRoutes({
         return true;
       }
       const credential = await authenticateIntegrationApi({ db, req, now });
+      if (cryptoDepositStart) {
+        if (credential.environment !== 'live'
+            || !Array.isArray(credential.scopes)
+            || !credential.scopes.includes('deposits:write')) {
+          reply(res, 403, { detail: 'Live deposit scope is required.' });
+          return true;
+        }
+        if (typeof createCryptoDeposit !== 'function') {
+          reply(res, 503, { detail: 'Crypto deposit service unavailable.' });
+          return true;
+        }
+        const idempotencyKey = String(req.headers?.['idempotency-key'] || '').trim();
+        if (idempotencyKey.length < 8 || idempotencyKey.length > 120) {
+          reply(res, 422, { detail: 'A valid Idempotency-Key header is required.' });
+          return true;
+        }
+        let body;
+        try {
+          body = await readJson(req, 32 * 1024);
+        } catch (error) {
+          reply(res, error.status || 400, { detail: error.message || 'Invalid request body.' });
+          return true;
+        }
+        const requestFingerprint = crypto.createHash('sha256')
+          .update(stableJson(body), 'utf8').digest('hex');
+        const operationId = `crypto_deposit:${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex')}`;
+        const operations = db.collection('integration_operations');
+        const existing = await operations.find_one({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+        }, { _id: 0 });
+        if (existing) {
+          if (existing.request_fingerprint !== requestFingerprint) {
+            reply(res, 409, { detail: 'Idempotency key was used with a different request.' });
+            return true;
+          }
+          if (existing.response) {
+            reply(res, 200, existing.response);
+            return true;
+          }
+        }
+        const internalIdempotencyKey = `btpi_${crypto.createHash('sha256')
+          .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
+          .digest('hex').slice(0, 48)}`;
+        const deposit = await createCryptoDeposit(
+          credential.user_id,
+          { ...body, idempotency_key: internalIdempotencyKey },
+        );
+        const response = {
+          id: deposit.id,
+          status: deposit.status || 'pending',
+          deposit: publicCryptoDeposit(deposit),
+        };
+        const timestamp = new Date(now()).toISOString();
+        await operations.replace_one(
+          { id: operationId },
+          {
+            id: operationId,
+            user_id: String(credential.user_id),
+            environment: credential.environment,
+            kind: 'crypto_deposit',
+            business_id: String(deposit.id),
+            status: response.status,
+            request_fingerprint: requestFingerprint,
+            reference: body.reference || null,
+            response,
+            created_at: existing?.created_at || timestamp,
+            updated_at: timestamp,
+          },
+          true,
+        );
+        reply(res, 200, response);
+        return true;
+      }
       if (exchangeExecution) {
         if (credential.environment !== 'live'
             || !Array.isArray(credential.scopes)

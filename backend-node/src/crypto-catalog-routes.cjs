@@ -2,6 +2,7 @@
 
 const { createHash } = require('node:crypto');
 const { sessionToken } = require('./auth-session-routes.cjs');
+const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
 const { getAppFeatures, getPlatformConfig } = require('./public-config-routes.cjs');
 const { authorizeAdmin } = require('./admin-authorization.cjs');
@@ -353,6 +354,26 @@ function createCryptoCatalogRoutes({
 
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
+    if (req.method === 'POST' && url.pathname === '/api/deposits/crypto') {
+      let userId;
+      try {
+        const authenticated = await sessionService.authenticate(sessionToken(req));
+        userId = sessionService.requireRecentAuth(authenticated);
+      } catch (error) {
+        reply(res, error.status || 401, { detail: error.message || 'Session requise' });
+        return true;
+      }
+      try {
+        const body = await readJson(req, 32 * 1024);
+        reply(res, 200, await createCryptoDepositIntent(userId, body));
+      } catch (error) {
+        const safe = publicConfigError(error);
+        reply(res, safe?.status || 500, {
+          detail: safe?.message || 'Impossible de créer le dépôt crypto.',
+        });
+      }
+      return true;
+    }
     if (req.method === 'GET' && url.pathname === '/api/admin/crypto/coins') {
       try {
         await authorizeAdmin(req, {
@@ -687,6 +708,204 @@ function createCryptoCatalogRoutes({
     }));
   }
 
+  async function createCryptoDepositIntent(userId, body) {
+    const amount = Number(body.amount);
+    const assetCode = String(body.asset_code || '').trim().toUpperCase();
+    const idempotencyKey = String(body.idempotency_key || '').trim();
+    const fullName = String(body.full_name || '').trim();
+    const email = String(body.email || '').trim().toLowerCase();
+    const refundAddress = String(body.refund_address || '').trim();
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1e12) {
+      throw httpError(400, 'Montant crypto invalide');
+    }
+    if (!assetCode || assetCode.length > 32
+        || !/^[a-zA-Z0-9._-]{8,128}$/.test(idempotencyKey)
+        || !fullName || fullName.length > 200
+        || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)
+        || !refundAddress || refundAddress.length > 256) {
+      throw httpError(422, 'Informations du dépôt crypto invalides');
+    }
+    if (Number(amount.toFixed(6)) !== amount) {
+      throw httpError(400, 'Le montant crypto accepte au maximum 6 décimales');
+    }
+
+    const features = await getAppFeatures(db);
+    if (features.wallet_crypto_enabled === false
+        || features.deposit_crypto_enabled === false) {
+      throw httpError(403, 'Les dépôts crypto sont désactivés');
+    }
+    const section = await getDepositCryptoConfig();
+    if (section.enabled === false) throw httpError(403, 'Les dépôts crypto sont désactivés');
+    const config = await credentials();
+    if (!config.configured) throw httpError(503, 'Passerelle crypto non configurée');
+    const providerRows = await providerAssets(config);
+    const catalog = catalogMap(providerRows || []);
+    const spec = ASSET_SPECS.find(candidate => {
+      const asset = catalog.get(candidate.id);
+      const providerCode = String(asset?.assetCode || '').trim().toUpperCase();
+      return candidate.id === assetCode
+        || `${candidate.coin}.${candidate.network}` === assetCode
+        || providerCode === assetCode;
+    });
+    if (!spec) throw httpError(400, 'Cryptomonnaie ou réseau non pris en charge');
+    const asset = catalog.get(spec.id);
+    if (!asset?.isActive || !assetEnabled(section, spec)) {
+      throw httpError(400, 'Cet actif ou réseau n’est pas activé');
+    }
+    const minimum = numeric(asset.minimum);
+    const maximum = numeric(asset.maximum, 1e12) || 1e12;
+    if (amount < minimum || amount > maximum) {
+      throw httpError(400, `Montant hors limites (${minimum} - ${maximum} ${spec.coin})`);
+    }
+    const platform = await getPlatformConfig(db);
+    const rate = cryptoRate(platform, spec.coin);
+    if (rate === null || rate <= 0) {
+      throw httpError(503, 'Le taux de conversion crypto est indisponible');
+    }
+    const feeSplit = feePercentSplit(section, spec.coin, spec.id);
+    const gatewayFixed = fixedFee(section, 'fees_gateway_fixed', spec);
+    const platformFixed = fixedFee(section, 'fees_platform_fixed', spec);
+    const feePct = feeSplit.gateway + feeSplit.platform;
+    const feeFixed = gatewayFixed + platformFixed;
+    const feeEstimate = (amount * feePct / 100 + feeFixed) * rate;
+    if (feePct >= 100 || amount * rate - feeEstimate <= 0) {
+      throw httpError(503, 'Configuration de frais crypto invalide');
+    }
+
+    const fingerprint = createHash('sha256').update(JSON.stringify({
+      amount, asset_code: assetCode, full_name: fullName, email, refund_address: refundAddress,
+    })).digest('hex');
+    const id = createHash('sha256')
+      .update(`izipay-deposit:${userId}:${idempotencyKey}`).digest('hex').slice(0, 32);
+    const deposits = db.collection('crypto_deposits');
+    let existing = await deposits.find_one({ id, user_id: String(userId) }, { _id: 0 });
+    if (existing && existing.request_fingerprint !== fingerprint) {
+      throw httpError(409, 'Cette clé d’idempotence est déjà associée à un autre dépôt');
+    }
+    if (existing?.deposit_address
+        || ['confirmed', 'expired', 'failed'].includes(existing?.status)) return existing;
+
+    const createdAt = existing?.created_at || new Date().toISOString();
+    const local = {
+      ...(existing || {}),
+      id,
+      user_id: String(userId),
+      idempotency_key: idempotencyKey,
+      request_fingerprint: fingerprint,
+      amount,
+      asset_code: assetCode,
+      catalog_asset_id: spec.id,
+      coin: spec.coin,
+      network: spec.network,
+      customer_email: email,
+      customer_name: fullName,
+      credit_currency: spec.id,
+      wallet_field: walletField(spec),
+      usdt_rate: rate,
+      fee_pct: feePct,
+      fee_fixed: feeFixed,
+      gateway_fee_pct: feeSplit.gateway,
+      platform_fee_pct: feeSplit.platform,
+      gateway_fee_fixed: gatewayFixed,
+      platform_fee_fixed: platformFixed,
+      status: existing?.status || 'creating',
+      created_at: createdAt,
+      updated_at: new Date().toISOString(),
+    };
+    if (!existing) {
+      try {
+        await deposits.insert_one(local);
+      } catch {
+        existing = await deposits.find_one({ id, user_id: String(userId) }, { _id: 0 });
+        if (!existing || existing.request_fingerprint !== fingerprint) {
+          throw httpError(409, 'Dépôt déjà en cours de création');
+        }
+      }
+    }
+
+    const parts = fullName.split(/\s+/, 2);
+    const providerBody = {
+      requestedCoin: assetCode,
+      amount: amount.toFixed(6),
+      customer: {
+        firstName: parts[0] || 'Client',
+        lastName: parts[1] || parts[0] || 'Client',
+        email,
+        refundAddress,
+      },
+      merchantReference: id,
+      metadata: { user_id: String(userId), kind: 'crypto_deposit' },
+    };
+    let response;
+    try {
+      response = await fetchImpl(`${config.baseUrl}/v1/payment-intents/direct`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${config.apiKey}`,
+          accept: 'application/json',
+          'content-type': 'application/json',
+          'idempotency-key': `izipay-deposit-${id}`,
+        },
+        body: JSON.stringify(providerBody),
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch {
+      await deposits.update_one({ id, user_id: String(userId) }, {
+        $set: { status: 'provider_unknown', updated_at: new Date().toISOString() },
+      });
+      throw httpError(502, 'Résultat du dépôt inconnu; réessayez avec la même clé.');
+    }
+    let payload;
+    try {
+      const text = await response.text();
+      if (text.length > 512_000) throw new Error('oversized provider response');
+      payload = JSON.parse(text);
+    } catch {
+      await deposits.update_one({ id, user_id: String(userId) }, {
+        $set: { status: 'provider_unknown', updated_at: new Date().toISOString() },
+      });
+      throw httpError(502, 'Réponse crypto invalide; réessayez avec la même clé.');
+    }
+    if (!response.ok) {
+      const failed = response.status < 500;
+      await deposits.update_one({ id, user_id: String(userId) }, {
+        $set: {
+          status: failed ? 'failed' : 'provider_unknown',
+          updated_at: new Date().toISOString(),
+        },
+      });
+      throw httpError(failed ? 400 : 502, failed
+        ? 'La passerelle a refusé le dépôt crypto.'
+        : 'Résultat du dépôt inconnu; réessayez avec la même clé.');
+    }
+    const depositAddress = String(payload.depositAddress || '').trim();
+    if (!depositAddress) {
+      await deposits.update_one({ id, user_id: String(userId) }, {
+        $set: { status: 'provider_unknown', updated_at: new Date().toISOString() },
+      });
+      throw httpError(502, 'Adresse de dépôt indisponible; réessayez avec la même clé.');
+    }
+    const providerExpiry = payload.expiresAt || null;
+    const parsedExpiry = providerExpiry ? Date.parse(providerExpiry) : NaN;
+    const expiresAt = Number.isFinite(parsedExpiry)
+      ? new Date(parsedExpiry).toISOString()
+      : new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const result = {
+      ...local,
+      status: String(payload.status || 'pending').toLowerCase(),
+      izipay_intent_id: payload.id || null,
+      deposit_address: depositAddress,
+      memo: payload.memo || null,
+      memo_type: payload.memoType || null,
+      amount_to_send: payload.amountToSend || payload.amountCryptoExpected || null,
+      expires_at: expiresAt,
+      izipay_expires_at: providerExpiry,
+      updated_at: new Date().toISOString(),
+    };
+    await deposits.update_one({ id, user_id: String(userId) }, { $set: result });
+    return result;
+  }
+
   async function integrationExchangeQuote(fromCurrency, toCurrency, amount) {
     const query = new URLSearchParams({
       from_currency: String(fromCurrency ?? ''),
@@ -716,6 +935,7 @@ function createCryptoCatalogRoutes({
     integrationCryptoAssets,
     integrationExchangeQuote,
     getPayout,
+    createCryptoDepositIntent,
     activeExchangeAssets,
     providerAssets,
     exchangeRateContext,

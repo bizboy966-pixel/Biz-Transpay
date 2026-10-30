@@ -76,7 +76,7 @@ function setup({
   }),
   scopes = ['transactions:read'],
   environment = 'live',
-  executeExchange, createPaymentLink,
+  executeExchange, createPaymentLink, createCryptoDeposit,
 } = {}) {
   const selectedPublicKey = environment === 'test' ? 'pk_test_demo' : publicKey;
   const selectedSecretKey = environment === 'test' ? 'sk_test_demo' : secretKey;
@@ -176,7 +176,7 @@ function setup({
   const db = { collection: name => collections[name] };
   const service = createIntegrationApiRoutes({
     db, now: () => now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
-    executeExchange, createPaymentLink,
+    executeExchange, createPaymentLink, createCryptoDeposit,
   });
   return { service, collections };
 }
@@ -260,6 +260,67 @@ test('integration exchange requires live scope and Idempotency-Key, then records
     key: 'pk_test_demo',
   })).status, 403);
   assert.equal(executed.length, 2);
+});
+
+test('integration crypto deposit is live-scope guarded and idempotent', async () => {
+  const created = [];
+  const createCryptoDeposit = async (userId, payload) => {
+    created.push({ userId, payload });
+    return {
+      id: 'crypto-deposit-1',
+      status: 'pending',
+      asset_code: payload.asset_code,
+      amount: payload.amount,
+      deposit_address: 'T-provider-address',
+      network: 'TRC20',
+    };
+  };
+  const { service, collections } = setup({
+    scopes: ['transactions:read', 'deposits:write'],
+    createCryptoDeposit,
+  });
+  const request = {
+    method: 'POST',
+    url: '/api/integration/v1/crypto/deposits',
+    idempotencyKey: 'crypto-api-request-01',
+    body: {
+      amount: 12,
+      asset_code: 'USDT.TRC20',
+      full_name: 'Merchant Client',
+      email: 'client@example.com',
+      refund_address: 'T-refund-address',
+    },
+  };
+  const first = await call(service, request);
+  const retry = await call(service, request);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.id, 'crypto-deposit-1');
+  assert.deepEqual(retry.body, first.body);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].userId, 'merchant-1');
+  assert.match(created[0].payload.idempotency_key, /^btpi_[a-f0-9]{48}$/);
+  assert.equal(collections.integration_operations.rows.filter(
+    row => row.id.startsWith('crypto_deposit:'),
+  ).length, 1);
+
+  assert.equal((await call(service, {
+    ...request,
+    body: { ...request.body, amount: 13 },
+  })).status, 409);
+  assert.equal(created.length, 1);
+
+  const noScope = setup({ createCryptoDeposit });
+  assert.equal((await call(noScope.service, request)).status, 403);
+  const testEnvironment = setup({
+    environment: 'test',
+    scopes: ['deposits:write'],
+    createCryptoDeposit,
+  });
+  assert.equal((await call(testEnvironment.service, {
+    ...request,
+    authorization: 'Bearer sk_test_demo',
+    key: 'pk_test_demo',
+  })).status, 403);
 });
 
 test('integration payment-link creation requires scope and persists an owner-scoped result', async () => {

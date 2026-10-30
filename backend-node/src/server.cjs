@@ -235,6 +235,7 @@ function createServer({
     getExchangeQuote: cryptoCatalog.integrationExchangeQuote,
     executeExchange: exchange.handleIntegration,
     createPaymentLink: paymentLinks.handleIntegration,
+    createCryptoDeposit: cryptoCatalog.createCryptoDepositIntent,
     getMobileMoneyOperators: (direction, userId) => (
       direction === 'deposit'
         ? publicConfig.integrationMobileMoneyOperators(direction, userId)

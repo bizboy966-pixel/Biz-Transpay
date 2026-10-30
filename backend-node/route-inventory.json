@@ -643,7 +643,7 @@
       "path": "/api/deposits/crypto",
       "source": "backend/server.py",
       "handler": "create_crypto_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -842,7 +842,7 @@
       "path": "/api/integration/v1/crypto/deposits",
       "source": "backend/integration_api.py",
       "handler": "start_crypto_deposit",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
