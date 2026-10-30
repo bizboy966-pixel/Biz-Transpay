@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { Readable } = require('node:stream');
 const { createPaydunyaWebhookRoutes } = require('../src/paydunya-webhook-routes.cjs');
+const { matches, applyUpdate, project } = require('../src/document-store.cjs');
 
 const MASTER = 'mock-paydunya-master';
 const STATIC_HASH = createHash('sha512').update(MASTER).digest('hex');
@@ -12,22 +13,20 @@ const STATIC_HASH = createHash('sha512').update(MASTER).digest('hex');
 class Collection {
   constructor(rows = []) { this.rows = structuredClone(rows); }
   async find_one(query) {
-    const row = this.rows.find(item => Object.entries(query).every(([key, value]) => (
-      item[key] === value
-    )));
-    return row ? structuredClone(row) : null;
+    const row = this.rows.find(item => matches(item, query));
+    return row ? project(structuredClone(row), { _id: 0 }) : null;
   }
   async update_one(query, update) {
-    const row = this.rows.find(item => Object.entries(query).every(([key, value]) => (
-      item[key] === value
-    )));
-    if (!row) return { matched_count: 0, modified_count: 0 };
-    Object.assign(row, structuredClone(update.$set || {}));
+    const index = this.rows.findIndex(item => matches(item, query));
+    if (index < 0) return { matched_count: 0, modified_count: 0 };
+    this.rows[index] = applyUpdate(this.rows[index], update, false, query);
     return { matched_count: 1, modified_count: 1 };
   }
 }
 
-function createDb({ depositStatus = 'pending', expectedAmount = 1000 } = {}) {
+function createDb({
+  depositStatus = 'pending', expectedAmount = 1000, linkPayment = false,
+} = {}) {
   const collections = new Map([
     ['settings', new Collection([{
       id: 'payment_provider_paydunya', enabled: true, mode: 'test',
@@ -35,6 +34,7 @@ function createDb({ depositStatus = 'pending', expectedAmount = 1000 } = {}) {
     ['momo_deposits', new Collection([{
       id: 'deposit-1',
       user_id: 'user-1',
+      ...(linkPayment ? { link_payment_id: 'link-payment-1', source: 'link_payment' } : {}),
       provider: 'paydunya',
       paydunya_token: 'provider-invoice-1',
       paydunya_reference: 'ref-1',
@@ -59,6 +59,9 @@ function createDb({ depositStatus = 'pending', expectedAmount = 1000 } = {}) {
     }])],
     ['wallet_operations', new Collection()],
     ['transactions', new Collection()],
+    ['link_payments', new Collection(linkPayment ? [{
+      id: 'link-payment-1', status: 'pending', amount: expectedAmount,
+    }] : [])],
   ]);
   return {
     collection(name) {
@@ -119,8 +122,8 @@ function confirmation(amount = 1000) {
   };
 }
 
-function setup({ depositStatus, expectedAmount = 1000, providerResponse } = {}) {
-  const db = createDb({ depositStatus, expectedAmount });
+function setup({ depositStatus, expectedAmount = 1000, providerResponse, linkPayment } = {}) {
+  const db = createDb({ depositStatus, expectedAmount, linkPayment });
   let providerCalls = 0;
   const service = createPaydunyaWebhookRoutes({
     db,
@@ -197,6 +200,26 @@ test('PayDunya nested form webhook verifies with the provider and credits once a
   assert.equal(db.collection('momo_deposits').rows[0].status, 'approved');
   assert.equal(db.collection('transactions').rows[0].metadata.wallet_snapshot.balance_before, 0);
   assert.equal(db.collection('transactions').rows[0].metadata.wallet_snapshot.balance_after, 980);
+});
+
+test('PayDunya link payment webhook credits the merchant once and records the paid link status', async () => {
+  const { db, service, providerCalls } = setup({ linkPayment: true });
+  const payload = {
+    hash: STATIC_HASH,
+    data: { invoice: { token: 'provider-invoice-1' } },
+  };
+  const first = await call(service, payload);
+  const duplicate = await call(service, payload);
+  assert.equal(first.status, 200);
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(providerCalls(), 1);
+  assert.equal(db.collection('users').rows[0].balance_xof, 980);
+  assert.equal(db.collection('transactions').rows.length, 1);
+  assert.equal(db.collection('transactions').rows[0].type, 'link_payment');
+  assert.equal(db.collection('transactions').rows[0].metadata.link_payment_id, 'link-payment-1');
+  assert.equal(db.collection('link_payments').rows[0].status, 'paid');
+  assert.equal(db.collection('link_payments').rows[0].balance_before, 0);
+  assert.equal(db.collection('link_payments').rows[0].balance_after, 980);
 });
 
 test('PayDunya callback hash mismatch never calls provider or credits the wallet', async () => {

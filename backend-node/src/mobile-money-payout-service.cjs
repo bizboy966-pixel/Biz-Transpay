@@ -30,6 +30,24 @@ function digits(value) {
   return String(value || '').replace(/\D/g, '');
 }
 
+const COUNTRY_DIAL_CODES = {
+  BF: '226', BJ: '229', CI: '225', CM: '237', CG: '242', CD: '243',
+  GA: '241', GN: '224', ML: '223', NE: '227', SN: '221', TG: '228',
+  GH: '233', NG: '234', GM: '220', KE: '254', RW: '250', TZ: '255',
+  UG: '256', ZA: '27', ZM: '260', EG: '20',
+};
+
+function localPhone(value, country) {
+  let phone = digits(value);
+  if (phone.startsWith('00')) phone = phone.slice(2);
+  const dial = COUNTRY_DIAL_CODES[country];
+  if (dial && phone.startsWith(dial)) phone = phone.slice(dial.length);
+  if (phone.length < 6 || phone.length > 12) {
+    throw failure(422, 'Numéro Mobile Money invalide.');
+  }
+  return phone;
+}
+
 function providerStatus(payload) {
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
   return String(data?.status || data?.state || payload?.status || '').trim().toLowerCase();
@@ -43,6 +61,58 @@ function providerId(payload) {
 function createMobileMoneyPayoutService({
   db, sessionSecret = '', env = process.env, fetchImpl = globalThis.fetch,
 }) {
+  async function refundRejectedPayout(transaction, statusValue) {
+    const metadata = transaction?.metadata || {};
+    const provider = String(metadata.provider || '');
+    const walletField = String(metadata.wallet_field
+      || `balance_${String(transaction?.currency || '').toLowerCase()}`);
+    const amount = Number(metadata.total_debit);
+    if (!transaction?.id || !transaction.user_id
+        || !Number.isFinite(amount) || amount <= 0
+        || !/^balance_[a-zA-Z0-9_]+$/.test(walletField)) {
+      throw failure(503, 'Le remboursement du retrait doit être vérifié.');
+    }
+    const operationId = `${provider}-withdrawal-refund:${transaction.id}`;
+    const requestFingerprint = crypto.createHash('sha256')
+      .update(`${transaction.id}:${amount}:${walletField}`).digest('hex');
+    const verifiedAt = new Date().toISOString();
+    const refund = await applyWalletOperation(db, {
+      userId: String(transaction.user_id), operationId,
+      direction: 'credit', primaryField: walletField,
+      increments: { [walletField]: amount }, requestFingerprint,
+      ledger: {
+        id: `payout-refund-${transaction.id}`,
+        user_id: String(transaction.user_id), type: 'refund', direction: 'in',
+        amount, currency: String(transaction.currency || '').toUpperCase(),
+        status: 'completed', reference: `REF-${transaction.reference || transaction.id}`,
+        description: 'Remboursement du retrait Mobile Money refusé',
+        created_at: verifiedAt, completed_at: verifiedAt,
+        metadata: {
+          original_transaction_id: String(transaction.id),
+          provider, provider_status: String(statusValue || 'rejected'),
+          operation_id: operationId, wallet_operation_id: operationId,
+        },
+      },
+    });
+    if (!['applied', 'already'].includes(refund.state)) {
+      throw failure(503, 'Le remboursement du retrait doit être réconcilié.');
+    }
+    await db.collection('transactions').update_one(
+      { id: String(transaction.id), status: 'pending' },
+      { $set: {
+        status: 'failed', completed_at: verifiedAt, updated_at: verifiedAt,
+        'metadata.provider_status': String(statusValue || 'rejected'),
+        'metadata.refunded': true,
+        'metadata.refund_operation_id': operationId,
+        'metadata.refund_wallet_snapshot': refund.snapshot || null,
+      } },
+    );
+    return db.collection('transactions').find_one(
+      { id: String(transaction.id), user_id: String(transaction.user_id) },
+      { _id: 0 },
+    );
+  }
+
   async function createIntegrationPayout(userId, body, idempotencyKey) {
     const ownerId = String(userId || '');
     const country = String(body.country || '').trim().toUpperCase();
@@ -87,12 +157,56 @@ function createMobileMoneyPayoutService({
     const provider = String(operator.provider || 'paydunya').toLowerCase();
     const walletField = `balance_${currency.toLowerCase()}`;
     if (!Object.hasOwn(user, walletField)) throw failure(422, 'Portefeuille non disponible.');
+    let paydunyaCredentials;
+    let mbiyoApiKey;
+    let afribapayCredentials;
+    let providerPhone = recipient;
+    if (provider === 'paydunya') {
+      if (String(paydunya?.mode || '').toLowerCase() !== 'live'
+          || !operator.withdraw_mode) {
+        throw failure(503, 'PayDunya production ou mode de retrait non configuré.');
+      }
+      paydunyaCredentials = loadCredentials(paydunya, sessionSecret, env);
+      providerPhone = localPhone(recipient, country);
+    } else if (provider === 'mbiyo') {
+      if (String(mbiyo?.mode || '').toLowerCase() !== 'live') {
+        throw failure(503, 'Mbiyo doit être configuré en mode production pour les retraits.');
+      }
+      mbiyoApiKey = decryptSetting(mbiyo, 'api_key', sessionSecret)
+        || decryptSetting(mbiyo, 'secret_key', sessionSecret);
+      if (!mbiyoApiKey) throw failure(503, 'Clé Mbiyo non configurée.');
+      if (country === 'CI' || country === 'ML') providerPhone = localPhone(recipient, country);
+    } else if (provider === 'afribapay') {
+      if (String(afribapay?.mode || '').toLowerCase() !== 'live') {
+        throw failure(503, 'AfriBaPay doit être configuré en mode production pour les retraits.');
+      }
+      afribapayCredentials = {
+        apiUser: decryptSetting(afribapay, 'api_user', sessionSecret),
+        apiKey: decryptSetting(afribapay, 'api_key', sessionSecret),
+        merchantKey: decryptSetting(afribapay, 'merchant_key', sessionSecret),
+        apiBase: String(afribapay.live_api_base_url || afribapay.api_base_url || '').replace(/\/+$/, ''),
+        payoutBase: String(afribapay.live_payout_base_url || afribapay.payout_base_url || '').replace(/\/+$/, ''),
+      };
+      if (!afribapayCredentials.apiUser || !afribapayCredentials.apiKey
+          || !afribapayCredentials.merchantKey || !afribapayCredentials.apiBase
+          || !afribapayCredentials.payoutBase) {
+        throw failure(503, 'Configuration AfriBaPay de retrait incomplète.');
+      }
+    } else {
+      throw failure(503, 'Prestataire de retrait non pris en charge.');
+    }
     const fees = calculateFees(amount, operator, feeBearer);
     const totalDebit = Number(fees.charged_amount);
     const recipientGets = Number(fees.wallet_credit_amount);
     if (!Number.isFinite(totalDebit) || totalDebit <= 0
         || !Number.isFinite(recipientGets) || recipientGets <= 0) {
       throw failure(422, 'Frais de retrait invalides.');
+    }
+    const callbackOrigin = String(
+      env.OFFICIAL_DOMAIN || env.BIZTRANSPAY_PUBLIC_URL || '',
+    ).trim().replace(/\/+$/, '');
+    if (!/^https:\/\/[^/]+$/i.test(callbackOrigin)) {
+      throw failure(503, 'L’URL publique HTTPS des callbacks doit être configurée avant les retraits.');
     }
     const fingerprint = crypto.createHash('sha256')
       .update(JSON.stringify({
@@ -132,11 +246,17 @@ function createMobileMoneyPayoutService({
       userId: ownerId, operationId, direction: 'debit', primaryField: walletField,
       increments: { [walletField]: -totalDebit },
       requiredBalanceField: walletField, requiredBalanceAmount: totalDebit,
+      requestFingerprint: fingerprint,
       ledger: transaction,
     });
     if (debit.state === 'insufficient') throw failure(400, 'Solde insuffisant, frais inclus.');
     if (!['applied', 'already'].includes(debit.state)) {
       throw failure(503, 'Le retrait n’a pas pu être réservé en toute sécurité.');
+    }
+    if (debit.state === 'already') {
+      const saved = await transactions.find_one({ id: txId, user_id: ownerId }, { _id: 0 });
+      if (!saved) throw failure(503, 'Retrait précédemment réservé mais introuvable.');
+      return { transaction: saved, idempotent_replay: true, pending_manual: true };
     }
     await transactions.update_one({ id: txId, user_id: ownerId }, { $set: {
       'metadata.wallet_snapshot': debit.snapshot || null,
@@ -145,31 +265,13 @@ function createMobileMoneyPayoutService({
       'metadata.submission_phase': 'dispatching',
     } });
 
-    const callbackOrigin = String(
-      env.OFFICIAL_DOMAIN || env.BIZTRANSPAY_PUBLIC_URL || '',
-    ).trim().replace(/\/+$/, '');
-    if (!/^https:\/\/[^/]+$/i.test(callbackOrigin)) {
-      await transactions.update_one({ id: txId }, { $set: {
-        'metadata.submission_phase': 'manual_review',
-        'metadata.manual_review_required': true,
-        'metadata.manual_review_reason': 'callback_origin_not_configured',
-      } });
-      return {
-        transaction: await transactions.find_one({ id: txId }, { _id: 0 }),
-        pending_manual: true,
-      };
-    }
     const callbackUrl = `${callbackOrigin}/api/webhooks/${provider === 'paydunya' ? 'paydunya/disbursement' : provider}?ref=${encodeURIComponent(txId)}`;
     let upstream;
     try {
       if (provider === 'paydunya') {
-        const credentials = loadCredentials(paydunya, sessionSecret, env);
-        const base = paydunya.mode === 'live'
-          ? 'https://app.paydunya.com' : 'https://app.paydunya.com';
-        const alias = digits(recipient);
-        if (alias.length < 6 || alias.length > 15 || !operator.withdraw_mode) {
-          throw failure(422, 'Numéro ou mode de retrait PayDunya invalide.');
-        }
+        const credentials = paydunyaCredentials;
+        const base = 'https://app.paydunya.com';
+        const alias = providerPhone;
         const headers = {
           'PAYDUNYA-MASTER-KEY': credentials.master_key,
           'PAYDUNYA-PRIVATE-KEY': credentials.private_key,
@@ -187,8 +289,11 @@ function createMobileMoneyPayoutService({
           }),
         });
         const invoice = await responseJson(invoiceResponse);
-        if (!invoiceResponse.ok || String(invoice.response_code || '').padStart(2, '0') !== '00') {
-          throw failure(502, 'PayDunya n’a pas créé le retrait.');
+        const invoiceAccepted = invoiceResponse.ok
+          && String(invoice.response_code || '').padStart(2, '0') === '00';
+        if (!invoiceAccepted) {
+          throw failure(invoiceResponse.ok || (invoiceResponse.status >= 400 && invoiceResponse.status < 500)
+            ? 422 : 502, 'PayDunya n’a pas créé le retrait.');
         }
         const token = String(invoice.token || invoice.disburse_invoice || invoice.invoice_token || '');
         if (!token) throw failure(502, 'Référence de retrait PayDunya absente.');
@@ -201,15 +306,16 @@ function createMobileMoneyPayoutService({
           headers, body: JSON.stringify({ disburse_invoice: token, disburse_id: txId }),
         });
         upstream = await responseJson(submitResponse);
-        if (!submitResponse.ok || String(upstream.response_code || '').padStart(2, '0') !== '00') {
-          throw failure(502, 'Réponse PayDunya non confirmée; retrait conservé en attente.');
+        const payoutAccepted = submitResponse.ok
+          && String(upstream.response_code || '').padStart(2, '0') === '00';
+        if (!payoutAccepted) {
+          throw failure(submitResponse.ok || (submitResponse.status >= 400 && submitResponse.status < 500)
+            ? 422 : 502, 'PayDunya n’a pas confirmé le retrait.');
         }
       } else if (provider === 'mbiyo') {
-        const apiKey = decryptSetting(mbiyo, 'api_key', sessionSecret)
-          || decryptSetting(mbiyo, 'secret_key', sessionSecret);
+        const apiKey = mbiyoApiKey;
         const base = String(mbiyo.base_url || env.MBIYO_BASE_URL
           || 'https://dashboard.mbiyo.africa/api/v1').replace(/\/+$/, '');
-        if (!apiKey) throw failure(503, 'Clé Mbiyo non configurée.');
         const response = await fetchImpl(`${base}/merchant/payout`, {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
           headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', accept: 'application/json' },
@@ -218,22 +324,16 @@ function createMobileMoneyPayoutService({
             order_id: txId, callback_url: callbackUrl,
             metadata: {
               network: operator.network || operator.operator || operatorCode,
-              phone_number: recipient, country_code: country,
+              phone_number: providerPhone, country_code: country,
               beneficiary: String(body.recipient_name || user.full_name || recipient),
             },
           }),
         });
         upstream = await responseJson(response);
-        if (!response.ok) throw failure(502, 'Réponse Mbiyo non confirmée; retrait conservé en attente.');
+        if (!response.ok) throw failure(response.status >= 400 && response.status < 500
+          ? 422 : 502, 'Mbiyo n’a pas confirmé le retrait.');
       } else if (provider === 'afribapay') {
-        const apiUser = decryptSetting(afribapay, 'api_user', sessionSecret);
-        const apiKey = decryptSetting(afribapay, 'api_key', sessionSecret);
-        const merchantKey = decryptSetting(afribapay, 'merchant_key', sessionSecret);
-        const apiBase = String(afribapay.live_api_base_url || afribapay.api_base_url || '').replace(/\/+$/, '');
-        const payoutBase = String(afribapay.live_payout_base_url || afribapay.payout_base_url || '').replace(/\/+$/, '');
-        if (!apiUser || !apiKey || !merchantKey || !apiBase || !payoutBase) {
-          throw failure(503, 'Configuration AfriBaPay de retrait incomplète.');
-        }
+        const { apiUser, apiKey, merchantKey, apiBase, payoutBase } = afribapayCredentials;
         const tokenResponse = await fetchImpl(`${apiBase}/v1/token`, {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
           headers: { authorization: `Basic ${Buffer.from(`${apiUser}:${apiKey}`).toString('base64')}`, accept: 'application/json' },
@@ -251,11 +351,17 @@ function createMobileMoneyPayoutService({
           }),
         });
         upstream = await responseJson(response);
-        if (!response.ok) throw failure(502, 'Réponse AfriBaPay non confirmée; retrait conservé en attente.');
+        if (!response.ok) throw failure(response.status >= 400 && response.status < 500
+          ? 422 : 502, 'AfriBaPay n’a pas confirmé le retrait.');
       } else {
         throw failure(503, 'Prestataire de retrait non pris en charge.');
       }
     } catch (error) {
+      if (error.status >= 400 && error.status < 500) {
+        const latest = await transactions.find_one({ id: txId, user_id: ownerId }, { _id: 0 });
+        await refundRejectedPayout(latest, error.code || 'provider_rejected');
+        throw failure(422, 'Le prestataire a refusé le retrait; le montant a été remboursé.');
+      }
       await transactions.update_one({ id: txId, status: 'pending' }, { $set: {
         'metadata.submission_phase': 'outcome_unknown',
         'metadata.manual_review_required': true,
@@ -269,6 +375,11 @@ function createMobileMoneyPayoutService({
     }
     const upstreamId = providerId(upstream);
     const status = providerStatus(upstream) || 'pending';
+    if (['failed', 'rejected', 'cancelled', 'canceled', 'error'].includes(status)) {
+      const saved = await transactions.find_one({ id: txId, user_id: ownerId }, { _id: 0 });
+      const failed = await refundRejectedPayout(saved, status);
+      return { transaction: failed, pending_manual: false };
+    }
     await transactions.update_one({ id: txId, status: 'pending' }, { $set: {
       'metadata.provider_transaction_id': upstreamId || null,
       'metadata.provider_status': status,
@@ -281,7 +392,90 @@ function createMobileMoneyPayoutService({
     return { transaction: saved, pending_manual: !upstreamId };
   }
 
-  return { createIntegrationPayout };
+  async function refreshPayoutStatus(transactionId, userId) {
+    const transactions = db.collection('transactions');
+    const transaction = await transactions.find_one({
+      id: String(transactionId), user_id: String(userId),
+    }, { _id: 0 });
+    if (!transaction || transaction.status !== 'pending') return transaction;
+    const metadata = transaction.metadata || {};
+    const provider = String(metadata.provider || '');
+    if (!['mbiyo', 'afribapay'].includes(provider)
+        || metadata.submission_phase !== 'provider_id_persisted') return transaction;
+    const settings = db.collection('settings');
+    const config = await settings.find_one(
+      { id: `payment_provider_${provider}` }, { _id: 0 },
+    );
+    if (!config?.enabled || String(config.mode || '').toLowerCase() !== 'live') return transaction;
+
+    let response;
+    let payload;
+    try {
+      if (provider === 'mbiyo') {
+        const apiKey = decryptSetting(config, 'api_key', sessionSecret)
+          || decryptSetting(config, 'secret_key', sessionSecret);
+        if (!apiKey || !metadata.provider_transaction_id) return transaction;
+        const base = String(config.base_url || env.MBIYO_BASE_URL
+          || 'https://dashboard.mbiyo.africa/api/v1').replace(/\/+$/, '');
+        response = await fetchImpl(
+          `${base}/merchant/transactions/${encodeURIComponent(metadata.provider_transaction_id)}`,
+          {
+            method: 'GET', redirect: 'error', signal: AbortSignal.timeout(15_000),
+            headers: { authorization: `Bearer ${apiKey}`, accept: 'application/json' },
+          },
+        );
+      } else {
+        const apiUser = decryptSetting(config, 'api_user', sessionSecret);
+        const apiKey = decryptSetting(config, 'api_key', sessionSecret);
+        const apiBase = String(config.live_api_base_url || config.api_base_url || '').replace(/\/+$/, '');
+        if (!apiUser || !apiKey || !apiBase) return transaction;
+        const tokenResponse = await fetchImpl(`${apiBase}/v1/token`, {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+          headers: {
+            authorization: `Basic ${Buffer.from(`${apiUser}:${apiKey}`).toString('base64')}`,
+            accept: 'application/json',
+          },
+        });
+        const tokenPayload = await responseJson(tokenResponse);
+        const accessToken = String(tokenPayload?.data?.access_token || '');
+        if (!tokenResponse.ok || !accessToken) return transaction;
+        const statusUrl = new URL(
+          `${String(config.live_payout_base_url || config.payout_base_url || '').replace(/\/+$/, '')}/v1/status`,
+        );
+        statusUrl.searchParams.set('order_id', transaction.id);
+        response = await fetchImpl(statusUrl, {
+          method: 'GET', redirect: 'error', signal: AbortSignal.timeout(15_000),
+          headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+        });
+      }
+      payload = await responseJson(response);
+    } catch {
+      await transactions.update_one({ id: transaction.id, status: 'pending' }, { $set: {
+        'metadata.last_status_poll_error': 'provider_unavailable',
+        'metadata.last_status_poll_at': new Date().toISOString(),
+      } });
+      return transaction;
+    }
+    if (!response.ok) return transaction;
+    const currentStatus = providerStatus(payload);
+    const successful = ['success', 'successful', 'completed', 'confirmed', 'paid', 'approved'].includes(currentStatus);
+    const failed = ['failed', 'rejected', 'cancelled', 'canceled', 'error'].includes(currentStatus);
+    if (!successful && !failed) return transaction;
+
+    const verifiedAt = new Date().toISOString();
+    if (failed) {
+      return refundRejectedPayout(transaction, currentStatus);
+    } else {
+      await transactions.update_one({ id: transaction.id, status: 'pending' }, { $set: {
+        status: 'completed', completed_at: verifiedAt, updated_at: verifiedAt,
+        'metadata.provider_status': currentStatus,
+        'metadata.provider_verified_at': verifiedAt,
+      } });
+    }
+    return transactions.find_one({ id: transaction.id, user_id: String(userId) }, { _id: 0 });
+  }
+
+  return { createIntegrationPayout, refreshPayoutStatus };
 }
 
-module.exports = { createMobileMoneyPayoutService };
+module.exports = { createMobileMoneyPayoutService, decryptSetting };

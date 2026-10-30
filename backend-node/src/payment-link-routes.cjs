@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
 const { sessionToken } = require('./auth-session-routes.cjs');
+const { selectOperator } = require('./paydunya-invoice-routes.cjs');
 
 const INTERNAL_LINK_OWNER = Symbol('internalLinkOwner');
 const INTERNAL_LINK_IDEMPOTENCY = Symbol('internalLinkIdempotency');
@@ -157,7 +158,11 @@ function publicLinkPaymentStatus(payment) {
   for (const key of [
     'id', 'method', 'status', 'amount', 'currency', 'network', 'amount_to_send',
     'deposit_address', 'memo', 'memo_type', 'expires_at', 'created_at',
-    'pending_expires_at',
+    'pending_expires_at', 'charged_amount', 'amount_to_pay', 'fee',
+    'gateway_fee', 'platform_fee', 'instructions', 'payment_flow',
+    'otp_required', 'auth_mode', 'submission_unknown', 'challenge_status',
+    'amount_net', 'balance_before', 'balance_after', 'provider_reference',
+    'redirect_url', 'checkout_url',
   ]) {
     if (payment[key] !== undefined && payment[key] !== null) result[key] = payment[key];
   }
@@ -173,7 +178,18 @@ function publicLinkPaymentStatus(payment) {
   return result;
 }
 
-function createPaymentLinkRoutes({ db, sessionService }) {
+async function releaseSingleUseClaim(db, payment) {
+  if (!payment?.single_use_claim_id || !payment?.link_id) return;
+  await db.collection('payment_links').update_one(
+    { id: String(payment.link_id), single_use_claim_id: String(payment.single_use_claim_id) },
+    { $unset: { single_use_claim_id: '' } },
+  );
+}
+
+function createPaymentLinkRoutes({
+  db, sessionService, createLinkMobileMoneyDeposit, verifyBot,
+  settlePaydunyaDepositById, finalizeLinkMobileMoney, env = process.env,
+}) {
   async function handlePaymentLinks(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const path = url.pathname;
@@ -182,19 +198,378 @@ function createPaymentLinkRoutes({ db, sessionService }) {
     const publicMatch = req.method === 'GET' && /^\/api\/links\/public\/([^/]+)$/.exec(path);
     const paymentStatusMatch = req.method === 'GET'
       && /^\/api\/links\/payments\/([^/]+)$/.exec(path);
+    const finalizeMatch = req.method === 'POST'
+      && /^\/api\/links\/payments\/([^/]+)\/(?:mobile-money\/)?finalize$/.exec(path);
+    const mobileMoneyStart = req.method === 'POST' && path === '/api/links/pay/mobile-money';
     const itemMatch = /^\/api\/links\/([^/]+)$/.exec(path);
     const update = req.method === 'PATCH' && itemMatch;
     const remove = req.method === 'DELETE' && itemMatch;
-    if (!list && !create && !publicMatch && !paymentStatusMatch && !update && !remove) return false;
+    if (!list && !create && !publicMatch && !paymentStatusMatch && !finalizeMatch
+        && !mobileMoneyStart && !update && !remove) return false;
     try {
+      if (finalizeMatch) {
+        const paymentId = decodeURIComponent(finalizeMatch[1]);
+        const body = await readJson(req);
+        const capability = String(body.finalize_capability || '').trim();
+        const otp = String(body.otp || '').trim();
+        const payment = await db.collection('link_payments').find_one(
+          { id: paymentId, method: 'mobile_money', status: 'pending' }, { _id: 0 },
+        );
+        if (!payment || typeof finalizeLinkMobileMoney !== 'function') {
+          throw error(404, 'Paiement introuvable ou non finalisable.');
+        }
+        const expected = String(payment.finalize_capability_hash || '');
+        const expiresAt = Date.parse(payment.finalize_capability_expires_at || '');
+        const suppliedHash = crypto.createHash('sha256').update(capability, 'utf8').digest('hex');
+        const validHash = expected.length === suppliedHash.length
+          && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(suppliedHash));
+        if (capability.length < 20 || capability.length > 128 || !validHash
+            || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+          throw error(403, 'Capacité de finalisation invalide ou expirée.');
+        }
+        if (otp.length < 1 || otp.length > 32) throw error(422, 'Code de confirmation invalide.');
+        const claimed = await db.collection('link_payments').update_one(
+          {
+            id: paymentId, status: 'pending',
+            finalize_capability_hash: expected,
+            challenge_status: 'required',
+          },
+          { $set: { challenge_status: 'submitting', finalize_claim_id: crypto.randomUUID() } },
+        );
+        if (!claimed.matched_count) throw error(409, 'Une confirmation est déjà en cours.');
+        const deposit = await db.collection('momo_deposits').find_one(
+          { id: String(payment.momo_deposit_id) },
+          { _id: 0 },
+        );
+        if (!deposit || String(deposit.link_payment_id || '') !== paymentId
+            || deposit.status !== 'pending') {
+          await db.collection('link_payments').update_one(
+            { id: paymentId, challenge_status: 'submitting' },
+            { $set: { challenge_status: 'required', finalize_claim_id: null } },
+          );
+          throw error(409, 'Le dépôt n’attend plus de code de confirmation.');
+        }
+        let finalized;
+        try {
+          finalized = await finalizeLinkMobileMoney(deposit, otp);
+        } catch (cause) {
+          const recoverable = Number(cause.status || 500) < 500;
+          await db.collection('link_payments').update_one(
+            { id: paymentId, challenge_status: 'submitting' },
+            { $set: recoverable ? {
+              challenge_status: 'required', finalize_claim_id: null,
+            } : {
+              challenge_status: 'submitted', finalize_capability_hash: null,
+              finalize_capability_expires_at: null, finalize_claim_id: null,
+            } },
+          );
+          throw cause;
+        }
+        const updatedAt = new Date().toISOString();
+        const challengeUpdate = {
+          auth_mode: null, challenge_status: 'submitted',
+          instructions: finalized.instructions || [],
+          ...(finalized.provider_reference
+            ? { provider_reference: finalized.provider_reference } : {}),
+          updated_at: updatedAt,
+        };
+        await db.collection('momo_deposits').update_one(
+          { id: deposit.id, status: 'pending' }, { $set: challengeUpdate },
+        );
+        await db.collection('link_payments').update_one(
+          { id: paymentId, status: 'pending', challenge_status: 'submitting' },
+          { $set: {
+            ...challengeUpdate, finalize_capability_hash: null,
+            finalize_capability_expires_at: null, finalize_claim_id: null,
+          } },
+        );
+        const fresh = await db.collection('link_payments').find_one(
+          { id: paymentId }, { _id: 0 },
+        );
+        reply(res, 200, publicLinkPaymentStatus(fresh || payment));
+        return true;
+      }
       if (paymentStatusMatch) {
         const paymentId = decodeURIComponent(paymentStatusMatch[1]);
         if (!paymentId || paymentId.length > 160) throw error(404, 'Paiement introuvable');
-        const payment = await db.collection('link_payments').find_one(
+        let payment = await db.collection('link_payments').find_one(
           { id: paymentId }, { _id: 0 },
         );
         if (!payment) throw error(404, 'Paiement introuvable');
+        if (payment.method === 'mobile_money' && payment.status === 'pending'
+            && payment.momo_deposit_id && typeof settlePaydunyaDepositById === 'function') {
+          const deposit = await settlePaydunyaDepositById(payment.momo_deposit_id);
+          if (deposit?.status === 'approved') {
+            await db.collection('link_payments').update_one(
+              { id: paymentId, status: 'pending' },
+              { $set: {
+                status: 'paid',
+                amount_net: Number(deposit.wallet_credit_amount ?? deposit.amount_net ?? deposit.amount),
+                charged_amount: Number(deposit.charged_amount ?? deposit.amount),
+                fee: Number(deposit.total_fee ?? deposit.fee ?? 0),
+                gateway_fee: Number(deposit.gateway_fee || 0),
+                platform_fee: Number(deposit.platform_fee || 0),
+                paid_at: deposit.approved_at || new Date().toISOString(),
+                ...(deposit.wallet_snapshot ? {
+                  balance_before: deposit.wallet_snapshot.balance_before,
+                  balance_after: deposit.wallet_snapshot.balance_after,
+                } : {}),
+              } },
+            );
+          } else if (deposit?.status === 'failed') {
+            await db.collection('link_payments').update_one(
+              { id: paymentId, status: 'pending' },
+              { $set: { status: 'failed', failed_at: new Date().toISOString() } },
+            );
+            await releaseSingleUseClaim(db, payment);
+          }
+          payment = await db.collection('link_payments').find_one({ id: paymentId }, { _id: 0 });
+        }
         reply(res, 200, publicLinkPaymentStatus(payment));
+        return true;
+      }
+      if (mobileMoneyStart) {
+        const body = await readJson(req);
+        if (typeof createLinkMobileMoneyDeposit !== 'function') {
+          throw error(503, 'Le paiement Mobile Money par lien n’est pas disponible.');
+        }
+        if (typeof verifyBot !== 'function' || !body.turnstile_token) {
+          throw error(403, 'La vérification anti-robot est requise.');
+        }
+        await verifyBot(body.turnstile_token, req, 'payment', env);
+        const slug = String(body.slug || '').trim();
+        const link = await db.collection('payment_links').find_one({ slug }, { _id: 0 });
+        if (!link || link.active === false) throw error(404, 'Lien de paiement indisponible.');
+        if (link.expires_at && Date.parse(link.expires_at) <= Date.now()) {
+          throw error(410, 'Ce lien de paiement a expiré.');
+        }
+        const country = String(body.country || '').trim().toUpperCase();
+        const operatorCode = String(body.operator || '').trim();
+        const fullName = String(body.full_name || '').trim();
+        const email = String(body.email || '').trim().toLowerCase();
+        const phone = String(body.phone_number || '').trim();
+        const key = String(body.idempotency_key || '').trim();
+        if (!/^[A-Z]{2}$/.test(country) || !operatorCode || fullName.length < 2
+            || fullName.length > 160 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+            || phone.length < 7 || phone.length > 32
+            || !/^[A-Za-z0-9._-]{8,128}$/.test(key)) {
+          throw error(422, 'Informations de paiement invalides.');
+        }
+        const settings = await db.collection('settings').find_one(
+          { id: 'payment_provider_paydunya' }, { _id: 0 },
+        );
+        const operator = selectOperator(settings?.catalog, country, operatorCode);
+        if (!settings?.enabled || !operator) {
+          throw error(422, 'Cet opérateur Mobile Money n’est pas disponible pour ce lien.');
+        }
+        const currency = String(operator.currency || 'XOF').toUpperCase();
+        if (!['XOF', 'XAF'].includes(currency)
+            || (link.currency !== 'UNIVERSAL'
+              && String(link.currency || '').toUpperCase() !== currency)) {
+          throw error(422, 'La devise de cet opérateur ne correspond pas au lien.');
+        }
+        const amount = link.amount_type === 'free'
+          ? numeric(body.amount, 'Montant')
+          : numeric(link.amount, 'Montant du lien');
+        const min = Math.max(Number(link.min_amount || 0), Number(operator.min || 0));
+        const maxValues = [Number(link.max_amount || 0), Number(operator.max || 0)]
+          .filter(value => value > 0);
+        const max = maxValues.length ? Math.min(...maxValues) : 0;
+        if (amount <= 0 || amount < min || (max > 0 && amount > max)) {
+          throw error(422, 'Montant en dehors des limites de ce lien ou de cet opérateur.');
+        }
+        const fingerprint = crypto.createHash('sha256').update(stableJson({
+          link_id: String(link.id), amount, currency, country, operator: operatorCode,
+          full_name: fullName, email, phone,
+        }), 'utf8').digest('hex');
+        const paymentId = `lp_${crypto.createHash('sha256')
+          .update(`${link.id}:${key}`, 'utf8').digest('hex').slice(0, 32)}`;
+        let payment = await db.collection('link_payments').find_one(
+          { id: paymentId }, { _id: 0 },
+        );
+        if (payment) {
+          if (payment.request_fingerprint !== fingerprint) {
+            throw error(409, 'Cette clé d’idempotence est déjà utilisée pour un autre paiement.');
+          }
+          const result = publicLinkPaymentStatus(payment);
+          if (payment.checkout_url) {
+            result.payment_kind = 'redirect';
+            result.redirect_url = payment.checkout_url;
+          }
+          reply(res, 200, result);
+          return true;
+        }
+        if (link.single_use) {
+          const claim = await db.collection('payment_links').update_one(
+            {
+              id: link.id, active: { $ne: false },
+              $or: [
+                { single_use_claim_id: null },
+                { single_use_claim_id: { $exists: false } },
+                { single_use_claim_id: '' },
+              ],
+            },
+            { $set: { single_use_claim_id: paymentId } },
+          );
+          if (!claim.matched_count) {
+            const latestLink = await db.collection('payment_links').find_one(
+              { id: link.id }, { _id: 0 },
+            );
+            if (latestLink?.single_use_claim_id !== paymentId) {
+              throw error(409, 'Ce lien à usage unique a déjà été utilisé ou réservé.');
+            }
+          }
+        }
+        const now = new Date().toISOString();
+        payment = {
+          id: paymentId, link_id: String(link.id), user_id: String(link.user_id),
+          slug: link.slug,
+          method: 'mobile_money', status: 'creating', amount, currency,
+          country, operator: operatorCode, operator_name: operator.name || operatorCode,
+          customer_name: fullName, customer_email: email, customer_phone: phone,
+          request_fingerprint: fingerprint, idempotency_key: key,
+          fee_bearer: link.fee_bearer || 'customer',
+          ...(link.single_use ? { single_use_claim_id: paymentId } : {}),
+          created_at: now,
+        };
+        try {
+          await db.collection('link_payments').insert_one(payment);
+        } catch (cause) {
+          const concurrent = await db.collection('link_payments').find_one(
+            { id: paymentId }, { _id: 0 },
+          );
+          if (concurrent?.request_fingerprint === fingerprint) {
+            reply(res, 200, publicLinkPaymentStatus(concurrent));
+            return true;
+          }
+          if (link.single_use) {
+            await db.collection('payment_links').update_one(
+              { id: link.id, single_use_claim_id: paymentId },
+              { $unset: { single_use_claim_id: '' } },
+            );
+          }
+          throw cause;
+        }
+        const feeBearer = link.fee_bearer === 'merchant' ? 'merchant' : 'client';
+        let started;
+        try {
+          started = await createLinkMobileMoneyDeposit(String(link.user_id), {
+            amount, currency, country, operator: operatorCode,
+            full_name: fullName, email, phone_number: phone,
+            fee_bearer: feeBearer, otp: body.otp,
+          }, `link-${paymentId}`, paymentId);
+        } catch (cause) {
+          const depositId = `pd_${crypto.createHash('sha256')
+            .update(`${link.user_id}:link-${paymentId}`, 'utf8').digest('hex')}`;
+          const deposit = await db.collection('momo_deposits').find_one(
+            { id: depositId, user_id: String(link.user_id) }, { _id: 0 },
+          );
+          if (deposit) {
+            const uncertain = ['pending', 'initiating', 'provider_unknown'].includes(
+              String(deposit.status || ''),
+            );
+            await db.collection('link_payments').update_one(
+              { id: paymentId, status: 'creating' },
+              { $set: {
+                status: uncertain ? 'pending' : 'failed',
+                momo_deposit_id: depositId,
+                submission_unknown: uncertain,
+                failed_at: uncertain ? null : new Date().toISOString(),
+              } },
+            );
+          } else {
+            await db.collection('link_payments').update_one(
+              { id: paymentId, status: 'creating' },
+              { $set: { status: 'failed', failed_at: new Date().toISOString() } },
+            );
+            if (link.single_use) {
+              await db.collection('payment_links').update_one(
+                { id: link.id, single_use_claim_id: paymentId },
+                { $unset: { single_use_claim_id: '' } },
+              );
+            }
+          }
+          throw cause;
+        }
+        if (!started?.handled || started.status < 200 || started.status >= 300
+            || !started.body?.id) {
+          const depositId = `pd_${crypto.createHash('sha256')
+            .update(`${link.user_id}:link-${paymentId}`, 'utf8').digest('hex')}`;
+          const deposit = await db.collection('momo_deposits').find_one(
+            { id: depositId, user_id: String(link.user_id) }, { _id: 0 },
+          );
+          const uncertain = started?.status >= 500
+            && ['pending', 'initiating', 'provider_unknown'].includes(String(deposit?.status || ''));
+          await db.collection('link_payments').update_one(
+            { id: paymentId, status: 'creating' },
+            { $set: {
+              status: uncertain ? 'pending' : 'failed',
+              ...(deposit ? { momo_deposit_id: depositId } : {}),
+              submission_unknown: uncertain,
+              failed_at: uncertain ? null : new Date().toISOString(),
+            } },
+          );
+          if (!uncertain && link.single_use) {
+            await db.collection('payment_links').update_one(
+              { id: link.id, single_use_claim_id: paymentId },
+              { $unset: { single_use_claim_id: '' } },
+            );
+          }
+          throw error(started?.status || 502, started?.body?.detail || 'Impossible de démarrer le paiement.');
+        }
+        const deposit = await db.collection('momo_deposits').find_one(
+          { id: String(started.body.id) }, { _id: 0 },
+        );
+        let finalizeCapability = null;
+        let finalizeCapabilityHash = null;
+        let finalizeCapabilityExpiresAt = null;
+        const requiresFinalization = deposit
+          && (deposit.auth_mode === 'pin'
+            || String(deposit.endpoint_slug || '').toLowerCase() === 'wizall-money-senegal')
+          && deposit.status === 'pending';
+        if (requiresFinalization) {
+          finalizeCapability = crypto.randomBytes(32).toString('hex');
+          finalizeCapabilityHash = crypto.createHash('sha256')
+            .update(finalizeCapability, 'utf8').digest('hex');
+          finalizeCapabilityExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+        }
+        await db.collection('link_payments').update_one(
+          { id: paymentId, status: 'creating' },
+          { $set: {
+            status: 'pending',
+            momo_deposit_id: String(started.body.id),
+            charged_amount: Number(started.body.charged_amount || amount),
+            amount_to_pay: Number(started.body.charged_amount || amount),
+            fee: Number(started.body.total_fee || 0),
+            gateway_fee: Number(started.body.gateway_fee || 0),
+            platform_fee: Number(started.body.platform_fee || 0),
+            pending_expires_at: started.body.pending_expires_at || null,
+            ...(deposit ? {
+              provider: deposit.provider,
+              payment_flow: deposit.payment_flow || null,
+              instructions: deposit.instructions || [],
+              auth_mode: deposit.auth_mode || null,
+              otp_required: Boolean(deposit.otp_required),
+              challenge_status: requiresFinalization ? 'required' : (deposit.challenge_status || null),
+            } : {}),
+            ...(finalizeCapabilityHash ? {
+              finalize_capability_hash: finalizeCapabilityHash,
+              finalize_capability_expires_at: finalizeCapabilityExpiresAt,
+            } : {}),
+            ...(started.body.checkout_url ? { checkout_url: started.body.checkout_url } : {}),
+            updated_at: new Date().toISOString(),
+          } },
+        );
+        const fresh = await db.collection('link_payments').find_one(
+          { id: paymentId }, { _id: 0 },
+        );
+        const result = publicLinkPaymentStatus(fresh || payment);
+        if (fresh?.checkout_url) {
+          result.payment_kind = 'redirect';
+          result.redirect_url = fresh.checkout_url;
+        }
+        if (finalizeCapability) result.finalize_capability = finalizeCapability;
+        reply(res, 200, result);
         return true;
       }
       if (publicMatch) {

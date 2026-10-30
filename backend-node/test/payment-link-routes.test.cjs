@@ -51,10 +51,11 @@ class Database {
   }
 }
 
-function setup() {
+function setup(routeOptions = {}) {
   const db = new Database();
   const handle = createPaymentLinkRoutes({
     db,
+    ...routeOptions,
     sessionService: {
       async authenticate(token) {
         if (token === 'alice') return { userId: 'user-a' };
@@ -197,4 +198,118 @@ test('public link-payment status returns a customer-safe snapshot only', async (
     handle, 'GET', '/api/links/payments/missing', undefined, null,
   );
   assert.equal(missing.status, 404);
+});
+
+test('public Mobile Money link start is Turnstile-checked, owner-scoped and idempotent', async () => {
+  let providerCalls = 0;
+  const { db, handle } = setup({
+    verifyBot: async token => {
+      if (token !== 'valid-turnstile') throw Object.assign(new Error('Turnstile invalide'), { status: 403 });
+    },
+    createLinkMobileMoneyDeposit: async (userId, payload, idempotencyKey, linkPaymentId) => {
+      providerCalls += 1;
+      assert.equal(userId, 'merchant-a');
+      assert.equal(payload.amount, 1200);
+      assert.equal(payload.fee_bearer, 'client');
+      assert.equal(linkPaymentId, `lp_${require('node:crypto').createHash('sha256')
+        .update('link-a:link-momo-001').digest('hex').slice(0, 32)}`);
+      return {
+        handled: true, status: 200,
+        body: { id: 'deposit-1', charged_amount: 1260, total_fee: 60 },
+      };
+    },
+  });
+  await db.collection('payment_links').insert_one({
+    id: 'link-a', slug: 'order-a', user_id: 'merchant-a', active: true,
+    amount_type: 'fixed', amount: 1200, currency: 'XOF',
+    fee_bearer: 'customer', single_use: true,
+  });
+  await db.collection('settings').insert_one({
+    id: 'payment_provider_paydunya', enabled: true,
+    catalog: [{
+      country: 'TG', provider: 'paydunya', code: 'tmoney', name: 'T-Money',
+      currency: 'XOF', active: true, min: 100, max: 50000,
+    }],
+  });
+  const body = {
+    slug: 'order-a', country: 'TG', operator: 'tmoney',
+    phone_number: '+22890000000', email: 'buyer@example.com',
+    full_name: 'Buyer Test', idempotency_key: 'link-momo-001',
+    turnstile_token: 'valid-turnstile',
+  };
+  const first = await call(handle, 'POST', '/api/links/pay/mobile-money', body, null);
+  const replay = await call(handle, 'POST', '/api/links/pay/mobile-money', body, null);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.status, 'pending');
+  assert.equal(first.body.charged_amount, 1260);
+  assert.equal(first.body.user_id, undefined);
+  assert.equal(first.body.provider_token, undefined);
+  assert.equal(replay.body.id, first.body.id);
+  assert.equal(providerCalls, 1);
+  const otherPayment = await call(handle, 'POST', '/api/links/pay/mobile-money', {
+    ...body, idempotency_key: 'link-momo-002',
+  }, null);
+  assert.equal(otherPayment.status, 409);
+  assert.equal(providerCalls, 1);
+});
+
+test('Mobile Money link finalization is capability-bound, one-use and leaves settlement pending', async () => {
+  const db = new Database();
+  let finalized = 0;
+  const handle = createPaymentLinkRoutes({
+    db,
+    verifyBot: async () => {},
+    createLinkMobileMoneyDeposit: async (userId, payload, key, linkPaymentId) => {
+      await db.collection('momo_deposits').insert_one({
+        id: 'deposit-finalize-1', user_id: userId, status: 'pending',
+        provider: 'mbiyo', auth_mode: 'pin', challenge_status: 'required',
+        link_payment_id: linkPaymentId,
+      });
+      return {
+        handled: true, status: 200,
+        body: { id: 'deposit-finalize-1', charged_amount: payload.amount },
+      };
+    },
+    finalizeLinkMobileMoney: async (deposit, otp) => {
+      finalized += 1;
+      assert.equal(deposit.id, 'deposit-finalize-1');
+      assert.equal(otp, '123456');
+      return { provider_reference: 'provider-finalize-1', instructions: ['Confirmez sur votre téléphone'] };
+    },
+  });
+  await db.collection('payment_links').insert_one({
+    id: 'link-finalize', slug: 'order-finalize', user_id: 'merchant-a',
+    active: true, amount_type: 'fixed', amount: 1200, currency: 'XOF',
+    fee_bearer: 'customer',
+  });
+  await db.collection('settings').insert_one({
+    id: 'payment_provider_paydunya', enabled: true,
+    catalog: [{
+      country: 'TG', provider: 'paydunya', code: 'tmoney', currency: 'XOF',
+      active: true, min: 100, max: 50000,
+    }],
+  });
+  const started = await call(handle, 'POST', '/api/links/pay/mobile-money', {
+    slug: 'order-finalize', country: 'TG', operator: 'tmoney',
+    phone_number: '+22890000000', email: 'buyer@example.com', full_name: 'Buyer Test',
+    idempotency_key: 'link-finalize-001', turnstile_token: 'valid',
+  }, null);
+  assert.equal(started.status, 200);
+  assert.equal(typeof started.body.finalize_capability, 'string');
+  assert.equal(started.body.challenge_status, 'required');
+  const finalizedResult = await call(
+    handle, 'POST', `/api/links/payments/${started.body.id}/mobile-money/finalize`,
+    { finalize_capability: started.body.finalize_capability, otp: '123456' }, null,
+  );
+  assert.equal(finalizedResult.status, 200);
+  assert.equal(finalizedResult.body.status, 'pending');
+  assert.equal(finalizedResult.body.challenge_status, 'submitted');
+  assert.equal(finalizedResult.body.provider_reference, 'provider-finalize-1');
+  assert.equal(finalized, 1);
+  const replay = await call(
+    handle, 'POST', `/api/links/payments/${started.body.id}/finalize`,
+    { finalize_capability: started.body.finalize_capability, otp: '123456' }, null,
+  );
+  assert.equal(replay.status, 403);
+  assert.equal(finalized, 1);
 });

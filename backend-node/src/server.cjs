@@ -41,6 +41,7 @@ const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
 const { createAfriBaPayWebhookRoutes } = require('./afribapay-webhook-routes.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
 const { createAdminPushRoutes } = require('./admin-push-routes.cjs');
+const { createMobileMoneyPayoutService } = require('./mobile-money-payout-service.cjs');
 
 const STATIC_MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -192,7 +193,12 @@ function createServer({
   const referrals = createReferralRoutes({ db, sessionService });
   const support = createSupportRoutes({ db, sessionService, env });
   const publicConfig = createPublicConfigRoutes({ db, sessionService, env });
-  const paymentLinks = createPaymentLinkRoutes({ db, sessionService });
+  const paymentLinks = createPaymentLinkRoutes({
+    db, sessionService, env, verifyBot,
+    createLinkMobileMoneyDeposit: paydunyaInvoiceRoutes.handleLinkPaymentDeposit,
+    finalizeLinkMobileMoney: paydunyaInvoiceRoutes.finalizeLinkMobileMoney,
+    settlePaydunyaDepositById: paydunyaWebhookRoutes.settleDepositById,
+  });
   const cryptoCatalog = createCryptoCatalogRoutes({ db, sessionService, sessionSecret, env });
   const exchange = createExchangeRoutes({
     db, sessionService, cryptoCatalog, notify: notifications.notify,
@@ -200,6 +206,9 @@ function createServer({
   const transfers = createTransferRoutes({
     db, sessionService, sessionSecret, env, verifyBot, cryptoCatalog,
     notify: notifications.notify,
+  });
+  const mobileMoneyPayout = createMobileMoneyPayoutService({
+    db, sessionSecret, env, fetchImpl,
   });
   const adminUserRoutes = createAdminUserRoutes({
     db, sessionService, cryptoCatalog, env,
@@ -238,6 +247,8 @@ function createServer({
     createCryptoDeposit: cryptoCatalog.createCryptoDepositIntent,
     createCryptoPayout: cryptoCatalog.createCryptoPayoutRequest,
     createMobileMoneyDeposit: paydunyaInvoiceRoutes.handleIntegrationDeposit,
+    createMobileMoneyPayout: mobileMoneyPayout.createIntegrationPayout,
+    refreshMobileMoneyPayout: mobileMoneyPayout.refreshPayoutStatus,
     getMobileMoneyOperators: (direction, userId) => (
       direction === 'deposit'
         ? publicConfig.integrationMobileMoneyOperators(direction, userId)

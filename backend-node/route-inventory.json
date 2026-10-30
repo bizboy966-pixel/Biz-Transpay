@@ -968,7 +968,7 @@
       "path": "/api/integration/v1/payouts",
       "source": "backend/integration_api.py",
       "handler": "start_payout",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "GET",
@@ -1094,7 +1094,8 @@
       "path": "/api/links/pay/mobile-money",
       "source": "backend/server.py",
       "handler": "start_link_payment_momo",
-      "status": "pending"
+      "status": "needs_review",
+      "note": "Node handler supports PayDunya link payments; Mbiyo link pay-in parity still needs implementation."
     },
     {
       "method": "GET",
@@ -1108,14 +1109,16 @@
       "path": "/api/links/payments/{payment_id}/finalize",
       "source": "backend/server.py",
       "handler": "finalize_link_payment",
-      "status": "pending"
+      "status": "implemented_unverified",
+      "note": "Capability-protected OTP finalization is implemented; provider runtime verification remains."
     },
     {
       "method": "POST",
       "path": "/api/links/payments/{payment_id}/mobile-money/finalize",
       "source": "backend/server.py",
       "handler": "finalize_link_payment",
-      "status": "pending"
+      "status": "implemented_unverified",
+      "note": "Capability-protected OTP finalization is implemented; provider runtime verification remains."
     },
     {
       "method": "GET",

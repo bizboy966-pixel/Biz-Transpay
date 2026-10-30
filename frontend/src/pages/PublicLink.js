@@ -465,6 +465,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const [error, setError] = useState('');
   const [turnstileToken, setTurnstileToken] = useState('');
   const turnstileRef = useRef(null);
+  const idempotencyRef = useRef({ fingerprint: '', key: '' });
 
   useEffect(() => {
     fetch(`${process.env.REACT_APP_BACKEND_URL || ''}/api/deposits/config?surface=public_link`).then(r => r.json())
@@ -508,6 +509,17 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
       setError(`Saisissez ${paymentFlow.otp_label || 'le code de paiement'} avant de continuer.`);
       return;
     }
+    const fingerprint = JSON.stringify([
+      link.id, isFree ? Number(amount) : Number(link.amount),
+      country, operator, phone.trim(), email.trim().toLowerCase(), fullName.trim(),
+    ]);
+    if (!idempotencyRef.current.key || idempotencyRef.current.fingerprint !== fingerprint) {
+      idempotencyRef.current = {
+        fingerprint,
+        key: window.crypto?.randomUUID?.()
+          || `link-momo-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      };
+    }
     setLoading(true);
     try {
       const endpoint = `${process.env.REACT_APP_BACKEND_URL || ''}/api/links/pay/mobile-money`;
@@ -517,6 +529,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
           full_name: fullName.trim(), email: email.trim(),
            country, operator, phone_number: phone.trim(), fee_bearer: bearer,
            turnstile_token: turnstileToken,
+            idempotency_key: idempotencyRef.current.key,
            ...(otp.trim() ? { otp: otp.trim() } : {}),
          });
       // Newer backends accept client|merchant. Retry the pre-validation

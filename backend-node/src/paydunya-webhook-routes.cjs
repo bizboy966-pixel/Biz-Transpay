@@ -285,11 +285,23 @@ function createPaydunyaWebhookRoutes({
         return true;
       }
       if (deposit.status === 'approved') {
+        if (deposit.link_payment_id) {
+          await db.collection('link_payments').update_one(
+            { id: String(deposit.link_payment_id), status: { $in: ['creating', 'pending'] } },
+            { $set: {
+              status: 'paid',
+              amount_net: Number(deposit.wallet_credit_amount ?? deposit.amount_net ?? deposit.amount),
+              fee: Number(deposit.total_fee ?? deposit.fee ?? 0),
+              paid_at: deposit.approved_at || new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            } },
+          );
+        }
         reply(res, 200, { received: true, duplicate: true });
         return true;
       }
       if (!['pending', 'failed'].includes(String(deposit.status || ''))
-          || !deposit.user_id || deposit.link_payment_id) {
+          || !deposit.user_id) {
         reply(res, 503, { received: true, pending_review: true });
         return true;
       }
@@ -386,6 +398,10 @@ function createPaydunyaWebhookRoutes({
         operation_id: operationId,
         wallet_operation_id: operationId,
         provider: 'paydunya',
+        ...(deposit.link_payment_id ? {
+          source: 'link_payment',
+          link_payment_id: String(deposit.link_payment_id),
+        } : {}),
         provider_reference: providerReference(confirmation, deposit.paydunya_reference || token),
         operator: deposit.operator || null,
         operator_name: deposit.operator_name || null,
@@ -411,7 +427,7 @@ function createPaydunyaWebhookRoutes({
         ledger: {
           id: `paydunya-deposit-${deposit.id}`,
           user_id: String(deposit.user_id),
-          type: 'deposit',
+          type: deposit.link_payment_id ? 'link_payment' : 'deposit',
           direction: 'in',
           amount: net,
           currency,
@@ -454,6 +470,26 @@ function createPaydunyaWebhookRoutes({
           } : {}),
         } },
       );
+      if (deposit.link_payment_id) {
+        await db.collection('link_payments').update_one(
+          { id: String(deposit.link_payment_id), status: { $in: ['creating', 'pending'] } },
+          { $set: {
+            status: 'paid',
+            amount_net: net,
+            charged_amount: gross,
+            fee,
+            gateway_fee: gatewayFee,
+            platform_fee: platformFee,
+            paid_at: verifiedAt,
+            updated_at: verifiedAt,
+            wallet_snapshot: mutation.snapshot || null,
+            ...(mutation.snapshot ? {
+              balance_before: mutation.snapshot.balance_before,
+              balance_after: mutation.snapshot.balance_after,
+            } : {}),
+          } },
+        );
+      }
       reply(res, 200, { received: true });
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 503;

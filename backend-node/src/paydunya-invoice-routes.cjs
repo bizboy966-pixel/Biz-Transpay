@@ -5,7 +5,9 @@ const { Readable } = require('node:stream');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
+const { decryptSetting } = require('./provider-settings.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
+const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
 
 const ROUTES = new Map([
   ['/api/deposits/mobile-money/par', 'par_redirect'],
@@ -403,6 +405,10 @@ function createPaydunyaInvoiceRoutes({
         provider_mode: config.mode,
         paydunya_flow: flow,
         initiation_state: 'initiating',
+        ...(req[INTEGRATION_LINK_PAYMENT] ? {
+          link_payment_id: String(req[INTEGRATION_LINK_PAYMENT]),
+          source: 'link_payment',
+        } : {}),
         ...(capability ? {
           psr_capability_hash: crypto.createHash('sha256').update(capability).digest('hex'),
           psr_capability_encrypted: security.encryptFernet(
@@ -533,7 +539,114 @@ function createPaydunyaInvoiceRoutes({
     return { handled, status: res.status, body: res.body || {} };
   }
 
-  return { handleRoute, handleIntegrationDeposit };
+  async function handleLinkPaymentDeposit(userId, body, idempotencyKey, linkPaymentId) {
+    const payload = {
+      ...body,
+      idempotency_key: String(idempotencyKey || ''),
+    };
+    const req = Readable.from([Buffer.from(JSON.stringify(payload))]);
+    req.method = 'POST';
+    req.url = '/api/deposits/mobile-money';
+    req.headers = {};
+    req[INTEGRATION_USER] = String(userId || '');
+    req[INTEGRATION_LINK_PAYMENT] = String(linkPaymentId || '');
+    const res = {
+      status: 500,
+      writeHead(status) { this.status = status; },
+      end(text) {
+        try { this.body = JSON.parse(String(text || '{}')); } catch { this.body = {}; }
+      },
+    };
+    const handled = await handleRoute(req, res);
+    return { handled, status: res.status, body: res.body || {} };
+  }
+
+  async function finalizeLinkMobileMoney(deposit, otp) {
+    const code = String(otp || '').trim();
+    if (!deposit?.id || code.length < 1 || code.length > 32) {
+      throw httpError(422, 'Le code de confirmation est invalide.');
+    }
+    const providerReference = String(
+      deposit.mbiyo_transaction_id || deposit.provider_reference
+        || deposit.paydunya_reference || '',
+    ).trim();
+    if (!providerReference) throw httpError(409, 'Référence prestataire introuvable.');
+
+    let response;
+    if (String(deposit.provider || '').toLowerCase() === 'mbiyo') {
+      const config = await db.collection('settings').find_one(
+        { id: 'payment_provider_mbiyo' }, { _id: 0 },
+      );
+      const apiKey = decryptSetting(config, 'api_key', sessionSecret)
+        || decryptSetting(config, 'secret_key', sessionSecret);
+      if (!config?.enabled || !apiKey) throw httpError(503, 'Mbiyo n’est pas configuré.');
+      const base = String(config.base_url || env.MBIYO_BASE_URL
+        || 'https://dashboard.mbiyo.africa/api/v1').replace(/\/+$/, '');
+      response = await fetchImpl(
+        `${base}/merchant/transactions/${encodeURIComponent(providerReference)}/finalize`,
+        {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+          headers: {
+            authorization: `Bearer ${apiKey}`, 'content-type': 'application/json',
+            accept: 'application/json',
+          },
+          body: JSON.stringify({ otp: code }),
+        },
+      );
+    } else if (String(deposit.endpoint_slug || '').toLowerCase() === 'wizall-money-senegal') {
+      const config = await db.collection('settings').find_one(
+        { id: 'payment_provider_paydunya' }, { _id: 0 },
+      );
+      if (!config?.enabled) throw httpError(503, 'PayDunya n’est pas configuré.');
+      const credentials = loadCredentials(config, sessionSecret, env);
+      const base = config.mode === 'live'
+        ? 'https://app.paydunya.com'
+        : 'https://app.paydunya.com/sandbox-api';
+      response = await fetchImpl(
+        `${base}/api/v1/softpay/wizall-money-senegal/confirm`,
+        {
+          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(20_000),
+          headers: {
+            'PAYDUNYA-MASTER-KEY': credentials.master_key,
+            'PAYDUNYA-PRIVATE-KEY': credentials.private_key,
+            'PAYDUNYA-TOKEN': credentials.token,
+            'content-type': 'application/json', accept: 'application/json',
+          },
+          body: JSON.stringify({
+            authorization_code: code,
+            phone_number: String(deposit.phone_number || ''),
+            transaction_id: providerReference,
+          }),
+        },
+      );
+    } else {
+      throw httpError(409, 'Cette transaction ne demande pas de code de finalisation.');
+    }
+
+    let payload;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (!response.ok || !payload || typeof payload !== 'object'
+        || payload.success === false || payload.response_code && payload.response_code !== '00') {
+      throw httpError(response.status >= 500 ? 502 : 400, 'Le code de confirmation n’a pas été accepté.');
+    }
+    const data = payload.data && typeof payload.data === 'object' ? payload.data : payload;
+    const rawInstructions = data.instructions;
+    const instructions = (Array.isArray(rawInstructions) ? rawInstructions : [rawInstructions])
+      .filter(value => typeof value === 'string' || typeof value === 'number')
+      .map(value => String(value).replace(/<[^>]*>/g, '').trim().slice(0, 500))
+      .filter(Boolean).slice(0, 8);
+    return {
+      provider_reference: String(
+        data.transaction_id || data.reference || data.provider_reference || '',
+      ).slice(0, 160),
+      instructions,
+    };
+  }
+
+  return {
+    handleRoute, handleIntegrationDeposit, handleLinkPaymentDeposit,
+    finalizeLinkMobileMoney,
+  };
 }
 
 module.exports = {

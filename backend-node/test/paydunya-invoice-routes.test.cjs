@@ -214,3 +214,37 @@ test('generic Mobile Money start fails closed when multiple PayDunya flows are e
   assert.equal(providerCalls, 0);
   assert.equal(collections.momo_deposits.rows.length, 0);
 });
+
+test('Wizall link finalization sends OTP only to PayDunya and returns sanitized instructions', async () => {
+  let request;
+  const { service } = setup({
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return {
+        ok: true, status: 200,
+        async json() {
+          return { response_code: '00', data: {
+            transaction_id: 'provider-ref-2',
+            instructions: ['Confirmez sur votre téléphone', '<script>alert(1)</script>'],
+          } };
+        },
+      };
+    },
+  });
+  const result = await service.finalizeLinkMobileMoney({
+    id: 'deposit-link-1',
+    provider: 'paydunya',
+    endpoint_slug: 'wizall-money-senegal',
+    paydunya_reference: 'provider-ref-1',
+    phone_number: '+221770000000',
+  }, '123456');
+  assert.equal(request.url, 'https://app.paydunya.com/sandbox-api/api/v1/softpay/wizall-money-senegal/confirm');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    authorization_code: '123456',
+    phone_number: '+221770000000',
+    transaction_id: 'provider-ref-1',
+  });
+  assert.equal(result.provider_reference, 'provider-ref-2');
+  assert.deepEqual(result.instructions, ['Confirmez sur votre téléphone', 'alert(1)']);
+  assert.equal(request.options.headers['PAYDUNYA-TOKEN'], 'mock-token');
+});

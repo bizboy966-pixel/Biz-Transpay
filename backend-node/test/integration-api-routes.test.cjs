@@ -78,7 +78,7 @@ function setup({
   scopes = ['transactions:read'],
   environment = 'live',
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-  createCryptoPayout,
+  createCryptoPayout, createMobileMoneyPayout,
 } = {}) {
   const selectedPublicKey = environment === 'test' ? 'pk_test_demo' : publicKey;
   const selectedSecretKey = environment === 'test' ? 'sk_test_demo' : secretKey;
@@ -180,7 +180,7 @@ function setup({
   const service = createIntegrationApiRoutes({
     db, now: () => now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
     executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-    createCryptoPayout,
+    createCryptoPayout, createMobileMoneyPayout,
   });
   return { service, collections };
 }
@@ -458,6 +458,57 @@ test('integration crypto payout requires live opt-in, KYC, scope and idempotency
   });
   assert.equal((await call(noScope.service, request)).status, 403);
   assert.equal(created.length, 1);
+});
+
+test('integration Mobile Money payout requires opt-in, KYC, scope and persists idempotency', async () => {
+  const submitted = [];
+  const createMobileMoneyPayout = async (userId, body, idempotencyKey) => {
+    submitted.push({ userId, body, idempotencyKey });
+    return {
+      transaction: {
+        id: 'mobile-payout-1', reference: 'BTP-WD-ABC123',
+        status: 'pending', amount: 2000, currency: 'XOF',
+      },
+    };
+  };
+  const { service, collections } = setup({
+    scopes: ['payouts:write'], payoutOptIn: true, createMobileMoneyPayout,
+  });
+  const request = {
+    method: 'POST',
+    url: '/api/integration/v1/payouts',
+    idempotencyKey: 'mobile-payout-request-01',
+    body: {
+      amount: 2000, currency: 'XOF', country: 'TG',
+      operator: 'tmoney_tg', recipient: '90123456',
+    },
+  };
+  const first = await call(service, request);
+  const retry = await call(service, request);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.equal(first.body.id, 'mobile-payout-1');
+  assert.equal(first.body.payout.reference, 'BTP-WD-ABC123');
+  assert.deepEqual(retry.body, first.body);
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].userId, 'merchant-1');
+  assert.match(submitted[0].idempotencyKey, /^btpi_[a-f0-9]{48}$/);
+  assert.equal(collections.integration_operations.rows.filter(
+    row => row.kind === 'payout' && row.id.startsWith('mobile_payout:'),
+  ).length, 1);
+  assert.equal((await call(service, {
+    ...request,
+    body: { ...request.body, amount: 2500 },
+  })).status, 409);
+  assert.equal(submitted.length, 1);
+
+  const noOptIn = setup({ scopes: ['payouts:write'], createMobileMoneyPayout });
+  assert.equal((await call(noOptIn.service, request)).status, 403);
+  const noKyc = setup({
+    scopes: ['payouts:write'], payoutOptIn: true, kycStatus: 'pending',
+    createMobileMoneyPayout,
+  });
+  assert.equal((await call(noKyc.service, request)).status, 403);
+  assert.equal(submitted.length, 1);
 });
 
 test('integration payment-link creation requires scope and persists an owner-scoped result', async () => {

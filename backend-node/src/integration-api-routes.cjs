@@ -75,7 +75,7 @@ function reply(res, status, body) {
 function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-  createCryptoPayout, createMobileMoneyPayout,
+  createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -284,7 +284,7 @@ function createIntegrationApiRoutes({
           credential.user_id, body, internalKey,
         );
         const transaction = result?.transaction || result;
-        if (!transaction?.id || !['pending', 'completed'].includes(String(transaction.status))) {
+        if (!transaction?.id || !['pending', 'completed', 'failed'].includes(String(transaction.status))) {
           reply(res, 502, { detail: 'The payout was not safely recorded.' });
           return true;
         }
@@ -669,7 +669,7 @@ function createIntegrationApiRoutes({
           reply(res, 404, { detail: kind.includes('payout') ? 'Payout not found' : 'Deposit not found' });
           return true;
         }
-        const transaction = payoutMatch || cryptoPayoutMatch
+        let transaction = payoutMatch || cryptoPayoutMatch
           ? await db.collection('transactions').find_one({
             id: businessId, user_id: credential.user_id,
           }, { _id: 0 })
@@ -686,6 +686,10 @@ function createIntegrationApiRoutes({
         if ((payoutMatch || cryptoPayoutMatch) && !transaction) {
           reply(res, 404, { detail: kind.includes('crypto') ? 'Crypto payout not found' : 'Payout not found' });
           return true;
+        }
+        if (payoutMatch && typeof refreshMobileMoneyPayout === 'function') {
+          transaction = await refreshMobileMoneyPayout(businessId, credential.user_id)
+            || transaction;
         }
         if ((depositMatch || cryptoDepositMatch) && !document) {
           reply(res, 404, { detail: kind === 'crypto_deposit' ? 'Crypto deposit not found' : 'Deposit not found' });
