@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createPublicConfigRoutes } = require('../src/public-config-routes.cjs');
 
-function setup() {
+function setup({ afriCredentials = false, paydunyaReady = true } = {}) {
   const settings = [
     {
       id: 'deposit_config',
@@ -18,7 +18,13 @@ function setup() {
     },
     {
       id: 'payment_provider_paydunya',
-      enabled: true, master_key_encrypted: 'private-key',
+      enabled: true,
+      ...(paydunyaReady ? {
+        master_key_encrypted: 'private-key',
+        private_key_encrypted: 'private-key',
+        token_encrypted: 'private-token',
+        modes: { psr: { enabled: true }, par_redirect: { enabled: false } },
+      } : { master_key_encrypted: 'private-key' }),
       catalog: [
         { country: 'TG', country_label: 'Togo', code: 'moov_tg', name: 'Moov Togo', currency: 'XOF', active: true, payment_flow: { kind: 'ussd' } },
         { country: 'TG', code: 'orange_tg', name: 'Orange Togo', currency: 'XOF', active: false },
@@ -36,7 +42,14 @@ function setup() {
       enabled: true, api_key_encrypted: 'private-afri-key',
       catalog: [
         { country: 'BF', code: 'afribapay_moov', name: 'Moov Burkina', currency: 'XOF', active: true },
+        { country: 'CM', code: 'orange_cm', name: 'Orange Cameroun', currency: 'XAF', active: true },
       ],
+      ...(afriCredentials ? {
+        api_user_encrypted: 'encrypted-user',
+        merchant_key_encrypted: 'encrypted-merchant',
+        agent_id_encrypted: 'encrypted-agent',
+        mode: 'sandbox',
+      } : {}),
     },
     {
       id: 'transfer_config',
@@ -75,18 +88,32 @@ test('deposit config returns grouped active catalogs, fees and the public-link p
   const dashboard = await call(service, '/api/deposits/config');
   assert.equal(dashboard.status, 200);
   assert.equal(dashboard.body.mobile_money_enabled, true);
-  assert.equal(dashboard.body.catalog.length, 2);
+  assert.equal(dashboard.body.catalog.length, 1);
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'BF'), false);
   const togo = dashboard.body.catalog.find(country => country.country === 'TG');
   assert.equal(togo.operators[0].fee_pct, 1.5);
   assert.equal(togo.operators[0].fee_fixed, 10);
   assert.equal(togo.operators[0].payment_flow.kind, 'ussd');
   assert.equal(dashboard.body.crypto.fees.USDT, 2);
   assert.equal(JSON.stringify(dashboard.body).includes('private-key'), false);
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'CM'), false);
 
   const link = await call(service, '/api/deposits/config?surface=public_link');
   assert.deepEqual(link.body.catalog.map(country => country.country), ['TG', 'BF']);
   assert.equal(link.body.catalog.flatMap(country => country.operators)
     .some(operator => operator.code.startsWith('afribapay_')), false);
+});
+
+test('AfriBaPay dashboard routes appear only with all credentials and a valid configured API host', async () => {
+  const service = setup({ afriCredentials: true });
+  const dashboard = await call(service, '/api/deposits/config');
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'CM'), true);
+});
+
+test('dashboard hides PayDunya routes without a complete supported payment setup', async () => {
+  const service = setup({ paydunyaReady: false });
+  const dashboard = await call(service, '/api/deposits/config');
+  assert.equal(dashboard.body.catalog.some(country => country.country === 'TG'), false);
 });
 
 test('deposit config rejects unknown surfaces', async () => {

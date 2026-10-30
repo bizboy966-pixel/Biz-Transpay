@@ -251,13 +251,17 @@ function publicConfig(provider, doc, env) {
   const hasCredential = key => Boolean(doc[`${key}_encrypted`]);
   const credentialsConfigured = PROVIDERS.afribapay.fields.every(hasCredential);
   const mode = doc.mode === 'live' ? 'live' : 'sandbox';
-  const apiBaseUrl = mode === 'live' ? doc.live_api_base_url : doc.sandbox_api_base_url;
+  const apiBaseUrl = mode === 'live'
+    ? doc.live_api_base_url
+    : (doc.sandbox_api_base_url || 'https://api-sandbox.afribapay.com');
   const payoutBaseUrl = mode === 'live' ? doc.live_payout_base_url : doc.sandbox_payout_base_url;
   const hasHttpsHost = value => {
     try {
       const url = new URL(String(value || ''));
-      return url.protocol === 'https:' && Boolean(url.hostname)
-        && !url.username && !url.password;
+      const hostname = url.hostname.toLowerCase();
+      return url.protocol === 'https:' && Boolean(hostname)
+        && !url.username && !url.password
+        && (hostname === 'afribapay.com' || hostname.endsWith('.afribapay.com'));
     } catch { return false; }
   };
   return {

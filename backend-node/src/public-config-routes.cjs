@@ -179,6 +179,24 @@ function publicFeatures(features) {
 
 function providerConfigured(config, env, provider) {
   if (!config?.enabled) return false;
+  if (provider === 'afribapay') {
+    const credentialsReady = [
+      'api_user_encrypted',
+      'api_key_encrypted',
+      'merchant_key_encrypted',
+      'agent_id_encrypted',
+    ].every(key => typeof config[key] === 'string' && config[key].length > 0);
+    const mode = String(config.mode || 'sandbox').toLowerCase() === 'live' ? 'live' : 'sandbox';
+    const apiBaseUrl = mode === 'live'
+      ? config.live_api_base_url
+      : (config.sandbox_api_base_url || 'https://api-sandbox.afribapay.com');
+    let url;
+    try { url = new URL(String(apiBaseUrl || '')); } catch { return false; }
+    const hostname = url.hostname.toLowerCase();
+    const apiHostAllowed = hostname === 'afribapay.com' || hostname.endsWith('.afribapay.com');
+    return credentialsReady && url.protocol === 'https:' && !url.username && !url.password
+      && apiHostAllowed;
+  }
   const credentialKeys = new Set([
     'api_key_encrypted', 'secret_key_encrypted', 'api_secret_encrypted',
     'client_secret_encrypted', 'master_key_encrypted', 'public_key_encrypted',
@@ -194,6 +212,23 @@ function providerConfigured(config, env, provider) {
     afribapay: ['AFRIBAPAY_API_KEY', 'AFRIBAPAY_SECRET_KEY', 'AFRIBAPAY_CLIENT_ID'],
   };
   return (envKeys[provider] || []).some(key => Boolean(String(env[key] || '').trim()));
+}
+
+function paydunyaPayinConfigured(config, env) {
+  if (!config?.enabled) return false;
+  const credentialsReady = Boolean(
+    (config.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
+    && (config.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
+    && (config.token_encrypted || env.PAYDUNYA_TOKEN),
+  );
+  const modes = config.modes && typeof config.modes === 'object' ? config.modes : {};
+  const enabledModes = Object.entries(modes).filter(([, value]) => (
+    value === true || value?.enabled === true
+  )).map(([name]) => name);
+  const supportedModes = enabledModes.filter(name => (
+    ['psr', 'par_redirect'].includes(name)
+  ));
+  return credentialsReady && enabledModes.length === 1 && supportedModes.length === 1;
 }
 
 function operatorFee(operator, fallback, key) {
@@ -484,13 +519,17 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
           ? depositConfig.mobile_money.operators : [];
         const providerConfigs = [
           { name: 'paydunya', config: paydunya },
-          { name: 'mbiyo', config: mbiyo },
+          ...(surface === 'public_link' ? [{ name: 'mbiyo', config: mbiyo }] : []),
           ...(surface === 'public_link' ? [] : [{ name: 'afribapay', config: afribapay }]),
         ];
         const grouped = new Map();
         const seen = new Set();
         for (const { name, config } of providerConfigs) {
-          if (!providerConfigured(config, env, name)) continue;
+          const configured = name === 'paydunya'
+            ? paydunyaPayinConfigured(config, env)
+            : providerConfigured(config, env, name);
+          if (!configured) continue;
+          if (name === 'afribapay' && depositConfig?.mobile_money?.enabled !== true) continue;
           for (const raw of Array.isArray(config.catalog) ? config.catalog : []) {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)
                 || raw.active === false || raw.archived === true || raw.hidden === true) continue;

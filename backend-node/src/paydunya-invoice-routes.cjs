@@ -6,6 +6,7 @@ const { sessionToken } = require('./auth-session-routes.cjs');
 const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
 const { decryptSetting } = require('./provider-settings.cjs');
+const { loadAfriBaPayConfig, submitAfriBaPayin } = require('./afribapay-payin.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
 
@@ -49,25 +50,25 @@ function canonicalOperator(value) {
   return code;
 }
 
-function selectOperator(catalog, country, requestedCode) {
+function selectOperator(catalog, country, requestedCode, provider = 'paydunya') {
   const countryCode = String(country || '').trim().toUpperCase();
   const requested = String(requestedCode || '').trim();
   if (!countryCode || !requested) return null;
   const eligible = (Array.isArray(catalog) ? catalog : []).filter(row => (
     row && String(row.country || '').toUpperCase() === countryCode
-      && String(row.provider || 'paydunya').toLowerCase() === 'paydunya'
+      && String(row.provider || provider).toLowerCase() === provider
       && row.active !== false && row.enabled !== false
       && row.visible !== false && row.archived !== true
   ));
   const exact = eligible.find(row => (
-    [row.code, row.operator, row.endpoint_slug].some(value => (
+    [row.code, row.public_code, row.operator, row.endpoint_slug].some(value => (
       String(value || '').toLowerCase() === requested.toLowerCase()
     ))
   ));
   if (exact) return exact;
   const canonical = canonicalOperator(requested);
   return eligible.find(row => (
-    [row.code, row.operator, row.endpoint_slug]
+    [row.code, row.public_code, row.operator, row.endpoint_slug]
       .some(value => canonicalOperator(value) === canonical)
   )) || null;
 }
@@ -250,29 +251,12 @@ function createPaydunyaInvoiceRoutes({
 
       const body = await readJson(req, 16 * 1024);
       let flow = routeFlow;
-      const settings = await db.collection('settings').find_one(
+      let provider = 'paydunya';
+      let selected = null;
+      let afriConfig = null;
+      let settings = await db.collection('settings').find_one(
         { id: 'payment_provider_paydunya' }, { _id: 0 },
       );
-      if (genericMobileMoney) {
-        if (!settings?.enabled) {
-          throw httpError(503, 'Aucun prestataire Mobile Money disponible.');
-        }
-        const modes = settings.modes && typeof settings.modes === 'object'
-          ? settings.modes : {};
-        const enabledModes = Object.entries(modes).filter(([, value]) => (
-          value === true || value?.enabled === true
-        )).map(([name]) => name);
-        const supportedModes = enabledModes.filter(name => (
-          ['psr', 'par_redirect'].includes(name)
-        ));
-        if (enabledModes.length !== 1 || supportedModes.length !== 1) {
-          throw httpError(
-            503,
-            'Le parcours Mobile Money sélectionné n’est pas disponible dans cette version.',
-          );
-        }
-        flow = supportedModes[0];
-      }
       const amount = Number(body.amount);
       const country = String(body.country || '').trim().toUpperCase();
       const operatorCode = String(body.operator || '').trim();
@@ -287,13 +271,84 @@ function createPaydunyaInvoiceRoutes({
         throw httpError(422, 'Informations de dépôt invalides.');
       }
 
-      if (!settings?.enabled) throw httpError(503, 'Passerelle Mobile Money non configurée.');
-      const modeSetting = settings.modes?.[flow];
-      if (!settings.modes || !(modeSetting === true || modeSetting?.enabled === true)) {
-        throw httpError(503, 'Ce mode de paiement Mobile Money est désactivé.');
+      if (genericMobileMoney) {
+        const paydunyaSelected = selectOperator(
+          settings?.catalog, country, operatorCode, 'paydunya',
+        );
+        afriConfig = await db.collection('settings').find_one(
+          { id: 'payment_provider_afribapay' }, { _id: 0 },
+        );
+        const afriSelected = selectOperator(
+          afriConfig?.catalog, country, operatorCode, 'afribapay',
+        );
+        const modes = settings?.modes && typeof settings.modes === 'object'
+          ? settings.modes : {};
+        const enabledModes = Object.entries(modes).filter(([, value]) => (
+          value === true || value?.enabled === true
+        )).map(([name]) => name);
+        const supportedModes = enabledModes.filter(name => (
+          ['psr', 'par_redirect'].includes(name)
+        ));
+        const paydunyaCredentialsReady = Boolean(
+          (settings?.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
+          && (settings?.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
+          && (settings?.token_encrypted || env.PAYDUNYA_TOKEN),
+        );
+        const paydunyaReady = Boolean(
+          settings?.enabled && paydunyaSelected && paydunyaCredentialsReady
+          && enabledModes.length === 1 && supportedModes.length === 1,
+        );
+
+        // Match the public catalogue: an unavailable PayDunya route cannot
+        // shadow a ready AfriBaPay route for the same operator.
+        if (paydunyaReady) {
+          flow = supportedModes[0];
+          selected = paydunyaSelected;
+        } else if (afriConfig?.enabled && afriSelected) {
+          provider = 'afribapay';
+          settings = afriConfig;
+          selected = afriSelected;
+          flow = 'softpay_direct';
+        } else if (!settings?.enabled) {
+          throw httpError(503, 'Aucun prestataire Mobile Money disponible.');
+        } else {
+          if (enabledModes.length !== 1 || supportedModes.length !== 1) {
+            throw httpError(
+              503,
+              'Le parcours Mobile Money sélectionné n’est pas disponible dans cette version.',
+            );
+          }
+          flow = supportedModes[0];
+        }
       }
-      const selected = selectOperator(settings.catalog, country, operatorCode);
-      if (!selected) throw httpError(400, 'Opérateur non disponible pour ce pays.');
+
+      if (provider === 'paydunya') {
+        if (!settings?.enabled) throw httpError(503, 'Passerelle Mobile Money non configurée.');
+        const modeSetting = settings.modes?.[flow];
+        if (!settings.modes || !(modeSetting === true || modeSetting?.enabled === true)) {
+          throw httpError(503, 'Ce mode de paiement Mobile Money est désactivé.');
+        }
+        selected ||= selectOperator(settings.catalog, country, operatorCode, 'paydunya');
+        if (!selected) throw httpError(400, 'Opérateur non disponible pour ce pays.');
+      } else {
+        const depositConfig = await db.collection('settings').find_one(
+          { id: 'deposit_config' }, { _id: 0 },
+        );
+        if (depositConfig?.mobile_money?.enabled !== true) {
+          throw httpError(503, 'Les dépôts Mobile Money sont désactivés.');
+        }
+        try {
+          afriConfig = loadAfriBaPayConfig(settings, sessionSecret);
+        } catch (error) {
+          throw httpError(
+            Number.isInteger(error.status) ? error.status : 503,
+            'AfriBaPay est activé mais sa configuration de paiement est incomplète.',
+          );
+        }
+        if (!String(selected.operator || '').trim()) {
+          throw httpError(503, 'AfriBaPay ne fournit pas le code prestataire de cet opérateur.');
+        }
+      }
       const currency = String(selected.currency || 'XOF').toUpperCase();
       if (!['XOF', 'XAF'].includes(currency)
           || (body.currency && String(body.currency).toUpperCase() !== currency)) {
@@ -342,7 +397,16 @@ function createPaydunyaInvoiceRoutes({
           created_at: existing.created_at,
           pending_expires_at: existing.pending_expires_at,
         };
-        if (flow === 'par_redirect') {
+        if (existing.provider === 'afribapay') {
+          result.payment_kind = existing.redirect_url ? 'redirect' : 'phone';
+          result.payment_flow = existing.payment_flow || {};
+          result.prompt_sent = true;
+          result.submission_unknown = Boolean(existing.submission_unknown);
+          result.message = existing.submission_unknown
+            ? 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié ici.'
+            : 'Suivez les instructions sur votre téléphone pour confirmer le paiement.';
+          if (existing.redirect_url) result.redirect_url = existing.redirect_url;
+        } else if (flow === 'par_redirect') {
           result.checkout_url = existing.checkout_url;
         } else {
           const expiresAt = Date.parse(existing.psr_capability_expires_at || '');
@@ -368,17 +432,26 @@ function createPaydunyaInvoiceRoutes({
       const origin = callbackOrigin(env);
       const now = new Date().toISOString();
       const capability = flow === 'psr' ? crypto.randomBytes(32).toString('base64url') : '';
-      const config = {
-        ...settings,
-        mode: settings.mode === 'live' ? 'live' : 'test',
-      };
-      const credentials = loadCredentials(config, sessionSecret, env);
+      const config = provider === 'paydunya'
+        ? { ...settings, mode: settings.mode === 'live' ? 'live' : 'test' }
+        : null;
+      const credentials = provider === 'paydunya'
+        ? loadCredentials(config, sessionSecret, env) : null;
+      const notifyUrl = provider === 'afribapay'
+        ? `${origin}/api/webhooks/afribapay?ref=${encodeURIComponent(depositId)}`
+        : '';
+      const paymentFlow = selected.payment_flow && typeof selected.payment_flow === 'object'
+        && !Array.isArray(selected.payment_flow) ? selected.payment_flow : {};
       const userNameParts = fullName.split(/\s+/, 2);
       const document = {
         id: depositId,
         user_id: userId,
         amount,
         requested_amount: fees.requested_amount,
+        ...(provider === 'afribapay' ? {
+          processed_amount: amount,
+          provider_submitted_amount: fees.charged_amount,
+        } : {}),
         charged_amount: fees.charged_amount,
         gateway_fee: fees.gateway_fee,
         platform_fee: fees.platform_fee,
@@ -404,9 +477,15 @@ function createPaydunyaInvoiceRoutes({
         idempotency_key: suppliedIdempotencyKey || null,
         request_fingerprint: fingerprint,
         status: 'pending',
-        provider: 'paydunya',
-        provider_mode: config.mode,
-        paydunya_flow: flow,
+        provider,
+        provider_mode: provider === 'afribapay' ? afriConfig.mode : config.mode,
+        ...(provider === 'afribapay' ? {
+          afribapay_order_id: depositId,
+          provider_status: 'pending',
+          notify_url: notifyUrl,
+          payment_flow: paymentFlow,
+          afribapay_submission_phase: 'not_submitted',
+        } : { paydunya_flow: flow }),
         initiation_state: 'initiating',
         ...(req[INTEGRATION_LINK_PAYMENT] ? {
           link_payment_id: String(req[INTEGRATION_LINK_PAYMENT]),
@@ -421,9 +500,129 @@ function createPaydunyaInvoiceRoutes({
           psr_capability_used: false,
         } : {}),
         created_at: now,
-        pending_expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+        pending_expires_at: provider === 'afribapay'
+          ? null : new Date(Date.now() + 30 * 60_000).toISOString(),
       };
       await deposits.insert_one(document);
+
+      if (provider === 'afribapay') {
+        const providerPayload = {
+          operator: selected.operator,
+          phone_number: phone,
+          country,
+          amount: fees.charged_amount,
+          currency,
+          order_id: depositId,
+          reference_id: suppliedIdempotencyKey || depositId,
+          notify_url: notifyUrl,
+          lang: 'fr',
+        };
+        let providerResponse;
+        try {
+          await deposits.update_one({ id: depositId, user_id: userId }, { $set: {
+            afribapay_submission_phase: 'dispatching',
+            updated_at: new Date().toISOString(),
+          } });
+          providerResponse = await submitAfriBaPayin({
+            config: afriConfig,
+            payload: providerPayload,
+            fetchImpl,
+          });
+        } catch (error) {
+          const rejected = Number(error.status) === 400;
+          const unknown = Boolean(error.outcomeUnknown) || Number(error.status) >= 500;
+          await deposits.update_one({ id: depositId, user_id: userId }, { $set: {
+            status: rejected ? 'failed' : 'pending',
+            initiation_state: rejected ? 'rejected' : 'unknown',
+            initiation_error: rejected
+              ? 'provider_rejected' : 'provider_outcome_unknown',
+            submission_unknown: unknown,
+            provider_status: rejected ? 'rejected' : 'unknown',
+            afribapay_submission_phase: rejected ? 'rejected' : 'outcome_unknown',
+            updated_at: new Date().toISOString(),
+          } });
+          if (rejected) {
+            throw httpError(400, 'AfriBaPay a refusé la demande de dépôt.');
+          }
+          if (error.safePublicMessage) throw error;
+          const result = {
+            id: depositId,
+            status: 'pending',
+            amount: fees.requested_amount,
+            requested_amount: fees.requested_amount,
+            charged_amount: fees.charged_amount,
+            gateway_fee: fees.gateway_fee,
+            platform_fee: fees.platform_fee,
+            total_fee: fees.total_fee,
+            fee_bearer: fees.fee_bearer,
+            currency,
+            mode: flow,
+            payment_kind: 'phone',
+            payment_flow: paymentFlow,
+            submission_unknown: true,
+            prompt_sent: false,
+            message: 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié ici.',
+            created_at: now,
+            pending_expires_at: null,
+          };
+          reply(res, 200, result);
+          return true;
+        }
+
+        const data = providerResponse.data && typeof providerResponse.data === 'object'
+          ? providerResponse.data : providerResponse;
+        const providerId = data.transaction_id || data.transactionId
+          || data.payment_id || data.id || null;
+        let redirectUrl = '';
+        const candidateUrl = String(data.provider_link || data.payment_url || '').trim();
+        if (candidateUrl) {
+          try {
+            const parsed = new URL(candidateUrl);
+            if (parsed.protocol === 'https:' && parsed.hostname
+                && !parsed.username && !parsed.password) {
+              redirectUrl = parsed.toString();
+            }
+          } catch {
+            // A malformed provider link is ignored; phone confirmation remains available.
+          }
+        }
+        const statusValue = String(data.status || providerResponse.status || 'pending')
+          .trim().toLowerCase().slice(0, 64) || 'pending';
+        await deposits.update_one({ id: depositId, user_id: userId }, { $set: {
+          ...(providerId ? { afribapay_transaction_id: String(providerId).slice(0, 160) } : {}),
+          ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
+          provider_status: statusValue,
+          afribapay_submission_phase: providerId
+            ? 'provider_id_received' : 'response_without_provider_id',
+          initiation_state: 'ready',
+          afribapay_response_received_at: new Date().toISOString(),
+          next_reconcile_at: new Date(Date.now() + 15_000).toISOString(),
+          updated_at: new Date().toISOString(),
+        } });
+        const result = {
+          id: depositId,
+          status: 'pending',
+          amount: fees.requested_amount,
+          requested_amount: fees.requested_amount,
+          charged_amount: fees.charged_amount,
+          gateway_fee: fees.gateway_fee,
+          platform_fee: fees.platform_fee,
+          total_fee: fees.total_fee,
+          fee_bearer: fees.fee_bearer,
+          currency,
+          mode: flow,
+          payment_kind: redirectUrl ? 'redirect' : 'phone',
+          payment_flow: paymentFlow,
+          prompt_sent: true,
+          submission_unknown: false,
+          message: 'Suivez les instructions sur votre téléphone pour confirmer le paiement.',
+          ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
+          created_at: now,
+          pending_expires_at: null,
+        };
+        reply(res, 200, result);
+        return true;
+      }
 
       const callbackUrl = `${origin}/api/webhooks/paydunya?ref=${encodeURIComponent(depositId)}`;
       let returnUrl = `${origin}/api/deposits/paydunya/return?ref=${encodeURIComponent(depositId)}`;

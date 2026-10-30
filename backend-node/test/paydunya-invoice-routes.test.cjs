@@ -3,6 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
+const security = require('../src/security.cjs');
 const { createPaydunyaInvoiceRoutes } = require('../src/paydunya-invoice-routes.cjs');
 
 function matches(row, query) {
@@ -61,6 +62,63 @@ function setup({ fetchImpl, modeEnabled = true } = {}) {
       PAYDUNYA_PRIVATE_KEY: 'mock-private',
       PAYDUNYA_TOKEN: 'mock-token',
     },
+    fetchImpl,
+  });
+  return { service, collections };
+}
+
+function setupAfriBaPay({ fetchImpl } = {}) {
+  const sessionSecret = 'test-session-secret-that-is-long-enough';
+  const encryptionKey = security.fernetKey(sessionSecret);
+  const collections = {
+    settings: new Collection([
+      {
+        id: 'payment_provider_paydunya',
+        enabled: false,
+        catalog: [],
+        modes: {},
+      },
+      {
+        id: 'payment_provider_afribapay',
+        enabled: true,
+        mode: 'sandbox',
+        api_user_encrypted: security.encryptFernet('mock-api-user', encryptionKey),
+        api_key_encrypted: security.encryptFernet('mock-api-key', encryptionKey),
+        merchant_key_encrypted: security.encryptFernet('mock-merchant-key', encryptionKey),
+        agent_id_encrypted: security.encryptFernet('must-never-be-sent', encryptionKey),
+        catalog: [{
+          provider: 'afribapay',
+          country: 'CM',
+          code: 'afribapay_orange_cm',
+          public_code: 'orange',
+          operator: 'orange_cm',
+          name: 'Orange Money Cameroun',
+          currency: 'XAF',
+          active: true,
+          min: 100,
+          max: 0,
+          gateway_fee_pct: 1,
+        }],
+      },
+      {
+        id: 'deposit_config',
+        mobile_money: { enabled: true },
+      },
+    ]),
+    momo_deposits: new Collection(),
+  };
+  const service = createPaydunyaInvoiceRoutes({
+    db: { collection: name => collections[name] },
+    sessionService: {
+      async authenticate(token) {
+        if (token !== 'merchant-session') {
+          throw Object.assign(new Error('Session requise'), { status: 401 });
+        }
+        return { userId: 'merchant-1' };
+      },
+    },
+    sessionSecret,
+    env: { OFFICIAL_DOMAIN: 'https://biz-transpay.example' },
     fetchImpl,
   });
   return { service, collections };
@@ -233,6 +291,150 @@ test('generic Mobile Money start fails closed when multiple PayDunya flows are e
   assert.equal(result.status, 503);
   assert.equal(providerCalls, 0);
   assert.equal(collections.momo_deposits.rows.length, 0);
+});
+
+test('generic Mobile Money selects ready AfriBaPay when overlapping routes are unavailable', async () => {
+  const requests = [];
+  const { service, collections } = setupAfriBaPay({
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith('/v1/token')) {
+        assert.equal(options.method, 'POST');
+        assert.equal(
+          options.headers.authorization,
+          `Basic ${Buffer.from('mock-api-user:mock-api-key').toString('base64')}`,
+        );
+        return {
+          ok: true,
+          async json() { return { data: { access_token: 'mock-afri-token' } }; },
+        };
+      }
+      assert.equal(String(url).endsWith('/v1/pay/payin'), true);
+      assert.equal(options.headers.authorization, 'Bearer mock-afri-token');
+      const submitted = JSON.parse(options.body);
+      assert.deepEqual(submitted, {
+        operator: 'orange_cm',
+        phone_number: '237670123456',
+        country: 'CM',
+        amount: 505,
+        currency: 'XAF',
+        order_id: submitted.order_id,
+        reference_id: 'afri-cm-orange-001',
+        notify_url: `https://biz-transpay.example/api/webhooks/afribapay?ref=${submitted.order_id}`,
+        lang: 'fr',
+        merchant_key: 'mock-merchant-key',
+      });
+      assert.doesNotMatch(options.body, /must-never-be-sent/);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { data: { transaction_id: 'afri-tx-1', status: 'pending' } };
+        },
+      };
+    },
+  });
+  const paydunya = collections.settings.rows.find(
+    row => row.id === 'payment_provider_paydunya',
+  );
+  Object.assign(paydunya, {
+    enabled: true,
+    modes: { psr: true, par_redirect: true },
+    catalog: [{
+      provider: 'paydunya',
+      country: 'CM',
+      code: 'orange',
+      name: 'Orange Cameroun',
+      currency: 'XAF',
+      active: true,
+      visible: true,
+    }],
+  });
+  collections.settings.rows.push({
+    id: 'payment_provider_mbiyo',
+    enabled: true,
+    secret_key_encrypted: 'configured',
+    catalog: [{
+      provider: 'mbiyo',
+      country: 'CM',
+      code: 'orange',
+      name: 'Orange Money Cameroun',
+      currency: 'XAF',
+      active: true,
+    }],
+  });
+  const request = {
+    amount: 500,
+    currency: 'XAF',
+    email: 'customer@example.com',
+    full_name: 'Test Customer',
+    country: 'CM',
+    operator: 'orange',
+    phone_number: '237670123456',
+    fee_bearer: 'client',
+    idempotency_key: 'afri-cm-orange-001',
+  };
+
+  const first = await call(
+    service, '/api/deposits/mobile-money/start', request, 'afri-cm-orange-001',
+  );
+  const retry = await call(
+    service, '/api/deposits/mobile-money/start', request, 'afri-cm-orange-001',
+  );
+  const stored = collections.momo_deposits.rows[0];
+
+  assert.equal(first.status, 200);
+  assert.equal(first.body.status, 'pending');
+  assert.equal(first.body.payment_kind, 'phone');
+  assert.equal(first.body.charged_amount, 505);
+  assert.equal(retry.body.id, first.body.id);
+  assert.equal(stored.provider, 'afribapay');
+  assert.equal(stored.afribapay_order_id, stored.id);
+  assert.equal(stored.provider_submitted_amount, 505);
+  assert.equal(stored.afribapay_transaction_id, 'afri-tx-1');
+  assert.equal(stored.initiation_state, 'ready');
+  assert.equal(stored.status, 'pending');
+  assert.equal(requests.length, 2);
+  assert.equal(JSON.stringify(requests).includes('must-never-be-sent'), false);
+});
+
+test('AfriBaPay network uncertainty stays pending and idempotency prevents a duplicate pay-in', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setupAfriBaPay({
+    fetchImpl: async url => {
+      providerCalls += 1;
+      if (String(url).endsWith('/v1/token')) {
+        return { ok: true, async json() { return { data: { access_token: 'mock-afri-token' } }; } };
+      }
+      throw new Error('network timeout after submission');
+    },
+  });
+  const request = {
+    amount: 500,
+    currency: 'XAF',
+    email: 'customer@example.com',
+    full_name: 'Test Customer',
+    country: 'CM',
+    operator: 'orange',
+    phone_number: '237670123456',
+    fee_bearer: 'client',
+    idempotency_key: 'afri-timeout-001',
+  };
+
+  const first = await call(
+    service, '/api/deposits/mobile-money/start', request, 'afri-timeout-001',
+  );
+  const retry = await call(
+    service, '/api/deposits/mobile-money/start', request, 'afri-timeout-001',
+  );
+
+  assert.equal(first.status, 200);
+  assert.equal(first.body.status, 'pending');
+  assert.equal(first.body.submission_unknown, true);
+  assert.equal(collections.momo_deposits.rows[0].status, 'pending');
+  assert.equal(collections.momo_deposits.rows[0].initiation_state, 'unknown');
+  assert.equal(retry.status, 409);
+  assert.equal(providerCalls, 2);
 });
 
 test('Wizall link finalization sends OTP only to PayDunya and returns sanitized instructions', async () => {

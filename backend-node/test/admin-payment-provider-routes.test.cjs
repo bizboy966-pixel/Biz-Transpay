@@ -132,7 +132,7 @@ test('all four admin provider settings pages have authenticated read routes', as
   const izipay = await call(service, 'GET', '/api/admin/payment-providers/izipay');
   assert.equal(izipay.body.configured, true);
   const afribapay = await call(service, 'GET', '/api/admin/payment-providers/afribapay');
-  assert.equal(afribapay.body.payin_available, false);
+  assert.equal(afribapay.body.payin_available, true);
   assert.equal(afribapay.body.api_key_configured, true);
   const mbiyo = await call(service, 'GET', '/api/admin/payment-providers/mbiyo');
   assert.equal(mbiyo.body.secret_key_configured, true);
