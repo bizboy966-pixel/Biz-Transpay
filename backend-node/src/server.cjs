@@ -11,6 +11,7 @@ const { createUserDataRoutes } = require('./user-data-routes.cjs');
 const { createDepositStatusRoutes } = require('./deposit-status-routes.cjs');
 const { createPaydunyaInvoiceRoutes } = require('./paydunya-invoice-routes.cjs');
 const { createPaydunyaWebhookRoutes } = require('./paydunya-webhook-routes.cjs');
+const { createFedaPayWebhookRoutes } = require('./fedapay-webhook-routes.cjs');
 const { createPaydunyaDisbursementRoutes } = require('./paydunya-disbursement-routes.cjs');
 const { createStripeDepositRoutes } = require('./stripe-deposit-routes.cjs');
 const { createTelegramNotifier } = require('./telegram-notifications.cjs');
@@ -166,6 +167,9 @@ function createServer({
   });
   const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
     db, env, sessionService,
+  });
+  const fedapayWebhookRoutes = createFedaPayWebhookRoutes({
+    db, env, notify: notifications.notify,
   });
   const stripeDepositRoutes = createStripeDepositRoutes({
     db, sessionService, env,
@@ -359,6 +363,7 @@ function createServer({
       if (await integrationDocumentationRoutes.handleRoute(req, res)) return;
       if (await paydunyaDisbursementProbeRoutes.handleRoute(req, res)) return;
       if (await afriBaPayWebhookRoutes.handleRoute(req, res)) return;
+      if (await fedapayWebhookRoutes.handleRoute(req, res)) return;
       if (await webhookProbeRoutes.handleRoute(req, res)) return;
       if (await adminPushRoutes(req, res)) return;
       res.statusCode = 503;

@@ -1383,7 +1383,7 @@
       "path": "/api/webhooks/fedapay",
       "source": "backend/server.py",
       "handler": "fedapay_webhook",
-      "status": "pending"
+      "status": "implemented_unverified"
     },
     {
       "method": "POST",
