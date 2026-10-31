@@ -51,3 +51,12 @@ workspace package manager, while Replit's documented proxy contract was usable.
 dependencies. If the package is unavailable, use the documented runtime proxy
 contract and mock the HTTP transport in tests; never expose provider credentials
 to the frontend or send live messages as a smoke test.
+
+Keep the application backend on the current Node.js runtime; do not reintroduce
+the previous Python backend during Plesk adaptation.
+
+**Why:** The user explicitly asked to keep the current Plesk/MySQL Node.js
+architecture and not bring the Python backend back.
+
+**How to apply:** Implement backend changes and deployment compatibility in
+Node.js, preserving the existing MySQL and route boundaries.

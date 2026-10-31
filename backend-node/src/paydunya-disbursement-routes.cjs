@@ -160,12 +160,14 @@ function createPaydunyaDisbursementRoutes({
       return true;
     }
     try {
-      const tx = await db.collection('transactions').find_one(
-        { reference, type: 'transfer' }, { _id: 0 },
-      );
+      const transactions = db.collection('transactions');
+      const tx = await transactions.find_one(
+        { id: reference }, { _id: 0 },
+      ) || await transactions.find_one({ reference }, { _id: 0 });
       const metadata = tx?.metadata || {};
-      if (!tx || metadata.transfer_type !== 'biz_to_mobile'
-          || metadata.provider === 'mbiyo') {
+      if (!tx || !['withdrawal', 'transfer'].includes(String(tx.type || ''))
+          || metadata.transfer_type !== 'biz_to_mobile'
+          || metadata.provider !== 'paydunya') {
         reply(res, 404, { detail: 'Retrait PayDunya introuvable.' });
         return true;
       }
@@ -193,7 +195,8 @@ function createPaydunyaDisbursementRoutes({
       if (!sameSecret(returnedToken, metadata.paydunya_invoice_token)
           || !amountMatches
           || (expectedMode && !sameSecret(returnedMode, expectedMode))
-          || (expectedProviderId && !sameSecret(returnedReference, expectedProviderId))) {
+          || (expectedProviderId && returnedReference
+            && !sameSecret(returnedReference, expectedProviderId))) {
         throw new Error('PayDunya payout response does not match the local transaction');
       }
       const status = String(valueFrom(provider, [

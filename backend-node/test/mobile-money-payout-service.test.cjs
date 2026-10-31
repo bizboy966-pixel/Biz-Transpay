@@ -363,7 +363,7 @@ test('PayDunya payout uses its two-step disbursement flow with provider callback
   const transfer = db.rows.settings.get('transfer_config');
   transfer.mobile_money.operators[0] = {
     ...transfer.mobile_money.operators[0],
-    provider: 'paydunya', withdraw_mode: 'mtn_ci',
+    provider: 'paydunya', withdraw_mode: 'tmoney_tg',
   };
   db.rows.settings.set('payment_provider_paydunya', {
     id: 'payment_provider_paydunya', enabled: true, mode: 'live',
@@ -380,7 +380,7 @@ test('PayDunya payout uses its two-step disbursement flow with provider callback
     fetchImpl: async (url, options) => {
       requests.push({ url, options });
       return requests.length === 1
-        ? providerResponse({ response_code: '00', token: 'pd-invoice-1' })
+        ? providerResponse({ response_code: '00', disburse_token: 'pd-invoice-1' })
         : providerResponse({ response_code: '00', status: 'pending' });
     },
   });
@@ -388,11 +388,265 @@ test('PayDunya payout uses its two-step disbursement flow with provider callback
     'merchant-1', payout(), 'idempotency-paydunya-001',
   );
   assert.equal(result.transaction.status, 'pending');
-  assert.equal(result.transaction.metadata.paydunya_invoice_token, 'pd-invoice-1');
+  assert.equal(result.transaction.metadata.paydunya_invoice_token, undefined);
+  assert.equal(
+    db.rows.transactions.get(result.transaction.id).metadata.paydunya_invoice_token,
+    'pd-invoice-1',
+  );
+  const replay = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-paydunya-001',
+  );
+  assert.equal(replay.transaction.metadata.paydunya_invoice_token, undefined);
   assert.equal(requests.length, 2);
   assert.match(requests[0].url, /\/api\/v2\/disburse\/get-invoice$/);
   assert.match(requests[1].url, /\/api\/v2\/disburse\/submit-invoice$/);
-  assert.match(JSON.parse(requests[0].options.body).callback_url, /\/api\/webhooks\/paydunya\/disbursement/);
+  const invoiceBody = JSON.parse(requests[0].options.body);
+  const submitBody = JSON.parse(requests[1].options.body);
+  assert.equal(invoiceBody.withdraw_mode, 't-money-togo');
+  assert.match(invoiceBody.callback_url, /\/api\/webhooks\/paydunya\/disbursement/);
+  assert.deepEqual(submitBody, {
+    disburse_invoice: 'pd-invoice-1',
+    disburse_id: result.transaction.id,
+  });
+});
+
+test('PayDunya payout rejects a mode that does not match the selected operator before debit', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya',
+    withdraw_mode: 'mtn_ci',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  let providerCalls = 0;
+  const service = createMobileMoneyPayoutService({
+    db,
+    sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return providerResponse({ response_code: '00' });
+    },
+  });
+
+  await assert.rejects(
+    service.createIntegrationPayout('merchant-1', payout(), 'idempotency-paydunya-mode'),
+    error => error.code === 'PAYDUNYA_WITHDRAW_MODE_MISMATCH',
+  );
+  assert.equal(providerCalls, 0);
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
+});
+
+test('PayDunya preflight rejection exposes its safe provider code and refunds the reservation', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya',
+    withdraw_mode: 't-money-togo',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  const service = createMobileMoneyPayoutService({
+    db,
+    sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async () => providerResponse({
+      response_code: '1001',
+      response_text: 'withdraw_mode unsupported',
+    }),
+  });
+
+  await assert.rejects(
+    service.createIntegrationPayout(
+      'merchant-1', payout(), 'idempotency-paydunya-preflight',
+    ),
+    error => error.code === 'PAYDUNYA_1001'
+      && error.message.includes('code 1001')
+      && error.message.includes('remboursé'),
+  );
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
+  const transaction = [...db.rows.transactions.values()][0];
+  assert.equal(transaction.status, 'failed');
+  assert.equal(transaction.metadata.provider_status, 'PAYDUNYA_1001');
+});
+
+test('PayDunya rechecks a non-success submit response and retries the same invoice only when created', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya',
+    withdraw_mode: 't-money-togo',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  const requests = [];
+  let payoutId = '';
+  const service = createMobileMoneyPayoutService({
+    db,
+    sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (String(url).endsWith('/get-invoice')) {
+        return providerResponse({ response_code: '00', disburse_token: 'pd-invoice-retry' });
+      }
+      if (String(url).endsWith('/submit-invoice')) {
+        const body = JSON.parse(options.body);
+        payoutId ||= body.disburse_id;
+        if (requests.filter(item => String(item.url).endsWith('/submit-invoice')).length === 1) {
+          return providerResponse({ response_code: '1001', response_text: 'temporary submit response' });
+        }
+        return providerResponse({
+          response_code: '00', status: 'pending', transaction_id: 'paydunya-tx-1',
+        });
+      }
+      return providerResponse({
+        response_code: '00',
+        status: 'created',
+        token: 'pd-invoice-retry',
+        withdraw_mode: 't-money-togo',
+        amount: '1000.00',
+        disburse_id: payoutId,
+      });
+    },
+  });
+
+  const result = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-paydunya-retry',
+  );
+  assert.equal(result.transaction.status, 'pending');
+  assert.equal(result.transaction.metadata.paydunya_status_check, 'created');
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 8_850);
+  const submitBodies = requests
+    .filter(item => String(item.url).endsWith('/submit-invoice'))
+    .map(item => JSON.parse(item.options.body));
+  assert.equal(submitBodies.length, 2);
+  assert.deepEqual(submitBodies[0], submitBodies[1]);
+  assert.equal(submitBodies[0].disburse_invoice, 'pd-invoice-retry');
+  assert.equal(requests.filter(item => String(item.url).endsWith('/check-status')).length, 1);
+});
+
+test('PayDunya keeps a non-00 submission reserved while verified status is pending', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya',
+    withdraw_mode: 't-money-togo',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  let payoutId = '';
+  let checkCalls = 0;
+  const service = createMobileMoneyPayoutService({
+    db,
+    sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async (url, options) => {
+      if (String(url).endsWith('/get-invoice')) {
+        return providerResponse({ response_code: '00', disburse_token: 'pd-invoice-pending' });
+      }
+      if (String(url).endsWith('/submit-invoice')) {
+        payoutId = JSON.parse(options.body).disburse_id;
+        return providerResponse({ response_code: '1001' });
+      }
+      checkCalls += 1;
+      return providerResponse({
+        response_code: '00',
+        status: 'pending',
+        token: 'pd-invoice-pending',
+        withdraw_mode: 't-money-togo',
+        amount: '1000',
+        disburse_id: payoutId,
+        transaction_id: 'paydunya-tx-pending',
+      });
+    },
+  });
+
+  const result = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-paydunya-pending',
+  );
+  assert.equal(result.transaction.status, 'pending');
+  assert.equal(result.transaction.metadata.provider_status, 'pending');
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 8_850);
+  assert.equal(checkCalls, 1);
+  assert.equal(result.transaction.metadata.refunded, undefined);
+});
+
+test('PayDunya refunds only after status lookup confirms a failed payout', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya',
+    withdraw_mode: 't-money-togo',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  let payoutId = '';
+  const service = createMobileMoneyPayoutService({
+    db,
+    sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async (url, options) => {
+      if (String(url).endsWith('/get-invoice')) {
+        return providerResponse({ response_code: '00', disburse_token: 'pd-invoice-failed' });
+      }
+      if (String(url).endsWith('/submit-invoice')) {
+        payoutId = JSON.parse(options.body).disburse_id;
+        return providerResponse({ response_code: '5000' });
+      }
+      return providerResponse({
+        response_code: '00',
+        status: 'failed',
+        token: 'pd-invoice-failed',
+        withdraw_mode: 't-money-togo',
+        amount: '1000',
+        disburse_id: payoutId,
+      });
+    },
+  });
+
+  const result = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-paydunya-failed',
+  );
+  assert.equal(result.transaction.status, 'failed');
+  assert.equal(result.transaction.metadata.refunded, true);
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
 });
 
 test('AfriBaPay payout authenticates then submits once to its configured payout host', async () => {

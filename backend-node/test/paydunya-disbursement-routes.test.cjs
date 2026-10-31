@@ -63,7 +63,7 @@ function setup({ providerStatus, status = 'failed' }) {
     id: 'tx-payout-1',
     user_id: 'alice',
     reference: 'BTX-PAYOUT-1',
-    type: 'transfer',
+    type: 'withdrawal',
     amount: 500,
     currency: 'XOF',
     status: 'pending',
@@ -72,7 +72,7 @@ function setup({ providerStatus, status = 'failed' }) {
       provider: 'paydunya',
       paydunya_invoice_token: 'invoice-token-1',
       paydunya_disbursement_id: 'provider-payout-1',
-      paydunya_withdraw_mode: 'orange-money',
+      paydunya_withdraw_mode: 'orange-money-senegal',
       recipient_gets: 500,
       total_debit: 550,
       wallet_field: 'balance_xof',
@@ -96,7 +96,7 @@ function setup({ providerStatus, status = 'failed' }) {
           response_code: '00',
           token: 'invoice-token-1',
           amount: 500,
-          withdraw_mode: 'orange-money',
+          withdraw_mode: 'orange-money-senegal',
           disburse_id: 'provider-payout-1',
           status,
         };
@@ -118,7 +118,7 @@ function setup({ providerStatus, status = 'failed' }) {
 async function request(routes, response, method = 'POST') {
   const req = Readable.from(method === 'POST' ? ['callback-payload'] : []);
   req.method = method;
-  req.url = '/api/webhooks/paydunya/disbursement?ref=BTX-PAYOUT-1';
+  req.url = '/api/webhooks/paydunya/disbursement?ref=tx-payout-1';
   const res = {
     writeHead(code) { this.statusCode = code; },
     end(body) { this.body = body; },

@@ -377,6 +377,13 @@ function createTransferRoutes({
         throw httpError(503, 'Le résultat du retrait doit être vérifié avant confirmation.');
       }
       if (transaction.status === 'failed') {
+        if (transaction.metadata?.provider === 'paydunya') {
+          throw httpError(
+            422,
+            'PayDunya a confirmé l’échec du retrait; le montant a été remboursé.',
+            'PAYDUNYA_PAYOUT_FAILED',
+          );
+        }
         throw httpError(422, 'Le prestataire a refusé le retrait; le montant a été remboursé.');
       }
       const pending = transaction.status === 'pending';
