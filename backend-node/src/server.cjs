@@ -166,6 +166,7 @@ function createServer({
   const mbiyoWebhookRoutes = createMbiyoWebhookRoutes({
     db, env, sessionSecret: env.SESSION_SECRET || '', fetchImpl,
   });
+  const afriBaPayWebhookRoutes = createAfriBaPayWebhookRoutes({ db, env });
   const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
     db, env, sessionService,
     reconcileMbiyoDeposit: mbiyoWebhookRoutes.reconcileDepositById,
@@ -175,6 +176,7 @@ function createServer({
     db,
     sessionService,
     reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
+    reconcileAfriBaPayDepositById: afriBaPayWebhookRoutes.reconcileOrder,
     reconcilePaydunyaDepositById: paydunyaWebhookRoutes.settleDepositById,
   });
   const paydunyaInvoiceRoutes = createPaydunyaInvoiceRoutes({
@@ -183,6 +185,7 @@ function createServer({
     sessionSecret: env.SESSION_SECRET || '',
     env,
     reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
+    reconcileAfriBaPayDepositById: afriBaPayWebhookRoutes.reconcileOrder,
   });
   const stripeDepositRoutes = createStripeDepositRoutes({
     db, sessionService, env,
@@ -219,9 +222,16 @@ function createServer({
       const deposit = await db.collection('momo_deposits').find_one(
         { id: String(id) }, { _id: 0 },
       );
-      return deposit?.provider === 'mbiyo'
-        ? mbiyoWebhookRoutes.reconcileDepositById(String(id), { force: true })
-        : paydunyaWebhookRoutes.settleDepositById(String(id));
+      if (deposit?.provider === 'mbiyo') {
+        return mbiyoWebhookRoutes.reconcileDepositById(String(id), { force: true });
+      }
+      if (deposit?.provider === 'afribapay') {
+        return afriBaPayWebhookRoutes.reconcileOrder(String(id));
+      }
+      if (deposit?.provider === 'paydunya') {
+        return paydunyaWebhookRoutes.settleDepositById(String(id));
+      }
+      return null;
     },
   });
   const exchange = createExchangeRoutes({
@@ -272,6 +282,9 @@ function createServer({
     if (deposit.provider === 'mbiyo') {
       return mbiyoWebhookRoutes.reconcileDepositById(String(depositId));
     }
+    if (deposit.provider === 'afribapay') {
+      return afriBaPayWebhookRoutes.reconcileOrder(String(depositId));
+    }
     if (deposit.provider === 'paydunya') {
       return paydunyaWebhookRoutes.settleDepositById(String(depositId));
     }
@@ -296,7 +309,6 @@ function createServer({
     ),
   });
   const webhookProbeRoutes = createWebhookProbeRoutes();
-  const afriBaPayWebhookRoutes = createAfriBaPayWebhookRoutes({ db, env });
   const afriBaPayDepositWorker = db ? createAfriBaPayDepositWorker({
     db,
     env,

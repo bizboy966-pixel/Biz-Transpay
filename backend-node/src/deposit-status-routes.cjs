@@ -167,9 +167,11 @@ function publicCryptoDeposit(deposit) {
 }
 
 function createDepositStatusRoutes({
-  db, sessionService, reconcileMbiyoDepositById, reconcilePaydunyaDepositById,
+  db, sessionService, reconcileMbiyoDepositById, reconcileAfriBaPayDepositById,
+  reconcilePaydunyaDepositById,
 }) {
   const lastPaydunyaReconcileAt = new Map();
+  const lastAfriBaPayReconcileAt = new Map();
 
   function shouldReconcilePaydunya(depositId) {
     const now = Date.now();
@@ -179,6 +181,19 @@ function createDepositStatusRoutes({
     if (lastPaydunyaReconcileAt.size > 500) {
       for (const [id, checkedAt] of lastPaydunyaReconcileAt) {
         if (now - checkedAt > 60_000) lastPaydunyaReconcileAt.delete(id);
+      }
+    }
+    return true;
+  }
+
+  function shouldReconcileAfriBaPay(depositId) {
+    const now = Date.now();
+    const last = lastAfriBaPayReconcileAt.get(depositId) || 0;
+    if (now - last < 10_000) return false;
+    lastAfriBaPayReconcileAt.set(depositId, now);
+    if (lastAfriBaPayReconcileAt.size > 500) {
+      for (const [id, checkedAt] of lastAfriBaPayReconcileAt) {
+        if (now - checkedAt > 60_000) lastAfriBaPayReconcileAt.delete(id);
       }
     }
     return true;
@@ -295,6 +310,15 @@ function createDepositStatusRoutes({
       if (deposit?.provider === 'mbiyo' && deposit.status === 'pending'
           && typeof reconcileMbiyoDepositById === 'function') {
         try { await reconcileMbiyoDepositById(deposit.id); } catch { /* status snapshot stays available */ }
+        deposit = await db.collection('momo_deposits').find_one(
+          { id: deposit.id, user_id: userId }, { _id: 0 },
+        ) || deposit;
+      }
+      if (deposit?.provider === 'afribapay'
+          && deposit.status === 'pending'
+          && typeof reconcileAfriBaPayDepositById === 'function'
+          && shouldReconcileAfriBaPay(deposit.id)) {
+        try { await reconcileAfriBaPayDepositById(deposit.id); } catch { /* worker retries safely */ }
         deposit = await db.collection('momo_deposits').find_one(
           { id: deposit.id, user_id: userId }, { _id: 0 },
         ) || deposit;

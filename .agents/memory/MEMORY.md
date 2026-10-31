@@ -9,6 +9,7 @@
 - [PayDunya disbursement](paydunya-disbursement.md) — check ambiguous submits by token; retry only verified `created` payouts and refund only terminal failures.
 - [Mobile Money withdrawal routing](mobile-money-withdrawal-routing.md) — payout is country-currency mapped to its matching fiat wallet; validate ranges only for active routes.
 - [Customer payment routing](paydunya-public-surface.md) — payment-provider route selection stays server-side; the client receives only a generic payment action.
+- [Mobile Money provider stickiness](mobile-money-provider-stickiness.md) — choose the provider once at initiation; all later status and finalization paths use the saved provider in both UI and API.
 - [Public payment CSRF boundary](public-payment-csrf.md) — anonymous payment-link mutations must not depend on a browser session CSRF token; Turnstile and payment validations remain active.
 - [PayDunya callback hosting](paydunya-callback-hosting.md) — PUSH rejects temporary Replit preview callbacks; use a public production deployment accepting GET, POST, and HEAD.
 - [Social channel visibility](social-channel-visibility.md) — social links are validated and filtered server-side before reaching the authenticated user interface.

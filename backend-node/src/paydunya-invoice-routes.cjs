@@ -292,6 +292,7 @@ async function invokePayDunya({ config, credentials, invoice, fetchImpl }) {
 function createPaydunyaInvoiceRoutes({
   db, sessionService, sessionSecret = '', env = process.env,
   fetchImpl = globalThis.fetch, reconcileMbiyoDepositById,
+  reconcileAfriBaPayDepositById,
 }) {
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
@@ -479,12 +480,21 @@ function createPaydunyaInvoiceRoutes({
           .update(`${userId}:${suppliedIdempotencyKey}`, 'utf8').digest('hex')}`
         : crypto.randomUUID();
       const deposits = db.collection('momo_deposits');
-      const existing = suppliedIdempotencyKey
+      let existing = suppliedIdempotencyKey
         ? await deposits.find_one({ id: depositId, user_id: userId }, { _id: 0 })
         : null;
       if (existing) {
         if (existing.request_fingerprint !== fingerprint) {
           throw httpError(409, 'Cette clé d’idempotence est déjà liée à une autre demande.');
+        }
+        if (existing.provider === 'afribapay' && existing.status === 'pending'
+            && typeof reconcileAfriBaPayDepositById === 'function') {
+          try { await reconcileAfriBaPayDepositById(existing.id); } catch {
+            /* Return the saved AfriBaPay result; never resubmit another provider. */
+          }
+          existing = await deposits.find_one(
+            { id: depositId, user_id: userId }, { _id: 0 },
+          ) || existing;
         }
         const recoverablePaydunyaPending = existing.provider === 'paydunya'
           && existing.paydunya_flow === 'softpay_direct'

@@ -35,7 +35,8 @@ class Collection {
 }
 
 function setup({
-  momo = [], crypto = [], reconcilePaydunyaDepositById,
+  momo = [], crypto = [], reconcileAfriBaPayDepositById,
+  reconcilePaydunyaDepositById,
 } = {}) {
   const collections = {
     momo_deposits: new Collection(momo),
@@ -43,6 +44,7 @@ function setup({
   };
   const service = createDepositStatusRoutes({
     db: { collection: name => collections[name] },
+    reconcileAfriBaPayDepositById,
     reconcilePaydunyaDepositById,
     sessionService: {
       async authenticate(token) {
@@ -148,6 +150,35 @@ test('pending direct PayDunya status verifies the invoice and keeps internal fie
   assert.equal(response.body.prompt_sent, true);
   assert.equal(response.body.paydunya_token, undefined);
   assert.equal(reconcileCalls, 1);
+});
+
+test('pending AfriBaPay status refresh stays with AfriBaPay and is throttled', async () => {
+  const row = {
+    id: 'afribapay-deposit-1',
+    user_id: 'user-1',
+    provider: 'afribapay',
+    status: 'pending',
+    amount: 500,
+    currency: 'XOF',
+  };
+  let afriCalls = 0;
+  let paydunyaCalls = 0;
+  const service = setup({
+    momo: [row],
+    reconcileAfriBaPayDepositById: async depositId => {
+      afriCalls += 1;
+      assert.equal(depositId, row.id);
+    },
+    reconcilePaydunyaDepositById: async () => { paydunyaCalls += 1; },
+  });
+
+  const first = await call(service, '/api/deposits/mobile-money/afribapay-deposit-1');
+  const second = await call(service, '/api/deposits/mobile-money/afribapay-deposit-1');
+  assert.equal(first.statusCode, 200);
+  assert.equal(second.statusCode, 200);
+  assert.equal(first.body.provider, 'afribapay');
+  assert.equal(afriCalls, 1);
+  assert.equal(paydunyaCalls, 0);
 });
 
 test('crypto deposit status is owner-scoped and strips internal provider fields', async () => {

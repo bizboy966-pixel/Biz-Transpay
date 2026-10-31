@@ -68,7 +68,7 @@ function setup({ fetchImpl, modeEnabled = true, mode = 'test' } = {}) {
   return { service, collections };
 }
 
-function setupAfriBaPay({ fetchImpl } = {}) {
+function setupAfriBaPay({ fetchImpl, reconcileAfriBaPayDepositById } = {}) {
   const sessionSecret = 'test-session-secret-that-is-long-enough';
   const encryptionKey = security.fernetKey(sessionSecret);
   const collections = {
@@ -133,6 +133,7 @@ function setupAfriBaPay({ fetchImpl } = {}) {
     sessionSecret,
     env: { OFFICIAL_DOMAIN: 'https://biz-transpay.example' },
     fetchImpl,
+    reconcileAfriBaPayDepositById,
   });
   return { service, collections };
 }
@@ -462,7 +463,13 @@ test('PayDunya Sandbox does not pretend to initiate a real operator request', as
 
 test('generic Mobile Money selects ready AfriBaPay when PayDunya has no usable flow', async () => {
   const requests = [];
+  let reconciliationCalls = 0;
+  let expectedDepositId = null;
   const { service, collections } = setupAfriBaPay({
+    reconcileAfriBaPayDepositById: async depositId => {
+      reconciliationCalls += 1;
+      assert.equal(depositId, expectedDepositId);
+    },
     fetchImpl: async (url, options) => {
       requests.push({ url: String(url), options });
       if (String(url).endsWith('/v1/token')) {
@@ -545,6 +552,7 @@ test('generic Mobile Money selects ready AfriBaPay when PayDunya has no usable f
   const first = await call(
     service, '/api/deposits/mobile-money/start', request, 'afri-cm-orange-001',
   );
+  expectedDepositId = first.body.id;
   const retry = await call(
     service, '/api/deposits/mobile-money/start', request, 'afri-cm-orange-001',
   );
@@ -561,6 +569,7 @@ test('generic Mobile Money selects ready AfriBaPay when PayDunya has no usable f
   assert.equal(stored.afribapay_transaction_id, 'afri-tx-1');
   assert.equal(stored.initiation_state, 'ready');
   assert.equal(stored.status, 'pending');
+  assert.equal(reconciliationCalls, 1);
   assert.equal(requests.length, 2);
   assert.equal(JSON.stringify(requests).includes('must-never-be-sent'), false);
 });
