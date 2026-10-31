@@ -359,7 +359,7 @@ test('a provider-confirmed rejection refunds once and marks the payout failed', 
   assert.ok(db.rows.transactions.has(`payout-refund-${created.transaction.id}`));
 });
 
-test('PayDunya payout uses its two-step disbursement flow with provider callbacks', async () => {
+test('PayDunya payout uses its two-step flow and the verified production callback host', async () => {
   const db = new MemoryDb();
   const transfer = db.rows.settings.get('transfer_config');
   transfer.mobile_money.operators[0] = {
@@ -373,7 +373,7 @@ test('PayDunya payout uses its two-step disbursement flow with provider callback
   const service = createMobileMoneyPayoutService({
     db, sessionSecret: 'test-session-secret',
     env: {
-      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      OFFICIAL_DOMAIN: 'https://www.biz-transpay.com',
       PAYDUNYA_MASTER_KEY: 'master',
       PAYDUNYA_PRIVATE_KEY: 'private',
       PAYDUNYA_TOKEN: 'token',
@@ -404,7 +404,10 @@ test('PayDunya payout uses its two-step disbursement flow with provider callback
   const invoiceBody = JSON.parse(requests[0].options.body);
   const submitBody = JSON.parse(requests[1].options.body);
   assert.equal(invoiceBody.withdraw_mode, 't-money-togo');
-  assert.match(invoiceBody.callback_url, /\/api\/webhooks\/paydunya\/disbursement/);
+  const callback = new URL(invoiceBody.callback_url);
+  assert.equal(callback.origin, 'https://biz-transpay.com');
+  assert.equal(callback.pathname, '/api/webhooks/paydunya/disbursement');
+  assert.equal(callback.searchParams.get('ref'), result.transaction.id);
   assert.deepEqual(submitBody, {
     disburse_invoice: 'pd-invoice-1',
     disburse_id: result.transaction.id,
@@ -582,6 +585,53 @@ test('PayDunya preflight rejection exposes its safe provider code and refunds th
   const transaction = [...db.rows.transactions.values()][0];
   assert.equal(transaction.status, 'failed');
   assert.equal(transaction.metadata.provider_status, 'PAYDUNYA_1001');
+});
+
+test('PayDunya 4002 refuses preparation before submit and refunds the reserved amount', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya',
+    withdraw_mode: 't-money-togo',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  const requests = [];
+  const service = createMobileMoneyPayoutService({
+    db,
+    sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://www.biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return providerResponse({
+        response_code: '4002',
+        response_text: 'Insufficient balance or callback unavailable',
+      });
+    },
+  });
+
+  await assert.rejects(
+    service.createIntegrationPayout(
+      'merchant-1', payout(), 'idempotency-paydunya-4002',
+    ),
+    error => error.code === 'PAYDUNYA_4002'
+      && error.message.includes('code 4002')
+      && error.message.includes('Insufficient balance or callback unavailable')
+      && error.message.includes('remboursé'),
+  );
+  assert.equal(requests.length, 1);
+  assert.match(requests[0], /\/api\/v2\/disburse\/get-invoice$/);
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
+  const transaction = [...db.rows.transactions.values()][0];
+  assert.equal(transaction.status, 'failed');
+  assert.equal(transaction.metadata.provider_status, 'PAYDUNYA_4002');
 });
 
 test('PayDunya rechecks a non-success submit response and retries the same invoice only when created', async () => {

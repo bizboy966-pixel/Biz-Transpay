@@ -8,6 +8,8 @@ const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
 
+const PAYDUNYA_CALLBACK_ORIGIN = 'https://biz-transpay.com';
+
 function failure(status, message, code) {
   return Object.assign(new Error(message), { status, code });
 }
@@ -202,6 +204,14 @@ function paydunyaResponseCode(payload) {
   const data = payload?.data && typeof payload.data === 'object' ? payload.data : payload;
   const code = String(data?.response_code || data?.responseCode || '').trim();
   return code ? code.padStart(2, '0') : '';
+}
+
+function paydunyaResponseText(payload) {
+  return String(providerField(payload, ['response_text', 'response_message']) || '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
 }
 
 function providerField(payload, names) {
@@ -441,12 +451,15 @@ function createMobileMoneyPayoutService({
         || !Number.isFinite(recipientGets) || recipientGets <= 0) {
       throw failure(422, 'Frais de retrait invalides.');
     }
-    const callbackOrigin = String(
+    const configuredCallbackOrigin = String(
       env.OFFICIAL_DOMAIN || env.BIZTRANSPAY_PUBLIC_URL || '',
     ).trim().replace(/\/+$/, '');
-    if (!/^https:\/\/[^/]+$/i.test(callbackOrigin)) {
+    if (!/^https:\/\/[^/]+$/i.test(configuredCallbackOrigin)) {
       throw failure(503, 'L’URL publique HTTPS des callbacks doit être configurée avant les retraits.');
     }
+    const callbackOrigin = provider === 'paydunya'
+      ? PAYDUNYA_CALLBACK_ORIGIN
+      : configuredCallbackOrigin;
     const fingerprint = crypto.createHash('sha256')
       .update(JSON.stringify({
         amount, country, operator: operatorCode, currency, recipient, fee_bearer: feeBearer,
@@ -544,11 +557,15 @@ function createMobileMoneyPayoutService({
             : code === '401'
               ? 'PayDunya a refusé l’autorisation du compte marchand.'
               : code === '4002'
-                ? 'PayDunya n’a pas pu préparer le retrait; vérifiez le solde marchand et l’URL du callback.'
+                ? 'PayDunya n’a pas pu préparer le retrait.'
                 : code === '5000'
                   ? 'PayDunya signale une indisponibilité temporaire.'
                   : 'PayDunya a refusé la préparation du retrait.';
-          throw failure(422, `${message}${code ? ` (code ${code})` : ''}`,
+          const providerDetail = code === '4002' ? paydunyaResponseText(invoice) : '';
+          throw failure(422,
+            `${message}${code ? ` (code ${code})` : ''}${providerDetail
+              ? ` Détail PayDunya : ${providerDetail}.`
+              : ''}`,
             code ? `PAYDUNYA_${code}` : 'PAYDUNYA_INVOICE_REJECTED');
         }
         const token = String(
