@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { NavLink, Outlet, Link, useLocation } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Home, Receipt, ScanLine, LayoutGrid, UserRound, IdCard, WalletCards, Menu, ChevronDown, LogOut, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { Logo } from '@/components/Logo';
 import { SafeImage } from '@/components/SafeImage';
 import NotificationBell from '@/components/NotificationBell';
@@ -14,7 +15,8 @@ import { prefetchPageForRoute } from '@/pageLoaders';
 
 export default function DashboardLayout() {
   const { t } = useTranslation();
-  const { user, logout } = useAuth();
+  const { user, logout, unlockAdminPanel } = useAuth();
+  const navigate = useNavigate();
   // Sidebar closed by default on mobile so the dashboard content is visible
   // immediately after login. Open on desktop for productivity.
   const [sidebarOpen, setSidebarOpen] = useState(() => {
@@ -22,7 +24,44 @@ export default function DashboardLayout() {
     return window.innerWidth >= 1024;
   });
   const [profileOpen, setProfileOpen] = useState(false);
+  const [adminUnlockOpen, setAdminUnlockOpen] = useState(false);
+  const [adminOtp, setAdminOtp] = useState('');
+  const [adminUnlocking, setAdminUnlocking] = useState(false);
+  const usernameClickState = useRef({ count: 0, startedAt: 0 });
   const loc = useLocation();
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+
+  const handleUsernameClick = () => {
+    if (!isAdmin) return;
+    const now = Date.now();
+    if (!usernameClickState.current.startedAt || now - usernameClickState.current.startedAt > 10_000) {
+      usernameClickState.current = { count: 0, startedAt: now };
+    }
+    usernameClickState.current.count += 1;
+    if (usernameClickState.current.count >= 4) {
+      usernameClickState.current = { count: 0, startedAt: 0 };
+      setProfileOpen(false);
+      setAdminOtp('');
+      setAdminUnlockOpen(true);
+    }
+  };
+
+  const verifyAdminPanel = async (event) => {
+    event.preventDefault();
+    setAdminUnlocking(true);
+    try {
+      await unlockAdminPanel(adminOtp);
+      setAdminUnlockOpen(false);
+      setAdminOtp('');
+      navigate('/admin');
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      toast.error(typeof detail === 'string' ? detail : detail?.message || 'Code de vérification invalide.');
+      setAdminOtp('');
+    } finally {
+      setAdminUnlocking(false);
+    }
+  };
 
   // Auto-close the sidebar on route change on mobile so a nav click doesn't
   // leave the drawer covering the destination page.
@@ -131,11 +170,15 @@ export default function DashboardLayout() {
                 <div className="absolute right-0 mt-2 min-w-[200px] bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
                   <div className="p-3 border-b border-slate-100">
                     <div className="font-semibold text-slate-900 text-sm">{user?.full_name}</div>
-                    <div className="text-xs text-slate-500">@{user?.username}</div>
+                    <button
+                      type="button"
+                      onClick={handleUsernameClick}
+                      data-testid="profile-username"
+                      className="block text-left text-xs text-slate-500"
+                    >
+                      @{user?.username}
+                    </button>
                   </div>
-                  {(user?.role === 'admin' || user?.role === 'super_admin') && (
-                   <Link to="/admin" className="block px-4 py-2 text-sm font-semibold text-[#2563EB] hover:bg-blue-50" data-testid="menu-admin">Admin Panel</Link>
-                  )}
                   <button onClick={logout} data-testid="btn-logout" className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
                     <LogOut className="w-3.5 h-3.5" /> {t('common.logout')}
                   </button>
@@ -179,6 +222,58 @@ export default function DashboardLayout() {
         ))}
       </nav>
       <FloatingSupportButtons />
+      {adminUnlockOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4">
+          <form
+            onSubmit={verifyAdminPanel}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="admin-panel-mfa-title"
+            data-testid="admin-panel-mfa-dialog"
+            className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <h2 id="admin-panel-mfa-title" className="font-cabinet text-xl font-bold text-slate-900">
+              Vérification à deux facteurs
+            </h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Saisissez le code actuel de votre application d’authentification pour continuer.
+            </p>
+            <label htmlFor="admin-panel-otp" className="mt-5 block text-sm font-semibold text-slate-700">
+              Code d’authentification
+            </label>
+            <input
+              id="admin-panel-otp"
+              data-testid="admin-panel-otp"
+              value={adminOtp}
+              onChange={(event) => setAdminOtp(event.target.value.replace(/\D/g, '').slice(0, 6))}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              required
+              className="bt-field mt-2 text-center tracking-[0.4em]"
+              placeholder="••••••"
+            />
+            <div className="mt-5 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setAdminUnlockOpen(false)}
+                className="flex-1 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600"
+                data-testid="admin-panel-mfa-cancel"
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                disabled={adminOtp.length !== 6 || adminUnlocking}
+                className="bt-button-primary flex-1"
+                data-testid="admin-panel-mfa-submit"
+              >
+                {adminUnlocking ? 'Vérification…' : 'Continuer'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

@@ -90,6 +90,10 @@ function AdminOnly({ children }) {
   if (loading) return <div className="min-h-screen flex items-center justify-center">Chargement…</div>;
   if (!user) return <Navigate to="/login" replace />;
   if (user.role !== 'admin' && user.role !== 'super_admin') return <Navigate to="/dashboard" replace />;
+  const unlockedUntil = Date.parse(user.admin_panel_unlocked_until || '');
+  if (user.admin_panel_unlocked !== true || !Number.isFinite(unlockedUntil) || unlockedUntil <= Date.now()) {
+    return <Navigate to="/dashboard" replace />;
+  }
   return children;
 }
 

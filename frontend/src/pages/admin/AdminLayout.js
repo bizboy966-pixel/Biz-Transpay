@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Users, ArrowLeftRight, ArrowDownToLine, ArrowUpFromLine, IdCard, Link2, Code2, CreditCard, MessageCircle, Settings as SettingsIcon, ShieldCheck, Search, ChevronDown, LogOut, Menu, X, UserPlus, MinusCircle, Send, Send as SendIcon2, Wallet, TrendingUp, Smartphone, Landmark, Mail, BarChart3 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import NotificationBell from '@/components/NotificationBell';
@@ -42,6 +42,7 @@ export default function AdminLayout() {
   });
   const [profileOpen, setProfileOpen] = useState(false);
   const loc = useLocation();
+  const navigate = useNavigate();
   const canAccess = (item) => !item.permission
     || user?.permissions?.includes('*')
     || user?.permissions?.includes(item.permission);
@@ -57,6 +58,19 @@ export default function AdminLayout() {
       setSidebarOpen(false);
     }
   }, [loc.pathname]);
+
+  useEffect(() => {
+    const unlockedUntil = Date.parse(user?.admin_panel_unlocked_until || '');
+    if (!Number.isFinite(unlockedUntil)) {
+      navigate('/dashboard', { replace: true });
+      return undefined;
+    }
+    const timeout = window.setTimeout(
+      () => navigate('/dashboard', { replace: true }),
+      Math.max(0, unlockedUntil - Date.now()),
+    );
+    return () => window.clearTimeout(timeout);
+  }, [user?.admin_panel_unlocked_until, navigate]);
 
   const initials = (user?.full_name || 'A').split(' ').map((s) => s[0]).slice(0, 2).join('').toUpperCase();
   const roleLabel = {

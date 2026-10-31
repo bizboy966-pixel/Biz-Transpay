@@ -25,6 +25,9 @@ jest.mock('@/components/TurnstileWidget', () => ({
   }, 'Vérifier'),
   useTurnstileConfig: () => ({ enabled: true, siteKey: 'test' }),
 }), { virtual: true });
+jest.mock('@/constants/userPinMigration', () => ({
+  USER_PIN_MIGRATION_NOTICE: 'Activez un nouveau PIN.',
+}), { virtual: true });
 jest.mock('@/lib/pushNotifications', () => ({
   currentPushToken: () => null, enableBrowserPush: jest.fn(), disableBrowserPush: jest.fn(),
 }), { virtual: true });
@@ -73,40 +76,41 @@ describe('Administrator PIN login and settings', () => {
     await submit();
   };
 
-  test('password is followed by method choice and a six-digit PIN login', async () => {
+  test('admin with a configured PIN signs into the user dashboard after password and PIN', async () => {
     mockLogin.mockResolvedValueOnce({
-      mfa_required: true, mfa_token: 'challenge', security_methods: ['totp', 'pin'],
+      mfa_required: true, mfa_token: 'challenge', security_methods: ['pin'],
     }).mockResolvedValueOnce({ user: { role: 'admin' } });
     await passwordStage();
-    expect(find('login-method-pin').disabled).toBe(false);
-    await click('login-method-pin');
+    expect(find('login-method-pin')).toBeNull();
+    expect(find('input-login-otp')).toBeNull();
     await input('input-login-pin', '04a9271');
     expect(find('input-login-pin').value).toBe('049271');
     expect(find('input-login-pin').type).toBe('password');
     await submit();
     expect(mockLogin).toHaveBeenLastCalledWith('admin@example.test', 'admin-password',
       expect.objectContaining({ security_method: 'pin', pin: '049271', otp: undefined, mfa_token: 'challenge' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/admin');
+    expect(mockNavigate).toHaveBeenCalledWith('/dashboard');
   });
 
-  test('authenticator login remains the default and the PIN is absent from its request', async () => {
+  test('admin without a configured PIN can still sign in with the authenticator', async () => {
     mockLogin.mockResolvedValueOnce({
-      mfa_required: true, mfa_token: 'challenge', security_methods: ['totp', 'pin'],
+      mfa_required: true, mfa_token: 'challenge', security_methods: ['totp'],
     }).mockResolvedValueOnce({ user: { role: 'super_admin' } });
     await passwordStage();
+    expect(find('input-login-pin')).toBeNull();
     await input('input-login-otp', '246810');
     await submit();
     expect(mockLogin).toHaveBeenLastCalledWith('admin@example.test', 'admin-password',
       expect.objectContaining({ security_method: 'totp', otp: '246810', pin: undefined }));
-    expect(mockNavigate).toHaveBeenCalledWith('/admin');
+    expect(mockNavigate).toHaveBeenCalledWith('/dashboard');
   });
 
-  test('a PIN that has not been configured cannot be selected', async () => {
+  test('an administrator without a PIN is prompted only for authenticator verification', async () => {
     mockLogin.mockResolvedValue({ mfa_required: true, mfa_token: 'challenge', security_methods: ['totp'] });
     await passwordStage();
-    expect(find('login-method-pin').disabled).toBe(true);
-    expect(container.textContent).toContain('configurez-le dans Profil');
+    expect(find('login-method-pin')).toBeNull();
     expect(find('input-login-pin')).toBeNull();
+    expect(find('input-login-otp')).not.toBeNull();
   });
 
   test('ordinary users still sign in directly without an admin PIN screen', async () => {
@@ -116,19 +120,16 @@ describe('Administrator PIN login and settings', () => {
     expect(find('login-method-pin')).toBeNull();
   });
 
-  test('failed PIN verification allows switching back to the authenticator', async () => {
+  test('failed PIN verification stays on the PIN prompt', async () => {
     mockLogin.mockResolvedValueOnce({
-      mfa_required: true, mfa_token: 'challenge', security_methods: ['totp', 'pin'],
+      mfa_required: true, mfa_token: 'challenge', security_methods: ['pin'],
     }).mockRejectedValueOnce({ response: { data: { detail: { message: 'PIN temporairement bloqué' } } } });
     await passwordStage();
-    await click('login-method-pin');
     await input('input-login-pin', '049271');
     await submit();
     expect(mockNavigate).not.toHaveBeenCalled();
-    const authenticator = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Authentificateur');
-    await act(async () => authenticator.click());
-    expect(find('input-login-pin')).toBeNull();
-    expect(find('input-login-otp')).not.toBeNull();
+    expect(find('input-login-pin')).not.toBeNull();
+    expect(find('input-login-otp')).toBeNull();
   });
 
   test('PIN setup requires matching six-digit inputs, password and authenticator', async () => {

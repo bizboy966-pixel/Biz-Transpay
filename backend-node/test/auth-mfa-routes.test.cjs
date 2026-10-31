@@ -157,6 +157,69 @@ test('administrator can enroll MFA, confirm recovery codes, and configure a PIN 
   }
 });
 
+test('administrator APIs stay locked until a valid TOTP opens the panel', async () => {
+  const db = new MemoryDatabase();
+  const secret = 'JBSWY3DPEHPK3PXP';
+  const user = {
+    ...adminUser(),
+    two_fa_enabled: true,
+    two_fa_secret_encrypted: security.encryptFernet(
+      secret, security.fernetKey(sessionSecret),
+    ),
+  };
+  await db.collection('users').insert_one(user);
+  const app = await start(db);
+  try {
+    const issue = await app.sessionService.issue(user.id, {
+      adminAuthMethod: 'pin',
+      userPinRequired: false,
+    });
+    const origin = new URL(app.base).origin.replace('http:', 'https:');
+    const initialCookie = cookieHeader(issue);
+
+    const blocked = await fetch(`${app.base}/api/admin/settings/features`, {
+      headers: { cookie: initialCookie.split(';')[0] },
+    });
+    assert.equal(blocked.status, 428);
+    assert.equal((await blocked.json()).detail.code, 'ADMIN_PANEL_MFA_REQUIRED');
+
+    const unlock = await fetch(`${app.base}/api/auth/admin-panel/verify`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: initialCookie,
+        origin,
+        'x-csrf-token': issue.csrfToken,
+      },
+      body: JSON.stringify({
+        code: security.totpCode(secret, Math.floor(Date.now() / 1000)),
+      }),
+    });
+    const unlockBody = await unlock.json();
+    assert.equal(unlock.status, 200, JSON.stringify(unlockBody));
+    assert.equal(unlockBody.user.admin_panel_unlocked, true);
+    assert.ok(unlock.headers.get('set-cookie'));
+
+    const rotatedSessionCookie = unlock.headers.get('set-cookie')
+      .match(new RegExp(`${SESSION_COOKIE_NAME}=([^;]+)`))[0];
+    const adminPageData = await fetch(`${app.base}/api/admin/settings/features`, {
+      headers: { cookie: rotatedSessionCookie },
+    });
+    assert.equal(adminPageData.status, 200, JSON.stringify(await adminPageData.json()));
+
+    const me = await fetch(`${app.base}/api/auth/me`, {
+      headers: { cookie: rotatedSessionCookie },
+    });
+    const profile = await me.json();
+    assert.equal(me.status, 200);
+    assert.equal(profile.admin_panel_unlocked, true);
+    assert.ok(profile.admin_panel_unlocked_until);
+    assert.equal(db.collection('admin_logs').documents.at(-1).action, 'admin_panel_unlocked');
+  } finally {
+    await app.close();
+  }
+});
+
 test('user 2FA can be disabled only with the password and a valid authenticator code', async () => {
   const db = new MemoryDatabase();
   const secret = 'JBSWY3DPEHPK3PXP';

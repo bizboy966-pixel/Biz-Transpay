@@ -93,9 +93,18 @@ export function AuthProvider({ children }) {
     return data;
   }, []);
 
+  const unlockAdminPanel = useCallback(async (code) => {
+    const { data } = await api.post('/auth/admin-panel/verify', { code });
+    if (data.user) setUser(data.user);
+    return data;
+  }, []);
+
   const value = useMemo(
-    () => ({ user, loading, login, register, logout, refresh, setUser, confirmTwoFactor }),
-    [user, loading, login, register, logout, refresh, confirmTwoFactor],
+    () => ({
+      user, loading, login, register, logout, refresh, setUser,
+      confirmTwoFactor, unlockAdminPanel,
+    }),
+    [user, loading, login, register, logout, refresh, confirmTwoFactor, unlockAdminPanel],
   );
 
   return (

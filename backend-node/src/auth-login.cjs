@@ -432,7 +432,7 @@ function createAuthLoginRoute({
             mfa_token: security.createMfaToken(user.id, 'login_mfa', {
               pin_version: user.admin_pin_version ?? null,
             }, jwtSecret),
-            security_methods: user.admin_pin_hash ? ['totp', 'pin'] : ['totp'],
+            security_methods: user.admin_pin_hash ? ['pin'] : ['totp'],
           });
           return true;
         }
@@ -442,6 +442,10 @@ function createAuthLoginRoute({
         if (mfa.sub !== user.id) {
           await recordLoginFailure(db, identifier, ip);
           fail(401, 'Jeton de sécurité invalide');
+        }
+        if (user.admin_pin_hash && body.security_method !== 'pin') {
+          await recordLoginFailure(db, identifier, ip);
+          fail(401, 'Utilisez votre code PIN pour vous connecter.');
         }
         if (body.security_method === 'pin') {
           const valid = Boolean(user.admin_pin_version)

@@ -6,6 +6,7 @@ const { sessionToken } = require('./auth-session-routes.cjs');
 const {
   ROLE_PERMISSIONS, effectiveRole, isAdminAccount, ensurePlatformOwnerRole,
 } = require('./public-user.cjs');
+const { REAUTH_MAX_AGE_SECONDS } = require('./session-service.cjs');
 
 function httpError(status, message, code) {
   const error = new Error(message);
@@ -135,6 +136,17 @@ async function authorizeAdmin(req, {
     }
     if (!admin.two_fa_enabled) {
       throw httpError(403, 'MFA obligatoire pour accéder à l’administration.', 'ADMIN_MFA_REQUIRED');
+    }
+    const panelUnlockedAt = authenticated.session?.admin_panel_unlocked_at instanceof Date
+      ? authenticated.session.admin_panel_unlocked_at.getTime()
+      : Date.parse(authenticated.session?.admin_panel_unlocked_at);
+    if (!Number.isFinite(panelUnlockedAt)
+        || panelUnlockedAt + REAUTH_MAX_AGE_SECONDS * 1000 <= Date.now()) {
+      throw httpError(
+        428,
+        'Confirmez votre identité avec l’authentificateur pour ouvrir le panneau.',
+        'ADMIN_PANEL_MFA_REQUIRED',
+      );
     }
     const role = effectiveRole(admin);
     const permissions = ROLE_PERMISSIONS[role] || [];

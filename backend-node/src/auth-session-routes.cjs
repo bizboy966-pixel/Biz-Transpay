@@ -2,7 +2,9 @@
 
 const crypto = require('node:crypto');
 const { publicUser, ensurePlatformOwnerRole } = require('./public-user.cjs');
-const { CSRF_COOKIE_NAME, SESSION_COOKIE_NAME } = require('./session-service.cjs');
+const {
+  CSRF_COOKIE_NAME, SESSION_COOKIE_NAME, REAUTH_MAX_AGE_SECONDS,
+} = require('./session-service.cjs');
 
 function parseCookies(header = '') {
   const values = {};
@@ -123,7 +125,21 @@ function createAuthSessionRoutes({ db, sessionService, env = process.env }) {
           platformOwnerEmail: env.PLATFORM_OWNER_EMAIL || '',
           claimBefore: env.PLATFORM_OWNER_CLAIM_BEFORE || '',
         });
-        json(res, 200, publicUser(user));
+        const unlockedAt = identity.session?.admin_panel_unlocked_at instanceof Date
+          ? identity.session.admin_panel_unlocked_at.getTime()
+          : Date.parse(identity.session?.admin_panel_unlocked_at);
+        const adminPanelUnlocked = (
+          ['admin', 'super_admin'].includes(user.role)
+          && Number.isFinite(unlockedAt)
+          && unlockedAt + REAUTH_MAX_AGE_SECONDS * 1000 > Date.now()
+        );
+        json(res, 200, {
+          ...publicUser(user),
+          admin_panel_unlocked: adminPanelUnlocked,
+          admin_panel_unlocked_until: adminPanelUnlocked
+            ? new Date(unlockedAt + REAUTH_MAX_AGE_SECONDS * 1000).toISOString()
+            : null,
+        });
         return true;
       }
       if (path === '/api/auth/csrf') {

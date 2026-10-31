@@ -57,6 +57,7 @@ class SessionService {
   async issue(userId, {
     ip = '', userAgent = '', adminAuthMethod = 'password',
     userPinRequired = false, userPinAuthenticated = false,
+    adminPanelUnlockedAt = null,
   } = {}) {
     if (!this.jwtSecret) throw new Error('Missing JWT/session signing secret');
     return this._serializeUser(userId, async () => {
@@ -70,6 +71,7 @@ class SessionService {
         admin_auth_method: adminAuthMethod,
         user_pin_required: Boolean(userPinRequired),
         user_pin_authenticated: Boolean(userPinAuthenticated),
+        ...(adminPanelUnlockedAt ? { admin_panel_unlocked_at: adminPanelUnlockedAt } : {}),
         expires_at: new Date(now.getTime() + SESSION_MAX_AGE_SECONDS * 1000),
         ip: String(ip).slice(0, 128), user_agent: String(userAgent).slice(0, 300),
       };
@@ -159,6 +161,7 @@ class SessionService {
       adminAuthMethod: oldSession.admin_auth_method || 'password',
       userPinRequired: Boolean(oldSession.user_pin_required),
       userPinAuthenticated: Boolean(oldSession.user_pin_authenticated),
+      adminPanelUnlockedAt: oldSession.admin_panel_unlocked_at || null,
     });
   }
 

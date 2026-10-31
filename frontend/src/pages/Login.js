@@ -61,7 +61,7 @@ export default function Login() {
     if (data.mfa_required) {
       setMfaToken(data.mfa_token);
       setSecurityMethods(data.security_methods || ['totp']);
-      setSecurityMethod('totp');
+      setSecurityMethod(data.security_methods?.includes('pin') ? 'pin' : 'totp');
       setOtp('');
       setPin('');
       setStep('mfa');
@@ -91,8 +91,7 @@ export default function Login() {
     }
     const u = data.user;
     toast.success('Connexion réussie');
-    const role = u?.role || u?.user?.role;
-    nav(role === 'admin' || role === 'super_admin' ? '/admin' : '/dashboard');
+    nav('/dashboard');
   };
 
   const attemptLogin = async (security) => {
@@ -237,8 +236,11 @@ export default function Login() {
             </div>
           ) : step === 'mfa' ? (
             <div>
-              <h2 className="font-cabinet font-bold text-lg text-slate-900 text-center mb-4">Vérification de sécurité</h2>
-              <div className="grid grid-cols-2 gap-2 mb-4" role="group" aria-label="Méthode de connexion administrateur">
+               <h2 className="font-cabinet font-bold text-lg text-slate-900 text-center mb-4">
+                 {securityMethod === 'pin' ? 'Code PIN' : 'Vérification de sécurité'}
+               </h2>
+               {securityMethods.includes('pin') && securityMethods.includes('totp') && (
+                <div className="grid grid-cols-2 gap-2 mb-4" role="group" aria-label="Méthode de connexion administrateur">
                 <button type="button" aria-pressed={securityMethod === 'totp'} disabled={loading}
                   onClick={() => { setSecurityMethod('totp'); setPin(''); setOtp(''); }}
                   className={`rounded-xl border px-3 py-3 text-sm font-semibold ${securityMethod === 'totp' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'}`}>
@@ -250,14 +252,14 @@ export default function Login() {
                   className={`rounded-xl border px-3 py-3 text-sm font-semibold disabled:opacity-40 ${securityMethod === 'pin' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 text-slate-600'}`}>
                   Code PIN
                 </button>
-              </div>
-              {!securityMethods.includes('pin') && <p className="mb-4 text-xs text-slate-500 text-center">Pour utiliser le PIN, configurez-le dans Profil → Sécurité après votre connexion avec l’authentificateur.</p>}
+                </div>
+               )}
               {securityMethod === 'pin' ? <>
                 <label htmlFor="admin-login-pin" className="text-sm font-semibold text-slate-700 mb-2 block text-center">Votre PIN personnel à six chiffres</label>
                 <input id="admin-login-pin" data-testid="input-login-pin" type="password" inputMode="numeric" autoComplete="off"
                   maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, ''))}
                   placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />
-                <p className="mt-2 text-xs text-slate-500 text-center">Saisissez le PIN que vous avez défini. L’authentificateur reste obligatoire pour les actions sensibles.</p>
+                 <p className="mt-2 text-xs text-slate-500 text-center">Après connexion, vous accéderez à votre espace utilisateur. L’authentificateur sera demandé séparément pour ouvrir l’administration.</p>
               </> : <>
                <label className="text-sm font-semibold text-slate-700 mb-2 block text-center">Code 2FA de l’application d’authentification</label>
               <input data-testid="input-login-otp" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} placeholder="••••••" className="bt-field text-center tracking-[0.4em]" />

@@ -4,11 +4,13 @@ const crypto = require('node:crypto');
 const bcrypt = require('bcryptjs');
 const security = require('./security.cjs');
 const { sessionToken } = require('./auth-session-routes.cjs');
-const { readJson, reply, fail } = require('./auth-login.cjs');
-const { isAdminAccount } = require('./public-user.cjs');
+const { REAUTH_MAX_AGE_SECONDS } = require('./session-service.cjs');
+const {
+  readJson, reply, fail, checkLoginSecurity, recordLoginFailure, clearAccountFailures,
+} = require('./auth-login.cjs');
+const { isAdminAccount, publicUser } = require('./public-user.cjs');
 
 const RECOVERY_CODE_COUNT = 8;
-const REAUTH_MAX_AGE_SECONDS = 15 * 60;
 
 async function authenticated(req, sessionService) {
   const token = sessionToken(req);
@@ -51,6 +53,7 @@ function createAuthMfaRoutes({ db, sessionService, jwtSecret, sessionSecret }) {
     const routes = new Set([
       '/api/auth/2fa/setup', '/api/auth/2fa/confirm',
       '/api/auth/2fa/disable', '/api/auth/admin-pin', '/api/auth/reauth',
+      '/api/auth/admin-panel/verify',
     ]);
     if (!routes.has(path) || method !== 'POST') return false;
     if (!db || !sessionService || !jwtSecret || !sessionSecret) {
@@ -60,6 +63,9 @@ function createAuthMfaRoutes({ db, sessionService, jwtSecret, sessionSecret }) {
     try {
       const body = path === '/api/auth/2fa/setup' ? {} : await readJson(req);
       if (path === '/api/auth/2fa/confirm' && !validCode(body.code)) fail(422, 'Code 2FA invalide');
+      if (path === '/api/auth/admin-panel/verify' && !validCode(body.code)) {
+        fail(422, 'Saisissez le code actuel de votre application d’authentification.');
+      }
       if (path === '/api/auth/admin-pin'
           && (!Object.hasOwn(body, 'pin') || !validCode(body.code)
               || typeof body.current_password !== 'string'
@@ -121,6 +127,71 @@ function createAuthMfaRoutes({ db, sessionService, jwtSecret, sessionSecret }) {
 
       const identity = await authenticated(req, sessionService);
       const user = await getUser(db, identity.userId);
+      if (path === '/api/auth/admin-panel/verify') {
+        if (!isAdminAccount(user)) fail(403, 'Accès administrateur requis.');
+        if (!user.two_fa_enabled) {
+          fail(403, 'La double authentification doit être activée avant d’ouvrir le panneau.',
+            'ADMIN_MFA_REQUIRED');
+        }
+
+        const identifier = String(user.email || user.username || user.id).toLowerCase();
+        const ip = String(req.socket?.remoteAddress || 'unknown').slice(0, 128);
+        await checkLoginSecurity(db, identifier, ip);
+        if (!await verifyTotp(db, user, body.code, sessionSecret)) {
+          await recordLoginFailure(db, identifier, ip);
+          await db.collection('admin_logs').insert_one({
+            id: crypto.randomUUID(),
+            admin_id: user.id,
+            admin_username: user.username || null,
+            action: 'admin_access_denied',
+            target_user_id: null,
+            target_username: null,
+            details: { path, method, allowed: false, reason: 'ADMIN_PANEL_MFA_INVALID' },
+            ip,
+            created_at: new Date().toISOString(),
+          });
+          fail(401, 'Code 2FA invalide ou déjà utilisé.', 'ADMIN_PANEL_MFA_INVALID');
+        }
+
+        const now = new Date();
+        const updated = await db.collection('sessions').update_one({
+          id: identity.sessionId,
+          user_id: user.id,
+          revoked_at: { $exists: false },
+        }, { $set: { admin_panel_unlocked_at: now } });
+        if (!updated.matched_count) fail(401, 'Session expirée. Reconnectez-vous.');
+        try {
+          await db.collection('admin_logs').insert_one({
+            id: crypto.randomUUID(),
+            admin_id: user.id,
+            admin_username: user.username || null,
+            action: 'admin_panel_unlocked',
+            target_user_id: null,
+            target_username: null,
+            details: { path, method, allowed: true },
+            ip,
+            created_at: now.toISOString(),
+          });
+        } catch {
+          await db.collection('sessions').update_one({
+            id: identity.sessionId, user_id: user.id,
+          }, { $unset: { admin_panel_unlocked_at: '' } });
+          fail(503, 'La journalisation de sécurité est indisponible.');
+        }
+        await clearAccountFailures(db, identifier);
+        identity.session.admin_panel_unlocked_at = now;
+        const rotated = await sessionService.rotate(identity);
+        const expiresAt = new Date(now.getTime() + REAUTH_MAX_AGE_SECONDS * 1000).toISOString();
+        reply(res, 200, {
+          ok: true,
+          user: {
+            ...publicUser(user),
+            admin_panel_unlocked: true,
+            admin_panel_unlocked_until: expiresAt,
+          },
+        }, { 'Set-Cookie': rotated.setCookie });
+        return true;
+      }
       if (path === '/api/auth/2fa/setup') {
         if (!isAdminAccount(user)) fail(403, 'La double authentification est réservée aux administrateurs');
         if (user.two_fa_enabled) fail(409, 'La double authentification est déjà activée');
@@ -206,6 +277,7 @@ function createAuthMfaRoutes({ db, sessionService, jwtSecret, sessionSecret }) {
       });
       return true;
     } catch (error) {
+      if (process.env.DEBUG_ADMIN_PANEL === '1') console.error(error);
       const status = Number.isInteger(error.status) ? error.status : 500;
       const detail = error.code
         ? { code: error.code, message: error.message, ...(error.extra || {}) }

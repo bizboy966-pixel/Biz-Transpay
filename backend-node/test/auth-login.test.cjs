@@ -173,6 +173,55 @@ test('admin login without MFA starts enrollment instead of issuing a session', a
   });
 });
 
+test('administrator with a PIN signs in to the user session but cannot choose TOTP at login', async () => {
+  const password = 'AdminStrongPassword123!';
+  const pin = '654321';
+  const user = userRecord({
+    id: 'admin-pin-user',
+    role: 'admin',
+    admin_role: 'general',
+    password_hash: await bcrypt.hash(password, 12),
+    two_fa_enabled: true,
+    admin_pin_hash: await security.hashPin('admin-pin-user', pin, 'admin', sessionSecret),
+    admin_pin_version: 'admin-pin-v1',
+    admin_pin_failures: 0,
+  });
+  await withLoginServer(user, async ({ base, db, sessionService }) => {
+    const initial = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: user.email, password, turnstile_token: 'test-token' }),
+    });
+    assert.equal(initial.status, 200);
+    const challenge = await initial.json();
+    assert.deepEqual(challenge.security_methods, ['pin']);
+
+    const totpAttempt = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        email: user.email, password, mfa_token: challenge.mfa_token,
+        security_method: 'totp', otp: '123456',
+      }),
+    });
+    assert.equal(totpAttempt.status, 401);
+
+    const completed = await fetch(`${base}/api/auth/login`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        email: user.email, password, mfa_token: challenge.mfa_token,
+        security_method: 'pin', pin,
+      }),
+    });
+    assert.equal(completed.status, 200);
+    assert.equal((await completed.json()).user.role, 'admin');
+    const cookie = completed.headers.get('set-cookie')
+      .match(new RegExp(`${SESSION_COOKIE_NAME}=([^;]+)`))[1];
+    const identity = await sessionService.authenticate(decodeURIComponent(cookie));
+    assert.equal(identity.session.admin_auth_method, 'pin');
+    assert.equal(identity.session.admin_panel_unlocked_at, undefined);
+    assert.equal(db.collection('sessions').documents.length, 1);
+  });
+});
+
 test('diagnostic mode keeps login unavailable until Preview storage is configured', async () => {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
