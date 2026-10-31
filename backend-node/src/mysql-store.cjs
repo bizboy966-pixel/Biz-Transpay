@@ -62,6 +62,52 @@ class MySqlStore {
     return true;
   }
 
+  async searchTelegramText(collectionName, {
+    fields, query, ownerFields = [], ownerIds = [], limit = 20,
+  } = {}) {
+    const collection = safeCollection(collectionName);
+    const safePaths = values => [...new Set((values || []).filter(path => (
+      typeof path === 'string' && /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/.test(path)
+    )))].slice(0, 80);
+    const searchFields = safePaths(fields);
+    const ownerPaths = safePaths(ownerFields);
+    const text = String(query || '').trim().slice(0, 100);
+    if (!searchFields.length || !text) return [];
+
+    const escapeLike = value => value.replace(/[!%_]/g, character => `!${character}`);
+    const pattern = `%${escapeLike(text.toLowerCase())}%`;
+    const terms = [];
+    const params = [];
+    for (const field of searchFields) {
+      terms.push(`LOWER(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_document, ?)), '')) LIKE ? ESCAPE '!'`);
+      params.push(`$.${field}`, pattern);
+    }
+    const digits = text.replace(/\D/g, '');
+    if (digits.length >= 6) {
+      const phonePaths = searchFields.filter(field => /phone|mobile|msisdn/i.test(field));
+      for (const field of phonePaths) {
+        terms.push(`REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+          COALESCE(JSON_UNQUOTE(JSON_EXTRACT(raw_document, ?)), ''),
+          '+', ''), ' ', ''), '-', ''), '(', ''), ')', ''), '.', ''), '/', '') LIKE ? ESCAPE '!'`);
+        params.push(`$.${field}`, `%${escapeLike(digits)}%`);
+      }
+    }
+    for (const field of ownerPaths) {
+      const ids = [...new Set((ownerIds || []).map(String).filter(Boolean))].slice(0, 100);
+      if (!ids.length) break;
+      terms.push(`JSON_UNQUOTE(JSON_EXTRACT(raw_document, ?)) IN (${ids.map(() => '?').join(', ')})`);
+      params.push(`$.${field}`, ...ids);
+    }
+    const limitValue = Math.max(1, Math.min(100, Math.floor(Number(limit) || 20)));
+    const [rows] = await this.pool.execute(
+      `SELECT raw_document FROM \`${collection}\`
+       WHERE (${terms.join(' OR ')})
+       ORDER BY created_at DESC LIMIT ?`,
+      [...params, limitValue],
+    );
+    return rows.map(row => decodeDocument(row.raw_document));
+  }
+
   async ensureLockTable() {
     if (!this.lockTableReady) {
       this.lockTableReady = this.pool.execute(

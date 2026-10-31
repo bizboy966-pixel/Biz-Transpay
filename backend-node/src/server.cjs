@@ -15,6 +15,7 @@ const { createFedaPayWebhookRoutes } = require('./fedapay-webhook-routes.cjs');
 const { createPaydunyaDisbursementRoutes } = require('./paydunya-disbursement-routes.cjs');
 const { createStripeDepositRoutes } = require('./stripe-deposit-routes.cjs');
 const { createTelegramNotifier } = require('./telegram-notifications.cjs');
+const { createTelegramCommandBot } = require('./telegram-command-bot.cjs');
 const { createKycRoutes } = require('./kyc-routes.cjs');
 const { createUserSettingsRoutes } = require('./user-settings-routes.cjs');
 const { createNotificationsPushRoutes } = require('./notifications-push-routes.cjs');
@@ -145,16 +146,18 @@ function createServer({
   healthState = null,
 } = {}) {
   const staticRoot = configuredStaticRoot ? path.resolve(configuredStaticRoot) : '';
-  const telegramNotifier = sendTelegramNotification
-    ? { enqueueAdminLogin: sendTelegramNotification }
-    : createTelegramNotifier({ db, env });
+  const telegramNotifier = createTelegramNotifier({ db, env, fetchImpl });
+  const enqueueAdminLogin = sendTelegramNotification || telegramNotifier.enqueueAdminLogin;
+  const telegramCommandBot = createTelegramCommandBot({
+    db, env, fetchImpl, sendMessage: telegramNotifier.sendMessage,
+  });
   const handleAuthSession = createAuthSessionRoutes({ db, sessionService, env });
   const handleAuthRegister = createAuthRegisterRoute({
     db, jwtSecret, sessionSecret, env, verifyBot,
   });
   const handleAuthLogin = createAuthLoginRoute({
     db, sessionService, jwtSecret, sessionSecret, env, verifyBot,
-    onAdminLogin: telegramNotifier.enqueueAdminLogin,
+    onAdminLogin: enqueueAdminLogin,
   });
   const handleAuthMfa = createAuthMfaRoutes({
     db, sessionService, jwtSecret, sessionSecret,
@@ -198,15 +201,20 @@ function createServer({
     db, sessionService, sessionSecret,
   });
   const notifications = createNotificationsPushRoutes({ db, sessionService, env });
+  const notify = async (userId, type, title, body, data = {}, options = {}) => {
+    const result = await notifications.notify(userId, type, title, body, data, options);
+    telegramNotifier.enqueueOperationEvent({ userId, type, data });
+    return result;
+  };
   const fedapayWebhookRoutes = createFedaPayWebhookRoutes({
-    db, env, notify: notifications.notify,
+    db, env, notify,
   });
   const paydunyaDisbursementRoutes = createPaydunyaDisbursementRoutes({
     db,
     sessionSecret: env.SESSION_SECRET || '',
     env,
     fetchImpl,
-    notify: notifications.notify,
+    notify,
   });
   const referrals = createReferralRoutes({ db, sessionService });
   const support = createSupportRoutes({ db, sessionService, env });
@@ -236,7 +244,7 @@ function createServer({
     },
   });
   const exchange = createExchangeRoutes({
-    db, sessionService, cryptoCatalog, notify: notifications.notify,
+    db, sessionService, cryptoCatalog, notify,
   });
   const mobileMoneyPayout = createMobileMoneyPayoutService({
     db, sessionSecret, env, fetchImpl,
@@ -245,11 +253,11 @@ function createServer({
     db, sessionService, sessionSecret, env, verifyBot, cryptoCatalog,
     createMobileMoneyPayout: mobileMoneyPayout.createIntegrationPayout,
     refreshMobileMoneyPayout: mobileMoneyPayout.refreshPayoutStatus,
-    notify: notifications.notify,
+    notify,
   });
   const adminUserRoutes = createAdminUserRoutes({
     db, sessionService, cryptoCatalog, env,
-    notify: notifications.notify,
+    notify,
     notifyAdminKyc: telegramNotifier.enqueueKycEvent,
   });
   const adminLegacyMerchantRoutes = createAdminLegacyMerchantRoutes({
@@ -260,7 +268,7 @@ function createServer({
   });
   const adminTransactionRoutes = createAdminTransactionRoutes({
     db, sessionService, env,
-    notify: notifications.notify,
+    notify,
     getCryptoPayout: cryptoCatalog.getPayout,
   });
   const adminPaymentLinkRoutes = createAdminPaymentLinkRoutes({
@@ -328,7 +336,7 @@ function createServer({
   const adminPushRoutes = createAdminPushRoutes({
     db, sessionService, env,
     sendPushToUser: notifications.sendPushToUser,
-    notify: notifications.notify,
+    notify,
   });
   // Explicit fail-closed migration server. Never forward traffic to legacy services or providers.
   const appServer = http.createServer(async (req, res) => {
@@ -469,11 +477,15 @@ function createServer({
   appServer.afriBaPayDepositWorker = afriBaPayDepositWorker;
   appServer.mbiyoDepositWorker = mbiyoDepositWorker;
   appServer.integrationWebhookWorker = integrationWebhookWorker;
+  appServer.telegramCommandBot = telegramCommandBot;
   appServer.once('listening', async () => {
     const webhookWorkerReady = !healthState?.issue
       && (!healthState || healthState.schemaStatus === 'complete')
       && (!healthState?.database || healthState.database === 'connected');
     if (webhookWorkerReady) integrationWebhookWorker?.start();
+    if (webhookWorkerReady && env.BIZTRANSPAY_MIGRATION_ENV === 'production') {
+      telegramCommandBot.start();
+    }
     try {
       const provider = await db?.collection?.('settings')?.find_one?.(
         { id: 'payment_provider_mbiyo' }, { _id: 0 },
@@ -490,6 +502,7 @@ function createServer({
   appServer.once('close', () => {
     mbiyoDepositWorker?.stop();
     integrationWebhookWorker?.stop();
+    telegramCommandBot.stop();
   });
   return appServer;
 }
