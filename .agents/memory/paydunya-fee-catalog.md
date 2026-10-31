@@ -13,11 +13,11 @@ For Orange incoming payments, the amount in the USSD instructions must be the pa
 
 **How to apply:** Keep the displayed and copied code, explanatory steps, and server-returned instructions consistent with the actual charged amount, including on public payment links.
 
-The separate server-to-server integration API is an exception: deposits always include fees in the payer's requested total and credit only the net amount to the merchant; payouts always add fees to the merchant's debit while preserving the beneficiary's requested amount. Legacy fee-bearer values remain accepted in API requests for compatibility but cannot alter this rule.
+The server-to-server integration API honors `fee_bearer` for deposits like the user payment flow. `sender` adds fees to the payer's charge and credits the requested amount; `receiver` charges the requested amount and deducts fees from the credited amount. The default is `receiver`.
 
-**Why:** API callers treat the requested deposit amount as the exact payer total and the requested payout amount as the exact beneficiary receipt. A client-controlled fee-bearer would silently change those promises; the interactive payment choices should remain unchanged.
+**Why:** The user explicitly asked for the API and its documentation to calculate the payment code and totals according to who bears the fees.
 
-**How to apply:** Enforce the fee allocation at the integration boundary for both providers, snapshot fees normally, and keep idempotency claims based on the original request for safe retries. Do not change the shared fee calculator or browser payment-link flows.
+**How to apply:** Use the same server-side fee calculation for the non-mutating deposit quote and final deposit; expose aggregate totals and the generated USSD code, not provider fee splits or provider identity. Preserve existing idempotency and payment-link behavior.
 
 “Delete” must preserve historical transaction references and therefore means a reversible soft deletion or archival state, not physical removal of records that past transactions depend on.
 

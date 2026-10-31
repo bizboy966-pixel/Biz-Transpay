@@ -148,6 +148,8 @@ function Endpoint({ item }) {
   const examples = item.code_examples || item.examples || item.code || {};
   const request = item.request || item.request_body || item.request_example;
   const response = item.response || item.response_body || item.response_example;
+  const otpRequest = item.otp_request_example;
+  const otpResponse = item.otp_request_response;
   const errors = item.errors || item.error_codes || item.http_errors || item.status_codes;
   const auth = item.authentication || item.auth || item.authorization;
   const anchor = item.id || `${method.toLowerCase()}-${pathOf(item).replace(/[^\w]+/g, '-')}`;
@@ -165,6 +167,8 @@ function Endpoint({ item }) {
       <ParametersTable parameters={item.parameters || item.params} />
       <DataBlock title="Corps de la requête" value={request} />
       <DataBlock title="Exemple de réponse" value={response} />
+      <DataBlock title="Demander un code OTP" value={otpRequest} />
+      <DataBlock title="Réponse de la demande OTP" value={otpResponse} />
       {errors && <DataBlock title="Erreurs et codes HTTP" value={errors} />}
       <CodeExamples examples={examples} />
     </article>

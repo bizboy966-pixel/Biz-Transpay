@@ -904,7 +904,7 @@ function PaymentFlowCard({ flow, amount, currency }) {
   const amountText = Number.isFinite(roundedAmount) ? String(roundedAmount) : '';
   const replaceAmount = (value) => String(value || '').replace(/\{amount\}|MONTANT/gi, amountText);
   const ussd = replaceAmount(flow?.ussd_template || flow?.ussd_code);
-  if (!steps.length && !ussd) return null;
+  if (!steps.length && !ussd && !flow?.otp_required) return null;
   const copyUssd = () => {
     if (navigator.clipboard && ussd) {
       navigator.clipboard.writeText(String(ussd));
@@ -918,6 +918,13 @@ function PaymentFlowCard({ flow, amount, currency }) {
         <ol className="list-decimal space-y-1 pl-5 text-[11px] leading-relaxed text-amber-900">
           {steps.map((step, index) => <li key={`${step}-${index}`}>{replaceAmount(step)}</li>)}
         </ol>
+      )}
+      {flow?.otp_required && (
+        <div className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-[11px]" data-testid="pay-otp-amount">
+          <span className="text-slate-600">Montant à confirmer avec le code</span>
+          <strong className="ml-2 text-slate-900">{amountText} {currency}</strong>
+          <p className="mt-1 text-[10px] text-slate-500">Le montant tient compte des frais selon le choix indiqué ci-dessus.</p>
+        </div>
       )}
       {ussd && (
         <div className="rounded-lg border border-amber-200 bg-white p-2">

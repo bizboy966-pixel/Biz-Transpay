@@ -4,6 +4,18 @@ const API = `${process.env.REACT_APP_BACKEND_URL || ''}/api`;
 
 export const api = axios.create({ baseURL: API, withCredentials: true });
 
+function publicPaymentMessage(value) {
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(/\bPayDunya\b/gi, 'Biz-transPay')
+    .replace(/\bAfriBaPay\b/gi, 'Biz-transPay')
+    .replace(/\bMbiyo(?:Pay)?\b/gi, 'Biz-transPay')
+    .replace(/\bPay\s*Junior\b/gi, 'Biz-transPay')
+    .replace(/\bBiya\s*Pay\b/gi, 'Biz-transPay')
+    .replace(/\bAfrika\s*Pay\b/gi, 'Biz-transPay')
+    .replace(/\b(?:PAYDUNYA|AFRIBAPAY|MBIYO)_([A-Z0-9_]+)\b/gi, 'BIZTRANSPAY_$1');
+}
+
 const CSRF_COOKIE_NAME = 'btp_csrf';
 const MUTATING_METHODS = new Set(['post', 'put', 'patch', 'delete']);
 const CSRF_PUBLIC_PATHS = new Set([
@@ -100,16 +112,22 @@ api.interceptors.response.use(
       let msg = 'Erreur de validation';
       try {
         if (typeof raw.code === 'string'
-            && /^PAYDUNYA_[A-Z0-9_]+$/.test(raw.code)
+            && /^(?:PAYDUNYA|AFRIBAPAY|MBIYO)_[A-Z0-9_]+$/i.test(raw.code)
             && typeof raw.message === 'string' && raw.message.trim()) {
-          msg = raw.message.trim();
+          msg = publicPaymentMessage(raw.message.trim());
         } else if (Array.isArray(raw) && raw.length > 0 && typeof raw[0]?.msg === 'string') {
           msg = raw.map((e) => e.msg).join(' · ');
         } else {
           msg = JSON.stringify(raw);
         }
       } catch { /* fallback stays 'Erreur de validation' */ }
-      if (err.response?.data) err.response.data.detail = msg;
+      if (err.response?.data) err.response.data.detail = publicPaymentMessage(msg);
+    }
+    if (typeof err.response?.data?.detail === 'string') {
+      err.response.data.detail = publicPaymentMessage(err.response.data.detail);
+    }
+    if (typeof err.response?.data?.message === 'string') {
+      err.response.data.message = publicPaymentMessage(err.response.data.message);
     }
     if (err.response?.status === 401) {
       const pathName = window.location.pathname;

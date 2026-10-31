@@ -194,7 +194,10 @@ test('live deposit and integration catalogues expose Orange Burkina OTP instruct
   assert.deepEqual(result.operators.map(operator => operator.code), ['orange_bf']);
   assert.equal(result.operators[0].payment_flow.otp_required, true);
   assert.match(result.operators[0].payment_flow.otp_label, /OTP Orange Money/);
-  assert.match(result.operators[0].payment_flow.steps.join(' '), /saisissez-le ici/i);
+  assert.match(
+    result.operators[0].payment_flow.steps.join(' '),
+    /saisissez ensuite le code généré dans le champ ci-dessous/i,
+  );
   assert.equal(JSON.stringify(result).includes('paydunya'), false);
   assert.equal(JSON.stringify(result).includes('encrypted-master'), false);
 });

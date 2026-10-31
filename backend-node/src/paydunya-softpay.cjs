@@ -60,7 +60,7 @@ const PROFILE_ROWS = [
     country: 'BF', aliases: ['orange-bf', 'orange_bf', 'orange-burkina', 'orange-money-burkina'],
     endpoint: 'orange-money-burkina', nameField: 'name_bf',
     emailField: 'email_bf', phoneField: 'phone_bf', otpField: 'otp_code',
-    tokenField: 'payment_token',
+    tokenField: 'payment_token', ussdCode: '*144*4*6*{amount}#',
   },
   {
     country: 'BF', aliases: ['moov-bf', 'moov_bf', 'moov-burkina', 'moov-burkina-faso'],
@@ -167,13 +167,13 @@ function paydunyaSoftpayPaymentFlow(endpointSlug, country) {
       before_submit: true,
       otp_required: true,
       otp_label: 'Code OTP Orange Money',
-      ...(profile.ussdCode ? { ussd_code: profile.ussdCode } : {}),
+      ...(profile.ussdCode ? { ussd_template: profile.ussdCode } : {}),
       steps: profile.ussdCode ? [
-        `Composez ${profile.ussdCode} sur votre téléphone et choisissez l’option 2 pour générer un code de paiement.`,
-        'Saisissez le code obtenu ici avant de lancer le dépôt.',
+        'Composez le code affiché ci-dessous sur le téléphone lié au numéro de paiement.',
+        'Il contient le montant dû, calculé selon le choix de prise en charge des frais. Saisissez ensuite le code généré dans le champ ci-dessous.',
       ] : [
-        'PayDunya exige un code de paiement pour cet opérateur.',
-        'Suivez la procédure officielle Orange Money pour obtenir le code, puis saisissez-le ici.',
+        'Biz-transPay demande un code de paiement pour cet opérateur.',
+        'Suivez la procédure officielle de votre opérateur pour obtenir le code, puis saisissez-le ici.',
       ],
       ...address,
     };
@@ -208,10 +208,10 @@ function paydunyaSoftpayPaymentFlow(endpointSlug, country) {
       before_submit: true,
       otp_required: true,
       otp_label: 'Code de paiement Orange Money',
-      ussd_code: profile.ussdCode,
+      ussd_template: profile.ussdCode,
       steps: [
-        'Composez #144*82# sur votre téléphone et choisissez l’option 2 pour générer un code de paiement.',
-        'Saisissez le code obtenu ici avant de lancer le dépôt.',
+        'Composez le code affiché ci-dessous sur le téléphone lié au numéro de paiement.',
+        'Saisissez le code généré dans le champ ci-dessous avant de lancer le dépôt.',
       ],
       ...address,
     };

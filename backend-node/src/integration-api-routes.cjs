@@ -3,6 +3,9 @@
 const crypto = require('node:crypto');
 const { authenticateIntegrationApi, IntegrationApiError } = require('./integration-api-auth.cjs');
 const { readJson } = require('./auth-login.cjs');
+const {
+  publicPaymentPayload, publicPaymentText,
+} = require('./public-payment-copy.cjs');
 
 function pickFields(document, fields) {
   return Object.fromEntries(fields
@@ -59,8 +62,26 @@ function publicMobileMoneyDeposit(document) {
     'id', 'status', 'amount', 'currency', 'country', 'operator', 'phone_number',
     'full_name', 'email', 'reference', 'description', 'provider_reference',
     'external_id', 'transaction_id', 'fee', 'fee_amount', 'fee_currency',
-    'amount_net', 'fee_bearer', 'created_at', 'updated_at', 'confirmed_at',
+    'requested_amount', 'charged_amount', 'total_fee', 'amount_net',
+    'fee_bearer', 'created_at', 'updated_at', 'confirmed_at',
   ]);
+}
+
+function publicMobileMoneyOperator(operator) {
+  const row = pickFields(operator, [
+    'country', 'country_label', 'code', 'name', 'currency', 'min', 'max',
+  ]);
+  if (typeof row.name === 'string') row.name = publicPaymentText(row.name);
+  const flow = operator?.payment_flow;
+  if (flow && typeof flow === 'object' && !Array.isArray(flow)) {
+    const flowFields = [
+      'kind', 'before_submit', 'otp_required', 'otp_request_before_submit', 'otp_label',
+      'ussd_code', 'ussd_template', 'steps', 'instructions', 'action_label',
+      'address_required', 'address_label',
+    ];
+    row.payment_flow = pickFields(flow, flowFields);
+  }
+  return row;
 }
 
 function publicMobileMoneyPayout(transaction) {
@@ -98,13 +119,13 @@ function reply(res, status, body) {
     'Content-Type': 'application/json; charset=utf-8',
     'X-Content-Type-Options': 'nosniff',
   });
-  res.end(JSON.stringify(body));
+  res.end(JSON.stringify(publicPaymentPayload(body)));
 }
 
 function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-  createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
+  quoteMobileMoneyDeposit, createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
   refreshMobileMoneyDeposit,
 }) {
   const mobileMoneyDepositRefreshAt = new Map();
@@ -140,6 +161,8 @@ function createIntegrationApiRoutes({
       && url.pathname === '/api/integration/v1/crypto/assets';
     const mobileMoneyOperatorCatalog = req.method === 'GET'
       && url.pathname === '/api/integration/v1/mobile-money/operators';
+    const mobileMoneyDepositQuote = req.method === 'POST'
+      && url.pathname === '/api/integration/v1/deposits/quote';
     const exchangeQuote = req.method === 'GET'
       && url.pathname === '/api/integration/v1/exchanges/quote';
     const exchangeExecution = req.method === 'POST'
@@ -181,11 +204,12 @@ function createIntegrationApiRoutes({
     const isDetail = exchangeMatch || linkPaymentsMatch || linkMatch || payoutMatch
       || depositMatch || cryptoDepositMatch || cryptoPayoutMatch;
     if ((req.method !== 'GET' && !exchangeExecution && !linkCreation
+          && !mobileMoneyDepositQuote
           && !cryptoDepositStart && !mobileMoneyDepositStart && !cryptoPayoutStart
           && !mobileMoneyPayoutStart)
         || (!kind && !isTransactions && !isDetail && !cryptoAssetCatalog
           && !mobileMoneyOperatorCatalog && !exchangeQuote
-          && !exchangeExecution && !linkCreation && !cryptoDepositStart
+          && !exchangeExecution && !linkCreation && !mobileMoneyDepositQuote && !cryptoDepositStart
           && !mobileMoneyDepositStart && !cryptoPayoutStart
           && !mobileMoneyPayoutStart)) return false;
     try {
@@ -195,6 +219,50 @@ function createIntegrationApiRoutes({
         return true;
       }
       const credential = await authenticateIntegrationApi({ db, req, now });
+      if (mobileMoneyDepositQuote) {
+        if (credential.environment !== 'live'
+            || !Array.isArray(credential.scopes)
+            || !credential.scopes.includes('deposits:write')) {
+          reply(res, 403, { detail: 'A Live deposits:write scope is required.' });
+          return true;
+        }
+        if (typeof quoteMobileMoneyDeposit !== 'function') {
+          reply(res, 503, { detail: 'Mobile Money fee quote service unavailable.' });
+          return true;
+        }
+        let body;
+        try {
+          body = await readJson(req, 32 * 1024);
+        } catch (error) {
+          reply(res, error.status || 400, { detail: error.message || 'Invalid request body.' });
+          return true;
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          reply(res, 422, { detail: 'A JSON object is required.' });
+          return true;
+        }
+        if (body.fee_bearer !== undefined) {
+          const bearer = String(body.fee_bearer || '').trim().toLowerCase();
+          const normalized = {
+            sender: 'sender',
+            client: 'sender',
+            receiver: 'receiver',
+            merchant: 'receiver',
+          }[bearer];
+          if (!normalized) {
+            reply(res, 422, { detail: 'fee_bearer must be sender or receiver.' });
+            return true;
+          }
+          body.fee_bearer = normalized;
+        }
+        const result = await quoteMobileMoneyDeposit(credential.user_id, body);
+        if (!result?.handled) {
+          reply(res, 503, { detail: 'Mobile Money fee quote service did not handle the request.' });
+          return true;
+        }
+        reply(res, result.status || 502, result.body || {});
+        return true;
+      }
       if (mobileMoneyDepositStart) {
         if (credential.environment !== 'live'
             || !Array.isArray(credential.scopes)
@@ -218,9 +286,37 @@ function createIntegrationApiRoutes({
           reply(res, error.status || 400, { detail: error.message || 'Invalid request body.' });
           return true;
         }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          reply(res, 422, { detail: 'A JSON object is required.' });
+          return true;
+        }
+        if (body.fee_bearer !== undefined) {
+          const bearer = String(body.fee_bearer || '').trim().toLowerCase();
+          const normalized = {
+            sender: 'sender',
+            client: 'sender',
+            receiver: 'receiver',
+            merchant: 'receiver',
+          }[bearer];
+          if (!normalized) {
+            reply(res, 422, { detail: 'fee_bearer must be sender or receiver.' });
+            return true;
+          }
+          body.fee_bearer = normalized;
+        }
+        if (body.request_otp !== undefined && typeof body.request_otp !== 'boolean') {
+          reply(res, 422, { detail: 'request_otp must be a boolean.' });
+          return true;
+        }
+        const otpRequest = body.request_otp === true;
+        if (otpRequest && String(body.otp || '').trim()) {
+          reply(res, 422, { detail: 'Do not send otp in the same request as request_otp.' });
+          return true;
+        }
         const requestFingerprint = crypto.createHash('sha256')
           .update(stableJson(body), 'utf8').digest('hex');
-        const operationId = `deposit:${crypto.createHash('sha256')
+        const operationKind = otpRequest ? 'deposit_otp' : 'deposit';
+        const operationId = `${operationKind}:${crypto.createHash('sha256')
           .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
           .digest('hex')}`;
         const operations = db.collection('integration_operations');
@@ -235,6 +331,10 @@ function createIntegrationApiRoutes({
             return true;
           }
           if (existing.response) {
+            if (otpRequest) {
+              reply(res, existing.response_status || 200, existing.response);
+              return true;
+            }
             let response = existing.response;
             const previousDeposit = await refreshIntegrationDeposit(
               existing.business_id || response.id, credential.user_id,
@@ -260,6 +360,41 @@ function createIntegrationApiRoutes({
             reply(res, 200, response);
             return true;
           }
+          if (otpRequest) {
+            reply(res, 409, {
+              detail: 'Le résultat de la demande de code est incertain. Vérifiez votre téléphone avant toute nouvelle demande.',
+            });
+            return true;
+          }
+        }
+        if (otpRequest) {
+          try {
+            await operations.insert_one({
+              id: operationId,
+              user_id: String(credential.user_id),
+              environment: credential.environment,
+              kind: operationKind,
+              status: 'otp_requesting',
+              request_fingerprint: requestFingerprint,
+              response: null,
+              created_at: new Date(now()).toISOString(),
+              updated_at: new Date(now()).toISOString(),
+            });
+          } catch {
+            const raced = await operations.find_one({
+              id: operationId,
+              user_id: String(credential.user_id),
+              environment: credential.environment,
+            }, { _id: 0 });
+            if (raced?.request_fingerprint === requestFingerprint && raced.response) {
+              reply(res, raced.response_status || 200, raced.response);
+            } else {
+              reply(res, 409, {
+                detail: 'La demande de code est déjà en cours ou son résultat est incertain. Vérifiez votre téléphone.',
+              });
+            }
+            return true;
+          }
         }
         const internalKey = `btpi_${crypto.createHash('sha256')
           .update(`${credential.user_id}:${credential.environment}:${idempotencyKey}`, 'utf8')
@@ -268,7 +403,38 @@ function createIntegrationApiRoutes({
           credential.user_id, body, internalKey,
         );
         if (!result?.handled) {
-          reply(res, 503, { detail: 'Mobile Money deposit service did not handle the request.' });
+          const response = { detail: 'Mobile Money deposit service did not handle the request.' };
+          if (otpRequest) {
+            await operations.replace_one({ id: operationId }, {
+              id: operationId, user_id: String(credential.user_id),
+              environment: credential.environment, kind: operationKind,
+              status: 'failed', request_fingerprint: requestFingerprint,
+              response_status: 503, response,
+              created_at: new Date(now()).toISOString(),
+              updated_at: new Date(now()).toISOString(),
+            }, true);
+          }
+          reply(res, 503, response);
+          return true;
+        }
+        if (otpRequest) {
+          const confirmed = result.status === 200 && result.body?.otp_sent === true;
+          const responseStatus = confirmed ? 200 : (result.status || 502);
+          const response = confirmed
+            ? result.body
+            : result.body?.detail
+              ? result.body
+              : { detail: 'Biz-transPay n’a pas confirmé l’envoi du code. Vérifiez votre téléphone avant de recommencer.' };
+          await operations.replace_one({ id: operationId }, {
+            id: operationId, user_id: String(credential.user_id),
+            environment: credential.environment, kind: operationKind,
+            status: confirmed ? 'otp_sent' : 'failed',
+            request_fingerprint: requestFingerprint,
+            response_status: responseStatus, response,
+            created_at: new Date(now()).toISOString(),
+            updated_at: new Date(now()).toISOString(),
+          }, true);
+          reply(res, responseStatus, response);
           return true;
         }
         if (result.status !== 200 || !result.body?.id) {
@@ -731,7 +897,14 @@ function createIntegrationApiRoutes({
           return true;
         }
         const catalogue = await getMobileMoneyOperators(direction, credential.user_id);
-        reply(res, 200, catalogue);
+        reply(res, 200, {
+          direction,
+          enabled: Boolean(catalogue?.enabled),
+          availability_source: catalogue?.availability_source
+            || 'serving_environment_configuration',
+          operators: Array.isArray(catalogue?.operators)
+            ? catalogue.operators.map(publicMobileMoneyOperator) : [],
+        });
         return true;
       }
       if (exchangeQuote) {

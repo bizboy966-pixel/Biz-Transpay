@@ -261,7 +261,7 @@ test('PayDunya returns sanitized actionable provider errors instead of a generic
   const result = await call(service, '/api/deposits/paydunya/par', depositRequest);
 
   assert.equal(result.status, 502);
-  assert.equal(result.body.detail, 'PayDunya a refusé la création de facture.');
+  assert.equal(result.body.detail, 'Biz-transPay a refusé la création de facture.');
   assert.doesNotMatch(JSON.stringify(result.body), /sensitive upstream payload/);
 });
 
@@ -290,6 +290,65 @@ test('generic Mobile Money start uses the only enabled PayDunya flow', async () 
   assert.equal(collections.momo_deposits.rows[0].provider, 'paydunya');
   assert.equal(collections.momo_deposits.rows[0].status, 'pending');
   assert.equal(providerCalls, 1);
+});
+
+test('integration deposit quote computes the actual fee bearer amount and Orange USSD code without a request', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    mode: 'live',
+    fetchImpl: async () => {
+      providerCalls += 1;
+      throw new Error('A quote must not call the payment network.');
+    },
+  });
+  const settings = collections.settings.rows[0];
+  settings.modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+  settings.catalog = [{
+    provider: 'paydunya',
+    country: 'BF',
+    code: 'orange-bf',
+    public_code: 'orange-bf',
+    name: 'Orange Money Burkina Faso',
+    endpoint_slug: 'orange-bf',
+    currency: 'XOF',
+    active: true,
+    visible: true,
+    min: 100,
+    max: 100000,
+    gateway_fee_pct: 3.5,
+    platform_fee_pct: 0,
+  }];
+  const common = {
+    amount: 600,
+    country: 'BF',
+    operator: 'orange-bf',
+    currency: 'XOF',
+  };
+
+  const sender = await service.quoteIntegrationDeposit('merchant-1', {
+    ...common, fee_bearer: 'sender',
+  });
+  const receiver = await service.quoteIntegrationDeposit('merchant-1', {
+    ...common, fee_bearer: 'receiver',
+  });
+  assert.equal(sender.status, 200);
+  assert.equal(sender.body.charged_amount, 621);
+  assert.equal(sender.body.amount_net, 600);
+  assert.equal(sender.body.fee_bearer, 'sender');
+  assert.equal(sender.body.code_to_enter, '*144*4*6*621#');
+  assert.equal(receiver.status, 200);
+  assert.equal(receiver.body.charged_amount, 600);
+  assert.equal(receiver.body.amount_net, 579);
+  assert.equal(receiver.body.fee_bearer, 'receiver');
+  assert.equal(receiver.body.code_to_enter, '*144*4*6*600#');
+  assert.equal(sender.body.gateway_fee, undefined);
+  assert.equal(sender.body.platform_fee, undefined);
+  assert.equal(providerCalls, 0);
+  assert.equal(collections.momo_deposits.rows.length, 0);
 });
 
 test('generic Mobile Money start fails closed when PSR and PAR are both enabled without SoftPay', async () => {
@@ -358,7 +417,7 @@ test('generic Mobile Money uses SoftPay direct and returns phone instructions', 
 
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(result.body.payment_kind, 'phone');
-  assert.equal(result.body.mode, 'softpay_direct');
+  assert.equal(result.body.mode, undefined);
   assert.equal(result.body.prompt_sent, true, JSON.stringify(result.body));
   assert.equal(result.body.submission_unknown, false);
   assert.equal('checkout_url' in result.body, false);

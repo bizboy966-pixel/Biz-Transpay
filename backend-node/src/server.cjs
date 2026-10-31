@@ -299,6 +299,7 @@ function createServer({
     createCryptoDeposit: cryptoCatalog.createCryptoDepositIntent,
     createCryptoPayout: cryptoCatalog.createCryptoPayoutRequest,
     createMobileMoneyDeposit: paydunyaInvoiceRoutes.handleIntegrationDeposit,
+    quoteMobileMoneyDeposit: paydunyaInvoiceRoutes.quoteIntegrationDeposit,
     refreshMobileMoneyDeposit: refreshIntegrationMobileMoneyDeposit,
     createMobileMoneyPayout: mobileMoneyPayout.createIntegrationPayout,
     refreshMobileMoneyPayout: mobileMoneyPayout.refreshPayoutStatus,

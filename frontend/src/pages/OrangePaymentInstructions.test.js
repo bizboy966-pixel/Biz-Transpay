@@ -101,6 +101,8 @@ describe('Orange USSD instructions use the amount actually paid', () => {
     expect(card.querySelector('code').textContent).toBe(`*144*4*6*${amount}#`);
     expect(card.querySelector('li').textContent).toContain(`*144*4*6*${amount}#`);
     expect(card.textContent).toContain('Suivez le menu pour générer le code de paiement.');
+    expect(card.textContent).toContain(`Montant à confirmer avec le code${amount} XOF`);
+    expect(card.textContent).not.toContain('PayDunya');
   }
 
   function expectBefore(first, second) {

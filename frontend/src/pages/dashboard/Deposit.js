@@ -1207,7 +1207,7 @@ export function MobileMoneyTracker({ deposit }) {
       </h2>
       <p className="text-xs sm:text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
          {pending && (fallbackCheckoutUrl
-           ? 'La demande directe a pris trop de temps. Utilisez le lien sécurisé PayDunya pour terminer ce même dépôt, sans en créer un second.'
+           ? 'La demande directe a pris trop de temps. Utilisez le lien Biz-transPay sécurisé pour terminer ce même dépôt, sans en créer un second.'
            : instructions)}
         {ok && `Votre portefeuille a été crédité de ${d.amount_net?.toLocaleString?.() || d.amount_net || d.amount} ${d.currency || 'XOF'} (net après frais).`}
         {failed && `La transaction a été refusée ou annulée. ${d.failed_reason ? '('+d.failed_reason+')' : ''}`}
@@ -1220,7 +1220,7 @@ export function MobileMoneyTracker({ deposit }) {
            data-testid="momo-hosted-checkout"
            className="inline-flex items-center justify-center gap-2 rounded-full bg-[#2563EB] px-5 py-3 text-xs font-bold text-white hover:bg-[#1D4ED8]"
          >
-           Continuer sur PayDunya <ArrowRight className="h-4 w-4" />
+           Continuer sur Biz-transPay <ArrowRight className="h-4 w-4" />
          </button>
        )}
         {checkoutRedirectUrl && !fallbackCheckoutUrl && (
@@ -1277,7 +1277,7 @@ function PaymentFlowCard({ flow, amount, currency }) {
   const amountText = Number.isFinite(roundedAmount) ? String(roundedAmount) : '';
   const replaceAmount = (value) => String(value || '').replace(/\{amount\}|MONTANT/gi, amountText);
   const ussd = replaceAmount(flow?.ussd_template || flow?.ussd_code);
-  if (!steps.length && !ussd) return null;
+  if (!steps.length && !ussd && !flow?.otp_required) return null;
   const copyUssd = () => {
     if (navigator.clipboard && ussd) {
       navigator.clipboard.writeText(String(ussd));
@@ -1291,6 +1291,13 @@ function PaymentFlowCard({ flow, amount, currency }) {
         <ol className="list-decimal space-y-1 pl-5 text-[11px] leading-relaxed text-amber-900">
           {steps.map((step, index) => <li key={`${step}-${index}`}>{replaceAmount(step)}</li>)}
         </ol>
+      )}
+      {flow?.otp_required && (
+        <div className="rounded-lg border border-amber-200 bg-white px-3 py-2 text-[11px]" data-testid="momo-otp-amount">
+          <span className="text-slate-600">Montant à confirmer avec le code</span>
+          <strong className="ml-2 text-slate-900">{amountText} {currency}</strong>
+          <p className="mt-1 text-[10px] text-slate-500">Le montant tient compte de votre choix concernant les frais.</p>
+        </div>
       )}
       {ussd && (
         <div className="rounded-lg border border-amber-200 bg-white p-2">

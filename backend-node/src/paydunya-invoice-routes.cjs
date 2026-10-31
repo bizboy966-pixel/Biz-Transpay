@@ -5,6 +5,7 @@ const { Readable } = require('node:stream');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { readJson } = require('./auth-login.cjs');
 const security = require('./security.cjs');
+const { publicPaymentPayload } = require('./public-payment-copy.cjs');
 const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
@@ -22,6 +23,7 @@ const {
 } = require('./paydunya-softpay.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
+const INTEGRATION_FEE_QUOTE = Symbol('paydunyaIntegrationFeeQuote');
 
 const ROUTES = new Map([
   ['/api/deposits/mobile-money/par', 'par_redirect'],
@@ -47,7 +49,7 @@ function httpError(status, message) {
 
 function reply(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
+  res.end(JSON.stringify(publicPaymentPayload(body)));
 }
 
 function canonicalOperator(value) {
@@ -326,8 +328,9 @@ function createPaydunyaInvoiceRoutes({
       let phone = String(body.phone_number || '').replace(/[\s().-]/g, '');
       if (!Number.isSafeInteger(inputAmount) || inputAmount <= 0
           || !/^[A-Z]{2}$/.test(country) || !operatorCode
-          || fullName.length < 2 || fullName.length > 160
-          || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+          || (!req[INTEGRATION_FEE_QUOTE]
+            && (fullName.length < 2 || fullName.length > 160
+              || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)))
           || (phone && !/^\+?\d{7,15}$/.test(phone))) {
         throw httpError(422, 'Informations de dépôt invalides.');
       }
@@ -468,6 +471,50 @@ function createPaydunyaInvoiceRoutes({
       const fees = provider === 'mbiyo'
         ? calculateMbiyoFees(amount, selected, body.fee_bearer, country).fees
         : calculateFees(amount, selected, body.fee_bearer);
+      const paydunyaSoftpayFlow = provider === 'paydunya' && flow === 'softpay_direct'
+        ? paydunyaSoftpayPaymentFlow(
+          selected.endpoint_slug || selected.public_code || selected.code || selected.operator,
+          country,
+        ) : null;
+      const configuredPaymentFlow = selected.payment_flow
+        && typeof selected.payment_flow === 'object' && !Array.isArray(selected.payment_flow)
+        ? selected.payment_flow : null;
+      const paymentFlow = provider === 'paydunya' && flow === 'softpay_direct'
+        ? mergePaydunyaSoftpayPaymentFlow(paydunyaSoftpayFlow, configuredPaymentFlow)
+        : configuredPaymentFlow || (provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
+            ...selected, country, network: selected.network || operatorCode,
+          }, fees.charged_amount)
+            : provider === 'afribapay' ? afribapayPaymentFlow({
+              country, operator: selected.operator || operatorCode,
+            }) : {});
+      if (req[INTEGRATION_FEE_QUOTE]) {
+        const netAmount = Number.isSafeInteger(Number(fees.wallet_credit_amount))
+          ? Number(fees.wallet_credit_amount)
+          : Number.isSafeInteger(Number(fees.amount_net))
+            ? Number(fees.amount_net)
+            : fees.fee_bearer === 'client'
+              ? fees.requested_amount
+              : fees.requested_amount - fees.total_fee;
+        const codeTemplate = String(paymentFlow.ussd_template || paymentFlow.ussd_code || '');
+        const codeToEnter = codeTemplate
+          ? codeTemplate.replace(/\{amount\}|MONTANT/gi, String(fees.charged_amount))
+          : '';
+        const quotedPaymentFlow = codeToEnter
+          ? { ...paymentFlow, ussd_code: codeToEnter }
+          : paymentFlow;
+        reply(res, 200, {
+          amount: fees.requested_amount,
+          requested_amount: fees.requested_amount,
+          charged_amount: fees.charged_amount,
+          amount_net: netAmount,
+          total_fee: fees.total_fee,
+          fee_bearer: fees.fee_bearer,
+          currency,
+          ...(codeToEnter ? { code_to_enter: codeToEnter } : {}),
+          payment_flow: quotedPaymentFlow,
+        });
+        return true;
+      }
       const fingerprint = requestFingerprint(body, flow, fees, phone, provider);
       const suppliedIdempotencyKey = String(
         req.headers?.['idempotency-key'] || body.idempotency_key || '',
@@ -595,22 +642,6 @@ function createPaydunyaInvoiceRoutes({
       const notifyUrl = provider === 'afribapay'
         ? `${origin}/api/webhooks/afribapay?ref=${encodeURIComponent(depositId)}`
         : '';
-      const paydunyaSoftpayFlow = provider === 'paydunya' && flow === 'softpay_direct'
-        ? paydunyaSoftpayPaymentFlow(
-          selected.endpoint_slug || selected.public_code || selected.code || selected.operator,
-          country,
-        ) : null;
-      const configuredPaymentFlow = selected.payment_flow
-        && typeof selected.payment_flow === 'object' && !Array.isArray(selected.payment_flow)
-        ? selected.payment_flow : null;
-      const paymentFlow = provider === 'paydunya' && flow === 'softpay_direct'
-        ? mergePaydunyaSoftpayPaymentFlow(paydunyaSoftpayFlow, configuredPaymentFlow)
-        : configuredPaymentFlow || (provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
-            ...selected, country, network: selected.network || operatorCode,
-          }, fees.charged_amount)
-            : provider === 'afribapay' ? afribapayPaymentFlow({
-              country, operator: selected.operator || operatorCode,
-            }) : {});
       if (body.request_otp === true) {
         if (provider !== 'afribapay' || paymentFlow.otp_request_before_submit !== true) {
           throw httpError(422, 'La demande de code OTP n’est pas disponible pour cet opérateur.');
@@ -638,6 +669,12 @@ function createPaydunyaInvoiceRoutes({
         reply(res, 200, {
           otp_sent: true,
           payment_flow: paymentFlow,
+          amount: fees.requested_amount,
+          requested_amount: fees.requested_amount,
+          charged_amount: fees.charged_amount,
+          total_fee: fees.total_fee,
+          fee_bearer: fees.fee_bearer,
+          currency,
           message: 'Le code OTP a été demandé. Saisissez-le pour continuer.',
         });
         return true;
@@ -1227,7 +1264,7 @@ function createPaydunyaInvoiceRoutes({
   async function handleIntegrationDeposit(userId, body, idempotencyKey) {
     const payload = {
       ...body,
-      fee_bearer: 'merchant',
+      fee_bearer: body?.fee_bearer || 'receiver',
       idempotency_key: String(idempotencyKey || ''),
     };
     const req = Readable.from([Buffer.from(JSON.stringify(payload))]);
@@ -1235,6 +1272,27 @@ function createPaydunyaInvoiceRoutes({
     req.url = '/api/deposits/mobile-money';
     req.headers = {};
     req[INTEGRATION_USER] = String(userId || '');
+    const res = {
+      status: 500,
+      writeHead(status) { this.status = status; },
+      end(text) {
+        try { this.body = JSON.parse(String(text || '{}')); } catch { this.body = {}; }
+      },
+    };
+    const handled = await handleRoute(req, res);
+    return { handled, status: res.status, body: res.body || {} };
+  }
+
+  async function quoteIntegrationDeposit(userId, body) {
+    const req = Readable.from([Buffer.from(JSON.stringify({
+      ...body,
+      fee_bearer: body?.fee_bearer || 'receiver',
+    }))]);
+    req.method = 'POST';
+    req.url = '/api/deposits/mobile-money';
+    req.headers = {};
+    req[INTEGRATION_USER] = String(userId || '');
+    req[INTEGRATION_FEE_QUOTE] = true;
     const res = {
       status: 500,
       writeHead(status) { this.status = status; },
@@ -1351,7 +1409,7 @@ function createPaydunyaInvoiceRoutes({
   }
 
   return {
-    handleRoute, handleIntegrationDeposit, handleLinkPaymentDeposit,
+    handleRoute, handleIntegrationDeposit, quoteIntegrationDeposit, handleLinkPaymentDeposit,
     finalizeLinkMobileMoney,
   };
 }

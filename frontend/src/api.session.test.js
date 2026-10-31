@@ -81,7 +81,7 @@ describe('session rotation during payment status polling', () => {
     };
     await expect(onError(error)).rejects.toBe(error);
     expect(error.response.data.detail).toBe(
-      'PayDunya a refusé la préparation du retrait. Le montant a été remboursé.',
+      'Biz-transPay a refusé la préparation du retrait. Le montant a été remboursé.',
     );
   });
 

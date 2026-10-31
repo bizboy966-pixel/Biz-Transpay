@@ -30,8 +30,10 @@ test('integration documentation describes authenticated reads and supported writ
   assert.equal(body.base_url, 'https://biz-transpay.com');
   const mobileMoney = body.sections.find(section => section.id === 'mobile-money');
   const transactionTracking = body.sections.find(section => section.id === 'transactions');
-  assert.match(mobileMoney.description, /reste liée à ce prestataire jusqu’à sa finalisation/);
-  assert.match(transactionTracking.description, /prestataire déjà associé/);
+  assert.match(mobileMoney.description, /fee_bearer indique/);
+  assert.match(mobileMoney.description, /charged_amount/);
+  assert.match(transactionTracking.description, /traitement Biz-transPay/);
+  assert.doesNotMatch(JSON.stringify(body), /PayDunya|AfriBaPay|Mbiyo/i);
 
   const deposit = body.endpoints.find(item => (
     item.method === 'POST' && item.path === '/api/integration/v1/deposits'
@@ -41,15 +43,23 @@ test('integration documentation describes authenticated reads and supported writ
   ));
   assert.ok(deposit?.request);
   assert.ok(payout?.request);
-  assert.match(deposit.description, /ne reroute pas un dépôt déjà créé/);
+  assert.match(deposit.description, /Biz-transPay choisit le traitement côté serveur/);
   assert.match(payout.description, /ne reroute pas un retrait en cours/);
+  assert.ok(deposit.parameters.some(parameter => parameter.name === 'fee_bearer'));
+  assert.match(deposit.parameters.find(parameter => parameter.name === 'request_otp').description,
+    /ne crée pas de dépôt/);
+  assert.equal(deposit.otp_request_response.charged_amount, 621);
   assert.equal(deposit.parameters.some(parameter => parameter.name === 'provider'), false);
   assert.equal(payout.parameters.some(parameter => parameter.name === 'provider'), false);
+  const quote = body.endpoints.find(item => (
+    item.method === 'POST' && item.path === '/api/integration/v1/deposits/quote'
+  ));
+  assert.equal(quote.response.code_to_enter, '*144*4*6*621#');
   const depositOtp = deposit.parameters.find(parameter => parameter.name === 'otp');
   assert.equal(depositOtp.required, false);
-  assert.match(depositOtp.description, /Orange Money Burkina/);
+  assert.doesNotMatch(depositOtp.description, /PayDunya|AfriBaPay|Mbiyo/i);
   const writeEndpoints = body.endpoints.filter(item => item.method === 'POST');
-  assert.equal(writeEndpoints.length, 6);
+  assert.equal(writeEndpoints.length, 7);
   for (const endpoint of writeEndpoints) {
     assert.ok(endpoint.request, `${endpoint.path} has a request example`);
     assert.ok(endpoint.code_examples?.curl, `${endpoint.path} has a cURL example`);
@@ -85,8 +95,9 @@ test('integration documentation PDF is delivered with a valid PDF response', asy
   assert.ok(res.body.toString('ascii').includes('/api/integration/v1/deposits'));
   assert.ok(res.body.toString('ascii').includes('/api/integration/v1/payouts'));
   assert.ok(res.body.toString('ascii').includes('otp'));
-  assert.ok(res.body.toString('ascii').includes(
-    'Apres creation, chaque operation reste liee au prestataire choisi',
-  ));
+  const pdfText = res.body.toString('ascii');
+  assert.ok(pdfText.includes('Apres creation, chaque operation garde le meme traitement'));
+  assert.ok(pdfText.includes('charged_amount'));
+  assert.doesNotMatch(pdfText, /PayDunya|AfriBaPay|Mbiyo/i);
 });
 

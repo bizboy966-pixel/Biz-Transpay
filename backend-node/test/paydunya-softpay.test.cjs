@@ -43,13 +43,16 @@ test('PayDunya official SoftPay operator aliases resolve to documented endpoints
 test('PayDunya SoftPay flows declare OTP, redirect, address and USSD requirements', () => {
   const orangeCi = paydunyaSoftpayPaymentFlow('orange-ci', 'CI');
   assert.equal(orangeCi.kind, 'ussd');
-  assert.equal(orangeCi.ussd_code, '#144*82#');
+  assert.equal(orangeCi.ussd_template, '#144*82#');
   assert.equal(orangeCi.otp_required, true);
   assert.equal(orangeCi.before_submit, true);
 
   const orangeBf = paydunyaSoftpayPaymentFlow('orange-bf', 'BF');
   assert.equal(orangeBf.otp_required, true);
   assert.equal(orangeBf.before_submit, true);
+  assert.equal(orangeBf.ussd_template, '*144*4*6*{amount}#');
+  assert.match(orangeBf.steps[1], /montant dû/);
+  assert.doesNotMatch(JSON.stringify(orangeBf), /PayDunya|AfriBaPay|Mbiyo/i);
 
   const wizall = paydunyaSoftpayPaymentFlow('wizall-sn', 'SN');
   assert.equal(wizall.kind, 'otp');

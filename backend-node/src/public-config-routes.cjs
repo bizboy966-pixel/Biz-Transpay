@@ -1,5 +1,6 @@
 'use strict';
 
+const { publicPaymentFlow } = require('./public-payment-copy.cjs');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
@@ -591,7 +592,7 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
               amount_increment: operatorFee(raw, feeEntry, 'amount_increment'),
               min: Math.max(0, Number(raw.min ?? feeEntry?.min ?? 100) || 0),
               max: Number(raw.max ?? feeEntry?.max ?? 0) || null,
-              payment_flow: paymentFlow,
+              payment_flow: publicPaymentFlow(paymentFlow),
             };
             if (!grouped.has(country)) {
               grouped.set(country, {
@@ -640,8 +641,9 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
     }
     const enabled = Boolean(response.body.mobile_money_enabled);
     const flowFields = [
-      'kind', 'before_submit', 'otp_required', 'otp_label',
+      'kind', 'before_submit', 'otp_required', 'otp_request_before_submit', 'otp_label',
       'ussd_code', 'ussd_template', 'steps', 'instructions', 'action_label',
+      'address_required', 'address_label',
     ];
     const operators = enabled
       ? (response.body.catalog || []).flatMap(country => (

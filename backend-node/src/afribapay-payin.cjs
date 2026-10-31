@@ -108,7 +108,7 @@ function afribapayPaymentFlow({ country, operator }) {
       otp_request_before_submit: true,
       otp_label: 'Code OTP Wigli Dicash',
       steps: [
-        'Appuyez sur « Demander le code » : AfriBaPay envoie le code OTP au numéro indiqué.',
+        'Appuyez sur « Demander le code » : Biz-transPay envoie le code OTP au numéro indiqué.',
         'Saisissez le code reçu, puis validez le paiement.',
       ],
     };
@@ -118,7 +118,7 @@ function afribapayPaymentFlow({ country, operator }) {
       kind: 'redirect',
       before_submit: false,
       steps: [
-        'Après le démarrage, vous serez redirigé vers le lien Wave renvoyé par AfriBaPay.',
+        'Après le démarrage, ouvrez le lien de paiement Wave sécurisé.',
         'Terminez le paiement sur la page ou dans l’application Wave, puis revenez pour le suivi.',
       ],
     };

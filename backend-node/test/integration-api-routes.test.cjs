@@ -42,6 +42,15 @@ class Collection {
     }
     return { matched_count: 1, modified_count: 1 };
   }
+  async insert_one(document) {
+    if (this.rows.some(item => String(item.id) === String(document.id))) {
+      const error = new Error('Duplicate entry');
+      error.code = 'ER_DUP_ENTRY';
+      throw error;
+    }
+    this.rows.push(structuredClone(document));
+    return { inserted_id: document.id };
+  }
   async replace_one(query, replacement, upsert = false) {
     const index = this.rows.findIndex(item => matches(item, query));
     if (index < 0) {
@@ -78,6 +87,7 @@ function setup({
   scopes = ['transactions:read'],
   environment = 'live',
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
+  quoteMobileMoneyDeposit,
   createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
   refreshMobileMoneyDeposit,
 } = {}) {
@@ -181,6 +191,7 @@ function setup({
   const service = createIntegrationApiRoutes({
     db, now: () => now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
     executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
+    quoteMobileMoneyDeposit,
     createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
     refreshMobileMoneyDeposit,
   });
@@ -355,6 +366,7 @@ test('integration Mobile Money deposit is Live-only and reuses the same provider
       full_name: 'Merchant Client',
       email: 'client@example.com',
       reference: 'external-ref-1',
+      fee_bearer: 'sender',
     },
   };
   const first = await call(service, request);
@@ -364,7 +376,7 @@ test('integration Mobile Money deposit is Live-only and reuses the same provider
   assert.deepEqual(retry.body, first.body);
   assert.equal(created.length, 1);
   assert.equal(created[0].userId, 'merchant-1');
-  assert.equal(created[0].body.fee_bearer, undefined);
+  assert.equal(created[0].body.fee_bearer, 'sender');
   assert.match(created[0].idempotencyKey, /^btpi_[a-f0-9]{48}$/);
   assert.equal(collections.integration_operations.rows.filter(
     row => row.id.startsWith('deposit:'),
@@ -381,6 +393,138 @@ test('integration Mobile Money deposit is Live-only and reuses the same provider
     key: 'pk_test_demo',
   })).status, 403);
   assert.equal(created.length, 1);
+});
+
+test('integration Mobile Money OTP requests are idempotent and return the fee-adjusted charge', async () => {
+  const created = [];
+  const createMobileMoneyDeposit = async (userId, body, idempotencyKey) => {
+    created.push({ userId, body, idempotencyKey });
+    if (body.request_otp) {
+      return {
+        handled: true,
+        status: 200,
+        body: {
+          otp_sent: true,
+          amount: 600,
+          charged_amount: body.fee_bearer === 'sender' ? 621 : 600,
+          total_fee: 21,
+          fee_bearer: body.fee_bearer === 'sender' ? 'client' : 'merchant',
+          payment_flow: {
+            otp_required: true,
+            steps: ['AfriBaPay envoie le code.'],
+          },
+          message: 'Code envoyé par AfriBaPay.',
+        },
+      };
+    }
+    return {
+      handled: true, status: 200,
+      body: { id: 'otp-deposit-final', status: 'pending' },
+    };
+  };
+  const { service, collections } = setup({
+    scopes: ['transactions:read', 'deposits:write'],
+    createMobileMoneyDeposit,
+  });
+  const otpRequest = {
+    method: 'POST',
+    url: '/api/integration/v1/deposits',
+    idempotencyKey: 'momo-otp-request-001',
+    body: {
+      amount: 600,
+      country: 'BF',
+      operator: 'orange_bf',
+      phone_number: '+22670000000',
+      full_name: 'Merchant Client',
+      email: 'client@example.com',
+      fee_bearer: 'sender',
+      request_otp: true,
+    },
+  };
+  const first = await call(service, otpRequest);
+  const replay = await call(service, otpRequest);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.otp_sent, true);
+  assert.equal(first.body.charged_amount, 621);
+  assert.equal(first.body.fee_bearer, 'sender');
+  assert.equal(first.body.message, 'Code envoyé par Biz-transPay.');
+  assert.deepEqual(replay.body, first.body);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].body.request_otp, true);
+  assert.equal(created[0].body.fee_bearer, 'sender');
+  assert.equal(
+    collections.integration_operations.rows.find(row => row.id.startsWith('deposit_otp:')).kind,
+    'deposit_otp',
+  );
+
+  const final = await call(service, {
+    ...otpRequest,
+    idempotencyKey: 'momo-final-deposit-001',
+    body: { ...otpRequest.body, request_otp: false, otp: '123456' },
+  });
+  assert.equal(final.status, 200);
+  assert.equal(final.body.id, 'otp-deposit-final');
+  assert.equal(created.length, 2);
+
+  const invalidBearer = await call(service, {
+    ...otpRequest,
+    idempotencyKey: 'momo-invalid-bearer-1',
+    body: { ...otpRequest.body, fee_bearer: 'unknown' },
+  });
+  assert.equal(invalidBearer.status, 422);
+  assert.equal(created.length, 2);
+});
+
+test('integration deposit quote returns the charged amount and USSD code without creating an operation', async () => {
+  const quotes = [];
+  const { service, collections } = setup({
+    scopes: ['deposits:write'],
+    quoteMobileMoneyDeposit: async (userId, body) => {
+      quotes.push({ userId, body });
+      return {
+        handled: true,
+        status: 200,
+        body: {
+          amount: 600,
+          charged_amount: 621,
+          amount_net: 600,
+          total_fee: 21,
+          fee_bearer: 'sender',
+          currency: 'XOF',
+          code_to_enter: '*144*4*6*621#',
+          payment_flow: {
+            ussd_template: '*144*4*6*{amount}#',
+            steps: ['PayDunya instructions use only public payment text.'],
+          },
+        },
+      };
+    },
+  });
+  const initialOperationCount = collections.integration_operations.rows.length;
+  const result = await call(service, {
+    method: 'POST',
+    url: '/api/integration/v1/deposits/quote',
+    body: {
+      amount: 600,
+      country: 'BF',
+      operator: 'orange-bf',
+      currency: 'XOF',
+      fee_bearer: 'sender',
+    },
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.charged_amount, 621);
+  assert.equal(result.body.code_to_enter, '*144*4*6*621#');
+  assert.equal(result.body.payment_flow.steps[0],
+    'Biz-transPay instructions use only public payment text.');
+  assert.deepEqual(quotes, [{
+    userId: 'merchant-1',
+    body: {
+      amount: 600, country: 'BF', operator: 'orange-bf',
+      currency: 'XOF', fee_bearer: 'sender',
+    },
+  }]);
+  assert.equal(collections.integration_operations.rows.length, initialOperationCount);
 });
 
 test('integration Mobile Money deposit refreshes provider status on detail and idempotent replay without resubmitting', async () => {
@@ -646,7 +790,7 @@ test('integration Mobile Money payout requires opt-in, KYC, scope and persists i
   assert.equal(submitted.length, 1);
 });
 
-test('integration Mobile Money payout exposes safe PayDunya 4002 detail and provider code', async () => {
+test('integration Mobile Money payout exposes provider-neutral 4002 detail and code', async () => {
   const detail = 'PayDunya n’a pas pu préparer le retrait. (code 4002) '
     + 'Détail PayDunya : vérifiez les autorisations du compte marchand.';
   const createMobileMoneyPayout = async () => {
@@ -671,7 +815,11 @@ test('integration Mobile Money payout exposes safe PayDunya 4002 detail and prov
   });
 
   assert.equal(response.status, 422);
-  assert.deepEqual(response.body, { detail, code: 'PAYDUNYA_4002' });
+  assert.deepEqual(response.body, {
+    detail: 'Biz-transPay n’a pas pu préparer le retrait. (code 4002) '
+      + 'Détail Biz-transPay : vérifiez les autorisations du compte marchand.',
+    code: 'BIZTRANSPAY_4002',
+  });
 });
 
 test('integration API refreshes PayDunya payouts without resubmitting or exposing invoice tokens', async () => {
@@ -874,7 +1022,15 @@ test('integration Mobile Money catalogue validates direction and delegates by ow
       calls.push({ direction, userId });
       return {
         direction, enabled: true,
-        operators: [{ country: 'TG', code: direction === 'payout' ? 'tmoney-out' : 'tmoney-in' }],
+        operators: [{
+          country: 'TG',
+          code: direction === 'payout' ? 'tmoney-out' : 'tmoney-in',
+          fee_pct: 2,
+          payment_flow: {
+            otp_request_before_submit: true,
+            steps: ['AfriBaPay demande le code OTP.'],
+          },
+        }],
         availability_source: 'serving_environment_configuration',
       };
     },
@@ -884,6 +1040,10 @@ test('integration Mobile Money catalogue validates direction and delegates by ow
   });
   assert.equal(deposit.status, 200);
   assert.equal(deposit.body.operators[0].code, 'tmoney-in');
+  assert.equal(deposit.body.operators[0].fee_pct, undefined);
+  assert.equal(deposit.body.operators[0].payment_flow.otp_request_before_submit, true);
+  assert.equal(deposit.body.operators[0].payment_flow.steps[0],
+    'Biz-transPay demande le code OTP.');
 
   const payout = await call(service, {
     url: '/api/integration/v1/mobile-money/operators?direction=payout',
