@@ -79,6 +79,7 @@ function setup({
   environment = 'live',
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
   createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
+  refreshMobileMoneyDeposit,
 } = {}) {
   const selectedPublicKey = environment === 'test' ? 'pk_test_demo' : publicKey;
   const selectedSecretKey = environment === 'test' ? 'sk_test_demo' : secretKey;
@@ -181,6 +182,7 @@ function setup({
     db, now: () => now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
     executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
     createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
+    refreshMobileMoneyDeposit,
   });
   return { service, collections };
 }
@@ -379,6 +381,86 @@ test('integration Mobile Money deposit is Live-only and reuses the same provider
     key: 'pk_test_demo',
   })).status, 403);
   assert.equal(created.length, 1);
+});
+
+test('integration Mobile Money deposit refreshes provider status on detail and idempotent replay without resubmitting', async () => {
+  let collections;
+  const created = [];
+  const refreshed = [];
+  const createMobileMoneyDeposit = async (userId, body, idempotencyKey) => {
+    created.push({ userId, body, idempotencyKey });
+    collections.momo_deposits.rows.push({
+      id: 'momo-api-status-1',
+      user_id: userId,
+      provider: 'paydunya',
+      paydunya_flow: 'softpay_direct',
+      paydunya_token: 'internal-paydunya-token',
+      status: 'pending',
+      amount: 3000,
+      currency: 'XOF',
+      country: 'TG',
+      operator: 'tmoney_tg',
+      phone_number: '90000000',
+    });
+    return {
+      handled: true,
+      status: 200,
+      body: {
+        id: 'momo-api-status-1',
+        status: 'pending',
+        checkout_url: 'https://checkout.example/pay/one-time',
+      },
+    };
+  };
+  const refreshMobileMoneyDeposit = async (id, userId) => {
+    refreshed.push({ id, userId });
+    const deposit = collections.momo_deposits.rows.find(row => row.id === id);
+    deposit.status = 'approved';
+    deposit.confirmed_at = '2026-10-31T11:00:00.000Z';
+    return deposit;
+  };
+  const setupResult = setup({
+    scopes: ['deposits:write'],
+    createMobileMoneyDeposit,
+    refreshMobileMoneyDeposit,
+  });
+  collections = setupResult.collections;
+  const request = {
+    method: 'POST',
+    url: '/api/integration/v1/deposits',
+    idempotencyKey: 'momo-status-request-01',
+    body: {
+      amount: 3000,
+      country: 'TG',
+      operator: 'tmoney_tg',
+      phone_number: '+22890000000',
+      full_name: 'Merchant Client',
+      email: 'client@example.com',
+    },
+  };
+
+  const createdResponse = await call(setupResult.service, request);
+  assert.equal(createdResponse.status, 200);
+  assert.equal(createdResponse.body.status, 'pending');
+
+  const statusResponse = await call(setupResult.service, {
+    url: '/api/integration/v1/deposits/momo-api-status-1',
+  });
+  assert.equal(statusResponse.status, 200);
+  assert.equal(statusResponse.body.status, 'approved');
+  assert.equal(Object.hasOwn(statusResponse.body, 'paydunya_token'), false);
+
+  const retryResponse = await call(setupResult.service, request);
+  assert.equal(retryResponse.status, 200);
+  assert.equal(retryResponse.body.status, 'approved');
+  assert.equal(retryResponse.body.deposit.checkout_url, 'https://checkout.example/pay/one-time');
+  assert.equal(created.length, 1);
+  assert.deepEqual(refreshed, [{ id: 'momo-api-status-1', userId: 'merchant-1' }]);
+  const operation = collections.integration_operations.rows.find(
+    row => row.kind === 'deposit' && row.business_id === 'momo-api-status-1',
+  );
+  assert.equal(operation.status, 'approved');
+  assert.equal(operation.response.status, 'approved');
 });
 
 test('integration crypto payout requires live opt-in, KYC, scope and idempotency', async () => {

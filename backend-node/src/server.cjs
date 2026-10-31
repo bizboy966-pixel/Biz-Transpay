@@ -264,6 +264,19 @@ function createServer({
   const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService, env });
   const integrationDocumentationRoutes = createIntegrationDocumentationRoutes();
   const paydunyaDisbursementProbeRoutes = createPayDunyaDisbursementProbeRoutes();
+  const refreshIntegrationMobileMoneyDeposit = async (depositId, userId) => {
+    const deposit = await db.collection('momo_deposits').find_one({
+      id: String(depositId), user_id: String(userId),
+    }, { _id: 0 });
+    if (!deposit) return null;
+    if (deposit.provider === 'mbiyo') {
+      return mbiyoWebhookRoutes.reconcileDepositById(String(depositId));
+    }
+    if (deposit.provider === 'paydunya') {
+      return paydunyaWebhookRoutes.settleDepositById(String(depositId));
+    }
+    return deposit;
+  };
   const integrationApiRoutes = createIntegrationApiRoutes({
     db,
     getCryptoAssets: cryptoCatalog.integrationCryptoAssets,
@@ -273,6 +286,7 @@ function createServer({
     createCryptoDeposit: cryptoCatalog.createCryptoDepositIntent,
     createCryptoPayout: cryptoCatalog.createCryptoPayoutRequest,
     createMobileMoneyDeposit: paydunyaInvoiceRoutes.handleIntegrationDeposit,
+    refreshMobileMoneyDeposit: refreshIntegrationMobileMoneyDeposit,
     createMobileMoneyPayout: mobileMoneyPayout.createIntegrationPayout,
     refreshMobileMoneyPayout: mobileMoneyPayout.refreshPayoutStatus,
     getMobileMoneyOperators: (direction, userId) => (

@@ -105,7 +105,35 @@ function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
   createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
+  refreshMobileMoneyDeposit,
 }) {
+  const mobileMoneyDepositRefreshAt = new Map();
+
+  async function refreshIntegrationDeposit(depositId, userId) {
+    const id = String(depositId || '');
+    const ownerId = String(userId || '');
+    let deposit = await db.collection('momo_deposits').find_one(
+      { id, user_id: ownerId }, { _id: 0 },
+    );
+    if (!deposit || deposit.status !== 'pending'
+        || typeof refreshMobileMoneyDeposit !== 'function') return deposit;
+
+    const key = `${ownerId}:${id}`;
+    const checkedAt = Number(now());
+    const previousCheck = mobileMoneyDepositRefreshAt.get(key);
+    if (previousCheck !== undefined && checkedAt - previousCheck < 10_000) return deposit;
+    mobileMoneyDepositRefreshAt.set(key, checkedAt);
+    while (mobileMoneyDepositRefreshAt.size > 500) {
+      mobileMoneyDepositRefreshAt.delete(mobileMoneyDepositRefreshAt.keys().next().value);
+    }
+
+    try { await refreshMobileMoneyDeposit(id, ownerId); } catch { /* Keep the last verified snapshot. */ }
+    deposit = await db.collection('momo_deposits').find_one(
+      { id, user_id: ownerId }, { _id: 0 },
+    ) || deposit;
+    return deposit;
+  }
+
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const cryptoAssetCatalog = req.method === 'GET'
@@ -207,7 +235,29 @@ function createIntegrationApiRoutes({
             return true;
           }
           if (existing.response) {
-            reply(res, 200, existing.response);
+            let response = existing.response;
+            const previousDeposit = await refreshIntegrationDeposit(
+              existing.business_id || response.id, credential.user_id,
+            );
+            if (previousDeposit) {
+              const currentDeposit = publicMobileMoneyDeposit(previousDeposit);
+              response = {
+                ...response,
+                id: String(previousDeposit.id),
+                status: String(previousDeposit.status || response.status || 'pending'),
+                deposit: { ...(response.deposit || {}), ...currentDeposit },
+              };
+              await operations.update_one({
+                id: operationId,
+                user_id: String(credential.user_id),
+                environment: credential.environment,
+              }, { $set: {
+                status: response.status,
+                response,
+                updated_at: new Date(now()).toISOString(),
+              } });
+            }
+            reply(res, 200, response);
             return true;
           }
         }
@@ -719,7 +769,7 @@ function createIntegrationApiRoutes({
             id: businessId, user_id: credential.user_id,
           }, { _id: 0 })
           : null;
-        const document = depositMatch
+        let document = depositMatch
           ? await db.collection('momo_deposits').find_one({
             id: businessId, user_id: credential.user_id,
           }, { _id: 0 })
@@ -728,6 +778,9 @@ function createIntegrationApiRoutes({
               id: businessId, user_id: credential.user_id,
             }, { _id: 0 })
             : null;
+        if (depositMatch && document) {
+          document = await refreshIntegrationDeposit(businessId, credential.user_id) || document;
+        }
         if ((payoutMatch || cryptoPayoutMatch) && !transaction) {
           reply(res, 404, { detail: kind.includes('crypto') ? 'Crypto payout not found' : 'Payout not found' });
           return true;
@@ -740,7 +793,29 @@ function createIntegrationApiRoutes({
           reply(res, 404, { detail: kind === 'crypto_deposit' ? 'Crypto deposit not found' : 'Deposit not found' });
           return true;
         }
-        if (payoutMatch) {
+        if (depositMatch) {
+          const safeDeposit = publicMobileMoneyDeposit(document);
+          const response = {
+            ...(operation.response || {}),
+            id: String(document.id),
+            status: String(document.status || operation.status || 'pending'),
+            deposit: { ...(operation.response?.deposit || {}), ...safeDeposit },
+          };
+          await db.collection('integration_operations').update_one(
+            {
+              id: operation.id,
+              user_id: String(credential.user_id),
+              environment: credential.environment,
+            },
+            { $set: {
+              status: response.status,
+              response,
+              updated_at: new Date(now()).toISOString(),
+            } },
+          );
+          reply(res, 200, safeDeposit);
+        }
+        else if (payoutMatch) {
           const safePayout = publicMobileMoneyPayout(transaction);
           const payoutResponse = mobileMoneyPayoutResponse(transaction);
           await db.collection('integration_operations').update_one(
