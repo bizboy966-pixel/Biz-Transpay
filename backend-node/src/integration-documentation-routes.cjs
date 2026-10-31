@@ -198,7 +198,7 @@ const WRITE_ENDPOINTS = [
     title: 'Créer un dépôt Mobile Money',
     section: 'mobile-money',
     risk_notice: LIVE_WRITE_WARNING,
-    description: 'Démarre le dépôt selon le catalogue actif; Biz-transPay choisit le traitement côté serveur et le conserve jusqu’à la fin de cette opération. amount est le montant de base. fee_bearer détermine si les frais sont ajoutés au montant payé ou déduits du montant crédité. La réponse donne charged_amount, total_fee et fee_bearer. Si payment_flow.ussd_template est fourni, {amount} représente charged_amount : le code affiché est ainsi calculé selon les frais. Une réponse « pending » signifie qu’une confirmation est encore attendue.',
+    description: 'Démarre le dépôt selon le catalogue actif; Biz-transPay choisit le traitement côté serveur et le conserve jusqu’à la fin de cette opération. amount est le montant de base. fee_bearer détermine si les frais sont ajoutés au montant payé ou déduits du montant crédité. La réponse donne charged_amount, total_fee et fee_bearer. Si payment_flow.ussd_template est fourni, {amount} représente charged_amount : le code affiché est ainsi calculé selon les frais. Une réponse « pending » signifie qu’une confirmation est encore attendue. Biz-transPay vérifie le paiement auprès du fournisseur et renvoie « completed » après confirmation et crédit; les statuts internes « approved » et « confirmed » sont normalisés en « completed ».',
     scope: 'Clé Live avec deposits:write.',
     parameters: [
       { name: 'amount', type: 'integer', required: true, description: 'Montant entier dans la devise du catalogue.' },

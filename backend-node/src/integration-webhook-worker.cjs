@@ -17,11 +17,13 @@ const OPERATION_SOURCES = Object.freeze({
   },
 });
 
-const SUCCESS_STATES = new Set(['completed', 'confirmed', 'success', 'successful', 'succeeded', 'paid']);
+const SUCCESS_STATES = new Set([
+  'approved', 'completed', 'confirmed', 'success', 'successful', 'succeeded', 'paid',
+]);
 const FAILURE_STATES = new Set(['failed', 'rejected', 'cancelled', 'canceled', 'expired']);
 const PENDING_STATES = [
   'pending', 'processing', 'created', 'submitted', 'accepted',
-  'in_progress', 'awaiting_confirmation', 'pending_manual',
+  'in_progress', 'awaiting_confirmation', 'pending_manual', 'approved',
 ];
 
 function finalStatus(value) {

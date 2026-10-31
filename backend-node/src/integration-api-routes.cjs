@@ -58,13 +58,41 @@ function publicCryptoPayout(transaction) {
 }
 
 function publicMobileMoneyDeposit(document) {
-  return pickFields(document, [
+  const result = pickFields(document, [
     'id', 'status', 'amount', 'currency', 'country', 'operator', 'phone_number',
     'full_name', 'email', 'reference', 'description', 'provider_reference',
     'external_id', 'transaction_id', 'fee', 'fee_amount', 'fee_currency',
     'requested_amount', 'charged_amount', 'total_fee', 'amount_net',
     'fee_bearer', 'created_at', 'updated_at', 'confirmed_at',
   ]);
+  const status = String(result.status || '').trim().toLowerCase();
+  if (['approved', 'complete', 'confirmed', 'paid', 'success', 'successful', 'succeeded']
+    .includes(status)) {
+    result.status = 'completed';
+  } else if (['failure', 'rejected', 'cancelled', 'canceled', 'expired'].includes(status)) {
+    result.status = 'failed';
+  }
+  return result;
+}
+
+function publicIntegrationOperation(operation) {
+  if (operation?.kind !== 'deposit') return operation;
+  const result = { ...operation };
+  const publicDeposit = publicMobileMoneyDeposit({
+    ...(operation.response?.deposit || {}),
+    status: operation.status || operation.response?.status
+      || operation.response?.deposit?.status,
+  });
+  if (result.status !== undefined) result.status = publicDeposit.status || result.status;
+  if (result.response && typeof result.response === 'object') {
+    result.response = {
+      ...result.response,
+      ...(publicDeposit.status ? { status: publicDeposit.status } : {}),
+      ...(result.response.deposit && publicDeposit.status
+        ? { deposit: { ...result.response.deposit, status: publicDeposit.status } } : {}),
+    };
+  }
+  return result;
 }
 
 function publicMobileMoneyOperator(operator) {
@@ -345,7 +373,7 @@ function createIntegrationApiRoutes({
               response = {
                 ...response,
                 id: String(previousDeposit.id),
-                status: String(previousDeposit.status || response.status || 'pending'),
+                status: String(currentDeposit.status || response.status || 'pending'),
                 deposit: { ...(response.deposit || {}), ...currentDeposit },
               };
               await operations.update_one({
@@ -443,10 +471,11 @@ function createIntegrationApiRoutes({
           return true;
         }
         const deposit = result.body;
+        const publicDeposit = publicMobileMoneyDeposit(deposit);
         const response = {
           id: String(deposit.id),
-          status: String(deposit.status || 'pending'),
-          deposit,
+          status: String(publicDeposit.status || 'pending'),
+          deposit: { ...deposit, ...publicDeposit },
         };
         const timestamp = new Date(now()).toISOString();
         await operations.replace_one(
@@ -1015,7 +1044,7 @@ function createIntegrationApiRoutes({
           const response = {
             ...(operation.response || {}),
             id: String(document.id),
-            status: String(document.status || operation.status || 'pending'),
+            status: String(safeDeposit.status || operation.status || 'pending'),
             deposit: { ...(operation.response?.deposit || {}), ...safeDeposit },
           };
           await db.collection('integration_operations').update_one(
@@ -1096,7 +1125,7 @@ function createIntegrationApiRoutes({
       const operations = await db.collection('integration_operations').find(
         query, { _id: 0 },
       ).sort('created_at', -1).to_list(rawLimit);
-      reply(res, 200, operations);
+      reply(res, 200, operations.map(publicIntegrationOperation));
       return true;
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 500;
@@ -1113,4 +1142,8 @@ function createIntegrationApiRoutes({
   return { handleRoute };
 }
 
-module.exports = { createIntegrationApiRoutes };
+module.exports = {
+  createIntegrationApiRoutes,
+  publicIntegrationOperation,
+  publicMobileMoneyDeposit,
+};

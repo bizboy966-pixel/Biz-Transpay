@@ -591,20 +591,20 @@ test('integration Mobile Money deposit refreshes provider status on detail and i
     url: '/api/integration/v1/deposits/momo-api-status-1',
   });
   assert.equal(statusResponse.status, 200);
-  assert.equal(statusResponse.body.status, 'approved');
+  assert.equal(statusResponse.body.status, 'completed');
   assert.equal(Object.hasOwn(statusResponse.body, 'paydunya_token'), false);
 
   const retryResponse = await call(setupResult.service, request);
   assert.equal(retryResponse.status, 200);
-  assert.equal(retryResponse.body.status, 'approved');
+  assert.equal(retryResponse.body.status, 'completed');
   assert.equal(retryResponse.body.deposit.checkout_url, 'https://checkout.example/pay/one-time');
   assert.equal(created.length, 1);
   assert.deepEqual(refreshed, [{ id: 'momo-api-status-1', userId: 'merchant-1' }]);
   const operation = collections.integration_operations.rows.find(
     row => row.kind === 'deposit' && row.business_id === 'momo-api-status-1',
   );
-  assert.equal(operation.status, 'approved');
-  assert.equal(operation.response.status, 'approved');
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.response.status, 'completed');
 });
 
 test('integration AfriBaPay deposit status refresh uses the saved operation and stays provider-neutral', async () => {
@@ -651,13 +651,13 @@ test('integration AfriBaPay deposit status refresh uses the saved operation and 
     url: '/api/integration/v1/deposits/afri-api-status-1',
   });
   assert.equal(response.status, 200);
-  assert.equal(response.body.status, 'confirmed');
+  assert.equal(response.body.status, 'completed');
   assert.equal(response.body.provider, undefined);
   assert.deepEqual(refreshed, ['afri-api-status-1']);
   const operation = collections.integration_operations.rows.find(
     row => row.id === 'op-afri-api-status',
   );
-  assert.equal(operation.status, 'confirmed');
+  assert.equal(operation.status, 'completed');
 });
 
 test('integration crypto payout requires live opt-in, KYC, scope and idempotency', async () => {

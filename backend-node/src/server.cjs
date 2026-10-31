@@ -42,6 +42,7 @@ const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
 const { createAdminFundsRoutes } = require('./admin-funds-routes.cjs');
 const { createAfriBaPayWebhookRoutes } = require('./afribapay-webhook-routes.cjs');
 const { createAfriBaPayDepositWorker } = require('./afribapay-deposit-worker.cjs');
+const { createPaydunyaDepositWorker } = require('./paydunya-deposit-worker.cjs');
 const { createMbiyoWebhookRoutes } = require('./mbiyo-webhook-routes.cjs');
 const { createMbiyoDepositWorker } = require('./mbiyo-deposit-worker.cjs');
 const { createPaymentLinkRoutes } = require('./payment-link-routes.cjs');
@@ -329,6 +330,10 @@ function createServer({
     env,
     reconcileOrder: afriBaPayWebhookRoutes.reconcileOrder,
   }) : null;
+  const paydunyaDepositWorker = db ? createPaydunyaDepositWorker({
+    db,
+    settleDepositById: paydunyaWebhookRoutes.settleDepositById,
+  }) : null;
   const mbiyoDepositWorker = typeof db?.collection === 'function' ? createMbiyoDepositWorker({
     db,
     reconcileOrder: mbiyoWebhookRoutes.reconcileOrder,
@@ -475,6 +480,7 @@ function createServer({
     }
   });
   appServer.afriBaPayDepositWorker = afriBaPayDepositWorker;
+  appServer.paydunyaDepositWorker = paydunyaDepositWorker;
   appServer.mbiyoDepositWorker = mbiyoDepositWorker;
   appServer.integrationWebhookWorker = integrationWebhookWorker;
   appServer.telegramCommandBot = telegramCommandBot;
@@ -495,11 +501,34 @@ function createServer({
       const hasWebhookSecret = Boolean(provider?.webhook_secret_encrypted
         || provider?.webhook_secret || env.MBIYO_WEBHOOK_SECRET);
       if (provider?.enabled && hasApiKey && hasWebhookSecret) mbiyoDepositWorker?.start();
+
+      if (webhookWorkerReady && env.BIZTRANSPAY_MIGRATION_ENV === 'production') {
+        const [paydunya, afribapay] = await Promise.all([
+          db.collection('settings').find_one(
+            { id: 'payment_provider_paydunya' }, { _id: 0 },
+          ),
+          db.collection('settings').find_one(
+            { id: 'payment_provider_afribapay' }, { _id: 0 },
+          ),
+        ]);
+        const hasPaydunyaCredentials = Boolean(
+          (paydunya?.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
+          && (paydunya?.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
+          && (paydunya?.token_encrypted || env.PAYDUNYA_TOKEN),
+        );
+        if (paydunya?.enabled && hasPaydunyaCredentials) paydunyaDepositWorker?.start();
+        if (afribapay?.enabled && afribapay?.api_user_encrypted
+            && afribapay?.api_key_encrypted) {
+          afriBaPayDepositWorker?.start();
+        }
+      }
     } catch {
       // Diagnostic mode may start before the payment-provider tables are available.
     }
   });
   appServer.once('close', () => {
+    afriBaPayDepositWorker?.stop();
+    paydunyaDepositWorker?.stop();
     mbiyoDepositWorker?.stop();
     integrationWebhookWorker?.stop();
     telegramCommandBot.stop();

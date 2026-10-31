@@ -112,6 +112,20 @@ test('API status reconciliation creates one durable, provider-neutral completion
   assert.equal(deliveries[0].payload.id, event.id);
 });
 
+test('API reconciliation normalizes an internally approved deposit and emits completed', async () => {
+  const { collections, worker } = setup();
+  collections.momo_deposits.rows[0].status = 'approved';
+
+  await worker.runOnce();
+
+  const operation = collections.integration_operations.rows[0];
+  const event = collections.integration_webhook_events.rows[0];
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.response.status, 'completed');
+  assert.equal(event.payload.data.previous_status, 'pending');
+  assert.equal(event.payload.data.status, 'completed');
+});
+
 test('failed merchant webhook delivery is retried with the same event id', async () => {
   let time = Date.parse('2026-10-31T10:00:00.000Z');
   const deliveredEventIds = [];
