@@ -28,6 +28,10 @@ test('integration documentation describes authenticated reads and supported writ
   assert.ok(body.sections.length > 0);
   assert.ok(body.endpoints.some(item => item.path === '/api/integration/v1/transactions'));
   assert.equal(body.base_url, 'https://biz-transpay.com');
+  const mobileMoney = body.sections.find(section => section.id === 'mobile-money');
+  const transactionTracking = body.sections.find(section => section.id === 'transactions');
+  assert.match(mobileMoney.description, /reste liée à ce prestataire jusqu’à sa finalisation/);
+  assert.match(transactionTracking.description, /prestataire déjà associé/);
 
   const deposit = body.endpoints.find(item => (
     item.method === 'POST' && item.path === '/api/integration/v1/deposits'
@@ -37,6 +41,10 @@ test('integration documentation describes authenticated reads and supported writ
   ));
   assert.ok(deposit?.request);
   assert.ok(payout?.request);
+  assert.match(deposit.description, /ne reroute pas un dépôt déjà créé/);
+  assert.match(payout.description, /ne reroute pas un retrait en cours/);
+  assert.equal(deposit.parameters.some(parameter => parameter.name === 'provider'), false);
+  assert.equal(payout.parameters.some(parameter => parameter.name === 'provider'), false);
   const depositOtp = deposit.parameters.find(parameter => parameter.name === 'otp');
   assert.equal(depositOtp.required, false);
   assert.match(depositOtp.description, /Orange Money Burkina/);
@@ -77,5 +85,8 @@ test('integration documentation PDF is delivered with a valid PDF response', asy
   assert.ok(res.body.toString('ascii').includes('/api/integration/v1/deposits'));
   assert.ok(res.body.toString('ascii').includes('/api/integration/v1/payouts'));
   assert.ok(res.body.toString('ascii').includes('otp'));
+  assert.ok(res.body.toString('ascii').includes(
+    'Apres creation, chaque operation reste liee au prestataire choisi',
+  ));
 });
 

@@ -463,6 +463,59 @@ test('integration Mobile Money deposit refreshes provider status on detail and i
   assert.equal(operation.response.status, 'approved');
 });
 
+test('integration AfriBaPay deposit status refresh uses the saved operation and stays provider-neutral', async () => {
+  let collections;
+  const refreshed = [];
+  const setupResult = setup({
+    scopes: ['transactions:read'],
+    refreshMobileMoneyDeposit: async (id, userId) => {
+      const deposit = collections.momo_deposits.rows.find(row => row.id === id);
+      assert.equal(deposit.provider, 'afribapay');
+      assert.equal(userId, 'merchant-1');
+      refreshed.push(id);
+      deposit.status = 'confirmed';
+      deposit.confirmed_at = '2026-10-31T11:00:00.000Z';
+      return deposit;
+    },
+  });
+  collections = setupResult.collections;
+  collections.momo_deposits.rows.push({
+    id: 'afri-api-status-1',
+    user_id: 'merchant-1',
+    provider: 'afribapay',
+    status: 'pending',
+    amount: 600,
+    currency: 'XOF',
+    country: 'TG',
+    operator: 'tmoney_tg',
+  });
+  collections.integration_operations.rows.push({
+    id: 'op-afri-api-status',
+    kind: 'deposit',
+    user_id: 'merchant-1',
+    environment: 'live',
+    business_id: 'afri-api-status-1',
+    status: 'pending',
+    response: {
+      id: 'afri-api-status-1',
+      status: 'pending',
+      deposit: { id: 'afri-api-status-1', status: 'pending' },
+    },
+  });
+
+  const response = await call(setupResult.service, {
+    url: '/api/integration/v1/deposits/afri-api-status-1',
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.status, 'confirmed');
+  assert.equal(response.body.provider, undefined);
+  assert.deepEqual(refreshed, ['afri-api-status-1']);
+  const operation = collections.integration_operations.rows.find(
+    row => row.id === 'op-afri-api-status',
+  );
+  assert.equal(operation.status, 'confirmed');
+});
+
 test('integration crypto payout requires live opt-in, KYC, scope and idempotency', async () => {
   const created = [];
   const createCryptoPayout = async (userId, body, idempotencyKey) => {

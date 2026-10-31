@@ -818,9 +818,17 @@ test('AfriBaPay payout authenticates then submits once to its configured payout 
     env: { OFFICIAL_DOMAIN: 'https://biz-transpay.com' },
     fetchImpl: async (url, options) => {
       requests.push({ url: String(url), options });
-      return requests.length === 1
-        ? providerResponse({ data: { access_token: 'af-token' } })
-        : providerResponse({ data: { transaction_id: 'af-100', status: 'pending' } });
+      const target = String(url);
+      if (target.endsWith('/v1/token')) {
+        return providerResponse({ data: { access_token: 'af-token' } });
+      }
+      if (target.endsWith('/v1/pay/payout')) {
+        return providerResponse({ data: { transaction_id: 'af-100', status: 'pending' } });
+      }
+      if (target.includes('/v1/status?')) {
+        return providerResponse({ data: { status: 'completed' } });
+      }
+      throw new Error(`Unexpected AfriBaPay URL: ${target}`);
     },
   });
   const result = await service.createIntegrationPayout(
@@ -835,6 +843,17 @@ test('AfriBaPay payout authenticates then submits once to its configured payout 
   assert.equal(payload.order_id, result.transaction.id);
   assert.equal(payload.notify_url, 'https://biz-transpay.com/api/webhooks/afribapay?ref=' + result.transaction.id);
   assert.equal(payload.merchant_key, 'merchant-id');
+
+  const refreshed = await service.refreshPayoutStatus(result.transaction.id, 'merchant-1');
+  assert.equal(refreshed.status, 'completed');
+  assert.equal(refreshed.metadata.provider, 'afribapay');
+  assert.equal(requests.length, 4);
+  assert.match(requests[2].url, /api\.afribapay\.test\/v1\/token$/);
+  assert.match(requests[3].url, /payout\.afribapay\.test\/v1\/status\?/);
+  assert.equal(
+    new URL(requests[3].url).searchParams.get('order_id'),
+    result.transaction.id,
+  );
 });
 
 test('AfriBaPay accepts mapped GNF and CDF payout routes with their exact wallet currencies', async () => {

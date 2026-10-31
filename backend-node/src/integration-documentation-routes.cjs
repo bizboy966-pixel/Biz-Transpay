@@ -22,12 +22,12 @@ const SECTIONS = [
   {
     id: 'mobile-money',
     title: 'Dépôts et retraits Mobile Money',
-    description: 'Flux recommandé : 1) récupérez le catalogue avec direction=deposit ou direction=payout; 2) envoyez le code operator retourné dans le POST correspondant; 3) conservez son id et consultez GET /deposits/{id} ou GET /payouts/{id} jusqu’au statut final. Envoyez le code opérateur, jamais le nom du prestataire : Biz-transPay sélectionne celui qui est actif côté serveur. Espacez les vérifications de statut d’environ 10 secondes et ne relancez pas une opération pending.',
+    description: 'Flux recommandé : 1) récupérez le catalogue avec direction=deposit ou direction=payout; 2) envoyez le code operator retourné dans le POST correspondant; 3) conservez son id et consultez GET /deposits/{id} ou GET /payouts/{id} jusqu’au statut final. Envoyez le code opérateur, jamais le nom du prestataire : Biz-transPay sélectionne côté serveur celui qui est actif pour le pays, l’opérateur et la devise. Dès la création, l’opération reste liée à ce prestataire jusqu’à sa finalisation; une modification du catalogue ne concerne que les nouvelles opérations. Espacez les vérifications de statut d’environ 10 secondes et ne relancez pas une opération pending.',
   },
   {
     id: 'transactions',
     title: 'Consulter et suivre les opérations',
-    description: 'Les listes donnent les opérations enregistrées. Pour suivre une opération, consultez son endpoint de détail : un dépôt ou un retrait peut rester « pending » pendant l’attente de confirmation du prestataire. Ne créez pas une deuxième opération pour remplacer une réponse en attente.',
+    description: 'Les listes donnent les opérations enregistrées. L’endpoint de détail relit le statut auprès du prestataire déjà associé à cette opération. Un dépôt ou un retrait peut rester « pending » pendant l’attente de confirmation; ne changez pas de prestataire et ne créez pas une deuxième opération pour remplacer une réponse en attente.',
   },
   {
     id: 'crypto',
@@ -138,7 +138,7 @@ const WRITE_ENDPOINTS = [
     title: 'Créer un dépôt Mobile Money',
     section: 'mobile-money',
     risk_notice: LIVE_WRITE_WARNING,
-    description: 'Démarre le dépôt auprès du prestataire activé pour le pays et l’opérateur. Ne transmettez pas de nom de prestataire. Une réponse « pending » signifie que le client doit confirmer le paiement ou que le prestataire doit encore envoyer sa confirmation.',
+    description: 'Démarre le dépôt auprès du prestataire activé pour le pays, l’opérateur et la devise. Ne transmettez pas de nom de prestataire. Le prestataire choisi reste associé à cette opération jusqu’à sa finalisation; un changement d’activation ne reroute pas un dépôt déjà créé. Une réponse « pending » signifie que le client doit confirmer le paiement ou que le prestataire doit encore envoyer sa confirmation.',
     scope: 'Clé Live avec deposits:write.',
     parameters: [
       { name: 'amount', type: 'integer', required: true, description: 'Montant entier dans la devise du catalogue.' },
@@ -192,7 +192,7 @@ const WRITE_ENDPOINTS = [
     title: 'Créer un retrait Mobile Money',
     section: 'mobile-money',
     risk_notice: LIVE_WRITE_WARNING,
-    description: 'Démarre le retrait depuis le portefeuille du marchand. Le pays et la devise doivent correspondre. Le prestataire est sélectionné côté serveur à partir du catalogue de retrait actif.',
+    description: 'Démarre le retrait depuis le portefeuille du marchand. Le pays, la devise et l’opérateur doivent correspondre au catalogue de retrait actif. Le prestataire sélectionné côté serveur reste associé à ce retrait jusqu’au statut final; une nouvelle configuration ne reroute pas un retrait en cours.',
     scope: 'Clé Live avec payouts:write, autorisation explicite des retraits API et KYC marchand vérifié.',
     parameters: [
       { name: 'amount', type: 'integer', required: true, description: 'Montant entier à retirer.' },
@@ -392,6 +392,7 @@ function buildPdf() {
     'Les ecritures exigent deposits:write, payouts:write, exchanges:write ou links:write selon la route.',
     'Les retraits exigent payouts:write, opt-in API et KYC marchand verifie.',
     'Le prestataire Mobile Money est choisi cote serveur selon le pays, l operateur et le catalogue actif.',
+    'Apres creation, chaque operation reste liee au prestataire choisi; le catalogue ne reroute que les nouvelles operations.',
     'Pour suivre un statut, consultez GET /deposits/{id} ou GET /payouts/{id}; ne recreez pas une operation pending.',
     'Pay-in Mobile Money: amount, country, operator, phone_number, full_name, email; currency facultative. Fournir otp si le catalogue l’exige, notamment pour Orange Money Burkina.',
     'Pay-out Mobile Money: amount, currency, country, operator, recipient; fee_bearer: sender ou receiver.',
