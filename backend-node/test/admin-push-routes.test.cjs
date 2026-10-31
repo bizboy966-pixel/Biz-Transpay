@@ -3,8 +3,12 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { Readable } = require('node:stream');
+const crypto = require('node:crypto');
 const { matches, project } = require('../src/document-store.cjs');
 const { createAdminPushRoutes } = require('../src/admin-push-routes.cjs');
+
+const TEST_FIREBASE_PRIVATE_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+  .privateKey.export({ type: 'pkcs8', format: 'pem' });
 
 class Collection {
   constructor(rows = []) { this.rows = structuredClone(rows); }
@@ -51,7 +55,7 @@ class Database {
   }
 }
 
-function setup() {
+function setup({ env: envOverrides = {} } = {}) {
   const db = new Database({
     users: [
       { id: 'admin', role: 'super_admin', username: 'owner', two_fa_enabled: true },
@@ -75,12 +79,13 @@ function setup() {
     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
       project_id: 'test-project',
       client_email: 'push@test-project.iam.gserviceaccount.com',
-      private_key: 'test-private-key',
+      private_key: TEST_FIREBASE_PRIVATE_KEY,
     }),
     FIREBASE_WEB_API_KEY: 'test-web-key',
     FIREBASE_MESSAGING_SENDER_ID: '123456',
     FIREBASE_APP_ID: '1:123456:web:test',
     FIREBASE_VAPID_KEY: 'test-vapid-key',
+    ...envOverrides,
   };
   const handle = createAdminPushRoutes({
     db,
@@ -201,5 +206,23 @@ test('admin push refuses missing confirmation and external notification links', 
     ...payload, confirmation: 'CONFIRMER', url: 'https://example.com',
   });
   assert.equal(external.status, 422);
+  assert.equal(scheduled.length, 0);
+});
+
+test('admin push refuses a Firebase project mismatch before queueing a campaign', async () => {
+  const { handle, scheduled } = setup({
+    env: { FIREBASE_PROJECT_ID: 'wrong-project' },
+  });
+  const result = await call(handle, 'POST', '/api/admin/push/send', {
+    audience: 'user',
+    user_id: 'u1',
+    title: 'Information',
+    body: 'Message',
+    url: '/dashboard',
+    confirmation: 'CONFIRMER',
+    request_id: '33333333-3333-4333-8333-333333333333',
+  });
+  assert.equal(result.status, 503);
+  assert.match(result.body.detail, /FIREBASE_PROJECT_ID/);
   assert.equal(scheduled.length, 0);
 });

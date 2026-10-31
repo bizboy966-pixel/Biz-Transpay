@@ -76,7 +76,8 @@ class MemoryDatabase {
 const firebaseService = JSON.stringify({
   project_id: 'example-project',
   client_email: 'fcm@example-project.iam.gserviceaccount.com',
-  private_key: 'test-only-not-a-real-key',
+  private_key: crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
+    .privateKey.export({ type: 'pkcs8', format: 'pem' }),
 });
 const validEnv = {
   FIREBASE_SERVICE_ACCOUNT_JSON: firebaseService,
@@ -228,6 +229,14 @@ test('push registration requires configured FCM, hashes tokens, and unregisters 
   const missing = setup();
   const unconfigured = await call(missing.service, 'POST', '/api/push/devices', { token });
   assert.equal(unconfigured.status, 503);
+
+  const mismatched = setup({
+    env: { ...validEnv, FIREBASE_PROJECT_ID: 'another-project' },
+  });
+  const rejectedMismatch = await call(
+    mismatched.service, 'POST', '/api/push/devices', { token },
+  );
+  assert.equal(rejectedMismatch.status, 503);
 });
 
 test('push config exposes only public Firebase client values and safe missing names', async () => {
@@ -235,8 +244,45 @@ test('push config exposes only public Firebase client values and safe missing na
   const result = await call(service, 'GET', '/api/push/config');
   assert.equal(result.body.configured, true);
   assert.equal(result.body.server_configured, true);
+  assert.deepEqual(result.body.missing, []);
+  assert.deepEqual(result.body.server_missing, []);
   assert.equal(result.body.config.projectId, 'example-project');
   assert.equal(JSON.stringify(result.body).includes('private_key'), false);
+});
+
+test('push config reports missing server and client variables without returning credentials', async () => {
+  const { service } = setup();
+  const result = await call(service, 'GET', '/api/push/config');
+  assert.equal(result.body.configured, false);
+  assert.equal(result.body.server_configured, false);
+  assert.ok(result.body.missing.includes('FIREBASE_WEB_API_KEY'));
+  assert.deepEqual(result.body.server_missing, ['FIREBASE_SERVICE_ACCOUNT_JSON']);
+  assert.equal(JSON.stringify(result.body).includes('private_key'), false);
+});
+
+test('push config does not report ready when the service account project differs', async () => {
+  const { service } = setup({
+    env: { ...validEnv, FIREBASE_PROJECT_ID: 'another-project' },
+  });
+  const result = await call(service, 'GET', '/api/push/config');
+  assert.equal(result.body.configured, true);
+  assert.equal(result.body.server_configured, false);
+  assert.match(result.body.server_missing[0], /FIREBASE_PROJECT_ID/);
+});
+
+test('push config rejects a malformed service-account private key safely', async () => {
+  const malformed = JSON.stringify({
+    project_id: 'example-project',
+    client_email: 'fcm@example-project.iam.gserviceaccount.com',
+    private_key: 'not-a-private-key',
+  });
+  const { service } = setup({
+    env: { ...validEnv, FIREBASE_SERVICE_ACCOUNT_JSON: malformed },
+  });
+  const result = await call(service, 'GET', '/api/push/config');
+  assert.equal(result.body.server_configured, false);
+  assert.match(result.body.server_missing[0], /private_key invalide/);
+  assert.equal(JSON.stringify(result.body).includes('not-a-private-key'), false);
 });
 
 test('FCM errors retire only tokens explicitly identified as permanently invalid', () => {

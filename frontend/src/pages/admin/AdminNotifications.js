@@ -12,15 +12,26 @@ export default function AdminNotifications() {
   const [preview, setPreview] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
   const [busy, setBusy] = useState(false);
-  const [firebaseReady, setFirebaseReady] = useState(null);
+  const [firebaseConfig, setFirebaseConfig] = useState(null);
   useEffect(() => {
-    api.get('/push/config').then(({ data }) => setFirebaseReady(Boolean(data.configured && data.server_configured))).catch(() => setFirebaseReady(false));
+    api.get('/push/config').then(({ data }) => setFirebaseConfig(data)).catch(() => setFirebaseConfig({
+      configured: false,
+      server_configured: false,
+      missing: [],
+      server_missing: [],
+      status_error: true,
+    }));
     api.get('/admin/push/audience-options').then(({ data }) => setOptions(data));
     const loadCampaigns = () => api.get('/admin/push/campaigns?limit=20').then(({ data }) => setCampaigns(data.campaigns || []));
     loadCampaigns();
     const timer = window.setInterval(loadCampaigns, 5000);
     return () => window.clearInterval(timer);
   }, []);
+  const firebaseReady = Boolean(firebaseConfig?.configured && firebaseConfig?.server_configured);
+  const missingFirebaseSettings = [
+    ...(firebaseConfig?.missing || []),
+    ...(firebaseConfig?.server_missing || []),
+  ];
   const set = (key, value) => { setForm((f) => ({ ...f, [key]: value })); setPreview(null); };
   const search = async (value) => { setQuery(value); set('user_id', ''); setPreview(null); if (value.length >= 2) { const { data } = await api.get('/admin/push/users', { params: { q: value } }); setUsers(data.users || []); } else setUsers([]); };
   const audiencePayload = () => ({ audience: form.audience, ...(form.audience === 'user' ? { user_id: form.user_id } : {}), ...(form.audience === 'group' ? { account_type: form.account_type || undefined, country: form.country || undefined, kyc_status: form.kyc_status || undefined } : {}) });
@@ -36,7 +47,33 @@ export default function AdminNotifications() {
     catch (e) { toast.error(e.response?.data?.detail || 'Envoi impossible'); } finally { setBusy(false); }
   };
   return <div className="space-y-6" data-testid="page-admin-notifications">
-    <div><h1 className="font-cabinet text-3xl font-extrabold text-slate-900">Notifications push</h1><p className="text-slate-500 mt-1">Envoyez un message aux clients actifs ayant activé les notifications sur leur navigateur.</p><p className={`text-sm mt-2 font-semibold ${firebaseReady ? 'text-emerald-600' : 'text-amber-600'}`}>{firebaseReady === null ? 'Vérification de la configuration Firebase…' : firebaseReady ? 'Firebase est prêt pour les notifications.' : 'Firebase n’est pas encore configuré : les campagnes ne pourront pas être livrées.'}</p></div>
+    <div>
+      <h1 className="font-cabinet text-3xl font-extrabold text-slate-900">Notifications push</h1>
+      <p className="text-slate-500 mt-1">Envoyez un message aux clients actifs ayant activé les notifications sur leur navigateur.</p>
+      {firebaseConfig === null ? (
+        <p className="text-sm mt-2 font-semibold text-slate-500">Vérification de la configuration Firebase…</p>
+      ) : firebaseReady ? (
+        <p className="text-sm mt-2 font-semibold text-emerald-600">Firebase est prêt pour les notifications.</p>
+      ) : (
+        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">
+            {firebaseConfig.status_error
+              ? 'Impossible de lire la configuration Firebase depuis le serveur.'
+              : 'Configuration Firebase incomplète : les campagnes ne pourront pas être livrées.'}
+          </p>
+          {missingFirebaseSettings.length > 0 && (
+            <p className="mt-1">
+              Variables à vérifier dans Plesk &gt; Node.js &gt; Environment Variables :{' '}
+              <code>{missingFirebaseSettings.join(', ')}</code>
+            </p>
+          )}
+          <p className="mt-1">
+            Après toute modification, enregistre les variables et redémarre l’application Node.
+            Ne partage jamais le contenu du compte de service.
+          </p>
+        </div>
+      )}
+    </div>
     <section className="bg-white border border-slate-100 rounded-2xl p-5 sm:p-7 space-y-5">
       <h2 className="font-bold text-xl flex items-center gap-2"><Bell className="w-5 h-5 text-blue-600" /> Audience</h2>
       <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Audience">

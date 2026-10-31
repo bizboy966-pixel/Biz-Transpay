@@ -5,7 +5,8 @@ const { readJson, reply } = require('./auth-login.cjs');
 const { escapeRegex } = require('./admin-user-routes.cjs');
 const {
   firebaseClientConfig,
-  serviceAccountInfo,
+  firebaseServerStatus,
+  missingFirebaseClientConfig,
 } = require('./notifications-push-routes.cjs');
 
 const MAX_AUDIENCE_USERS = 50_000;
@@ -21,8 +22,8 @@ const CAMPAIGN_FIELDS = [
   'finished_at', 'error',
 ];
 
-function httpError(status, message) {
-  return Object.assign(new Error(message), { status });
+function httpError(status, message, code) {
+  return Object.assign(new Error(message), { status, code });
 }
 
 function audienceQuery(body) {
@@ -209,8 +210,17 @@ function createAdminPushRoutes({
         if (String(body.confirmation || '').trim().toUpperCase() !== 'CONFIRMER') {
           throw httpError(428, 'Une confirmation explicite est requise. Saisissez CONFIRMER.');
         }
-        if (!firebaseClientConfig(env) || !serviceAccountInfo(env)) {
-          throw httpError(503, 'La configuration Firebase Web et le compte de service sont requis.');
+        const firebaseServer = firebaseServerStatus(env);
+        const firebaseMissing = [
+          ...(firebaseClientConfig(env) ? [] : missingFirebaseClientConfig(env)),
+          ...firebaseServer.missing,
+        ];
+        if (firebaseMissing.length) {
+          throw httpError(
+            503,
+            `Configuration Firebase incomplète ou incohérente : ${firebaseMissing.join(', ')}.`,
+            'FCM_CONFIGURATION',
+          );
         }
         const title = String(body.title || '').trim();
         const message = String(body.body || '').trim();
@@ -329,7 +339,9 @@ function createAdminPushRoutes({
     } catch (cause) {
       const status = Number.isInteger(cause.status) ? cause.status : 500;
       reply(res, status, {
-        detail: status >= 500 ? 'Service de notifications indisponible.' : cause.message,
+        detail: cause.code === 'FCM_CONFIGURATION'
+          ? cause.message
+          : status >= 500 ? 'Service de notifications indisponible.' : cause.message,
       });
       return true;
     }

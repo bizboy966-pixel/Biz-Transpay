@@ -83,6 +83,32 @@ function missingFirebaseClientConfig(env) {
   return missing;
 }
 
+function firebaseServerStatus(env) {
+  const info = serviceAccountInfo(env);
+  if (!info) {
+    return { configured: false, missing: ['FIREBASE_SERVICE_ACCOUNT_JSON'] };
+  }
+  try {
+    const privateKey = crypto.createPrivateKey(
+      String(info.private_key).replace(/\\n/g, '\n'),
+    );
+    if (privateKey.asymmetricKeyType !== 'rsa') throw new Error('Unsupported key type');
+  } catch {
+    return {
+      configured: false,
+      missing: ['FIREBASE_SERVICE_ACCOUNT_JSON (private_key invalide)'],
+    };
+  }
+  const configuredProject = String(env.FIREBASE_PROJECT_ID || '').trim();
+  if (configuredProject && configuredProject !== info.project_id) {
+    return {
+      configured: false,
+      missing: ['FIREBASE_PROJECT_ID (doit correspondre au project_id du compte de service)'],
+    };
+  }
+  return { configured: true, missing: [] };
+}
+
 function safeFcmError(responseBody, httpStatus) {
   const error = responseBody?.error || {};
   const status = String(error.status || '').toUpperCase();
@@ -293,11 +319,13 @@ function createNotificationsPushRoutes({
       if (!userId) return true;
       if (configRoute) {
         const config = firebaseClientConfig(env);
+        const serverStatus = firebaseServerStatus(env);
         reply(res, 200, {
           configured: Boolean(config),
           config,
-          server_configured: Boolean(serviceAccountInfo(env)),
+          server_configured: serverStatus.configured,
           missing: config ? [] : missingFirebaseClientConfig(env),
+          server_missing: serverStatus.missing,
         });
         return true;
       }
@@ -307,7 +335,7 @@ function createNotificationsPushRoutes({
           reply(res, 422, { detail: 'Jeton push invalide.' });
           return true;
         }
-        const serviceConfigured = Boolean(serviceAccountInfo(env));
+        const serviceConfigured = firebaseServerStatus(env).configured;
         if (req.method === 'POST') {
           if (!firebaseClientConfig(env) || !serviceConfigured) {
             reply(res, 503, { detail: 'Les notifications push ne sont pas configurées.' });
@@ -450,6 +478,7 @@ function createNotificationsPushRoutes({
 module.exports = {
   createNotificationsPushRoutes,
   firebaseClientConfig,
+  firebaseServerStatus,
   serviceAccountInfo,
   safeFcmError,
 };
