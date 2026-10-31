@@ -37,6 +37,9 @@ test('integration documentation describes authenticated reads and supported writ
   ));
   assert.ok(deposit?.request);
   assert.ok(payout?.request);
+  const depositOtp = deposit.parameters.find(parameter => parameter.name === 'otp');
+  assert.equal(depositOtp.required, false);
+  assert.match(depositOtp.description, /Orange Money Burkina/);
   const writeEndpoints = body.endpoints.filter(item => item.method === 'POST');
   assert.equal(writeEndpoints.length, 6);
   for (const endpoint of writeEndpoints) {
@@ -73,5 +76,6 @@ test('integration documentation PDF is delivered with a valid PDF response', asy
   assert.ok(res.body.toString('ascii').includes('%%EOF'));
   assert.ok(res.body.toString('ascii').includes('/api/integration/v1/deposits'));
   assert.ok(res.body.toString('ascii').includes('/api/integration/v1/payouts'));
+  assert.ok(res.body.toString('ascii').includes('otp'));
 });
 

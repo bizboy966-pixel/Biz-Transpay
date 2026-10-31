@@ -159,6 +159,46 @@ test('FedaPay catalog preserves the legacy public country and operator contract'
   assert.equal(JSON.stringify(result.body).includes('FEDAPAY_SECRET_KEY'), false);
 });
 
+test('live deposit and integration catalogues expose Orange Burkina OTP instructions', async () => {
+  const { service } = setup([
+    { id: 'deposit_config', mobile_money: { enabled: true, operators: [] } },
+    {
+      id: 'payment_provider_paydunya',
+      enabled: true,
+      mode: 'live',
+      modes: {
+        softpay_direct: { enabled: true },
+        psr: { enabled: false },
+        par_redirect: { enabled: false },
+      },
+      master_key_encrypted: 'encrypted-master',
+      private_key_encrypted: 'encrypted-private',
+      token_encrypted: 'encrypted-token',
+      catalog: [{
+        country: 'BF',
+        country_label: 'Burkina Faso',
+        code: 'orange_bf',
+        name: 'Orange Money Burkina Faso',
+        endpoint_slug: 'orange-money-burkina',
+        currency: 'XOF',
+        active: true,
+        visible: true,
+      }],
+    },
+    { id: 'payment_provider_mbiyo', enabled: false },
+    { id: 'payment_provider_afribapay', enabled: false },
+  ]);
+
+  const result = await service.integrationMobileMoneyOperators('deposit');
+  assert.equal(result.enabled, true);
+  assert.deepEqual(result.operators.map(operator => operator.code), ['orange_bf']);
+  assert.equal(result.operators[0].payment_flow.otp_required, true);
+  assert.match(result.operators[0].payment_flow.otp_label, /OTP Orange Money/);
+  assert.match(result.operators[0].payment_flow.steps.join(' '), /saisissez-le ici/i);
+  assert.equal(JSON.stringify(result).includes('paydunya'), false);
+  assert.equal(JSON.stringify(result).includes('encrypted-master'), false);
+});
+
 test('fee configuration is authenticated, provider-neutral, and uses configured fee totals', async () => {
   const { service } = setup([
     {

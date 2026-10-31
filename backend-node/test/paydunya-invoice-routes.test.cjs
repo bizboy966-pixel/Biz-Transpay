@@ -687,3 +687,108 @@ test('Wizall link finalization sends OTP only to PayDunya and returns sanitized 
   assert.deepEqual(result.instructions, ['Confirmez sur votre téléphone', 'alert(1)']);
   assert.equal(request.options.headers['PAYDUNYA-TOKEN'], 'mock-token');
 });
+
+test('PayDunya Orange Burkina uses the documented SoftPay endpoint and requires OTP', async () => {
+  let calls = 0;
+  const { service, collections } = setup({
+    mode: 'live',
+    fetchImpl: async (url, options) => {
+      calls += 1;
+      if (calls === 1) {
+        assert.match(String(url), /\/api\/v1\/checkout-invoice\/create$/);
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { response_code: '00', token: 'orange-bf-token' }; },
+        };
+      }
+      assert.equal(
+        String(url),
+        'https://app.paydunya.com/api/v1/softpay/orange-money-burkina',
+      );
+      assert.equal(options.method, 'POST');
+      assert.deepEqual(JSON.parse(options.body), {
+        name_bf: 'Awa Example',
+        email_bf: 'payer@example.test',
+        phone_bf: '62784521',
+        otp_code: '89525',
+        payment_token: 'orange-bf-token',
+      });
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { success: true, message: 'success message' }; },
+      };
+    },
+  });
+  collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+  collections.settings.rows[0].catalog.push({
+    provider: 'paydunya',
+    country: 'BF',
+    code: 'orange_bf',
+    name: 'Orange Money Burkina Faso',
+    endpoint_slug: 'orange-money-burkina',
+    currency: 'XOF',
+    active: true,
+    visible: true,
+    min: 500,
+  });
+
+  const result = await call(service, '/api/deposits/mobile-money/start', {
+    ...depositRequest,
+    country: 'BF',
+    operator: 'orange_bf',
+    phone_number: '+22662784521',
+    otp: '89525',
+  }, 'orange-bf-softpay-otp-001');
+
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.payment_kind, 'phone');
+  assert.equal(result.body.prompt_sent, true);
+  assert.equal(collections.momo_deposits.rows[0].payment_flow.otp_required, true);
+  assert.equal(collections.momo_deposits.rows[0].otp, undefined);
+  assert.equal(calls, 2);
+});
+
+test('PayDunya Orange Burkina rejects a missing OTP before creating a deposit', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    mode: 'live',
+    fetchImpl: async () => {
+      providerCalls += 1;
+      throw new Error('A missing OTP must not reach PayDunya');
+    },
+  });
+  collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+  collections.settings.rows[0].catalog.push({
+    provider: 'paydunya',
+    country: 'BF',
+    code: 'orange_bf',
+    name: 'Orange Money Burkina Faso',
+    endpoint_slug: 'orange-money-burkina',
+    currency: 'XOF',
+    active: true,
+    visible: true,
+    min: 500,
+  });
+
+  const result = await call(service, '/api/deposits/mobile-money/start', {
+    ...depositRequest,
+    country: 'BF',
+    operator: 'orange_bf',
+    phone_number: '+22662784521',
+  }, 'orange-bf-softpay-no-otp-001');
+
+  assert.equal(result.status, 422);
+  assert.match(result.body.detail, /code OTP Orange Money/i);
+  assert.equal(collections.momo_deposits.rows.length, 0);
+  assert.equal(providerCalls, 0);
+});

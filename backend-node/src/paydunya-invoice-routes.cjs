@@ -12,10 +12,10 @@ const { decryptSetting } = require('./provider-settings.cjs');
 const { loadAfriBaPayConfig, submitAfriBaPayin } = require('./afribapay-payin.cjs');
 const mbiyoPayin = require('./mbiyo-payin.cjs');
 const {
-  paydunyaModeEnabled, preferredPaydunyaPayinMode,
+  paydunyaModeEnabled, paydunyaPayinModeForOperator,
 } = require('./paydunya-payin-capabilities.cjs');
 const {
-  resolvePaydunyaSoftpayOperator, submitPaydunyaSoftpay,
+  resolvePaydunyaSoftpayOperator, paydunyaSoftpayPaymentFlow, submitPaydunyaSoftpay,
 } = require('./paydunya-softpay.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
@@ -354,7 +354,9 @@ function createPaydunyaInvoiceRoutes({
         const afriSelected = selectOperator(
           afriConfig?.catalog, country, operatorCode, 'afribapay',
         );
-        const preferredPaydunyaMode = preferredPaydunyaPayinMode(settings);
+        const preferredPaydunyaMode = paydunyaPayinModeForOperator(
+          settings, paydunyaSelected, country,
+        );
         const paydunyaCredentialsReady = Boolean(
           (settings?.master_key_encrypted || env.PAYDUNYA_MASTER_KEY)
           && (settings?.private_key_encrypted || env.PAYDUNYA_PRIVATE_KEY)
@@ -579,12 +581,25 @@ function createPaydunyaInvoiceRoutes({
       const notifyUrl = provider === 'afribapay'
         ? `${origin}/api/webhooks/afribapay?ref=${encodeURIComponent(depositId)}`
         : '';
-      const paymentFlow = selected.payment_flow && typeof selected.payment_flow === 'object'
-        && !Array.isArray(selected.payment_flow)
-        ? selected.payment_flow
-        : provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
-          ...selected, country, network: selected.network || operatorCode,
-        }, fees.charged_amount) : {};
+      const paydunyaSoftpayFlow = provider === 'paydunya' && flow === 'softpay_direct'
+        ? paydunyaSoftpayPaymentFlow(
+          selected.endpoint_slug || selected.public_code || selected.code || selected.operator,
+          country,
+        ) : null;
+      const paymentFlow = paydunyaSoftpayFlow
+        || (selected.payment_flow && typeof selected.payment_flow === 'object'
+          && !Array.isArray(selected.payment_flow)
+          ? selected.payment_flow
+          : provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
+            ...selected, country, network: selected.network || operatorCode,
+          }, fees.charged_amount) : {});
+      if (paymentFlow.before_submit && paymentFlow.otp_required
+          && !String(body.otp || '').trim()) {
+        throw httpError(
+          422,
+          `Saisissez ${paymentFlow.otp_label || 'le code de confirmation'} avant de continuer.`,
+        );
+      }
       const userNameParts = fullName.split(/\s+/, 2);
       const document = {
         id: depositId,
@@ -1011,11 +1026,13 @@ function createPaydunyaInvoiceRoutes({
         try {
           await submitPaydunyaSoftpay({
             mode: config.mode,
-            endpointSlug: selected.endpoint_slug,
+            endpointSlug: selected.endpoint_slug || selected.public_code
+              || selected.code || selected.operator,
             country,
             fullName,
             email,
             phone,
+            otp: body.otp,
             paymentToken: token,
             credentials,
             fetchImpl,

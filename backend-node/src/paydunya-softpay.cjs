@@ -8,13 +8,43 @@ const T_MONEY_TOGO = Object.freeze({
   tokenField: 'payment_token',
 });
 
+const ORANGE_MONEY_BURKINA = Object.freeze({
+  endpoint: 'orange-money-burkina',
+  nameField: 'name_bf',
+  emailField: 'email_bf',
+  phoneField: 'phone_bf',
+  otpField: 'otp_code',
+  tokenField: 'payment_token',
+});
+
 // Only expose a direct route after its official endpoint and field names are verified.
 function resolvePaydunyaSoftpayOperator(endpointSlug, country) {
   const slug = String(endpointSlug || '').trim().toLowerCase();
   const countryCode = String(country || '').trim().toUpperCase();
-  if (countryCode !== 'TG') return null;
-  return ['t-money-togo', 't-money', 'tmoney-togo', 'tmoney_tg'].includes(slug)
-    ? T_MONEY_TOGO : null;
+  if (countryCode === 'BF'
+      && ['orange-money-burkina', 'orange-burkina', 'orange-bf', 'orange_bf'].includes(slug)) {
+    return ORANGE_MONEY_BURKINA;
+  }
+  if (countryCode === 'TG'
+      && ['t-money-togo', 't-money', 'tmoney-togo', 'tmoney_tg'].includes(slug)) {
+    return T_MONEY_TOGO;
+  }
+  return null;
+}
+
+function paydunyaSoftpayPaymentFlow(endpointSlug, country) {
+  const profile = resolvePaydunyaSoftpayOperator(endpointSlug, country);
+  if (!profile?.otpField) return null;
+  return {
+    kind: 'phone_confirmation',
+    before_submit: true,
+    otp_required: true,
+    otp_label: 'Code OTP Orange Money',
+    steps: [
+      'Ce dépôt demande un code OTP Orange Money.',
+      'Obtenez le code selon la procédure Orange Money de votre ligne, puis saisissez-le ici avant de lancer le dépôt.',
+    ],
+  };
 }
 
 function softpayError(status, message, options = {}) {
@@ -31,11 +61,15 @@ function localPhone(country, phone) {
       && digits.startsWith('228') && digits.length === 11) {
     digits = digits.slice(3);
   }
+  if (String(country || '').toUpperCase() === 'BF'
+      && digits.startsWith('226') && digits.length === 11) {
+    digits = digits.slice(3);
+  }
   return digits;
 }
 
 async function submitPaydunyaSoftpay({
-  mode, endpointSlug, country, fullName, email, phone, paymentToken,
+  mode, endpointSlug, country, fullName, email, phone, otp, paymentToken,
   credentials, fetchImpl = globalThis.fetch,
 }) {
   const profile = resolvePaydunyaSoftpayOperator(endpointSlug, country);
@@ -48,7 +82,7 @@ async function submitPaydunyaSoftpay({
   if (mode !== 'live') {
     throw softpayError(
       503,
-      'Le mode Sandbox PayDunya ne peut pas envoyer une demande T-Money réelle. Passez en mode Production.',
+      'Le mode Sandbox PayDunya ne peut pas envoyer une demande Mobile Money réelle. Passez en mode Production.',
     );
   }
 
@@ -58,9 +92,13 @@ async function submitPaydunyaSoftpay({
     [profile.phoneField]: localPhone(country, phone),
     [profile.tokenField]: String(paymentToken || '').trim(),
   };
+  if (profile.otpField) body[profile.otpField] = String(otp || '').trim();
   if (!body[profile.nameField] || !body[profile.emailField]
       || !body[profile.phoneField] || !body[profile.tokenField]) {
     throw softpayError(422, 'Les informations nécessaires au paiement PayDunya sont incomplètes.');
+  }
+  if (profile.otpField && !body[profile.otpField]) {
+    throw softpayError(422, 'Saisissez le code OTP Orange Money avant de continuer.');
   }
 
   let response;
@@ -127,5 +165,6 @@ async function submitPaydunyaSoftpay({
 
 module.exports = {
   resolvePaydunyaSoftpayOperator,
+  paydunyaSoftpayPaymentFlow,
   submitPaydunyaSoftpay,
 };

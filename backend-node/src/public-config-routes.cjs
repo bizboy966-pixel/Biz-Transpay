@@ -4,7 +4,8 @@ const { sessionToken } = require('./auth-session-routes.cjs');
 const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
-const { paydunyaPayinReady } = require('./paydunya-payin-capabilities.cjs');
+const { paydunyaPayinReady, paydunyaPayinModeForOperator } = require('./paydunya-payin-capabilities.cjs');
+const { paydunyaSoftpayPaymentFlow } = require('./paydunya-softpay.cjs');
 const mbiyoPayin = require('./mbiyo-payin.cjs');
 const CRYPTO_FEE_ASSETS = [
   ['USDC.POLYGON', 'USDC', 'POLYGON'], ['USDC.SOL', 'USDC', 'SOL'],
@@ -536,6 +537,8 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)
                 || raw.active === false || raw.archived === true || raw.hidden === true) continue;
             const country = String(raw.country || '').trim().toUpperCase();
+            const paydunyaMode = name === 'paydunya'
+              ? paydunyaPayinModeForOperator(config, raw, country) : '';
             const internalCode = String(raw.public_code || raw.code || '').trim();
             const code = name === 'mbiyo'
               ? internalCode.replace(/^mbiyo_/i, '') : internalCode;
@@ -568,10 +571,20 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
               max: Number(raw.max ?? feeEntry?.max ?? 0) || null,
               payment_flow: raw.payment_flow && typeof raw.payment_flow === 'object'
                 && !Array.isArray(raw.payment_flow)
+                && !(name === 'paydunya' && paydunyaMode === 'softpay_direct'
+                  && paydunyaSoftpayPaymentFlow(
+                    raw.endpoint_slug || raw.public_code || raw.code || raw.operator,
+                    country,
+                  ))
                 ? raw.payment_flow
-                : name === 'mbiyo' ? mbiyoPayin.paymentFlow({
-                  ...raw, country, network: raw.network || code,
-                }) : {},
+                : name === 'paydunya' && paydunyaMode === 'softpay_direct'
+                  ? paydunyaSoftpayPaymentFlow(
+                    raw.endpoint_slug || raw.public_code || raw.code || raw.operator,
+                    country,
+                  ) || {}
+                  : name === 'mbiyo' ? mbiyoPayin.paymentFlow({
+                    ...raw, country, network: raw.network || code,
+                  }) : {},
             };
             if (!grouped.has(country)) {
               grouped.set(country, {

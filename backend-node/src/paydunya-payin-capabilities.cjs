@@ -1,5 +1,7 @@
 'use strict';
 
+const { resolvePaydunyaSoftpayOperator } = require('./paydunya-softpay.cjs');
+
 const PAYDUNYA_PAYIN_MODE_PRIORITY = Object.freeze([
   'softpay_direct', 'psr', 'par_redirect',
 ]);
@@ -26,6 +28,20 @@ function preferredPaydunyaPayinMode(config) {
   return checkoutModes.length === 1 ? checkoutModes[0] : '';
 }
 
+function paydunyaPayinModeForOperator(config, operator, country) {
+  const enabled = enabledPaydunyaPayinModes(config);
+  const endpointCandidates = [
+    operator?.endpoint_slug, operator?.public_code, operator?.code, operator?.operator,
+  ].filter(Boolean);
+  if (enabled.includes('softpay_direct') && endpointCandidates.some(candidate => (
+    resolvePaydunyaSoftpayOperator(candidate, country)
+  ))) {
+    return 'softpay_direct';
+  }
+  const checkoutModes = enabled.filter(mode => mode === 'psr' || mode === 'par_redirect');
+  return checkoutModes.length === 1 ? checkoutModes[0] : '';
+}
+
 function paydunyaPayinReady(config, env = process.env) {
   if (!config?.enabled || !preferredPaydunyaPayinMode(config)) return false;
   return Boolean(
@@ -40,5 +56,6 @@ module.exports = {
   paydunyaModeEnabled,
   enabledPaydunyaPayinModes,
   preferredPaydunyaPayinMode,
+  paydunyaPayinModeForOperator,
   paydunyaPayinReady,
 };
