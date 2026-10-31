@@ -68,10 +68,7 @@ async function readJson(response, { status, outcomeUnknown = false } = {}) {
   return payload;
 }
 
-async function submitAfriBaPayin({ config, payload, fetchImpl = globalThis.fetch }) {
-  if (typeof fetchImpl !== 'function') {
-    throw providerError(503, 'AfribaPAY service unavailable');
-  }
+async function afriBearerToken(config, fetchImpl) {
   const basic = Buffer.from(`${config.apiUser}:${config.apiKey}`, 'utf8').toString('base64');
   let tokenResponse;
   try {
@@ -96,6 +93,95 @@ async function submitAfriBaPayin({ config, payload, fetchImpl = globalThis.fetch
     ? tokenPayload.data : tokenPayload;
   const token = String(data.access_token || '').trim();
   if (!token) throw providerError(503, 'AfribaPAY token is missing');
+  return token;
+}
+
+function afribapayPaymentFlow({ country, operator }) {
+  const countryCode = String(country || '').trim().toUpperCase();
+  const operatorCode = String(operator || '').trim().toLowerCase().split(':').at(-1)
+    .replace(/[^a-z0-9_-]/g, '');
+  if (countryCode === 'BF' && ['wligdicash', 'wligdi-cash'].includes(operatorCode)) {
+    return {
+      kind: 'otp',
+      before_submit: true,
+      otp_required: true,
+      otp_request_before_submit: true,
+      otp_label: 'Code OTP Wigli Dicash',
+      steps: [
+        'Appuyez sur « Demander le code » : AfriBaPay envoie le code OTP au numéro indiqué.',
+        'Saisissez le code reçu, puis validez le paiement.',
+      ],
+    };
+  }
+  if (operatorCode === 'wave') {
+    return {
+      kind: 'redirect',
+      before_submit: false,
+      steps: [
+        'Après le démarrage, vous serez redirigé vers le lien Wave renvoyé par AfriBaPay.',
+        'Terminez le paiement sur la page ou dans l’application Wave, puis revenez pour le suivi.',
+      ],
+    };
+  }
+  return {
+    kind: 'phone_confirmation',
+    before_submit: false,
+    steps: [
+      'La demande est envoyée à l’opérateur sélectionné.',
+      'Suivez les instructions de paiement affichées sur votre téléphone et revenez ici pour le suivi.',
+    ],
+  };
+}
+
+async function requestAfriBaPayOtp({ config, payload, fetchImpl = globalThis.fetch }) {
+  if (typeof fetchImpl !== 'function') {
+    throw providerError(503, 'AfribaPAY service unavailable');
+  }
+  const country = String(payload?.country || '').trim().toUpperCase();
+  const operator = String(payload?.operator || '').trim().toLowerCase().split(':').at(-1);
+  if (country !== 'BF' || !['wligdicash', 'wligdi-cash'].includes(operator)) {
+    throw providerError(422, 'OTP request is not documented for this operator');
+  }
+  const token = await afriBearerToken(config, fetchImpl);
+  let response;
+  try {
+    response = await fetchImpl(`${config.baseUrl}/v1/pay/otp`, {
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({
+        operator: String(payload.operator || '').trim().toLowerCase().split(':').at(-1),
+        country,
+        phone_number: payload.phone_number,
+        amount: payload.amount,
+        currency: payload.currency,
+        merchant_key: config.merchantKey,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw providerError(502, 'The OTP request outcome is unknown', true);
+  }
+  if (!response.ok) {
+    throw providerError(response.status >= 500 ? 502 : 400, 'AfribaPAY rejected the OTP request', response.status >= 500);
+  }
+  const result = await readJson(response, { status: 502, outcomeUnknown: true });
+  const data = result.data && typeof result.data === 'object' ? result.data : result;
+  if (String(data.status || '').toUpperCase() !== 'SUCCESS' || Number(data.code) !== 200) {
+    throw providerError(400, 'AfribaPAY did not confirm that the OTP was sent');
+  }
+  return { sent: true };
+}
+
+async function submitAfriBaPayin({ config, payload, fetchImpl = globalThis.fetch }) {
+  if (typeof fetchImpl !== 'function') {
+    throw providerError(503, 'AfribaPAY service unavailable');
+  }
+  const token = await afriBearerToken(config, fetchImpl);
 
   let payinResponse;
   try {
@@ -134,4 +220,6 @@ module.exports = {
   DEFAULT_SANDBOX_BASE_URL,
   loadAfriBaPayConfig,
   submitAfriBaPayin,
+  requestAfriBaPayOtp,
+  afribapayPaymentFlow,
 };

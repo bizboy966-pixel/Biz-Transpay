@@ -74,7 +74,11 @@ function publicMomoDeposit(deposit, now = Date.now()) {
       ? { before_submit: rawFlow.before_submit } : {}),
     ...(typeof rawFlow.otp_required === 'boolean'
       ? { otp_required: rawFlow.otp_required } : {}),
-    ...(['ussd_code', 'ussd_template', 'action_label', 'otp_label'].reduce((result, key) => {
+    ...(typeof rawFlow.otp_request_before_submit === 'boolean'
+      ? { otp_request_before_submit: rawFlow.otp_request_before_submit } : {}),
+    ...(typeof rawFlow.address_required === 'boolean'
+      ? { address_required: rawFlow.address_required } : {}),
+    ...(['ussd_code', 'ussd_template', 'action_label', 'otp_label', 'address_label'].reduce((result, key) => {
       const value = plainText(rawFlow[key]);
       if (value) result[key] = value.slice(0, 180);
       return result;
@@ -118,14 +122,16 @@ function publicMomoDeposit(deposit, now = Date.now()) {
     payment_flow: flow,
     auth_mode: authMode,
     otp_required: Boolean(deposit.otp_required || authMode === 'pin'),
-    challenge_status: authMode === 'pin'
+    challenge_status: authMode === 'pin' || deposit.otp_required
       ? 'required' : ['approved', 'paid'].includes(status) ? 'completed' : 'pending',
     instructions,
     payment_instructions: paymentInstructions,
     pending_instructions: pendingInstructions,
     redirect_url: redirectUrl,
-    payment_kind: directPaydunya ? 'phone'
-      : deposit.payment_kind === 'popup' ? 'popup'
+    payment_kind: redirectUrl || rawFlow.kind === 'redirect'
+      ? 'redirect'
+      : directPaydunya ? 'phone'
+        : deposit.payment_kind === 'popup' ? 'popup'
         : deposit.payment_kind === 'redirect'
           || rawFlow.kind === 'redirect'
           || deposit.payment_fallback === 'hosted_checkout' || redirectUrl

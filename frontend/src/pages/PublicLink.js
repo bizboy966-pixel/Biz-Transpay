@@ -460,6 +460,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [otp, setOtp] = useState('');
+  const [address, setAddress] = useState('');
   // Keep the business meaning independent from the legacy transport values:
   // client pays vs Biz-transPay/merchant pays.
   const feeBearer = link.fee_bearer === 'owner' ? 'merchant' : 'client';
@@ -490,6 +491,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const selectedOp = operators.find((o) => o.code === operator);
   const paymentFlow = selectedOp?.payment_flow || {};
   const flowNeedsOtp = Boolean(paymentFlow.before_submit && paymentFlow.otp_required);
+  const addressRequired = Boolean(paymentFlow.address_required);
   const baseAmount = Number(amount) || 0;
   const currency = selectedOp?.currency || 'XOF';
   const {
@@ -501,7 +503,8 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
   const submit = async (e) => {
     e.preventDefault();
     setError('');
-    if (!country || !operator || !phone.trim() || !email.trim() || !fullName.trim() || (isFree && !amount)) {
+    if (!country || !operator || !phone.trim() || !email.trim() || !fullName.trim()
+        || (addressRequired && !address.trim()) || (isFree && !amount)) {
       setError('Tous les champs sont obligatoires'); return;
     }
     if (!turnstile.enabled || !turnstileToken) {
@@ -514,6 +517,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
     const fingerprint = JSON.stringify([
       link.id, isFree ? Number(amount) : Number(link.amount),
       country, operator, phone.trim(), email.trim().toLowerCase(), fullName.trim(),
+      addressRequired ? address.trim() : '',
     ]);
     if (!idempotencyRef.current.key || idempotencyRef.current.fingerprint !== fingerprint) {
       idempotencyRef.current = {
@@ -530,6 +534,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
           amount: isFree ? parseFloat(amount) : undefined,
           full_name: fullName.trim(), email: email.trim(),
            country, operator, phone_number: phone.trim(), fee_bearer: bearer,
+           ...(addressRequired ? { address: address.trim() } : {}),
            turnstile_token: turnstileToken,
             idempotency_key: idempotencyRef.current.key,
            ...(otp.trim() ? { otp: otp.trim() } : {}),
@@ -576,9 +581,16 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
           className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
       </Field>
+      {addressRequired && (
+        <Field label={paymentFlow.address_label || 'Ville ou adresse du client'}>
+          <input type="text" value={address} onChange={(e) => setAddress(e.target.value)}
+            required maxLength={180} data-testid="pay-momo-address"
+            className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm outline-none focus:border-[#2563EB]" />
+        </Field>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <Field label="Pays">
-          <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); setOtp(''); }}
+          <select value={country} onChange={(e) => { setCountry(e.target.value); setOperator(''); setOtp(''); setAddress(''); }}
             required tabIndex="-1" aria-hidden="true" className="sr-only">
             <option value="">Sélectionnez un pays</option>
             {catalog.map((c) => <option key={c.country} value={c.country}>{c.country_label}</option>)}
@@ -586,7 +598,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
           <SelectionMenu
             label="Sélectionner le pays"
             value={country}
-            onChange={(value) => { setCountry(value); setOperator(''); setOtp(''); }}
+            onChange={(value) => { setCountry(value); setOperator(''); setOtp(''); setAddress(''); }}
             placeholder="Sélectionner"
             options={catalog.map((c) => {
               const known = COUNTRIES.find((item) => item.code === c.country);
@@ -601,7 +613,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
           />
         </Field>
         <Field label="Opérateur">
-          <select value={operator} onChange={(e) => { setOperator(e.target.value); setOtp(''); }}
+          <select value={operator} onChange={(e) => { setOperator(e.target.value); setOtp(''); setAddress(''); }}
             disabled={!country} required tabIndex="-1" aria-hidden="true" className="sr-only">
             <option value="">Sélectionnez un opérateur</option>
             {operators.map((o) => <option key={o.code} value={o.code}>{o.name}</option>)}
@@ -609,7 +621,7 @@ export function MoMoLinkForm({ link, turnstile, onSuccess }) {
           <SelectionMenu
             label="Sélectionner l’opérateur"
             value={operator}
-            onChange={(value) => { setOperator(value); setOtp(''); }}
+            onChange={(value) => { setOperator(value); setOtp(''); setAddress(''); }}
             placeholder={country ? 'Sélectionner' : 'Choisissez un pays'}
             disabled={!country}
             options={operators.map((o) => ({
@@ -775,6 +787,7 @@ export function MoMoLinkTracker({ payment }) {
   const failed = p.status === 'failed' || p.status === 'expired';
   const pending = !ok && !failed;
   const flow = p.payment_flow || {};
+  const checkoutRedirectUrl = pending && p.redirect_url ? p.redirect_url : '';
   const needsPostInitOtp = pending && (p.auth_mode === 'pin' || (p.otp_required && !flow.before_submit));
   const instructionValue = (!p.submission_unknown && flow.instructions)
     || p.instructions || p.payment_instructions || p.pending_instructions;
@@ -830,6 +843,16 @@ export function MoMoLinkTracker({ payment }) {
         {failed && `La transaction a été refusée ou a expiré.`}
       </p>
       {pending && <PaymentFlowCard flow={flow} amount={p.amount_to_pay || p.charged_amount || p.amount} currency={p.currency} />}
+      {checkoutRedirectUrl && (
+        <button
+          type="button"
+          onClick={() => window.location.assign(checkoutRedirectUrl)}
+          data-testid="momo-link-provider-redirect"
+          className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-[#2563EB] px-3 py-2 text-xs font-bold text-white"
+        >
+          Continuer le paiement sécurisé <ArrowRight className="h-3 w-3" />
+        </button>
+      )}
       {pending && (
         <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-left text-[11px] text-blue-800">
           <strong className="block text-blue-950">

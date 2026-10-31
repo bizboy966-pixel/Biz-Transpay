@@ -6,6 +6,7 @@ const { applyWalletOperation } = require('./wallet.cjs');
 const { loadCredentials } = require('./paydunya-invoice-routes.cjs');
 const { sessionToken } = require('./auth-session-routes.cjs');
 const { publicMomoDeposit } = require('./deposit-status-routes.cjs');
+const { resolvePaydunyaSoftpayOperator, localPhone } = require('./paydunya-softpay.cjs');
 
 function reply(res, status, body) {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -163,6 +164,91 @@ function createPaydunyaWebhookRoutes({
   db, env = process.env, fetchImpl = globalThis.fetch, sessionService,
   reconcileDeposit, reconcileMbiyoDeposit, finalizeMbiyoDeposit,
 }) {
+  async function confirmWizallSoftpay(deposit, otp) {
+    const profile = resolvePaydunyaSoftpayOperator(
+      deposit.endpoint_slug || deposit.operator, deposit.country,
+    );
+    if (!profile?.confirmationEndpoint) {
+      throw Object.assign(
+        new Error('Ce dépôt ne demande pas de code PayDunya.'),
+        { status: 409, providerRejected: true },
+      );
+    }
+    const providerReference = String(
+      deposit.provider_reference || deposit.paydunya_transaction_id || '',
+    ).trim();
+    const code = String(otp || '').trim();
+    if (!providerReference || !code || code.length > 32) {
+      throw Object.assign(
+        new Error('Référence ou code de confirmation invalide.'),
+        { status: 422, providerRejected: true },
+      );
+    }
+    const settings = await db.collection('settings').find_one(
+      { id: 'payment_provider_paydunya' }, { _id: 0 },
+    );
+    if (!settings?.enabled) {
+      throw Object.assign(
+        new Error('PayDunya n’est pas configuré.'),
+        { status: 503, providerRejected: true },
+      );
+    }
+    let credentials;
+    try {
+      credentials = loadCredentials(settings, env.SESSION_SECRET, env);
+    } catch {
+      throw Object.assign(
+        new Error('Les identifiants PayDunya sont indisponibles.'),
+        { status: 503, providerRejected: true },
+      );
+    }
+    const mode = deposit.provider_mode === 'live' ? 'live' : 'test';
+    const base = mode === 'live'
+      ? 'https://app.paydunya.com'
+      : 'https://app.paydunya.com/sandbox-api';
+    let response;
+    try {
+      response = await fetchImpl(
+        `${base}/api/v1/softpay/${profile.confirmationEndpoint}`,
+        {
+          method: 'POST',
+          redirect: 'error',
+          signal: AbortSignal.timeout(20_000),
+          headers: {
+            'PAYDUNYA-MASTER-KEY': credentials.master_key,
+            'PAYDUNYA-PRIVATE-KEY': credentials.private_key,
+            'PAYDUNYA-TOKEN': credentials.token,
+            'content-type': 'application/json',
+            accept: 'application/json',
+          },
+          body: JSON.stringify({
+            authorization_code: code,
+            phone_number: localPhone(deposit.country, deposit.phone_number),
+            transaction_id: providerReference,
+          }),
+        },
+      );
+    } catch {
+      throw Object.assign(
+        new Error('La confirmation est incertaine. Le statut sera vérifié sans renvoyer le code.'),
+        { status: 502, outcomeUnknown: true },
+      );
+    }
+    let payload;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (!response.ok || !payload || payload.success !== true) {
+      const rejected = response.status >= 400 && response.status < 500
+        || (response.ok && payload?.success === false);
+      throw Object.assign(
+        new Error(rejected
+          ? 'PayDunya n’a pas accepté le code de confirmation.'
+          : 'La confirmation est incertaine. Le statut sera vérifié sans renvoyer le code.'),
+        { status: rejected ? 422 : 502, providerRejected: rejected, outcomeUnknown: !rejected },
+      );
+    }
+    return { provider_reference: providerReference };
+  }
+
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const finalizeMatch = req.method === 'POST'
@@ -207,6 +293,88 @@ function createPaydunyaWebhookRoutes({
               return true;
             }
             await finalizeMbiyoDeposit(deposit, body?.otp);
+            deposit = await db.collection('momo_deposits').find_one(
+              { id: depositId, user_id: userId }, { _id: 0 },
+            ) || deposit;
+            reply(res, 200, publicMomoDeposit(deposit));
+            return true;
+          }
+        }
+        if (deposit.provider === 'paydunya' && deposit.status === 'pending'
+            && deposit.otp_required) {
+          const profile = resolvePaydunyaSoftpayOperator(
+            deposit.endpoint_slug || deposit.operator, deposit.country,
+          );
+          if (profile?.confirmationEndpoint) {
+            let body;
+            try {
+              body = JSON.parse((await readRawBody(req)).toString('utf8'));
+            } catch {
+              reply(res, 400, { detail: 'Code de confirmation invalide.' });
+              return true;
+            }
+            const otp = String(body?.otp || '').trim();
+            if (!otp || otp.length > 32) {
+              reply(res, 422, { detail: 'Saisissez un code de confirmation valide.' });
+              return true;
+            }
+            const claim = await db.collection('momo_deposits').update_one(
+              { id: depositId, user_id: userId, status: 'pending', challenge_status: 'required' },
+              { $set: {
+                challenge_status: 'submitting',
+                paydunya_finalize_state: 'submitting',
+                paydunya_finalize_claimed_at: new Date().toISOString(),
+              } },
+            );
+            if (!claim.matched_count) {
+              reply(res, 409, { detail: 'Une confirmation est déjà en cours ou a déjà été envoyée.' });
+              return true;
+            }
+            try {
+              await confirmWizallSoftpay(deposit, otp);
+            } catch (error) {
+              const rejected = Boolean(error.providerRejected);
+              await db.collection('momo_deposits').update_one(
+                { id: depositId, user_id: userId, status: 'pending', paydunya_finalize_state: 'submitting' },
+                { $set: rejected ? {
+                  challenge_status: 'required',
+                  paydunya_finalize_state: 'rejected',
+                  paydunya_finalize_claimed_at: null,
+                  updated_at: new Date().toISOString(),
+                } : {
+                  challenge_status: 'submitted',
+                  otp_required: false,
+                  auth_mode: null,
+                  paydunya_finalize_state: 'unknown',
+                  submission_unknown: true,
+                  next_reconcile_at: new Date(Date.now() + 10_000).toISOString(),
+                  paydunya_finalize_claimed_at: null,
+                  updated_at: new Date().toISOString(),
+                } },
+              );
+              if (rejected) throw error;
+              deposit = await db.collection('momo_deposits').find_one(
+                { id: depositId, user_id: userId }, { _id: 0 },
+              ) || deposit;
+              reply(res, 200, publicMomoDeposit(deposit));
+              return true;
+            }
+            await db.collection('momo_deposits').update_one(
+              { id: depositId, user_id: userId, status: 'pending', paydunya_finalize_state: 'submitting' },
+              { $set: {
+                challenge_status: 'submitted',
+                otp_required: false,
+                auth_mode: null,
+                paydunya_finalize_state: 'accepted',
+                submission_unknown: false,
+                next_reconcile_at: new Date(Date.now() + 10_000).toISOString(),
+                paydunya_finalize_claimed_at: null,
+                updated_at: new Date().toISOString(),
+              } },
+            );
+            const reconcile = typeof reconcileDeposit === 'function'
+              ? reconcileDeposit : settleDepositById;
+            try { await reconcile(depositId); } catch { /* the status worker retries safely */ }
             deposit = await db.collection('momo_deposits').find_one(
               { id: depositId, user_id: userId }, { _id: 0 },
             ) || deposit;

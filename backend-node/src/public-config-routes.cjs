@@ -5,8 +5,11 @@ const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
 const { paydunyaPayinReady, paydunyaPayinModeForOperator } = require('./paydunya-payin-capabilities.cjs');
-const { paydunyaSoftpayPaymentFlow } = require('./paydunya-softpay.cjs');
+const {
+  paydunyaSoftpayPaymentFlow, mergePaydunyaSoftpayPaymentFlow,
+} = require('./paydunya-softpay.cjs');
 const mbiyoPayin = require('./mbiyo-payin.cjs');
+const afribapayPayin = require('./afribapay-payin.cjs');
 const CRYPTO_FEE_ASSETS = [
   ['USDC.POLYGON', 'USDC', 'POLYGON'], ['USDC.SOL', 'USDC', 'SOL'],
   ['USDC.BEP20', 'USDC', 'BEP20'], ['USDC.ERC20', 'USDC', 'ERC20'],
@@ -555,6 +558,25 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
               && String(item.code || '').toLowerCase().replace(/^mbiyo_/, '') === keyCode
             ));
             if (feeEntry?.active === false || feeEntry?.hidden === true) continue;
+            const paydunyaOfficialFlow = name === 'paydunya' && paydunyaMode === 'softpay_direct'
+              ? paydunyaSoftpayPaymentFlow(
+                raw.endpoint_slug || raw.public_code || raw.code || raw.operator,
+                country,
+              ) : null;
+            const configuredFlow = raw.payment_flow && typeof raw.payment_flow === 'object'
+              && !Array.isArray(raw.payment_flow) ? raw.payment_flow : null;
+            const paymentFlow = name === 'paydunya' && paydunyaMode === 'softpay_direct'
+              ? mergePaydunyaSoftpayPaymentFlow(paydunyaOfficialFlow, configuredFlow)
+              : configuredFlow || (name === 'paydunya' && paydunyaMode === 'softpay_direct'
+                ? paydunyaOfficialFlow || {}
+                : name === 'mbiyo' ? mbiyoPayin.paymentFlow({
+                  ...raw, country, network: raw.network || code,
+                })
+                  : name === 'afribapay' ? afribapayPayin.afribapayPaymentFlow({
+                    ...raw,
+                    country,
+                    operator: raw.operator || raw.public_code || raw.code || raw.endpoint_slug,
+                  }) : {});
             const row = {
               code,
               name: String(raw.name || code),
@@ -569,22 +591,7 @@ function createPublicConfigRoutes({ db, sessionService, env = process.env }) {
               amount_increment: operatorFee(raw, feeEntry, 'amount_increment'),
               min: Math.max(0, Number(raw.min ?? feeEntry?.min ?? 100) || 0),
               max: Number(raw.max ?? feeEntry?.max ?? 0) || null,
-              payment_flow: raw.payment_flow && typeof raw.payment_flow === 'object'
-                && !Array.isArray(raw.payment_flow)
-                && !(name === 'paydunya' && paydunyaMode === 'softpay_direct'
-                  && paydunyaSoftpayPaymentFlow(
-                    raw.endpoint_slug || raw.public_code || raw.code || raw.operator,
-                    country,
-                  ))
-                ? raw.payment_flow
-                : name === 'paydunya' && paydunyaMode === 'softpay_direct'
-                  ? paydunyaSoftpayPaymentFlow(
-                    raw.endpoint_slug || raw.public_code || raw.code || raw.operator,
-                    country,
-                  ) || {}
-                  : name === 'mbiyo' ? mbiyoPayin.paymentFlow({
-                    ...raw, country, network: raw.network || code,
-                  }) : {},
+              payment_flow: paymentFlow,
             };
             if (!grouped.has(country)) {
               grouped.set(country, {

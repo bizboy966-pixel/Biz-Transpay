@@ -9,13 +9,16 @@ const {
   FIAT_WALLET_CURRENCY_SET, MOBILE_MONEY_COUNTRY_CURRENCY,
 } = require('./supported-currencies.cjs');
 const { decryptSetting } = require('./provider-settings.cjs');
-const { loadAfriBaPayConfig, submitAfriBaPayin } = require('./afribapay-payin.cjs');
+const {
+  loadAfriBaPayConfig, submitAfriBaPayin, requestAfriBaPayOtp, afribapayPaymentFlow,
+} = require('./afribapay-payin.cjs');
 const mbiyoPayin = require('./mbiyo-payin.cjs');
 const {
   paydunyaModeEnabled, paydunyaPayinModeForOperator,
 } = require('./paydunya-payin-capabilities.cjs');
 const {
-  resolvePaydunyaSoftpayOperator, paydunyaSoftpayPaymentFlow, submitPaydunyaSoftpay,
+  resolvePaydunyaSoftpayOperator, paydunyaSoftpayPaymentFlow,
+  mergePaydunyaSoftpayPaymentFlow, submitPaydunyaSoftpay,
 } = require('./paydunya-softpay.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
@@ -135,6 +138,7 @@ function requestFingerprint(body, flow, fees, phone, provider = 'paydunya') {
     country: String(body.country || '').toUpperCase(),
     operator: canonicalOperator(body.operator),
     phone,
+    address: String(body.address || '').trim(),
     email: String(body.email || '').trim().toLowerCase(),
     fee_bearer: fees.fee_bearer,
     description: String(body.description || ''),
@@ -586,19 +590,57 @@ function createPaydunyaInvoiceRoutes({
           selected.endpoint_slug || selected.public_code || selected.code || selected.operator,
           country,
         ) : null;
-      const paymentFlow = paydunyaSoftpayFlow
-        || (selected.payment_flow && typeof selected.payment_flow === 'object'
-          && !Array.isArray(selected.payment_flow)
-          ? selected.payment_flow
-          : provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
+      const configuredPaymentFlow = selected.payment_flow
+        && typeof selected.payment_flow === 'object' && !Array.isArray(selected.payment_flow)
+        ? selected.payment_flow : null;
+      const paymentFlow = provider === 'paydunya' && flow === 'softpay_direct'
+        ? mergePaydunyaSoftpayPaymentFlow(paydunyaSoftpayFlow, configuredPaymentFlow)
+        : configuredPaymentFlow || (provider === 'mbiyo' ? mbiyoPayin.paymentFlow({
             ...selected, country, network: selected.network || operatorCode,
-          }, fees.charged_amount) : {});
+          }, fees.charged_amount)
+            : provider === 'afribapay' ? afribapayPaymentFlow({
+              country, operator: selected.operator || operatorCode,
+            }) : {});
+      if (body.request_otp === true) {
+        if (provider !== 'afribapay' || paymentFlow.otp_request_before_submit !== true) {
+          throw httpError(422, 'La demande de code OTP n’est pas disponible pour cet opérateur.');
+        }
+        try {
+          await requestAfriBaPayOtp({
+            config: afriConfig,
+            payload: {
+              operator: String(selected.operator || operatorCode).trim().toLowerCase().split(':').at(-1),
+              country,
+              phone_number: phone,
+              amount: fees.charged_amount,
+              currency,
+            },
+            fetchImpl,
+          });
+        } catch (error) {
+          throw httpError(
+            Number(error.status) >= 500 ? 502 : 400,
+            Number(error.status) >= 500
+              ? 'AfriBaPay n’a pas confirmé l’envoi du code. Vérifiez votre téléphone avant de recommencer.'
+              : 'AfriBaPay n’a pas envoyé le code OTP. Vérifiez le numéro et recommencez.',
+          );
+        }
+        reply(res, 200, {
+          otp_sent: true,
+          payment_flow: paymentFlow,
+          message: 'Le code OTP a été demandé. Saisissez-le pour continuer.',
+        });
+        return true;
+      }
       if (paymentFlow.before_submit && paymentFlow.otp_required
           && !String(body.otp || '').trim()) {
         throw httpError(
           422,
           `Saisissez ${paymentFlow.otp_label || 'le code de confirmation'} avant de continuer.`,
         );
+      }
+      if (paymentFlow.address_required && !String(body.address || '').trim()) {
+        throw httpError(422, `Saisissez ${paymentFlow.address_label || 'l’adresse demandée'} pour cet opérateur.`);
       }
       const userNameParts = fullName.split(/\s+/, 2);
       const document = {
@@ -633,7 +675,8 @@ function createPaydunyaInvoiceRoutes({
         country,
         operator: operatorCode,
         operator_name: selected.name || '',
-        endpoint_slug: selected.endpoint_slug || '',
+        endpoint_slug: selected.endpoint_slug || selected.public_code
+          || selected.code || selected.operator || '',
         operator_snapshot: selected,
         phone_number: phone,
         fee_bearer: fees.fee_bearer,
@@ -825,7 +868,7 @@ function createPaydunyaInvoiceRoutes({
 
       if (provider === 'afribapay') {
         const providerPayload = {
-          operator: selected.operator,
+          operator: String(selected.operator || operatorCode).trim().toLowerCase().split(':').at(-1),
           phone_number: phone,
           country,
           amount: fees.charged_amount,
@@ -834,6 +877,8 @@ function createPaydunyaInvoiceRoutes({
           reference_id: suppliedIdempotencyKey || depositId,
           notify_url: notifyUrl,
           lang: 'fr',
+          ...(paymentFlow.otp_required && body.otp
+            ? { otp_code: String(body.otp).trim().slice(0, 32) } : {}),
         };
         let providerResponse;
         try {
@@ -1023,8 +1068,9 @@ function createPaydunyaInvoiceRoutes({
           paydunya_submission_phase: 'softpay_dispatching',
           updated_at: new Date().toISOString(),
         } });
+        let softpayResult;
         try {
-          await submitPaydunyaSoftpay({
+          softpayResult = await submitPaydunyaSoftpay({
             mode: config.mode,
             endpointSlug: selected.endpoint_slug || selected.public_code
               || selected.code || selected.operator,
@@ -1032,6 +1078,7 @@ function createPaydunyaInvoiceRoutes({
             fullName,
             email,
             phone,
+            address: body.address,
             otp: body.otp,
             paymentToken: token,
             credentials,
@@ -1094,6 +1141,20 @@ function createPaydunyaInvoiceRoutes({
           paydunya_softpay_state: 'sent',
           paydunya_submission_phase: 'softpay_accepted',
           paydunya_softpay_sent_at: new Date().toISOString(),
+          ...(softpayResult?.redirect_url ? {
+            redirect_url: softpayResult.redirect_url,
+            payment_kind: 'redirect',
+          } : {}),
+          ...(softpayResult?.provider_reference ? {
+            provider_reference: softpayResult.provider_reference,
+            provider_transaction_id: softpayResult.provider_reference,
+            paydunya_transaction_id: softpayResult.provider_reference,
+          } : {}),
+          ...(softpayResult?.auth_mode ? {
+            auth_mode: softpayResult.auth_mode,
+            otp_required: Boolean(softpayResult.otp_required),
+            challenge_status: 'required',
+          } : {}),
           next_reconcile_at: new Date(Date.now() + 10_000).toISOString(),
           updated_at: new Date().toISOString(),
         } });
@@ -1123,8 +1184,14 @@ function createPaydunyaInvoiceRoutes({
       } else if (flow === 'psr') {
         result.payment_kind = 'popup';
         result.psr_token_url = tokenUrl;
+      } else if (fresh.redirect_url) {
+        result.payment_kind = 'redirect';
+        result.redirect_url = fresh.redirect_url;
+        result.checkout_url = fresh.redirect_url;
       } else {
         result.payment_kind = 'phone';
+        result.auth_mode = fresh.auth_mode || null;
+        result.otp_required = Boolean(fresh.otp_required);
         result.prompt_sent = Boolean(
           fresh.paydunya_softpay_state === 'sent' || fresh.paydunya_softpay_sent_at,
         );

@@ -25,7 +25,7 @@ class Collection {
 }
 
 function createDb({
-  depositStatus = 'pending', expectedAmount = 1000, linkPayment = false,
+  depositStatus = 'pending', expectedAmount = 1000, linkPayment = false, depositOverrides = {},
 } = {}) {
   const collections = new Map([
     ['settings', new Collection([{
@@ -53,6 +53,7 @@ function createDb({
       operator: 'tmoney',
       operator_name: 'T-Money',
       created_at: '2026-05-01T10:00:00.000Z',
+      ...structuredClone(depositOverrides),
     }])],
     ['users', new Collection([{
       id: 'user-1', balance_xof: 0, wallet_credit_operation_ids: [],
@@ -122,8 +123,11 @@ function confirmation(amount = 1000) {
   };
 }
 
-function setup({ depositStatus, expectedAmount = 1000, providerResponse, linkPayment } = {}) {
-  const db = createDb({ depositStatus, expectedAmount, linkPayment });
+function setup({
+  depositStatus, expectedAmount = 1000, providerResponse, linkPayment,
+  depositOverrides, fetchImpl, sessionService, reconcileDeposit,
+} = {}) {
+  const db = createDb({ depositStatus, expectedAmount, linkPayment, depositOverrides });
   let providerCalls = 0;
   const service = createPaydunyaWebhookRoutes({
     db,
@@ -135,6 +139,7 @@ function setup({ depositStatus, expectedAmount = 1000, providerResponse, linkPay
     },
     fetchImpl: async (url, options) => {
       providerCalls += 1;
+      if (fetchImpl) return fetchImpl(url, options);
       assert.match(url, /^https:\/\/app\.paydunya\.com\/sandbox-api\/v1\/checkout-invoice\/confirm\//);
       assert.equal(options.method, 'GET');
       return {
@@ -143,6 +148,8 @@ function setup({ depositStatus, expectedAmount = 1000, providerResponse, linkPay
         async json() { return providerResponse || confirmation(expectedAmount); },
       };
     },
+    sessionService,
+    reconcileDeposit,
   });
   return { db, service, providerCalls: () => providerCalls };
 }
@@ -175,6 +182,20 @@ async function callReturn(service, path) {
   };
   const handled = await service.handleRoute(req, res);
   return { handled, status: res.status, location: res.headers.Location };
+}
+
+async function callFinalize(service, depositId, payload) {
+  const req = Readable.from([Buffer.from(JSON.stringify(payload))]);
+  req.method = 'POST';
+  req.url = `/api/deposits/mobile-money/${encodeURIComponent(depositId)}/finalize`;
+  req.headers = { 'content-type': 'application/json' };
+  const res = {
+    status: 500,
+    writeHead(status) { this.status = status; },
+    end(text) { this.body = JSON.parse(text); },
+  };
+  const handled = await service.handleRoute(req, res);
+  return { handled, status: res.status, body: res.body };
 }
 
 test('PayDunya nested form webhook verifies with the provider and credits once atomically', async () => {
@@ -265,4 +286,68 @@ test('PayDunya browser return independently verifies before redirecting to compl
   assert.equal(result.location, '/dashboard?paydunya=completed');
   assert.equal(providerCalls(), 1);
   assert.equal(db.collection('users').rows[0].balance_xof, 980);
+});
+
+test('Wizall OTP confirmation is submitted once and then checked server-side', async () => {
+  const providerRequests = [];
+  const reconciled = [];
+  const { db, service, providerCalls } = setup({
+    depositOverrides: {
+      country: 'SN',
+      operator: 'wizall-sn',
+      endpoint_slug: 'wizall-money-senegal',
+      phone_number: '+221770000000',
+      provider_reference: 'wizall-transaction-1',
+      otp_required: true,
+      challenge_status: 'required',
+    },
+    sessionService: { authenticate: async () => ({ userId: 'user-1' }) },
+    fetchImpl: async (url, options) => {
+      providerRequests.push({ url, options });
+      return { ok: true, status: 200, json: async () => ({ success: true }) };
+    },
+    reconcileDeposit: async id => reconciled.push(id),
+  });
+
+  const first = await callFinalize(service, 'deposit-1', { otp: '987654' });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.otp_required, false);
+  assert.equal(providerCalls(), 1);
+  assert.equal(providerRequests[0].url, 'https://app.paydunya.com/sandbox-api/api/v1/softpay/wizall-money-senegal/confirm');
+  assert.deepEqual(JSON.parse(providerRequests[0].options.body), {
+    authorization_code: '987654',
+    phone_number: '770000000',
+    transaction_id: 'wizall-transaction-1',
+  });
+  assert.deepEqual(reconciled, ['deposit-1']);
+
+  const retry = await callFinalize(service, 'deposit-1', { otp: '987654' });
+  assert.equal(retry.status, 200);
+  assert.equal(providerCalls(), 1);
+  const stored = await db.collection('momo_deposits').find_one({ id: 'deposit-1' });
+  assert.equal(stored.paydunya_finalize_state, 'accepted');
+});
+
+test('invalid Wizall OTP is rejected before claiming or sending the confirmation', async () => {
+  const { db, service, providerCalls } = setup({
+    depositOverrides: {
+      country: 'SN',
+      operator: 'wizall-sn',
+      endpoint_slug: 'wizall-money-senegal',
+      provider_reference: 'wizall-transaction-1',
+      otp_required: true,
+      challenge_status: 'required',
+    },
+    sessionService: { authenticate: async () => ({ userId: 'user-1' }) },
+    fetchImpl: async () => {
+      throw new Error('Provider must not be called for an empty code.');
+    },
+  });
+
+  const response = await callFinalize(service, 'deposit-1', { otp: ' ' });
+  assert.equal(response.status, 422);
+  assert.equal(providerCalls(), 0);
+  const stored = await db.collection('momo_deposits').find_one({ id: 'deposit-1' });
+  assert.equal(stored.challenge_status, 'required');
+  assert.equal(stored.paydunya_finalize_state, undefined);
 });

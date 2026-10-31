@@ -630,6 +630,8 @@ export function MobileMoneyForm({ onSuccess }) {
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [otp, setOtp] = useState('');
+  const [address, setAddress] = useState('');
+  const [otpRequestedFor, setOtpRequestedFor] = useState('');
   const [authorizedPaymentFlowKey, setAuthorizedPaymentFlowKey] = useState('');
   const [feeBearer, setFeeBearer] = useState('merchant');
   const [psrAssetError, setPsrAssetError] = useState('');
@@ -647,11 +649,16 @@ export function MobileMoneyForm({ onSuccess }) {
     if (user?.full_name) setFullName(user.full_name);
   }, [user]);
 
+  useEffect(() => {
+    setOtpRequestedFor('');
+    setOtp('');
+  }, [country, operator, phone, amount]);
+
   const countryEntry = catalog.find((c) => c.country === country);
   const operators = countryEntry?.operators || [];
   const selectedOp = operators.find((o) => o.code === operator);
   const paymentFlow = selectedOp?.payment_flow || {};
-  const flowNeedsOtp = Boolean(paymentFlow.before_submit && paymentFlow.otp_required);
+  const addressRequired = Boolean(paymentFlow.address_required);
   const baseAmount = Number(amount) || 0;
   const currency = selectedOp?.currency || 'XOF';
   const {
@@ -659,6 +666,15 @@ export function MobileMoneyForm({ onSuccess }) {
     totalToPay,
     creditedAmount,
   } = mobileMoneyFeePreview(baseAmount, selectedOp, feeBearer);
+  const otpRequestFingerprint = [
+    country, operator, phone.trim(), baseAmount, totalToPay,
+  ].join(':');
+  const otpRequestPending = Boolean(
+    paymentFlow.otp_request_before_submit && otpRequestedFor !== otpRequestFingerprint,
+  );
+  const flowNeedsOtp = Boolean(
+    paymentFlow.before_submit && paymentFlow.otp_required && !otpRequestPending,
+  );
   const requiresPreSubmitUssdAuthorization = paymentFlow.kind === 'ussd'
     && paymentFlow.before_submit === true;
   const paymentFlowAuthorizationKey = [
@@ -690,7 +706,8 @@ export function MobileMoneyForm({ onSuccess }) {
 
   const submit = async (e) => {
     e.preventDefault();
-    if (!country || !operator || !phone.trim() || !amount || !email.trim() || !fullName.trim()) {
+    if (!country || !operator || !phone.trim() || !amount || !email.trim() || !fullName.trim()
+        || (addressRequired && !address.trim())) {
       toast.error('Tous les champs sont obligatoires');
       return;
     }
@@ -712,7 +729,10 @@ export function MobileMoneyForm({ onSuccess }) {
     }
     setLoading(true);
     try {
-      if (!depositIdempotencyRef.current) {
+      const requestOtp = Boolean(
+        paymentFlow.otp_request_before_submit && otpRequestPending,
+      );
+      if (!requestOtp && !depositIdempotencyRef.current) {
         depositIdempotencyRef.current = window.crypto?.randomUUID?.()
           || `deposit-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       }
@@ -724,11 +744,20 @@ export function MobileMoneyForm({ onSuccess }) {
         country,
         operator,
         phone_number: phone.trim(),
+        ...(addressRequired ? { address: address.trim() } : {}),
         fee_bearer: feeBearer,
-        idempotency_key: depositIdempotencyRef.current,
+        ...(requestOtp ? { request_otp: true } : {
+          idempotency_key: depositIdempotencyRef.current,
+        }),
         ...(otp.trim() ? { otp: otp.trim() } : {}),
       };
       const { data } = await api.post('/deposits/mobile-money/start', request);
+      if (data.otp_sent) {
+        setOtpRequestedFor(otpRequestFingerprint);
+        setOtp('');
+        toast.success(data.message || 'Le code OTP a été demandé.');
+        return;
+      }
       const redirectUrl = data.redirect_url || data.checkout_url;
       if (data.payment_kind === 'redirect' || data.payment_flow?.kind === 'redirect' || redirectUrl) {
         if (!redirectUrl) throw new Error('Le lien de paiement n’a pas pu être préparé. Veuillez réessayer.');
@@ -801,6 +830,16 @@ export function MobileMoneyForm({ onSuccess }) {
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="momo-email" required
           className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
       </div>
+      {addressRequired && (
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+            {paymentFlow.address_label || 'Ville ou adresse du client'}
+          </label>
+          <input type="text" value={address} onChange={(e) => setAddress(e.target.value)}
+            data-testid="momo-address" required maxLength={180}
+            className="w-full px-3 py-2.5 border border-slate-200 rounded-xl outline-none focus:border-[#2563EB] text-sm" />
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1.5">Pays</label>
@@ -811,6 +850,7 @@ export function MobileMoneyForm({ onSuccess }) {
               setCountry(e.target.value);
               setOperator('');
               setOtp('');
+              setAddress('');
               setAuthorizedPaymentFlowKey('');
             }}
             tabIndex="-1"
@@ -876,6 +916,7 @@ export function MobileMoneyForm({ onSuccess }) {
               onChange={(value) => {
                 setOperator(value);
                 setOtp('');
+              setAddress('');
                 setAuthorizedPaymentFlowKey('');
               }}
               placeholder="Sélectionner"
@@ -1007,15 +1048,18 @@ export function MobileMoneyForm({ onSuccess }) {
         </Field>
       )}
       <button type="submit"
-        disabled={loading || (flowNeedsOtp && !otp.trim())
+        disabled={loading || (addressRequired && !address.trim())
+          || (flowNeedsOtp && !otp.trim())
           || (requiresPreSubmitUssdAuthorization && !paymentFlowAuthorized)}
         data-testid="momo-submit"
         className="w-full bg-[#2563EB] hover:bg-[#1D4ED8] text-white font-bold text-sm py-3 rounded-full disabled:opacity-50 flex items-center justify-center gap-2">
         {loading
           ? <><Loader2 className="w-4 h-4 animate-spin" /> Envoi…</>
-          : <>{requiresPreSubmitUssdAuthorization
-            ? (paymentFlow.action_label || 'J’ai autorisé la demande, lancer le paiement')
-            : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
+          : <>{otpRequestPending ? 'Demander le code OTP'
+            : flowNeedsOtp ? 'Valider le code et payer'
+              : requiresPreSubmitUssdAuthorization
+                ? (paymentFlow.action_label || 'J’ai autorisé la demande, lancer le paiement')
+                : 'Payer maintenant'} <ArrowRight className="w-4 h-4" /></>}
       </button>
     </form>
   );
@@ -1113,6 +1157,8 @@ export function MobileMoneyTracker({ deposit }) {
   const fallbackCheckoutUrl = d.payment_fallback === 'hosted_checkout'
     ? (d.redirect_url || d.checkout_url)
     : '';
+  const checkoutRedirectUrl = pending && d.payment_kind === 'redirect'
+    ? d.redirect_url : '';
   const flow = d.payment_flow || {};
   const instructionValue = (!d.submission_unknown && flow.instructions)
     || d.instructions || d.payment_instructions || d.pending_instructions || d.message;
@@ -1122,7 +1168,6 @@ export function MobileMoneyTracker({ deposit }) {
       ? instructionValue
       : `Une demande de ${d.amount_to_pay?.toLocaleString?.() || d.amount_to_pay || d.charged_amount || d.amount} ${d.currency || 'XOF'} via ${operatorName} a été envoyée au ${d.phone_number || 'numéro indiqué'}. Ouvrez la notification ou l’application Mobile Money et confirmez le paiement.`);
   const needsPostInitOtp = pending && (d.auth_mode === 'pin' || (d.otp_required && !flow.before_submit));
-  const afribapayWaveRedirect = pending && d.provider === 'afribapay' && d.redirect_url;
   const finalize = async () => {
     if (!otp.trim()) {
       setFinalizeError('Saisissez le code demandé pour continuer.');
@@ -1178,14 +1223,14 @@ export function MobileMoneyTracker({ deposit }) {
            Continuer sur PayDunya <ArrowRight className="h-4 w-4" />
          </button>
        )}
-       {afribapayWaveRedirect && (
+        {checkoutRedirectUrl && !fallbackCheckoutUrl && (
          <button
            type="button"
-           onClick={() => window.location.assign(d.redirect_url)}
-           data-testid="afribapay-wave-redirect"
+            onClick={() => window.location.assign(checkoutRedirectUrl)}
+            data-testid="momo-provider-redirect"
            className="inline-flex items-center justify-center gap-2 rounded-full bg-[#2563EB] px-5 py-3 text-xs font-bold text-white hover:bg-[#1D4ED8]"
          >
-           Ouvrir le paiement Wave <ArrowRight className="h-4 w-4" />
+            Continuer le paiement sécurisé <ArrowRight className="h-4 w-4" />
          </button>
        )}
        {needsPostInitOtp && (

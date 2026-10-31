@@ -1,6 +1,6 @@
 ---
 name: Customer payment routing
-description: Provider-neutral customer surfaces with a narrow Mbiyo Wave CI checkout exception
+description: Provider-neutral payment surfaces may expose only documented, validated provider checkout redirects
 ---
 
 The customer-facing deposit surface must not receive or display provider mode names, provider configuration, test/live mode, or gateway/platform fee splits. The server selects the enabled route and returns only the generic action needed by the browser: phone confirmation, popup, or redirect.
@@ -17,11 +17,11 @@ Admins may enable all supported Mobile Money providers at once. Provider selecti
 
 **How to apply:** Use the same mode-aware readiness checks for public catalog visibility and runtime dispatch. For supported Live SoftPay operators, create an invoice, call the documented operator-specific endpoint with its token, and mark the prompt sent only after provider success. Verify pending invoices server-side from status reads, callbacks, and returns; never retry an ambiguous submission with the same idempotency key. Return a popup for PSR and a redirect only for PAR.
 
-Public payment links normally stay on the Biz-transPay page. The only redirect exception is a pending MbiyoPay Côte d'Ivoire Wave payment when Mbiyo returns a valid HTTPS checkout URL. Do not expose provider identity or checkout URLs for other providers or operators. A redirect or browser return is not proof of payment; signed callback verification, server-side status lookup, and the idempotent finalizer remain the settlement gate. A `UNIVERSAL` link must resolve the operator's actual catalog currency rather than filtering by the literal link currency.
+Public payment pages stay provider-neutral, but may send a customer to a checkout URL when the provider's official documentation defines that route as a redirect. Expose only a provider-issued HTTPS URL validated against the documented host for that provider; never accept an arbitrary client URL. A redirect or browser return is not proof of payment; signed callback verification, server-side status lookup, and the idempotent finalizer remain the settlement gate. A `UNIVERSAL` link must resolve the operator's actual catalog currency rather than filtering by the literal link currency.
 
-**Why:** The Wave CI requirement targets the existing Mbiyo integration, whose Pay-in contract calls for redirecting only when it returns `redirect_url`; other operators must retain their existing in-app behavior.
+**Why:** Official PayDunya and AfriBaPay flows include operator-specific redirects (for example Wave and Djamo). Restricting redirects to one provider would break documented checkout steps; allowing arbitrary URLs would create an unsafe redirect boundary.
 
-**How to apply:** Filter fixed-currency links to matching operators, allow universal links to resolve by the selected operator, and expose only a validated generic redirect URL for a pending Mbiyo CI Wave payment. Keep credentials and provider names private and never settle from a browser return.
+**How to apply:** Use provider-specific documented flow metadata to choose phone confirmation, OTP, USSD, or redirect. Validate HTTPS redirect hosts against the official provider contract, keep credentials and provider selection private, and settle only after server-side status or callback verification. Filter fixed-currency links to matching operators and allow universal links to resolve by the selected operator.
 
 Authenticated PayDunya SoftPay direct wallet deposits keep their waiting and confirmation state inside Biz-transPay. The invoice-creation response alone is not proof that an operator prompt was sent. Provider checkout URLs or timeout fallback markers remain internal; the browser follows server-selected `payment_kind`, not the presence of a URL.
 
