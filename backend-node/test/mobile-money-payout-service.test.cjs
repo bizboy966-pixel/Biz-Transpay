@@ -450,9 +450,8 @@ test('PayDunya status polling verifies the invoice and reconciles success withou
   const created = await service.createIntegrationPayout(
     'merchant-1', payout(), 'idempotency-paydunya-poll-001',
   );
-  const stored = db.rows.transactions.get(created.transaction.id);
-  stored.metadata = JSON.stringify(stored.metadata);
   const refreshed = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
+  assert.equal(requests.length, 3);
   assert.equal(refreshed.status, 'completed');
   assert.equal(refreshed.metadata.paydunya_invoice_token, undefined);
   assert.equal(db.rows.transactions.get(created.transaction.id).status, 'completed');
@@ -499,10 +498,9 @@ test('PayDunya verified terminal failure refunds once during status polling', as
   const created = await service.createIntegrationPayout(
     'merchant-1', payout(), 'idempotency-paydunya-poll-002',
   );
-  const stored = db.rows.transactions.get(created.transaction.id);
-  stored.metadata = JSON.stringify(stored.metadata);
   const failed = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
   const replay = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
+  assert.equal(requests.length, 3);
   assert.equal(failed.status, 'failed');
   assert.equal(failed.metadata.refunded, true);
   assert.equal(replay.status, 'failed');
