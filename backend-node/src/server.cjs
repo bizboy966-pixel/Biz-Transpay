@@ -34,6 +34,7 @@ const { createAdminSettingsRoutes } = require('./admin-settings-routes.cjs');
 const { createAdminStatisticsRoutes } = require('./admin-statistics-routes.cjs');
 const { createIntegrationSettingsRoutes } = require('./integration-settings-routes.cjs');
 const { createIntegrationApiRoutes } = require('./integration-api-routes.cjs');
+const { createIntegrationWebhookWorker } = require('./integration-webhook-worker.cjs');
 const { createIntegrationDocumentationRoutes } = require('./integration-documentation-routes.cjs');
 const { createPayDunyaDisbursementProbeRoutes } = require('./paydunya-disbursement-probe-routes.cjs');
 const { createWebhookProbeRoutes } = require('./webhook-probe-routes.cjs');
@@ -272,6 +273,10 @@ function createServer({
   const adminStatisticsRoutes = createAdminStatisticsRoutes({ db, sessionService, env });
   const adminFundsRoutes = createAdminFundsRoutes({ db, sessionService, env });
   const integrationSettingsRoutes = createIntegrationSettingsRoutes({ db, sessionService, env });
+  const integrationWebhookWorker = createIntegrationWebhookWorker({
+    db,
+    deliverEvent: integrationSettingsRoutes.deliverEvent,
+  });
   const integrationDocumentationRoutes = createIntegrationDocumentationRoutes();
   const paydunyaDisbursementProbeRoutes = createPayDunyaDisbursementProbeRoutes();
   const refreshIntegrationMobileMoneyDeposit = async (depositId, userId) => {
@@ -303,6 +308,7 @@ function createServer({
     refreshMobileMoneyDeposit: refreshIntegrationMobileMoneyDeposit,
     createMobileMoneyPayout: mobileMoneyPayout.createIntegrationPayout,
     refreshMobileMoneyPayout: mobileMoneyPayout.refreshPayoutStatus,
+    reconcileIntegrationOperation: integrationWebhookWorker.reconcileOperation,
     getMobileMoneyOperators: (direction, userId) => (
       direction === 'deposit'
         ? publicConfig.integrationMobileMoneyOperators(direction, userId)
@@ -462,7 +468,9 @@ function createServer({
   });
   appServer.afriBaPayDepositWorker = afriBaPayDepositWorker;
   appServer.mbiyoDepositWorker = mbiyoDepositWorker;
+  appServer.integrationWebhookWorker = integrationWebhookWorker;
   appServer.once('listening', async () => {
+    integrationWebhookWorker?.start();
     try {
       const provider = await db?.collection?.('settings')?.find_one?.(
         { id: 'payment_provider_mbiyo' }, { _id: 0 },
@@ -476,7 +484,10 @@ function createServer({
       // Diagnostic mode may start before the payment-provider tables are available.
     }
   });
-  appServer.once('close', () => mbiyoDepositWorker?.stop());
+  appServer.once('close', () => {
+    mbiyoDepositWorker?.stop();
+    integrationWebhookWorker?.stop();
+  });
   return appServer;
 }
 

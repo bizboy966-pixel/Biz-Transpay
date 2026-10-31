@@ -126,7 +126,7 @@ function createIntegrationApiRoutes({
   db, now = Date.now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
   quoteMobileMoneyDeposit, createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
-  refreshMobileMoneyDeposit,
+  refreshMobileMoneyDeposit, reconcileIntegrationOperation,
 }) {
   const mobileMoneyDepositRefreshAt = new Map();
 
@@ -340,6 +340,7 @@ function createIntegrationApiRoutes({
               existing.business_id || response.id, credential.user_id,
             );
             if (previousDeposit) {
+              await reconcileIntegrationOperation?.(existing, previousDeposit);
               const currentDeposit = publicMobileMoneyDeposit(previousDeposit);
               response = {
                 ...response,
@@ -456,7 +457,7 @@ function createIntegrationApiRoutes({
             environment: credential.environment,
             kind: 'deposit',
             business_id: response.id,
-            status: response.status,
+            status: 'pending',
             request_fingerprint: requestFingerprint,
             reference: body.reference || null,
             response,
@@ -465,6 +466,16 @@ function createIntegrationApiRoutes({
           },
           true,
         );
+        await reconcileIntegrationOperation?.({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+          kind: 'deposit',
+          business_id: response.id,
+          status: 'pending',
+          response,
+          reference: body.reference || null,
+        }, deposit);
         reply(res, 200, response);
         return true;
       }
@@ -530,6 +541,7 @@ function createIntegrationApiRoutes({
                   ) || previousTransaction;
                 } catch { /* A status polling failure never resubmits a payout. */ }
               }
+              await reconcileIntegrationOperation?.(existing, previousTransaction);
               const response = mobileMoneyPayoutResponse(previousTransaction);
               await operations.update_one({
                 id: operationId,
@@ -570,7 +582,7 @@ function createIntegrationApiRoutes({
             environment: credential.environment,
             kind: 'payout',
             business_id: response.id,
-            status: response.status,
+            status: 'pending',
             request_fingerprint: requestFingerprint,
             reference: body.reference || null,
             response,
@@ -579,6 +591,16 @@ function createIntegrationApiRoutes({
           },
           true,
         );
+        await reconcileIntegrationOperation?.({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+          kind: 'payout',
+          business_id: response.id,
+          status: 'pending',
+          response,
+          reference: body.reference || null,
+        }, transaction);
         reply(res, 200, response);
         return true;
       }
@@ -660,7 +682,7 @@ function createIntegrationApiRoutes({
             environment: credential.environment,
             kind: 'crypto_payout',
             business_id: response.id,
-            status: response.status,
+            status: 'pending',
             request_fingerprint: requestFingerprint,
             reference: body.reference || null,
             response,
@@ -669,6 +691,16 @@ function createIntegrationApiRoutes({
           },
           true,
         );
+        await reconcileIntegrationOperation?.({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+          kind: 'crypto_payout',
+          business_id: response.id,
+          status: 'pending',
+          response,
+          reference: body.reference || null,
+        }, payout);
         reply(res, 200, response);
         return true;
       }
@@ -737,7 +769,7 @@ function createIntegrationApiRoutes({
             environment: credential.environment,
             kind: 'crypto_deposit',
             business_id: String(deposit.id),
-            status: response.status,
+            status: 'pending',
             request_fingerprint: requestFingerprint,
             reference: body.reference || null,
             response,
@@ -746,6 +778,16 @@ function createIntegrationApiRoutes({
           },
           true,
         );
+        await reconcileIntegrationOperation?.({
+          id: operationId,
+          user_id: String(credential.user_id),
+          environment: credential.environment,
+          kind: 'crypto_deposit',
+          business_id: String(deposit.id),
+          status: 'pending',
+          response,
+          reference: body.reference || null,
+        }, deposit);
         reply(res, 200, response);
         return true;
       }
@@ -953,6 +995,7 @@ function createIntegrationApiRoutes({
             : null;
         if (depositMatch && document) {
           document = await refreshIntegrationDeposit(businessId, credential.user_id) || document;
+          await reconcileIntegrationOperation?.(operation, document);
         }
         if ((payoutMatch || cryptoPayoutMatch) && !transaction) {
           reply(res, 404, { detail: kind.includes('crypto') ? 'Crypto payout not found' : 'Payout not found' });
@@ -961,6 +1004,7 @@ function createIntegrationApiRoutes({
         if (payoutMatch && typeof refreshMobileMoneyPayout === 'function') {
           transaction = await refreshMobileMoneyPayout(businessId, credential.user_id)
             || transaction;
+          await reconcileIntegrationOperation?.(operation, transaction);
         }
         if ((depositMatch || cryptoDepositMatch) && !document) {
           reply(res, 404, { detail: kind === 'crypto_deposit' ? 'Crypto deposit not found' : 'Deposit not found' });

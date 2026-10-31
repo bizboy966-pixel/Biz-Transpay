@@ -201,6 +201,17 @@ function createIntegrationSettingsRoutes({
     };
   }
 
+  async function deliverEvent(userId, environment, destinationId, event) {
+    const destination = await db.collection('integration_webhooks').find_one({
+      id: String(destinationId),
+      user_id: String(userId),
+      environment: String(environment),
+      active: true,
+    }, { _id: 0 });
+    if (!destination) return { status: 'skipped', destination_id: String(destinationId) };
+    return deliverTestWebhook(String(userId), String(environment), destination, event);
+  }
+
   async function handleRoute(req, res) {
     const url = new URL(req.url || '/', 'http://localhost');
     const isSettings = req.method === 'GET' && url.pathname === '/api/integration/settings';
@@ -658,7 +669,7 @@ function createIntegrationSettingsRoutes({
       return true;
     }
   }
-  return { handleRoute };
+  return { handleRoute, deliverEvent };
 }
 
 module.exports = { createIntegrationSettingsRoutes };

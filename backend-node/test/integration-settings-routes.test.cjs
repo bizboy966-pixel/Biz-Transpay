@@ -146,6 +146,45 @@ test('webhook test endpoint sends a signed event and stores a sanitized delivery
   assert.equal(JSON.stringify(delivery).includes('webhook-test-secret'), false);
 });
 
+test('API status events use the same signed delivery contract as webhook tests', async () => {
+  const requests = [];
+  const { service, collections } = setup({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { status: 204 };
+    },
+  });
+  const encryptionKey = security.integrationEncryptionKey(
+    'integration-test-session-secret',
+    undefined,
+  );
+  collections.integration_webhooks.rows[0].secret_encrypted = security.encryptFernet(
+    'webhook-test-secret', encryptionKey,
+  );
+  const event = {
+    id: 'evt_deposit_complete_1',
+    type: 'deposit.status_changed',
+    created_at: '2026-10-31T10:00:00.000Z',
+    data: { id: 'deposit-1', status: 'completed', currency: 'XOF', amount: 600 },
+  };
+
+  const delivery = await service.deliverEvent(
+    'merchant-1', 'live', 'merchant-1:live', event,
+  );
+  const sent = requests[0];
+  const timestamp = sent.options.headers['X-BizTransPay-Timestamp'];
+  const signature = `sha256=${crypto.createHmac('sha256', 'webhook-test-secret')
+    .update(`${timestamp}.${sent.options.body}`, 'utf8').digest('hex')}`;
+
+  assert.equal(delivery.status, 'delivered');
+  assert.equal(sent.url, 'https://merchant.example.test/hook');
+  assert.equal(sent.options.headers['X-BizTransPay-Event-Id'], event.id);
+  assert.equal(sent.options.headers['X-BizTransPay-Event-Type'], event.type);
+  assert.equal(sent.options.headers['X-BizTransPay-Signature'], signature);
+  assert.deepEqual(JSON.parse(sent.options.body), event);
+  assert.equal(collections.integration_webhook_deliveries.rows.at(-1).event_type, event.type);
+});
+
 test('specific webhook test rejects private destinations and retries delivery failures', async () => {
   let attempts = 0;
   const { service, collections } = setup({
