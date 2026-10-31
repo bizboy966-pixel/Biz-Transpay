@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import api from '@/api';
 
 const PUBLIC_DOCS_URL = 'https://biz-transpay.com/integration/docs';
+const FALLBACK_API_BASE_URL = 'https://biz-transpay.com';
 
 const asList = (value) => {
   if (Array.isArray(value)) return value;
@@ -149,7 +150,7 @@ function Endpoint({ item }) {
   const response = item.response || item.response_body || item.response_example;
   const errors = item.errors || item.error_codes || item.http_errors || item.status_codes;
   const auth = item.authentication || item.auth || item.authorization;
-  const anchor = item.id || pathOf(item).replace(/[^\w]+/g, '-');
+  const anchor = item.id || `${method.toLowerCase()}-${pathOf(item).replace(/[^\w]+/g, '-')}`;
 
   return (
     <article id={anchor} className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -159,6 +160,7 @@ function Endpoint({ item }) {
       </div>
       <h3 className="mt-3 font-cabinet text-lg font-extrabold text-slate-900">{titleOf(item)}</h3>
       {(item.description || item.summary) && <p className="mt-1 text-sm leading-relaxed text-slate-600">{item.description || item.summary}</p>}
+      {item.risk_notice && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950"><strong>Avant l’appel :</strong> {item.risk_notice}</div>}
       {auth && <div className="mt-4 rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs leading-relaxed text-blue-950"><strong className="font-bold">Authentification</strong><div className="mt-1 whitespace-pre-wrap">{typeof auth === 'string' ? auth : formatJson(auth)}</div></div>}
       <ParametersTable parameters={item.parameters || item.params} />
       <DataBlock title="Corps de la requête" value={request} />
@@ -181,7 +183,7 @@ function DocumentationSection({ section, endpoints, query }) {
       <h2 className="font-cabinet text-2xl font-extrabold text-slate-900">{titleOf(section)}</h2>
       {(section.description || section.content) && <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-slate-600">{section.description || section.content}</p>}
       <CodeExamples examples={sectionExamples} />
-      {visibleEndpoints.length > 0 && <div className="mt-5 space-y-5">{visibleEndpoints.map((item, index) => <Endpoint key={item.id || pathOf(item) || index} item={item} />)}</div>}
+      {visibleEndpoints.length > 0 && <div className="mt-5 space-y-5">{visibleEndpoints.map((item, index) => <Endpoint key={`${item.method || 'GET'}-${pathOf(item) || index}`} item={item} />)}</div>}
     </section>
   );
 }
@@ -255,6 +257,11 @@ export default function IntegrationDocs() {
               <div className="text-xs font-bold text-blue-950">URL publique à partager après publication de cette version</div>
               <a href={PUBLIC_DOCS_URL} target="_blank" rel="noreferrer" className="mt-1 inline-flex items-center gap-1 break-all text-sm font-semibold text-blue-700 underline underline-offset-2 hover:text-blue-900">{PUBLIC_DOCS_URL}<ExternalLink className="h-3.5 w-3.5 shrink-0" /></a>
             </div>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="text-xs font-bold text-slate-700">URL de base de l’API</div>
+              <code className="mt-1 block break-all text-sm font-semibold text-slate-900">{documentation?.base_url || FALLBACK_API_BASE_URL}</code>
+              <p className="mt-1 text-xs leading-relaxed text-slate-600">Toutes les routes de la documentation sont relatives à cette adresse.</p>
+            </div>
             <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-950"><span aria-hidden="true">⚠</span><p><strong>Ne partagez jamais vos clés API ni vos secrets avec l’agent d’intégration dans le chat.</strong> Gardez toutes les clés secrètes sur votre serveur.</p></div>
           </section>
           {loading && <div className="mt-8 space-y-4"><div className="h-24 animate-pulse rounded-2xl bg-slate-200" /><div className="h-72 animate-pulse rounded-2xl bg-slate-200" /></div>}
@@ -262,7 +269,7 @@ export default function IntegrationDocs() {
           {!loading && !error && (
             <div className="mt-8 space-y-8">
               {sections.map((section, index) => <DocumentationSection key={section.id || section.name || index} section={section} endpoints={endpoints} query={query} />)}
-              {ungroupedEndpoints.length > 0 && <section id="other-endpoints" className="scroll-mt-24"><h2 className="font-cabinet text-2xl font-extrabold text-slate-900">Autres endpoints</h2><div className="mt-5 space-y-5">{ungroupedEndpoints.filter((item) => !query.trim() || JSON.stringify(item).toLowerCase().includes(query.toLowerCase())).map((item, index) => <Endpoint key={item.id || pathOf(item) || index} item={item} />)}</div></section>}
+              {ungroupedEndpoints.length > 0 && <section id="other-endpoints" className="scroll-mt-24"><h2 className="font-cabinet text-2xl font-extrabold text-slate-900">Autres endpoints</h2><div className="mt-5 space-y-5">{ungroupedEndpoints.filter((item) => !query.trim() || JSON.stringify(item).toLowerCase().includes(query.toLowerCase())).map((item, index) => <Endpoint key={`${item.method || 'GET'}-${pathOf(item) || index}`} item={item} />)}</div></section>}
               {!sections.length && !ungroupedEndpoints.length && <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">Aucun endpoint documenté n’est disponible.</div>}
               {!hasVisibleEndpoints && <div className="rounded-2xl border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">Aucun endpoint documenté ne correspond à cette recherche.</div>}
             </div>

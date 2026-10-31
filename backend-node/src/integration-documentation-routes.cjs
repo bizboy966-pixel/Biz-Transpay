@@ -1,24 +1,56 @@
 'use strict';
 
+const API_BASE_URL = 'https://biz-transpay.com';
+const READ_AUTH = 'Authorization: Bearer $BIZ_SECRET_KEY\nX-Public-Key: $BIZ_PUBLIC_KEY';
+const WRITE_AUTH = `${READ_AUTH}\nIdempotency-Key: $BIZ_IDEMPOTENCY_KEY`;
+const LIVE_WRITE_WARNING = 'Attention : cette route POST peut créer une opération réelle. Les clés de test ne simulent pas les écritures financières. Vérifiez le pays, l’opérateur, le montant et la destination avant tout appel avec une clé Live.';
+
 const SECTIONS = [
   {
     id: 'authentication',
-    title: 'Authentification',
-    description: 'Envoyez votre clé secrète dans l’en-tête Authorization. Les clés sandbox et live sont distinctes.',
+    title: 'Authentification et démarrage',
+    description: [
+      'Base URL de production : https://biz-transpay.com.',
+      'Chaque requête doit envoyer ensemble Authorization: Bearer <clé secrète> et X-Public-Key: <clé publique>. Les deux clés doivent appartenir au même environnement.',
+      'Conservez les clés sur votre serveur. Les écritures financières sont réservées aux clés Live : les clés de test ne déclenchent aucun dépôt ni retrait réel.',
+      'Préparez une clé Idempotency-Key unique pour chaque nouvelle écriture et réutilisez exactement cette clé et le même corps uniquement pour retenter cette même opération.',
+    ].join('\n\n'),
+    code_examples: {
+      curl: `export BIZ_BASE_URL="${API_BASE_URL}"\nexport BIZ_PUBLIC_KEY="pk_live_…"\nexport BIZ_SECRET_KEY="sk_live_…"\n# Définir ces valeurs dans l’environnement serveur; ne pas les exposer au navigateur.`,
+    },
+  },
+  {
+    id: 'mobile-money',
+    title: 'Dépôts et retraits Mobile Money',
+    description: 'Flux recommandé : 1) récupérez le catalogue avec direction=deposit ou direction=payout; 2) envoyez le code operator retourné dans le POST correspondant; 3) conservez son id et consultez GET /deposits/{id} ou GET /payouts/{id} jusqu’au statut final. Envoyez le code opérateur, jamais le nom du prestataire : Biz-transPay sélectionne celui qui est actif côté serveur. Espacez les vérifications de statut d’environ 10 secondes et ne relancez pas une opération pending.',
   },
   {
     id: 'transactions',
-    title: 'Transactions',
-    description: 'Les recherches sont limitées au compte marchand associé à la clé API.',
+    title: 'Consulter et suivre les opérations',
+    description: 'Les listes donnent les opérations enregistrées. Pour suivre une opération, consultez son endpoint de détail : un dépôt ou un retrait peut rester « pending » pendant l’attente de confirmation du prestataire. Ne créez pas une deuxième opération pour remplacer une réponse en attente.',
   },
   {
-    id: 'payments',
-    title: 'Paiements et actifs',
-    description: 'Consultez les opérations et les catalogues actuellement configurés dans cet environnement.',
+    id: 'crypto',
+    title: 'Dépôts et retraits crypto',
+    description: 'Utilisez les codes d’actif et de réseau fournis par le catalogue crypto actif. Les retraits exigent aussi une clé Live avec autorisation de retrait, l’activation explicite des retraits API et un KYC marchand vérifié.',
+  },
+  {
+    id: 'other-operations',
+    title: 'Échanges et liens de paiement',
+    description: 'Les échanges et créations de liens sont des écritures financières : utilisez une clé Live, un Idempotency-Key unique et consultez ensuite l’opération créée.',
+  },
+  {
+    id: 'errors',
+    title: 'Réponses, erreurs et sécurité des tentatives',
+    description: 'Les erreurs JSON contiennent généralement « detail » et peuvent aussi contenir « code ». Un HTTP 409 signifie que la même clé Idempotency-Key a été réutilisée avec un corps différent. En cas de délai réseau, ne générez pas une nouvelle clé : réessayez avec la clé initiale ou consultez l’opération par son identifiant.',
+    code_examples: {
+      curl: '{"detail":"Idempotency key was used with a different request."}',
+      javascript: '{"detail":"PayDunya n’a pas pu préparer le retrait.","code":"PAYDUNYA_4002"}',
+    },
   },
 ];
 
-const ENDPOINTS = [
+const READ_ROUTES = [
   ['GET', '/api/integration/v1/transactions', 'Lister les transactions', 'transactions'],
   ['GET', '/api/integration/v1/deposits', 'Lister les dépôts Mobile Money', 'transactions'],
   ['GET', '/api/integration/v1/payouts', 'Lister les retraits Mobile Money', 'transactions'],
@@ -26,29 +58,317 @@ const ENDPOINTS = [
   ['GET', '/api/integration/v1/crypto/payouts', 'Lister les retraits crypto', 'transactions'],
   ['GET', '/api/integration/v1/exchanges', 'Lister les échanges', 'transactions'],
   ['GET', '/api/integration/v1/links', 'Lister les liens de paiement', 'transactions'],
-  ['GET', '/api/integration/v1/deposits/{id}', 'Consulter un dépôt', 'transactions'],
-  ['GET', '/api/integration/v1/payouts/{id}', 'Consulter un retrait', 'transactions'],
+  ['GET', '/api/integration/v1/deposits/{id}', 'Consulter et actualiser un dépôt', 'transactions'],
+  ['GET', '/api/integration/v1/payouts/{id}', 'Consulter et actualiser un retrait', 'transactions'],
   ['GET', '/api/integration/v1/crypto/deposits/{id}', 'Consulter un dépôt crypto', 'transactions'],
   ['GET', '/api/integration/v1/crypto/payouts/{id}', 'Consulter un retrait crypto', 'transactions'],
   ['GET', '/api/integration/v1/exchanges/{id}', 'Consulter un échange', 'transactions'],
   ['GET', '/api/integration/v1/links/{id}', 'Consulter un lien de paiement', 'transactions'],
-  ['GET', '/api/integration/v1/links/payments/{id}', 'Consulter le paiement d’un lien', 'transactions'],
-  ['GET', '/api/integration/v1/mobile-money/operators?direction=deposit', 'Catalogue Mobile Money pour dépôts', 'payments'],
-  ['GET', '/api/integration/v1/mobile-money/operators?direction=payout', 'Catalogue Mobile Money pour retraits', 'payments'],
-  ['GET', '/api/integration/v1/crypto/assets?direction=deposit', 'Catalogue crypto pour dépôts', 'payments'],
-  ['GET', '/api/integration/v1/crypto/assets?direction=payout', 'Catalogue crypto pour retraits', 'payments'],
-  ['GET', '/api/integration/v1/exchanges/quote?from_currency=XOF&to_currency=XAF&amount=1000', 'Obtenir un devis d’échange', 'payments'],
-].map(([method, path, title, section]) => ({
-  method,
-  path,
-  title,
-  section,
-  description: 'Cette opération ne retourne que les données accessibles à la clé API du marchand.',
-  auth: 'Authorization: Bearer $BIZ_SECRET_KEY',
-  code_examples: {
-    curl: `curl -H "Authorization: Bearer $BIZ_SECRET_KEY" "$BIZ_BASE_URL${path}"`,
+  ['GET', '/api/integration/v1/links/{id}/payments', 'Lister les paiements d’un lien', 'transactions'],
+  ['GET', '/api/integration/v1/mobile-money/operators?direction=deposit', 'Catalogue Mobile Money pour dépôts', 'mobile-money'],
+  ['GET', '/api/integration/v1/mobile-money/operators?direction=payout', 'Catalogue Mobile Money pour retraits', 'mobile-money'],
+  ['GET', '/api/integration/v1/crypto/assets?direction=deposit', 'Catalogue crypto pour dépôts', 'crypto'],
+  ['GET', '/api/integration/v1/crypto/assets?direction=payout', 'Catalogue crypto pour retraits', 'crypto'],
+  ['GET', '/api/integration/v1/exchanges/quote?from_currency=XOF&to_currency=XAF&amount=1000', 'Obtenir un devis d’échange', 'other-operations'],
+];
+
+const COMMON_ERRORS = [
+  { status: 400, description: 'Requête ou valeur incorrecte.' },
+  { status: 401, description: 'Clés absentes, invalides ou de deux environnements différents.' },
+  { status: 403, description: 'Compte, environnement, autorisation ou configuration non éligible.' },
+  { status: 409, description: 'Idempotency-Key déjà utilisée avec un corps différent.' },
+  { status: 422, description: 'Champ invalide, clé d’idempotence absente ou limite dépassée.' },
+  { status: 429, description: 'Limite de 120 requêtes par minute pour cette clé.' },
+  { status: 502, description: 'Le prestataire n’a pas confirmé le démarrage; vérifiez l’opération avant toute nouvelle tentative.' },
+  { status: 503, description: 'Service ou configuration du prestataire temporairement indisponible.' },
+];
+
+function curlGet(path) {
+  const target = path.replaceAll('{id}', '$BIZ_RESOURCE_ID');
+  return [
+    `curl -sS "${API_BASE_URL}${target}" \\`,
+    '  -H "Authorization: Bearer $BIZ_SECRET_KEY" \\',
+    '  -H "X-Public-Key: $BIZ_PUBLIC_KEY"',
+  ].join('\n');
+}
+
+function curlPost(path, body) {
+  return [
+    `curl -sS -X POST "${API_BASE_URL}${path}" \\`,
+    '  -H "Authorization: Bearer $BIZ_SECRET_KEY" \\',
+    '  -H "X-Public-Key: $BIZ_PUBLIC_KEY" \\',
+    '  -H "Idempotency-Key: $BIZ_IDEMPOTENCY_KEY" \\',
+    '  -H "Content-Type: application/json" \\',
+    `  --data '${JSON.stringify(body)}'`,
+  ].join('\n');
+}
+
+function readEndpoint([method, path, title, section]) {
+  const isDetail = path.includes('{id}');
+  const isList = !isDetail && !path.includes('?direction=') && !path.includes('/quote?');
+  const parameters = isDetail
+    ? [{ name: 'id', type: 'string', required: true, description: 'Identifiant Biz-transPay retourné à la création.' }]
+    : isList
+      ? [{ name: 'limit', type: 'integer', required: false, description: 'Nombre de résultats, de 1 à 500; valeur par défaut : 100.' }]
+      : [];
+  return {
+    method,
+    path,
+    title,
+    section,
+    description: path.endsWith('/deposits') || path.endsWith('/payouts')
+      ? 'Retourne les opérations du compte marchand associé aux clés. Utilisez l’endpoint de détail pour suivre le statut à jour.'
+      : path.includes('/mobile-money/operators')
+        ? 'Retourne uniquement les routes disponibles dans la configuration active de production. Utilisez le champ code comme valeur operator lors de la création.'
+        : path.includes('/crypto/assets')
+          ? 'Retourne les actifs disponibles dans le catalogue de la direction demandée.'
+          : path.includes('/exchanges/quote')
+            ? 'Paramètres obligatoires : from_currency, to_currency et amount.'
+            : 'Les données sont limitées au compte marchand associé aux clés.',
+    auth: READ_AUTH,
+    ...(parameters.length ? { parameters } : {}),
+    code_examples: { curl: curlGet(path) },
+  };
+}
+
+const WRITE_ENDPOINTS = [
+  {
+    method: 'POST',
+    path: '/api/integration/v1/deposits',
+    title: 'Créer un dépôt Mobile Money',
+    section: 'mobile-money',
+    risk_notice: LIVE_WRITE_WARNING,
+    description: 'Démarre le dépôt auprès du prestataire activé pour le pays et l’opérateur. Ne transmettez pas de nom de prestataire. Une réponse « pending » signifie que le client doit confirmer le paiement ou que le prestataire doit encore envoyer sa confirmation.',
+    scope: 'Clé Live avec deposits:write.',
+    parameters: [
+      { name: 'amount', type: 'integer', required: true, description: 'Montant entier dans la devise du catalogue.' },
+      { name: 'country', type: 'string', required: true, description: 'Code pays ISO à deux lettres, par exemple TG.' },
+      { name: 'operator', type: 'string', required: true, description: 'Code exact du catalogue direction=deposit.' },
+      { name: 'currency', type: 'string', required: false, description: 'Devise du catalogue; si fournie, elle doit correspondre.' },
+      { name: 'phone_number', type: 'string', required: false, description: 'Téléphone du payeur, au format international recommandé.' },
+      { name: 'full_name', type: 'string', required: true, description: 'Nom du payeur, 2 à 160 caractères.' },
+      { name: 'email', type: 'string', required: true, description: 'Adresse e-mail valide du payeur.' },
+    ],
+    request: {
+      amount: 600,
+      country: 'TG',
+      operator: 'tmoney_tg',
+      currency: 'XOF',
+      phone_number: '+22891000000',
+      full_name: 'Client Exemple',
+      email: 'client@example.com',
+    },
+    response: {
+      id: 'deposit-id',
+      status: 'pending',
+      deposit: {
+        id: 'deposit-id',
+        status: 'pending',
+        currency: 'XOF',
+        payment_kind: 'phone',
+        prompt_sent: true,
+      },
+    },
+    auth: `${WRITE_AUTH}\nScope requis : deposits:write`,
+    errors: COMMON_ERRORS,
+    code_examples: {
+      curl: curlPost('/api/integration/v1/deposits', {
+        amount: 600,
+        country: 'TG',
+        operator: 'tmoney_tg',
+        currency: 'XOF',
+        phone_number: '+22891000000',
+        full_name: 'Client Exemple',
+        email: 'client@example.com',
+      }),
+    },
   },
-}));
+  {
+    method: 'POST',
+    path: '/api/integration/v1/payouts',
+    title: 'Créer un retrait Mobile Money',
+    section: 'mobile-money',
+    risk_notice: LIVE_WRITE_WARNING,
+    description: 'Démarre le retrait depuis le portefeuille du marchand. Le pays et la devise doivent correspondre. Le prestataire est sélectionné côté serveur à partir du catalogue de retrait actif.',
+    scope: 'Clé Live avec payouts:write, autorisation explicite des retraits API et KYC marchand vérifié.',
+    parameters: [
+      { name: 'amount', type: 'integer', required: true, description: 'Montant entier à retirer.' },
+      { name: 'currency', type: 'string', required: true, description: 'Devise associée au pays et à l’opérateur.' },
+      { name: 'country', type: 'string', required: true, description: 'Code pays ISO à deux lettres.' },
+      { name: 'operator', type: 'string', required: true, description: 'Code exact du catalogue direction=payout.' },
+      { name: 'recipient', type: 'string', required: true, description: 'Numéro Mobile Money du bénéficiaire.' },
+      { name: 'fee_bearer', type: 'string', required: false, description: 'sender ou receiver; sender par défaut.' },
+    ],
+    request: {
+      amount: 500,
+      currency: 'XOF',
+      country: 'TG',
+      operator: 'tmoney_tg',
+      recipient: '+22891000000',
+      fee_bearer: 'sender',
+    },
+    response: {
+      id: 'payout-id',
+      status: 'pending',
+      payout: {
+        id: 'payout-id',
+        status: 'pending',
+        amount: 500,
+        currency: 'XOF',
+      },
+    },
+    auth: `${WRITE_AUTH}\nScope requis : payouts:write; opt-in retrait et KYC vérifié`,
+    errors: COMMON_ERRORS,
+    code_examples: {
+      curl: curlPost('/api/integration/v1/payouts', {
+        amount: 500,
+        currency: 'XOF',
+        country: 'TG',
+        operator: 'tmoney_tg',
+        recipient: '+22891000000',
+        fee_bearer: 'sender',
+      }),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/integration/v1/crypto/deposits',
+    title: 'Créer un dépôt crypto',
+    section: 'crypto',
+    risk_notice: LIVE_WRITE_WARNING,
+    description: 'Crée une intention de dépôt pour un actif actif dans le catalogue. Renvoyez l’identifiant et les instructions retournées au client.',
+    scope: 'Clé Live avec deposits:write.',
+    parameters: [
+      { name: 'amount', type: 'number', required: true, description: 'Montant positif, jusqu’à 6 décimales.' },
+      { name: 'asset_code', type: 'string', required: true, description: 'Code actif retourné par le catalogue.' },
+      { name: 'full_name', type: 'string', required: true, description: 'Nom du client.' },
+      { name: 'email', type: 'string', required: true, description: 'E-mail valide.' },
+      { name: 'refund_address', type: 'string', required: true, description: 'Adresse à utiliser si un remboursement est requis.' },
+    ],
+    request: {
+      amount: 25.5,
+      asset_code: '<asset_code_du_catalogue>',
+      full_name: 'Client Exemple',
+      email: 'client@example.com',
+      refund_address: '<adresse_de_remboursement>',
+    },
+    response: { id: 'crypto-deposit-id', status: 'pending', deposit: { id: 'crypto-deposit-id', status: 'pending' } },
+    auth: `${WRITE_AUTH}\nScope requis : deposits:write`,
+    errors: COMMON_ERRORS,
+    code_examples: {
+      curl: curlPost('/api/integration/v1/crypto/deposits', {
+        amount: 25.5,
+        asset_code: '<asset_code_du_catalogue>',
+        full_name: 'Client Exemple',
+        email: 'client@example.com',
+        refund_address: '<adresse_de_remboursement>',
+      }),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/integration/v1/crypto/payouts',
+    title: 'Créer un retrait crypto',
+    section: 'crypto',
+    risk_notice: LIVE_WRITE_WARNING,
+    description: 'Crée un retrait vers une adresse compatible avec l’actif et le réseau actifs. Vérifiez soigneusement le réseau et l’adresse avant l’envoi.',
+    scope: 'Clé Live avec payouts:write, autorisation explicite des retraits API et KYC marchand vérifié.',
+    parameters: [
+      { name: 'amount', type: 'number', required: true, description: 'Montant positif, jusqu’à 8 décimales.' },
+      { name: 'asset_code', type: 'string', required: true, description: 'Actif retourné par le catalogue.' },
+      { name: 'network_code', type: 'string', required: false, description: 'Réseau retourné par le catalogue.' },
+      { name: 'wallet_address', type: 'string', required: true, description: 'Adresse de destination sur le réseau sélectionné.' },
+      { name: 'destination_memo', type: 'string', required: false, description: 'Mémo/tag de destination si le réseau l’exige.' },
+      { name: 'fee_bearer', type: 'string', required: false, description: 'sender ou receiver; sender par défaut.' },
+    ],
+    request: {
+      amount: 10,
+      asset_code: '<asset_code_du_catalogue>',
+      network_code: '<network_code_du_catalogue>',
+      wallet_address: '<adresse_de_destination>',
+      fee_bearer: 'sender',
+    },
+    response: { id: 'crypto-payout-id', status: 'pending', payout: { id: 'crypto-payout-id', status: 'pending' } },
+    auth: `${WRITE_AUTH}\nScope requis : payouts:write; opt-in retrait et KYC vérifié`,
+    errors: COMMON_ERRORS,
+    code_examples: {
+      curl: curlPost('/api/integration/v1/crypto/payouts', {
+        amount: 10,
+        asset_code: '<asset_code_du_catalogue>',
+        network_code: '<network_code_du_catalogue>',
+        wallet_address: '<adresse_de_destination>',
+        fee_bearer: 'sender',
+      }),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/integration/v1/exchanges',
+    title: 'Exécuter un échange',
+    section: 'other-operations',
+    risk_notice: LIVE_WRITE_WARNING,
+    description: 'Exécute l’échange après validation du devis et des soldes disponibles.',
+    scope: 'Clé Live avec exchanges:write.',
+    parameters: [
+      { name: 'from_currency', type: 'string', required: true, description: 'Code de la devise source.' },
+      { name: 'to_currency', type: 'string', required: true, description: 'Code de la devise de destination, différente de la source.' },
+      { name: 'amount', type: 'number', required: true, description: 'Montant positif dans la devise source.' },
+    ],
+    request: { from_currency: 'XOF', to_currency: 'XAF', amount: 1000 },
+    response: { id: 'exchange-id', status: 'completed', exchange: { transaction: { id: 'exchange-id', status: 'completed' } } },
+    auth: `${WRITE_AUTH}\nScope requis : exchanges:write`,
+    errors: COMMON_ERRORS,
+    code_examples: {
+      curl: curlPost('/api/integration/v1/exchanges', {
+        from_currency: 'XOF',
+        to_currency: 'XAF',
+        amount: 1000,
+      }),
+    },
+  },
+  {
+    method: 'POST',
+    path: '/api/integration/v1/links',
+    title: 'Créer un lien de paiement',
+    section: 'other-operations',
+    risk_notice: LIVE_WRITE_WARNING,
+    description: 'Crée un lien fixe ou à montant libre. Pour un montant libre, fournissez min_amount et max_amount; pour un lien fixe, fournissez amount.',
+    scope: 'Clé Live avec links:write.',
+    parameters: [
+      { name: 'title', type: 'string', required: true, description: 'Nom du lien.' },
+      { name: 'amount_type', type: 'string', required: false, description: 'fixed par défaut; ou free.' },
+      { name: 'amount', type: 'number', required: false, description: 'Montant du lien fixed.' },
+      { name: 'min_amount', type: 'number', required: false, description: 'Minimum requis pour un lien free.' },
+      { name: 'max_amount', type: 'number', required: false, description: 'Maximum supérieur au minimum pour un lien free.' },
+      { name: 'currency', type: 'string', required: false, description: 'Devise; UNIVERSAL par défaut.' },
+      { name: 'description', type: 'string', required: false, description: 'Description facultative.' },
+    ],
+    request: {
+      title: 'Commande 1042',
+      amount_type: 'fixed',
+      amount: 2500,
+      currency: 'XOF',
+      description: 'Paiement commande 1042',
+    },
+    response: { id: 'link-id', status: 'created', link: { id: 'link-id', slug: 'example-slug', title: 'Commande 1042' } },
+    auth: `${WRITE_AUTH}\nScope requis : links:write`,
+    errors: COMMON_ERRORS,
+    code_examples: {
+      curl: curlPost('/api/integration/v1/links', {
+        title: 'Commande 1042',
+        amount_type: 'fixed',
+        amount: 2500,
+        currency: 'XOF',
+        description: 'Paiement commande 1042',
+      }),
+    },
+  },
+];
+
+const ENDPOINTS = [
+  ...READ_ROUTES.map(readEndpoint),
+  ...WRITE_ENDPOINTS,
+];
 
 function pdfText(value) {
   return String(value).normalize('NFKD')
@@ -61,8 +381,17 @@ function pdfText(value) {
 function buildPdf() {
   const lines = [
     'Biz-transPay - Documentation API marchande',
-    'Authentification: Authorization: Bearer $BIZ_SECRET_KEY',
-    'Les routes documentees ci-dessous sont des lectures protegees par marchand.',
+    `Base URL: ${API_BASE_URL}`,
+    'Auth: Authorization Bearer + X-Public-Key; les deux cles doivent etre du meme environnement.',
+    'Gardez la cle secrete sur votre serveur. Les ecritures financieres exigent des cles Live.',
+    'Les exemples POST peuvent declencher des operations reelles : verifiez les donnees avant execution.',
+    'Chaque POST exige Idempotency-Key (8-120 caracteres); reutilisez-la seulement pour retenter la meme operation.',
+    'Les ecritures exigent deposits:write, payouts:write, exchanges:write ou links:write selon la route.',
+    'Les retraits exigent payouts:write, opt-in API et KYC marchand verifie.',
+    'Le prestataire Mobile Money est choisi cote serveur selon le pays, l operateur et le catalogue actif.',
+    'Pour suivre un statut, consultez GET /deposits/{id} ou GET /payouts/{id}; ne recreez pas une operation pending.',
+    'Pay-in Mobile Money: amount, country, operator, phone_number, full_name, email; currency facultative.',
+    'Pay-out Mobile Money: amount, currency, country, operator, recipient; fee_bearer: sender ou receiver.',
     '',
     ...ENDPOINTS.map(endpoint => `${endpoint.method} ${endpoint.path} - ${endpoint.title}`),
   ].slice(0, 42);
@@ -87,41 +416,42 @@ function buildPdf() {
   });
   const xrefOffset = Buffer.byteLength(pdf, 'ascii');
   pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (const offset of offsets.slice(1)) {
+  offsets.slice(1).forEach(offset => {
     pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
-  }
+  });
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
   return Buffer.from(pdf, 'ascii');
 }
 
 function createIntegrationDocumentationRoutes() {
+  const documentation = {
+    title: 'Intégrer Biz-transPay',
+    description: 'Guide d’intégration API marchand : authentification, catalogues, dépôts, retraits, suivi des statuts, échanges, crypto et liens de paiement.',
+    base_url: API_BASE_URL,
+    sections: SECTIONS,
+    endpoints: ENDPOINTS,
+  };
+
   async function handleRoute(req, res) {
-    if (req.method !== 'GET') return false;
-    const pathname = new URL(req.url || '/', 'http://localhost').pathname;
-    if (pathname === '/api/integration/documentation') {
+    const path = String(req.url || '').split('?')[0];
+    if (req.method === 'GET' && path === '/api/integration/documentation') {
       res.writeHead(200, {
-        'Cache-Control': 'no-store',
+        'Cache-Control': 'public, max-age=60',
         'Content-Type': 'application/json; charset=utf-8',
         'X-Content-Type-Options': 'nosniff',
       });
-      res.end(JSON.stringify({
-        title: 'Documentation API Biz-transPay',
-        description: 'Référence des opérations de lecture disponibles dans l’environnement actuel.',
-        sections: SECTIONS,
-        endpoints: ENDPOINTS,
-      }));
+      res.end(JSON.stringify(documentation));
       return true;
     }
-    if (pathname === '/api/integration/documentation.pdf') {
-      const pdf = buildPdf();
+    if (req.method === 'GET' && path === '/api/integration/documentation.pdf') {
       res.writeHead(200, {
-        'Cache-Control': 'no-store',
+        'Cache-Control': 'public, max-age=60',
         'Content-Disposition': 'attachment; filename="biz-transpay-integration-docs.pdf"',
-        'Content-Length': String(pdf.length),
+        'Content-Length': String(buildPdf().length),
         'Content-Type': 'application/pdf',
         'X-Content-Type-Options': 'nosniff',
       });
-      res.end(pdf);
+      res.end(buildPdf());
       return true;
     }
     return false;
@@ -130,4 +460,4 @@ function createIntegrationDocumentationRoutes() {
   return { handleRoute };
 }
 
-module.exports = { createIntegrationDocumentationRoutes, buildPdf };
+module.exports = { createIntegrationDocumentationRoutes };
