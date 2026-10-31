@@ -34,13 +34,16 @@ class Collection {
   }
 }
 
-function setup({ momo = [], crypto = [] } = {}) {
+function setup({
+  momo = [], crypto = [], reconcilePaydunyaDepositById,
+} = {}) {
   const collections = {
     momo_deposits: new Collection(momo),
     crypto_deposits: new Collection(crypto),
   };
   const service = createDepositStatusRoutes({
     db: { collection: name => collections[name] },
+    reconcilePaydunyaDepositById,
     sessionService: {
       async authenticate(token) {
         const userId = token === 'session-user-1' ? 'user-1'
@@ -116,6 +119,35 @@ test('pending mobile money recovery returns the newest eligible customer deposit
   const response = await call(service, '/api/deposits/mobile-money/pending');
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.id, 'newest');
+});
+
+test('pending direct PayDunya status verifies the invoice and keeps internal fields private', async () => {
+  const row = {
+    id: 'paydunya-direct-1',
+    user_id: 'user-1',
+    provider: 'paydunya',
+    paydunya_flow: 'softpay_direct',
+    paydunya_token: 'private-invoice-token',
+    paydunya_softpay_state: 'sent',
+    status: 'pending',
+    amount: 500,
+    currency: 'XOF',
+  };
+  let reconcileCalls = 0;
+  const service = setup({
+    momo: [row],
+    reconcilePaydunyaDepositById: async depositId => {
+      reconcileCalls += 1;
+      assert.equal(depositId, row.id);
+    },
+  });
+
+  const response = await call(service, '/api/deposits/mobile-money/paydunya-direct-1');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.status, 'pending');
+  assert.equal(response.body.prompt_sent, true);
+  assert.equal(response.body.paydunya_token, undefined);
+  assert.equal(reconcileCalls, 1);
 });
 
 test('crypto deposit status is owner-scoped and strips internal provider fields', async () => {

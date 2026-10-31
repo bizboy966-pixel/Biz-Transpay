@@ -85,6 +85,13 @@ function publicMomoDeposit(deposit, now = Date.now()) {
   const redirectUrl = safeRedirect(deposit.redirect_url || deposit.checkout_url);
   const directPaydunya = deposit.provider === 'paydunya'
     && deposit.paydunya_flow === 'softpay_direct';
+  const paydunyaPromptSent = Boolean(
+    deposit.paydunya_softpay_state === 'sent' || deposit.paydunya_softpay_sent_at,
+  );
+  const directPaydunyaUnknown = Boolean(
+    directPaydunya && (deposit.submission_unknown
+      || (status === 'pending' && !paydunyaPromptSent)),
+  );
   const publicValue = {
     id: deposit.id,
     status,
@@ -125,11 +132,11 @@ function publicMomoDeposit(deposit, now = Date.now()) {
           ? 'redirect' : 'phone',
     payment_fallback: directPaydunya ? null
       : deposit.payment_fallback === 'hosted_checkout' ? 'hosted_checkout' : null,
-    submission_unknown: Boolean(deposit.submission_unknown),
-    message: directPaydunya && deposit.submission_unknown
-      ? 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié ici.'
+    submission_unknown: directPaydunyaUnknown || Boolean(deposit.submission_unknown),
+    message: directPaydunya && directPaydunyaUnknown
+      ? 'L’envoi n’est pas confirmé. Vérifiez le statut et ne créez pas un second dépôt.'
       : null,
-    prompt_sent: Boolean(deposit.prompt_sent),
+    prompt_sent: directPaydunya ? paydunyaPromptSent : Boolean(deposit.prompt_sent),
     finalize_capability: typeof deposit.finalize_capability === 'string'
       ? deposit.finalize_capability.slice(0, 512) : null,
     failed_reason: status === 'failed'
@@ -154,8 +161,23 @@ function publicCryptoDeposit(deposit) {
 }
 
 function createDepositStatusRoutes({
-  db, sessionService, reconcileMbiyoDepositById,
+  db, sessionService, reconcileMbiyoDepositById, reconcilePaydunyaDepositById,
 }) {
+  const lastPaydunyaReconcileAt = new Map();
+
+  function shouldReconcilePaydunya(depositId) {
+    const now = Date.now();
+    const last = lastPaydunyaReconcileAt.get(depositId) || 0;
+    if (now - last < 10_000) return false;
+    lastPaydunyaReconcileAt.set(depositId, now);
+    if (lastPaydunyaReconcileAt.size > 500) {
+      for (const [id, checkedAt] of lastPaydunyaReconcileAt) {
+        if (now - checkedAt > 60_000) lastPaydunyaReconcileAt.delete(id);
+      }
+    }
+    return true;
+  }
+
   async function handleRoute(req, res) {
     // Owner-check first; Mbiyo status reads are throttled by the reconciler.
     if (req.method !== 'GET') return false;
@@ -267,6 +289,16 @@ function createDepositStatusRoutes({
       if (deposit?.provider === 'mbiyo' && deposit.status === 'pending'
           && typeof reconcileMbiyoDepositById === 'function') {
         try { await reconcileMbiyoDepositById(deposit.id); } catch { /* status snapshot stays available */ }
+        deposit = await db.collection('momo_deposits').find_one(
+          { id: deposit.id, user_id: userId }, { _id: 0 },
+        ) || deposit;
+      }
+      if (deposit?.provider === 'paydunya'
+          && deposit.paydunya_flow === 'softpay_direct'
+          && deposit.status === 'pending'
+          && typeof reconcilePaydunyaDepositById === 'function'
+          && shouldReconcilePaydunya(deposit.id)) {
+        try { await reconcilePaydunyaDepositById(deposit.id); } catch { /* webhook/status may retry */ }
         deposit = await db.collection('momo_deposits').find_one(
           { id: deposit.id, user_id: userId }, { _id: 0 },
         ) || deposit;

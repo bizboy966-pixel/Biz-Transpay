@@ -166,8 +166,16 @@ function createServer({
   const mbiyoWebhookRoutes = createMbiyoWebhookRoutes({
     db, env, sessionSecret: env.SESSION_SECRET || '', fetchImpl,
   });
+  const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
+    db, env, sessionService,
+    reconcileMbiyoDeposit: mbiyoWebhookRoutes.reconcileDepositById,
+    finalizeMbiyoDeposit: mbiyoWebhookRoutes.finalizeDepositById,
+  });
   const depositStatusRoutes = createDepositStatusRoutes({
-    db, sessionService, reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
+    db,
+    sessionService,
+    reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
+    reconcilePaydunyaDepositById: paydunyaWebhookRoutes.settleDepositById,
   });
   const paydunyaInvoiceRoutes = createPaydunyaInvoiceRoutes({
     db,
@@ -175,11 +183,6 @@ function createServer({
     sessionSecret: env.SESSION_SECRET || '',
     env,
     reconcileMbiyoDepositById: mbiyoWebhookRoutes.reconcileDepositById,
-  });
-  const paydunyaWebhookRoutes = createPaydunyaWebhookRoutes({
-    db, env, sessionService,
-    reconcileMbiyoDeposit: mbiyoWebhookRoutes.reconcileDepositById,
-    finalizeMbiyoDeposit: mbiyoWebhookRoutes.finalizeDepositById,
   });
   const stripeDepositRoutes = createStripeDepositRoutes({
     db, sessionService, env,

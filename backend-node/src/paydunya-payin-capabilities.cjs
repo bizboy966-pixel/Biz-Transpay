@@ -13,7 +13,10 @@ function paydunyaModeEnabled(config, mode) {
 }
 
 function enabledPaydunyaPayinModes(config) {
-  return PAYDUNYA_PAYIN_MODE_PRIORITY.filter(mode => paydunyaModeEnabled(config, mode));
+  return PAYDUNYA_PAYIN_MODE_PRIORITY.filter(mode => (
+    paydunyaModeEnabled(config, mode)
+    && (mode !== 'softpay_direct' || config?.mode === 'live')
+  ));
 }
 
 function preferredPaydunyaPayinMode(config) {

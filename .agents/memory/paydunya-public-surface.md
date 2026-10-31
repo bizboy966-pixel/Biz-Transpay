@@ -11,11 +11,11 @@ The customer-facing deposit surface must not receive or display provider mode na
 
 Payment links follow the same boundary: their public page exposes the link's own logo, title, description, amount and payment choices, never the owner's name or username. The fee bearer is read from the stored link configuration; public requests cannot override it.
 
-Admins may enable all supported Mobile Money providers at once. Provider selection must be capability-aware for the requested country, operator, currency, and payment flow. An enabled but unusable route must not shadow another ready provider. PayDunya SoftPay direct is the default supported mode; otherwise PSR or PAR redirect is usable only when exactly one is enabled.
+Admins may enable all supported Mobile Money providers at once. Provider selection must be capability-aware for the requested country, operator, currency, and payment flow. An enabled but unusable route must not shadow another ready provider. PayDunya SoftPay direct is available only in Live mode; otherwise PSR or PAR redirect is usable only when exactly one is enabled.
 
-**Why:** A fixed provider priority can hide Mobile Money or fail a transaction even though another enabled provider can serve the selected operator. Pay Junior was hidden because its default SoftPay direct mode was omitted from readiness checks; choosing arbitrarily between PSR and PAR would also make the payment flow unpredictable.
+**Why:** A fixed provider priority can hide Mobile Money or fail a transaction even though another enabled provider can serve the selected operator. PayDunya’s Sandbox SoftPay endpoint is a separate test-wallet flow that requires a password the app must not collect; it does not send an operator-specific T-Money request. Choosing arbitrarily between PSR and PAR would also make the payment flow unpredictable.
 
-**How to apply:** Use the same readiness checks for public catalog visibility and runtime dispatch. Return phone instructions for SoftPay direct, a popup for PSR, and a redirect only for PAR; fail closed when PSR and PAR are both enabled without SoftPay. Keep provider/mode details private and preserve existing idempotency barriers.
+**How to apply:** Use the same mode-aware readiness checks for public catalog visibility and runtime dispatch. For supported Live SoftPay operators, create an invoice, call the documented operator-specific endpoint with its token, and mark the prompt sent only after provider success. Verify pending invoices server-side from status reads, callbacks, and returns; never retry an ambiguous submission with the same idempotency key. Return a popup for PSR and a redirect only for PAR.
 
 Public payment links normally stay on the Biz-transPay page. The only redirect exception is a pending MbiyoPay Côte d'Ivoire Wave payment when Mbiyo returns a valid HTTPS checkout URL. Do not expose provider identity or checkout URLs for other providers or operators. A redirect or browser return is not proof of payment; signed callback verification, server-side status lookup, and the idempotent finalizer remain the settlement gate. A `UNIVERSAL` link must resolve the operator's actual catalog currency rather than filtering by the literal link currency.
 
@@ -23,11 +23,11 @@ Public payment links normally stay on the Biz-transPay page. The only redirect e
 
 **How to apply:** Filter fixed-currency links to matching operators, allow universal links to resolve by the selected operator, and expose only a validated generic redirect URL for a pending Mbiyo CI Wave payment. Keep credentials and provider names private and never settle from a browser return.
 
-Authenticated PayDunya SoftPay direct wallet deposits also keep their waiting and confirmation state inside Biz-transPay. Provider checkout URLs or timeout fallback markers for this flow are internal reconciliation data, not customer navigation actions. The browser follows the server-selected `payment_kind`, not the presence of a URL.
+Authenticated PayDunya SoftPay direct wallet deposits keep their waiting and confirmation state inside Biz-transPay. The invoice-creation response alone is not proof that an operator prompt was sent. Provider checkout URLs or timeout fallback markers remain internal; the browser follows server-selected `payment_kind`, not the presence of a URL.
 
-**Why:** The owner expects direct deposits to remain in the app through confirmation; an automatic hosted-checkout fallback sends the customer away and obscures the in-app pending state.
+**Why:** The provider requires a second, operator-specific SoftPay call after invoice creation. Claiming a prompt was sent after only creating an invoice leaves customers waiting for a payment request that never reached their phone.
 
-**How to apply:** For `softpay_direct`, return the generic phone action and reconcile the existing invoice server-side, including after an ambiguous timeout. Preserve separate PSR popup and explicitly selected PAR redirect behavior.
+**How to apply:** For `softpay_direct`, store the invoice token before dispatch, invoke only a documented operator endpoint, and return the generic phone action only after its positive response. On ambiguous timeouts, keep the invoice pending, verify it server-side, and block duplicate submissions. Preserve separate PSR popup and explicitly selected PAR redirect behavior.
 
 The sanitized public payment status must retain the payment method discriminator (`mobile_money` or `crypto`) so the browser chooses the matching tracker after creation.
 

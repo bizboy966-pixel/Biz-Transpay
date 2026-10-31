@@ -27,6 +27,7 @@ function setup({
     {
       id: 'payment_provider_paydunya',
       enabled: true,
+      mode: 'live',
       ...(paydunyaReady ? {
         master_key_encrypted: 'private-key',
         private_key_encrypted: 'private-key',

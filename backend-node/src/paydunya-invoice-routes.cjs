@@ -14,6 +14,9 @@ const mbiyoPayin = require('./mbiyo-payin.cjs');
 const {
   paydunyaModeEnabled, preferredPaydunyaPayinMode,
 } = require('./paydunya-payin-capabilities.cjs');
+const {
+  resolvePaydunyaSoftpayOperator, submitPaydunyaSoftpay,
+} = require('./paydunya-softpay.cjs');
 const INTEGRATION_USER = Symbol('paydunyaIntegrationUser');
 const INTEGRATION_LINK_PAYMENT = Symbol('paydunyaLinkPayment');
 
@@ -397,6 +400,20 @@ function createPaydunyaInvoiceRoutes({
         }
         selected ||= selectOperator(settings.catalog, country, operatorCode, 'paydunya');
         if (!selected) throw httpError(400, 'Opérateur non disponible pour ce pays.');
+        if (flow === 'softpay_direct') {
+          if (settings.mode !== 'live') {
+            throw httpError(
+              503,
+              'Le mode Sandbox PayDunya ne peut pas envoyer une demande T-Money réelle. Passez en mode Production.',
+            );
+          }
+          if (!resolvePaydunyaSoftpayOperator(selected.endpoint_slug, country)) {
+            throw httpError(
+              503,
+              'Le parcours PayDunya Mobile Money de cet opérateur n’est pas disponible.',
+            );
+          }
+        }
       } else if (provider === 'afribapay') {
         const depositConfig = await db.collection('settings').find_one(
           { id: 'deposit_config' }, { _id: 0 },
@@ -463,8 +480,12 @@ function createPaydunyaInvoiceRoutes({
         if (existing.request_fingerprint !== fingerprint) {
           throw httpError(409, 'Cette clé d’idempotence est déjà liée à une autre demande.');
         }
+        const recoverablePaydunyaPending = existing.provider === 'paydunya'
+          && existing.paydunya_flow === 'softpay_direct'
+          && existing.status === 'pending';
         if (existing.initiation_state !== 'ready'
-            && !(existing.provider === 'mbiyo' && existing.status === 'pending')) {
+            && !(existing.provider === 'mbiyo' && existing.status === 'pending')
+            && !recoverablePaydunyaPending) {
           throw httpError(409, 'La demande existe déjà et nécessite une vérification avant nouvelle tentative.');
         }
         const result = {
@@ -503,6 +524,21 @@ function createPaydunyaInvoiceRoutes({
             ? 'La confirmation prend du temps. Ne relancez pas ce dépôt; son statut sera vérifié ici.'
             : 'Suivez les instructions sur votre téléphone pour confirmer le paiement.';
           if (existing.redirect_url) result.redirect_url = existing.redirect_url;
+        } else if (existing.provider === 'paydunya' && flow === 'softpay_direct') {
+          const promptSent = Boolean(
+            existing.paydunya_softpay_state === 'sent' || existing.paydunya_softpay_sent_at,
+          );
+          result.payment_kind = 'phone';
+          result.payment_flow = existing.payment_flow || {};
+          result.prompt_sent = promptSent;
+          result.submission_unknown = Boolean(
+            existing.submission_unknown || (existing.status === 'pending' && !promptSent),
+          );
+          result.message = result.submission_unknown
+            ? 'L’envoi n’est pas confirmé. Vérifiez le statut et ne créez pas un second dépôt.'
+            : promptSent
+              ? 'La demande a été envoyée. Validez le paiement sur votre téléphone.'
+              : null;
         } else if (flow === 'par_redirect') {
           result.checkout_url = existing.checkout_url;
           result.payment_kind = 'redirect';
@@ -606,7 +642,13 @@ function createPaydunyaInvoiceRoutes({
           payment_flow: paymentFlow,
           otp_required: Boolean(paymentFlow.otp_required),
           challenge_status: paymentFlow.otp_required ? 'required' : 'pending',
-        } : { paydunya_flow: flow }),
+        } : {
+          paydunya_flow: flow,
+          ...(flow === 'softpay_direct' ? {
+            payment_flow: paymentFlow,
+            paydunya_softpay_state: 'not_started',
+          } : {}),
+        }),
         initiation_state: 'initiating',
         ...(req[INTEGRATION_LINK_PAYMENT] ? {
           link_payment_id: String(req[INTEGRATION_LINK_PAYMENT]),
@@ -953,12 +995,99 @@ function createPaydunyaInvoiceRoutes({
         paydunya_token: token,
         paydunya_reference: String(invoice.reference || invoice.invoice_id || ''),
         checkout_url: checkoutUrl || '',
-        initiation_state: 'ready',
+        initiation_state: flow === 'softpay_direct' ? 'initiating' : 'ready',
+        ...(flow === 'softpay_direct' ? {
+          paydunya_softpay_state: 'invoice_created',
+          paydunya_submission_phase: 'invoice_created',
+        } : {}),
         updated_at: new Date().toISOString(),
       } });
+      if (flow === 'softpay_direct') {
+        await deposits.update_one({ id: depositId, user_id: userId }, { $set: {
+          paydunya_softpay_state: 'dispatching',
+          paydunya_submission_phase: 'softpay_dispatching',
+          updated_at: new Date().toISOString(),
+        } });
+        try {
+          await submitPaydunyaSoftpay({
+            mode: config.mode,
+            endpointSlug: selected.endpoint_slug,
+            country,
+            fullName,
+            email,
+            phone,
+            paymentToken: token,
+            credentials,
+            fetchImpl,
+          });
+        } catch (error) {
+          const rejected = Boolean(error.providerRejected)
+            || (Number.isInteger(error.status) && error.status < 500);
+          if (rejected) {
+            await deposits.update_one(
+              { id: depositId, user_id: userId, status: 'pending' },
+              { $set: {
+                status: 'failed',
+                initiation_state: 'rejected',
+                initiation_error: 'provider_rejected',
+                provider_status: 'rejected',
+                submission_unknown: false,
+                paydunya_softpay_state: 'rejected',
+                paydunya_submission_phase: 'softpay_rejected',
+                next_reconcile_at: null,
+                updated_at: new Date().toISOString(),
+              } },
+            );
+            throw error;
+          }
+          await deposits.update_one({ id: depositId, user_id: userId, status: 'pending' }, { $set: {
+            initiation_state: 'unknown',
+            initiation_error: 'provider_outcome_unknown',
+            provider_status: 'unknown',
+            submission_unknown: true,
+            paydunya_softpay_state: 'unknown',
+            paydunya_submission_phase: 'softpay_outcome_unknown',
+            next_reconcile_at: new Date(Date.now() + 10_000).toISOString(),
+            updated_at: new Date().toISOString(),
+          } });
+          const fresh = await deposits.find_one(
+            { id: depositId, user_id: userId }, { _id: 0 },
+          ) || document;
+          reply(res, 200, {
+            ...require('./deposit-status-routes.cjs').publicMomoDeposit(fresh),
+            amount: fees.requested_amount,
+            requested_amount: fees.requested_amount,
+            charged_amount: fees.charged_amount,
+            gateway_fee: fees.gateway_fee,
+            platform_fee: fees.platform_fee,
+            total_fee: fees.total_fee,
+            fee_bearer: fees.fee_bearer,
+            mode: flow,
+            prompt_sent: false,
+            submission_unknown: true,
+            message: 'L’envoi n’est pas confirmé. Vérifiez les notifications et le statut; ne créez pas un second dépôt.',
+          });
+          return true;
+        }
+        await deposits.update_one({ id: depositId, user_id: userId, status: 'pending' }, { $set: {
+          initiation_state: 'ready',
+          provider_status: 'pending',
+          prompt_sent: true,
+          submission_unknown: false,
+          paydunya_softpay_state: 'sent',
+          paydunya_submission_phase: 'softpay_accepted',
+          paydunya_softpay_sent_at: new Date().toISOString(),
+          next_reconcile_at: new Date(Date.now() + 10_000).toISOString(),
+          updated_at: new Date().toISOString(),
+        } });
+      }
+      const fresh = await deposits.find_one(
+        { id: depositId, user_id: userId }, { _id: 0 },
+      ) || document;
       const result = {
+        ...require('./deposit-status-routes.cjs').publicMomoDeposit(fresh),
         id: depositId,
-        status: 'pending',
+        status: fresh.status || 'pending',
         amount: fees.requested_amount,
         requested_amount: fees.requested_amount,
         charged_amount: fees.charged_amount,
@@ -979,8 +1108,15 @@ function createPaydunyaInvoiceRoutes({
         result.psr_token_url = tokenUrl;
       } else {
         result.payment_kind = 'phone';
-        result.prompt_sent = true;
-        result.message = 'Suivez les instructions sur votre téléphone pour confirmer le paiement.';
+        result.prompt_sent = Boolean(
+          fresh.paydunya_softpay_state === 'sent' || fresh.paydunya_softpay_sent_at,
+        );
+        result.submission_unknown = Boolean(fresh.submission_unknown);
+        result.message = fresh.status === 'approved'
+          ? 'Paiement confirmé et portefeuille crédité.'
+          : result.prompt_sent
+            ? 'La demande a été envoyée. Validez le paiement sur votre téléphone.'
+            : 'L’envoi n’est pas confirmé. Vérifiez le statut avant toute nouvelle tentative.';
       }
       reply(res, 200, result);
     } catch (error) {

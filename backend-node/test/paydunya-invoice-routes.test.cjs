@@ -25,12 +25,12 @@ class Collection {
   }
 }
 
-function setup({ fetchImpl, modeEnabled = true } = {}) {
+function setup({ fetchImpl, modeEnabled = true, mode = 'test' } = {}) {
   const collections = {
     settings: new Collection([{
       id: 'payment_provider_paydunya',
       enabled: true,
-      mode: 'test',
+      mode,
       store_name: 'Biz-transPay',
       modes: {
         softpay_direct: { enabled: false },
@@ -308,14 +308,40 @@ test('generic Mobile Money start fails closed when PSR and PAR are both enabled 
 });
 
 test('generic Mobile Money uses SoftPay direct and returns phone instructions', async () => {
-  let providerCalls = 0;
+  const requests = [];
   const { service, collections } = setup({
-    fetchImpl: async () => {
-      providerCalls += 1;
+    mode: 'live',
+    fetchImpl: async (url, options) => {
+      requests.push({ url: String(url), options });
+      if (requests.length === 1) {
+        assert.match(String(url), /\/api\/v1\/checkout-invoice\/create$/);
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { response_code: '00', token: 'provider-invoice-token' }; },
+        };
+      }
+      assert.equal(
+        String(url),
+        'https://app.paydunya.com/api/v1/softpay/t-money-togo',
+      );
+      assert.equal(options.method, 'POST');
+      const body = JSON.parse(options.body);
+      assert.deepEqual(body, {
+        name_t_money: 'Awa Example',
+        email_t_money: 'payer@example.test',
+        phone_t_money: '90000000',
+        payment_token: 'provider-invoice-token',
+      });
       return {
         ok: true,
         status: 200,
-        async json() { return { response_code: '00', token: 'provider-softpay-token' }; },
+        async json() {
+          return {
+            success: true,
+            message: 'Votre paiement est en cours de traitement.',
+          };
+        },
       };
     },
   });
@@ -332,11 +358,106 @@ test('generic Mobile Money uses SoftPay direct and returns phone instructions', 
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(result.body.payment_kind, 'phone');
   assert.equal(result.body.mode, 'softpay_direct');
-  assert.equal(result.body.prompt_sent, true);
+  assert.equal(result.body.prompt_sent, true, JSON.stringify(result.body));
+  assert.equal(result.body.submission_unknown, false);
   assert.equal('checkout_url' in result.body, false);
   assert.equal('psr_token_url' in result.body, false);
   assert.equal(collections.momo_deposits.rows[0].paydunya_flow, 'softpay_direct');
-  assert.equal(providerCalls, 1);
+  assert.equal(collections.momo_deposits.rows[0].paydunya_softpay_state, 'sent');
+  assert.equal(requests.length, 2);
+});
+
+test('PayDunya SoftPay direct does not claim a prompt when the provider rejects it', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    mode: 'live',
+    fetchImpl: async () => {
+      providerCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return providerCalls === 1
+            ? { response_code: '00', token: 'provider-invoice-token' }
+            : { success: false, message: 'invalid phone' };
+        },
+      };
+    },
+  });
+  collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+
+  const result = await call(
+    service, '/api/deposits/mobile-money/start', depositRequest, 'generic-softpay-rejected-001',
+  );
+  assert.equal(result.status, 400);
+  assert.match(result.body.detail, /refusé la demande/i);
+  assert.equal(collections.momo_deposits.rows[0].status, 'failed');
+  assert.equal(collections.momo_deposits.rows[0].paydunya_softpay_state, 'rejected');
+  assert.equal(collections.momo_deposits.rows[0].prompt_sent, undefined);
+  assert.equal(providerCalls, 2);
+});
+
+test('PayDunya SoftPay direct reports uncertain outcomes and never resubmits an invoice', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    mode: 'live',
+    fetchImpl: async () => {
+      providerCalls += 1;
+      if (providerCalls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { response_code: '00', token: 'provider-invoice-token' }; },
+        };
+      }
+      throw new Error('simulated network timeout');
+    },
+  });
+  collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+
+  const first = await call(
+    service, '/api/deposits/mobile-money/start', depositRequest, 'generic-softpay-unknown-001',
+  );
+  const retry = await call(
+    service, '/api/deposits/mobile-money/start', depositRequest, 'generic-softpay-unknown-001',
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.body.status, 'pending');
+  assert.equal(first.body.prompt_sent, false);
+  assert.equal(first.body.submission_unknown, true);
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.prompt_sent, false);
+  assert.equal(retry.body.submission_unknown, true);
+  assert.equal(providerCalls, 2);
+});
+
+test('PayDunya Sandbox does not pretend to initiate a real operator request', async () => {
+  let providerCalls = 0;
+  const { service, collections } = setup({
+    fetchImpl: async () => {
+      providerCalls += 1;
+      throw new Error('Sandbox SoftPay should not be called without a wallet password');
+    },
+  });
+  collections.settings.rows[0].modes = {
+    softpay_direct: { enabled: true },
+    psr: { enabled: false },
+    par_redirect: { enabled: false },
+  };
+  const result = await call(
+    service, '/api/deposits/mobile-money/start', depositRequest, 'generic-softpay-sandbox-001',
+  );
+  assert.equal(result.status, 503);
+  assert.equal(providerCalls, 0);
+  assert.equal(collections.momo_deposits.rows.length, 0);
 });
 
 test('generic Mobile Money selects ready AfriBaPay when PayDunya has no usable flow', async () => {

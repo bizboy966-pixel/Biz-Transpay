@@ -250,7 +250,13 @@ function publicConfig(provider, doc, env) {
     for (const name of ['softpay_direct', 'psr', 'par_redirect']) {
       const raw = modes[name];
       const enabled = isObject(raw) ? raw.enabled !== false : Boolean(raw);
-      publicModes[name] = { enabled, available: Boolean(doc.enabled && isConfigured && enabled) };
+      publicModes[name] = {
+        enabled,
+        available: Boolean(
+          doc.enabled && isConfigured && enabled
+          && (name !== 'softpay_direct' || doc.mode === 'live'),
+        ),
+      };
     }
     const result = {
       enabled: doc.enabled !== false,
