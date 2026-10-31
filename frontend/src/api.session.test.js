@@ -66,6 +66,25 @@ describe('session rotation during payment status polling', () => {
     expect(window.location.href).toBe('/login');
   });
 
+  test('PayDunya payout errors display the provider message instead of raw JSON', async () => {
+    const error = {
+      config: {},
+      response: {
+        status: 422,
+        data: {
+          detail: {
+            code: 'PAYDUNYA_4002',
+            message: 'PayDunya a refusé la préparation du retrait. Le montant a été remboursé.',
+          },
+        },
+      },
+    };
+    await expect(onError(error)).rejects.toBe(error);
+    expect(error.response.data.detail).toBe(
+      'PayDunya a refusé la préparation du retrait. Le montant a été remboursé.',
+    );
+  });
+
   test('financial mutations are never replayed after rotation', async () => {
     api.post.mockResolvedValue({ data: { ok: true } });
     await refreshBrowserSession();

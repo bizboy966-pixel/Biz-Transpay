@@ -99,7 +99,11 @@ api.interceptors.response.use(
     if (raw && typeof raw !== 'string' && !preserveStructuredDetail) {
       let msg = 'Erreur de validation';
       try {
-        if (Array.isArray(raw) && raw.length > 0 && typeof raw[0]?.msg === 'string') {
+        if (typeof raw.code === 'string'
+            && /^PAYDUNYA_[A-Z0-9_]+$/.test(raw.code)
+            && typeof raw.message === 'string' && raw.message.trim()) {
+          msg = raw.message.trim();
+        } else if (Array.isArray(raw) && raw.length > 0 && typeof raw[0]?.msg === 'string') {
           msg = raw.map((e) => e.msg).join(' · ');
         } else {
           msg = JSON.stringify(raw);
