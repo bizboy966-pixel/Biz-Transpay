@@ -352,6 +352,7 @@ test('a provider-confirmed rejection refunds once and marks the payout failed', 
   const replay = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
   assert.equal(failed.status, 'failed');
   assert.equal(failed.metadata.refunded, true);
+  assert.equal(failed.metadata.manual_review_required, false);
   assert.equal(replay.status, 'failed');
   assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
   assert.equal(requests.length, 2);
@@ -408,6 +409,106 @@ test('PayDunya payout uses its two-step disbursement flow with provider callback
     disburse_invoice: 'pd-invoice-1',
     disburse_id: result.transaction.id,
   });
+});
+
+test('PayDunya status polling verifies the invoice and reconciles success without resubmitting', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya', withdraw_mode: 'tmoney_tg',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  const requests = [];
+  const service = createMobileMoneyPayoutService({
+    db, sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith('/get-invoice')) {
+        return providerResponse({ response_code: '00', disburse_token: 'pd-poll-1' });
+      }
+      if (url.endsWith('/submit-invoice')) {
+        return providerResponse({ response_code: '00', status: 'pending' });
+      }
+      return providerResponse({
+        response_code: '00',
+        status: 'completed',
+        disburse_token: 'pd-poll-1',
+        withdraw_mode: 't-money-togo',
+        amount: 1000,
+      });
+    },
+  });
+  const created = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-paydunya-poll-001',
+  );
+  const stored = db.rows.transactions.get(created.transaction.id);
+  stored.metadata = JSON.stringify(stored.metadata);
+  const refreshed = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
+  assert.equal(refreshed.status, 'completed');
+  assert.equal(refreshed.metadata.paydunya_invoice_token, undefined);
+  assert.equal(db.rows.transactions.get(created.transaction.id).status, 'completed');
+  assert.equal(requests.filter(({ url }) => url.endsWith('/submit-invoice')).length, 1);
+  assert.equal(requests.filter(({ url }) => url.endsWith('/check-status')).length, 1);
+});
+
+test('PayDunya verified terminal failure refunds once during status polling', async () => {
+  const db = new MemoryDb();
+  const transfer = db.rows.settings.get('transfer_config');
+  transfer.mobile_money.operators[0] = {
+    ...transfer.mobile_money.operators[0],
+    provider: 'paydunya', withdraw_mode: 'tmoney_tg',
+  };
+  db.rows.settings.set('payment_provider_paydunya', {
+    id: 'payment_provider_paydunya', enabled: true, mode: 'live',
+  });
+  const requests = [];
+  const service = createMobileMoneyPayoutService({
+    db, sessionSecret: 'test-session-secret',
+    env: {
+      OFFICIAL_DOMAIN: 'https://biz-transpay.com',
+      PAYDUNYA_MASTER_KEY: 'master',
+      PAYDUNYA_PRIVATE_KEY: 'private',
+      PAYDUNYA_TOKEN: 'token',
+    },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url.endsWith('/get-invoice')) {
+        return providerResponse({ response_code: '00', disburse_token: 'pd-fail-1' });
+      }
+      if (url.endsWith('/submit-invoice')) {
+        return providerResponse({ response_code: '00', status: 'pending' });
+      }
+      return providerResponse({
+        response_code: '00',
+        status: 'rejected',
+        disburse_token: 'pd-fail-1',
+        withdraw_mode: 't-money-togo',
+        amount: 1000,
+      });
+    },
+  });
+  const created = await service.createIntegrationPayout(
+    'merchant-1', payout(), 'idempotency-paydunya-poll-002',
+  );
+  const stored = db.rows.transactions.get(created.transaction.id);
+  stored.metadata = JSON.stringify(stored.metadata);
+  const failed = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
+  const replay = await service.refreshPayoutStatus(created.transaction.id, 'merchant-1');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.metadata.refunded, true);
+  assert.equal(replay.status, 'failed');
+  assert.equal(db.rows.users.get('merchant-1').balance_xof, 10_000);
+  assert.equal(requests.filter(({ url }) => url.endsWith('/check-status')).length, 1);
+  assert.ok(db.rows.transactions.has(`payout-refund-${created.transaction.id}`));
 });
 
 test('PayDunya payout rejects a mode that does not match the selected operator before debit', async () => {

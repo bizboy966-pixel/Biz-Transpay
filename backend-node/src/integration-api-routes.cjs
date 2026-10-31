@@ -63,6 +63,35 @@ function publicMobileMoneyDeposit(document) {
   ]);
 }
 
+function publicMobileMoneyPayout(transaction) {
+  const metadata = typeof transaction?.metadata === 'string'
+    ? (() => { try { return JSON.parse(transaction.metadata); } catch { return {}; } })()
+    : (transaction?.metadata || {});
+  return {
+    ...pickFields(transaction, [
+      'id', 'reference', 'status', 'amount', 'currency',
+      'created_at', 'updated_at', 'completed_at',
+    ]),
+    pending_manual: Boolean(metadata.manual_review_required || metadata.provider_outcome_unknown),
+  };
+}
+
+function mobileMoneyPayoutResponse(transaction, pendingManual = false) {
+  const payout = publicMobileMoneyPayout(transaction);
+  return {
+    id: String(payout.id || ''),
+    status: String(payout.status || 'pending'),
+    payout: {
+      id: String(payout.id || ''),
+      reference: String(payout.reference || ''),
+      status: String(payout.status || 'pending'),
+      amount: Number(payout.amount),
+      currency: String(payout.currency || '').toUpperCase(),
+      ...(pendingManual || payout.pending_manual ? { pending_manual: true } : {}),
+    },
+  };
+}
+
 function reply(res, status, body) {
   res.writeHead(status, {
     'Cache-Control': 'no-store',
@@ -273,6 +302,31 @@ function createIntegrationApiRoutes({
             return true;
           }
           if (existing.response) {
+            let previousTransaction = await db.collection('transactions').find_one({
+              id: String(existing.business_id || ''),
+              user_id: String(credential.user_id),
+            }, { _id: 0 });
+            if (previousTransaction) {
+              if (typeof refreshMobileMoneyPayout === 'function') {
+                try {
+                  previousTransaction = await refreshMobileMoneyPayout(
+                    previousTransaction.id, credential.user_id,
+                  ) || previousTransaction;
+                } catch { /* A status polling failure never resubmits a payout. */ }
+              }
+              const response = mobileMoneyPayoutResponse(previousTransaction);
+              await operations.update_one({
+                id: operationId,
+                user_id: String(credential.user_id),
+                environment: credential.environment,
+              }, { $set: {
+                status: response.status,
+                response,
+                updated_at: new Date(now()).toISOString(),
+              } });
+              reply(res, 200, response);
+              return true;
+            }
             reply(res, 200, existing.response);
             return true;
           }
@@ -288,18 +342,9 @@ function createIntegrationApiRoutes({
           reply(res, 502, { detail: 'The payout was not safely recorded.' });
           return true;
         }
-        const response = {
-          id: String(transaction.id),
-          status: String(transaction.status),
-          payout: {
-            id: String(transaction.id),
-            reference: String(transaction.reference || ''),
-            status: String(transaction.status),
-            amount: Number(transaction.amount),
-            currency: String(transaction.currency || '').toUpperCase(),
-            ...(result?.pending_manual ? { pending_manual: true } : {}),
-          },
-        };
+        const response = mobileMoneyPayoutResponse(
+          transaction, Boolean(result?.pending_manual),
+        );
         const timestamp = new Date(now()).toISOString();
         await operations.replace_one(
           { id: operationId },
@@ -695,7 +740,23 @@ function createIntegrationApiRoutes({
           reply(res, 404, { detail: kind === 'crypto_deposit' ? 'Crypto deposit not found' : 'Deposit not found' });
           return true;
         }
-        if (payoutMatch) reply(res, 200, transaction);
+        if (payoutMatch) {
+          const safePayout = publicMobileMoneyPayout(transaction);
+          const payoutResponse = mobileMoneyPayoutResponse(transaction);
+          await db.collection('integration_operations').update_one(
+            {
+              id: operation.id,
+              user_id: String(credential.user_id),
+              environment: credential.environment,
+            },
+            { $set: {
+              status: payoutResponse.status,
+              response: payoutResponse,
+              updated_at: new Date(now()).toISOString(),
+            } },
+          );
+          reply(res, 200, safePayout);
+        }
         else if (cryptoPayoutMatch) reply(res, 200, publicCryptoPayout(transaction));
         else if (cryptoDepositMatch) reply(res, 200, publicCryptoDeposit(document));
         else reply(res, 200, publicMobileMoneyDeposit(document));

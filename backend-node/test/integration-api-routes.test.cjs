@@ -78,7 +78,7 @@ function setup({
   scopes = ['transactions:read'],
   environment = 'live',
   executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-  createCryptoPayout, createMobileMoneyPayout,
+  createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
 } = {}) {
   const selectedPublicKey = environment === 'test' ? 'pk_test_demo' : publicKey;
   const selectedSecretKey = environment === 'test' ? 'sk_test_demo' : secretKey;
@@ -180,7 +180,7 @@ function setup({
   const service = createIntegrationApiRoutes({
     db, now: () => now, getCryptoAssets, getMobileMoneyOperators, getExchangeQuote,
     executeExchange, createPaymentLink, createCryptoDeposit, createMobileMoneyDeposit,
-    createCryptoPayout, createMobileMoneyPayout,
+    createCryptoPayout, createMobileMoneyPayout, refreshMobileMoneyPayout,
   });
   return { service, collections };
 }
@@ -509,6 +509,82 @@ test('integration Mobile Money payout requires opt-in, KYC, scope and persists i
   });
   assert.equal((await call(noKyc.service, request)).status, 403);
   assert.equal(submitted.length, 1);
+});
+
+test('integration API refreshes PayDunya payouts without resubmitting or exposing invoice tokens', async () => {
+  let collections;
+  let createCalls = 0;
+  const refreshCalls = [];
+  const transaction = {
+    id: 'api-paydunya-payout-1',
+    user_id: 'merchant-1',
+    reference: 'BTP-WD-PD001',
+    status: 'pending',
+    amount: 2000,
+    currency: 'XOF',
+    created_at: '2026-10-31T10:00:00.000Z',
+    metadata: {
+      provider: 'paydunya',
+      paydunya_invoice_token: 'must-not-leak',
+      manual_review_required: true,
+    },
+  };
+  const { service, collections: testCollections } = setup({
+    scopes: ['transactions:read', 'payouts:write'],
+    payoutOptIn: true,
+    createMobileMoneyPayout: async () => {
+      createCalls += 1;
+      collections.transactions.rows.push(structuredClone(transaction));
+      return { transaction };
+    },
+    refreshMobileMoneyPayout: async (id, userId) => {
+      refreshCalls.push({ id, userId });
+      const current = collections.transactions.rows.find(row => row.id === id);
+      current.status = 'completed';
+      current.completed_at = '2026-10-31T10:01:00.000Z';
+      current.metadata.manual_review_required = false;
+      current.metadata.paydunya_invoice_token = 'must-not-leak';
+      return current;
+    },
+  });
+  collections = testCollections;
+  const request = {
+    method: 'POST',
+    url: '/api/integration/v1/payouts',
+    idempotencyKey: 'paydunya-api-payout-01',
+    body: {
+      amount: 2000, currency: 'XOF', country: 'TG',
+      operator: 'tmoney_tg', recipient: '90123456',
+    },
+  };
+  const created = await call(service, request);
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.equal(created.body.status, 'pending');
+  assert.equal(JSON.stringify(created.body).includes('must-not-leak'), false);
+
+  const replay = await call(service, request);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.status, 'completed');
+  assert.equal(createCalls, 1);
+
+  const detail = await call(service, {
+    url: `/api/integration/v1/payouts/${transaction.id}`,
+  });
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.status, 'completed');
+  assert.equal(detail.body.pending_manual, false);
+  assert.equal(Object.hasOwn(detail.body, 'metadata'), false);
+  assert.equal(JSON.stringify(detail.body).includes('must-not-leak'), false);
+  assert.deepEqual(refreshCalls, [
+    { id: transaction.id, userId: 'merchant-1' },
+    { id: transaction.id, userId: 'merchant-1' },
+  ]);
+  const operation = collections.integration_operations.rows.find(
+    row => row.kind === 'payout' && row.business_id === transaction.id,
+  );
+  assert.equal(operation.status, 'completed');
+  assert.equal(operation.response.status, 'completed');
+  assert.equal(operation.response.payout.status, 'completed');
 });
 
 test('integration payment-link creation requires scope and persists an owner-scoped result', async () => {

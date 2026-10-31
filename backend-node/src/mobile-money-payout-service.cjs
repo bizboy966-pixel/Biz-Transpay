@@ -61,13 +61,35 @@ function providerId(payload) {
   return String(data?.transaction_id || data?.id || data?.reference || '').trim();
 }
 
+function payoutMetadata(transaction) {
+  const value = transaction?.metadata;
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch { return {}; }
+  }
+  return {};
+}
+
 function publicPayoutTransaction(transaction) {
   if (!transaction || typeof transaction !== 'object') return transaction;
-  const metadata = transaction.metadata && typeof transaction.metadata === 'object'
-    && !Array.isArray(transaction.metadata)
-    ? { ...transaction.metadata } : null;
-  if (metadata) delete metadata.paydunya_invoice_token;
-  return metadata ? { ...transaction, metadata } : transaction;
+  if (!Object.hasOwn(transaction, 'metadata')) return transaction;
+  if (typeof transaction.metadata === 'string') {
+    const metadata = { ...payoutMetadata(transaction) };
+    delete metadata.paydunya_invoice_token;
+    return { ...transaction, metadata };
+  }
+  if (!transaction.metadata || typeof transaction.metadata !== 'object'
+      || Array.isArray(transaction.metadata)) {
+    const safe = { ...transaction };
+    delete safe.metadata;
+    return safe;
+  }
+  const metadata = { ...transaction.metadata };
+  delete metadata.paydunya_invoice_token;
+  return { ...transaction, metadata };
 }
 
 const PAYDUNYA_WITHDRAW_MODES = new Set([
@@ -264,7 +286,7 @@ function createMobileMoneyPayoutService({
   db, sessionSecret = '', env = process.env, fetchImpl = globalThis.fetch,
 }) {
   async function refundRejectedPayout(transaction, statusValue) {
-    const metadata = transaction?.metadata || {};
+    const metadata = payoutMetadata(transaction);
     const provider = String(metadata.provider || '');
     const walletField = String(metadata.wallet_field
       || `balance_${String(transaction?.currency || '').toLowerCase()}`);
@@ -305,6 +327,7 @@ function createMobileMoneyPayoutService({
         status: 'failed', completed_at: verifiedAt, updated_at: verifiedAt,
         'metadata.provider_status': String(statusValue || 'rejected'),
         'metadata.refunded': true,
+         'metadata.manual_review_required': false,
         'metadata.refund_operation_id': operationId,
         'metadata.refund_wallet_snapshot': refund.snapshot || null,
       } },
@@ -716,16 +739,119 @@ function createMobileMoneyPayoutService({
     const transaction = await transactions.find_one({
       id: String(transactionId), user_id: String(userId),
     }, { _id: 0 });
-    if (!transaction || transaction.status !== 'pending') return transaction;
-    const metadata = transaction.metadata || {};
+    if (!transaction || transaction.status !== 'pending') {
+      return publicPayoutTransaction(transaction);
+    }
+    const metadata = payoutMetadata(transaction);
     const provider = String(metadata.provider || '');
-    if (!['mbiyo', 'afribapay'].includes(provider)
-        || metadata.submission_phase !== 'provider_id_persisted') return transaction;
+    if (!['paydunya', 'mbiyo', 'afribapay'].includes(provider)
+        || (provider !== 'paydunya'
+          && metadata.submission_phase !== 'provider_id_persisted')) {
+      return publicPayoutTransaction(transaction);
+    }
     const settings = db.collection('settings');
     const config = await settings.find_one(
       { id: `payment_provider_${provider}` }, { _id: 0 },
     );
-    if (!config?.enabled || String(config.mode || '').toLowerCase() !== 'live') return transaction;
+    if (!config?.enabled || String(config.mode || '').toLowerCase() !== 'live') {
+      return publicPayoutTransaction(transaction);
+    }
+
+    if (provider === 'paydunya') {
+      const token = String(metadata.paydunya_invoice_token || '').trim();
+      const mode = String(metadata.paydunya_withdraw_mode || '').trim().toLowerCase();
+      const amount = Number(metadata.paydunya_amount ?? metadata.recipient_gets);
+      const disbursementId = String(metadata.paydunya_disbursement_id || transaction.id);
+      if (!token || !PAYDUNYA_WITHDRAW_MODES.has(mode)
+          || !Number.isSafeInteger(amount) || amount <= 0) {
+        return publicPayoutTransaction(transaction);
+      }
+      const polledAt = new Date().toISOString();
+      try {
+        const credentials = loadCredentials(config, sessionSecret, env);
+        const statusCheck = await checkPaydunyaDisbursement(
+          fetchImpl,
+          'https://app.paydunya.com',
+          {
+            'PAYDUNYA-MASTER-KEY': credentials.master_key,
+            'PAYDUNYA-PRIVATE-KEY': credentials.private_key,
+            'PAYDUNYA-TOKEN': credentials.token,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          { token, mode, amount, disbursementId },
+        );
+        if (!statusCheck.verified || !statusCheck.status) {
+          await transactions.update_one(
+            { id: transaction.id, status: 'pending' },
+            { $set: {
+              'metadata.last_status_poll_error': 'status_unverified',
+              'metadata.last_status_poll_at': polledAt,
+            } },
+          );
+          return publicPayoutTransaction(transaction);
+        }
+        const currentStatus = statusCheck.status;
+        const successful = [
+          'success', 'successful', 'completed', 'confirmed', 'paid', 'approved',
+        ].includes(currentStatus);
+        const failed = [
+          'failed', 'rejected', 'cancelled', 'canceled', 'error',
+        ].includes(currentStatus);
+        if (failed) {
+          await refundRejectedPayout(transaction, currentStatus);
+          await transactions.update_one(
+            { id: transaction.id, status: 'failed' },
+            { $set: {
+              'metadata.paydunya_status': currentStatus,
+              'metadata.paydunya_response_code': statusCheck.responseCode || null,
+              'metadata.last_status_poll_at': polledAt,
+              'metadata.last_status_poll_error': null,
+            } },
+          );
+        } else if (successful) {
+          await transactions.update_one(
+            { id: transaction.id, status: 'pending' },
+            { $set: {
+              status: 'completed',
+              completed_at: polledAt,
+              updated_at: polledAt,
+              'metadata.provider_status': currentStatus,
+              'metadata.paydunya_status': currentStatus,
+              'metadata.paydunya_response_code': statusCheck.responseCode || null,
+              'metadata.provider_verified_at': polledAt,
+              'metadata.last_status_poll_at': polledAt,
+              'metadata.last_status_poll_error': null,
+              'metadata.manual_review_required': false,
+            } },
+          );
+        } else {
+          await transactions.update_one(
+            { id: transaction.id, status: 'pending' },
+            { $set: {
+              'metadata.provider_status': currentStatus,
+              'metadata.paydunya_status': currentStatus,
+              'metadata.paydunya_response_code': statusCheck.responseCode || null,
+              'metadata.last_status_poll_at': polledAt,
+              'metadata.last_status_poll_error': null,
+            } },
+          );
+        }
+        const refreshed = await transactions.find_one(
+          { id: transaction.id, user_id: String(userId) }, { _id: 0 },
+        );
+        return publicPayoutTransaction(refreshed || transaction);
+      } catch {
+        await transactions.update_one(
+          { id: transaction.id, status: 'pending' },
+          { $set: {
+            'metadata.last_status_poll_error': 'provider_unavailable',
+            'metadata.last_status_poll_at': polledAt,
+          } },
+        );
+        return publicPayoutTransaction(transaction);
+      }
+    }
 
     let response;
     let payload;

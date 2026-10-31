@@ -18,3 +18,16 @@ correlation leaves confirmed payouts stuck.
 **How to apply:** Keep submit/status reconciliation and callbacks idempotent;
 use mocked provider responses in tests and never send real payout requests as
 automated verification.
+
+Biz-transPay’s merchant API must use that same payout status reconciler for
+detail reads and idempotent replays. A replay or status read may poll and settle
+an existing payout, but must never submit it again; API responses must omit the
+PayDunya invoice token and internal provider metadata.
+
+**Why:** A stale API snapshot can leave a confirmed withdrawal marked pending,
+while exposing the internal token or resubmitting from a read can compromise
+provider security or duplicate money movement.
+
+**How to apply:** Wire API reads to the shared reconciler, keep idempotency
+records synchronized with the transaction, and return only the documented
+provider-neutral payout fields.
