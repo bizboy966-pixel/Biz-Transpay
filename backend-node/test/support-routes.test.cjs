@@ -68,7 +68,9 @@ function setup(seed = {}) {
     db,
     sessionService: {
       async authenticate(token) {
-        if (token === 'admin-session') return { userId: 'admin-1' };
+        if (token === 'admin-session') {
+          return { userId: 'admin-1', session: { admin_panel_unlocked_at: new Date() } };
+        }
         if (token !== 'support-session') {
           const error = new Error('Session requise');
           error.status = 401;

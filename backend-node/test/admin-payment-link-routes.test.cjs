@@ -91,7 +91,10 @@ function setup() {
       if (token !== 'admin-session') {
         throw Object.assign(new Error('Session requise'), { status: 401 });
       }
-      return { userId: 'admin', session: { admin_auth_method: 'totp' } };
+      return {
+        userId: 'admin',
+        session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
+      };
     },
     requireRecentAuth() {},
   };

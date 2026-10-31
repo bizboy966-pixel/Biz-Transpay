@@ -55,7 +55,10 @@ function setup(target = {}) {
         error.status = 401;
         throw error;
       }
-      return { userId: 'admin-1', session: { admin_auth_method: 'totp' } };
+      return {
+        userId: 'admin-1',
+        session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
+      };
     },
     requireRecentAuth() {},
   };

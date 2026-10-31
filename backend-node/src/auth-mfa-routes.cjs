@@ -277,7 +277,6 @@ function createAuthMfaRoutes({ db, sessionService, jwtSecret, sessionSecret }) {
       });
       return true;
     } catch (error) {
-      if (process.env.DEBUG_ADMIN_PANEL === '1') console.error(error);
       const status = Number.isInteger(error.status) ? error.status : 500;
       const detail = error.code
         ? { code: error.code, message: error.message, ...(error.extra || {}) }

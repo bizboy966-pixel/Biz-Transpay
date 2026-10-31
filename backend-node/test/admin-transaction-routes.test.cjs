@@ -168,7 +168,10 @@ function setup({ includeExchanges = false } = {}) {
       if (token !== 'admin-session') {
         throw Object.assign(new Error('Session requise'), { status: 401, code: 'SESSION_REQUIRED' });
       }
-      return { userId: 'admin-1', session: { admin_auth_method: 'totp' } };
+      return {
+        userId: 'admin-1',
+        session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
+      };
     },
   };
   return { db, routes: createAdminTransactionRoutes({ db, sessionService, env: {} }) };

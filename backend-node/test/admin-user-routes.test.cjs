@@ -112,7 +112,10 @@ function setup({ sessionUserId = 'staff-1', staff = {} } = {}) {
         if (token !== 'admin-session') {
           throw Object.assign(new Error('Session requise'), { status: 401, code: 'SESSION_REQUIRED' });
         }
-        return { userId: sessionUserId, session: { admin_auth_method: 'totp' } };
+        return {
+          userId: sessionUserId,
+          session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
+        };
       },
     },
   });

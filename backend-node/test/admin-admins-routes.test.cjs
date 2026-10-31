@@ -88,7 +88,7 @@ function destructiveSetup(seed = {}) {
     sessionService: {
       async authenticate(token) {
         if (token !== 'admin-session') throw Object.assign(new Error('Session requise'), { status: 401 });
-        return { userId: 'owner', session: { admin_auth_method: 'totp' } };
+        return { userId: 'owner', session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() } };
       },
       requireRecentAuth() {},
     },
@@ -130,7 +130,7 @@ test('admin list returns only safe admin profile fields and applies the default 
     sessionService: {
       async authenticate(token) {
         if (token !== 'admin-session') throw Object.assign(new Error('Session requise'), { status: 401 });
-        return { userId: 'owner', session: { admin_auth_method: 'totp' } };
+        return { userId: 'owner', session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() } };
       },
     },
     env: {},

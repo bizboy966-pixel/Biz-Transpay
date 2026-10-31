@@ -46,7 +46,12 @@ function setup({ users = [], transactions = [], momo = [], crypto = [], settings
     db: { collection: name => collections[name] },
     sessionService: {
       async authenticate(token) {
-        if (token === 'admin-session') return { userId: 'admin-1' };
+        if (token === 'admin-session') {
+          return {
+            userId: 'admin-1',
+            session: { admin_panel_unlocked_at: new Date() },
+          };
+        }
         throw Object.assign(new Error('Session requise'), { status: 401 });
       },
     },

@@ -51,7 +51,10 @@ function setup({ user = {}, settings = [], env = {} } = {}) {
   const sessionService = {
     authenticate: async token => {
       assert.equal(token, 'synthetic-admin-session');
-      return { userId: 'admin-1', session: { admin_auth_method: 'totp' } };
+      return {
+        userId: 'admin-1',
+        session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
+      };
     },
     requireRecentAuth() { authChecks.recent += 1; },
   };

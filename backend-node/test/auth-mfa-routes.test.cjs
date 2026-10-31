@@ -46,6 +46,12 @@ class MemoryCollection {
     for (const old of selected) this.documents[this.documents.indexOf(old)] = applyUpdate(old, changes);
     return { matched_count: selected.length, modified_count: selected.length };
   }
+  async delete_one(query) {
+    const index = this.documents.findIndex(doc => matches(doc, query));
+    if (index < 0) return { deleted_count: 0 };
+    this.documents.splice(index, 1);
+    return { deleted_count: 1 };
+  }
 }
 
 class MemoryDatabase {
@@ -183,6 +189,17 @@ test('administrator APIs stay locked until a valid TOTP opens the panel', async 
     assert.equal(blocked.status, 428);
     assert.equal((await blocked.json()).detail.code, 'ADMIN_PANEL_MFA_REQUIRED');
 
+    const expiredIssue = await app.sessionService.issue(user.id, {
+      adminAuthMethod: 'pin',
+      userPinRequired: false,
+      adminPanelUnlockedAt: new Date(Date.now() - (15 * 60 * 1000) - 1),
+    });
+    const expired = await fetch(`${app.base}/api/admin/settings/features`, {
+      headers: { cookie: cookieHeader(expiredIssue).split(';')[0] },
+    });
+    assert.equal(expired.status, 428);
+    assert.equal((await expired.json()).detail.code, 'ADMIN_PANEL_MFA_REQUIRED');
+
     const unlock = await fetch(`${app.base}/api/auth/admin-panel/verify`, {
       method: 'POST',
       headers: {
@@ -214,7 +231,9 @@ test('administrator APIs stay locked until a valid TOTP opens the panel', async 
     assert.equal(me.status, 200);
     assert.equal(profile.admin_panel_unlocked, true);
     assert.ok(profile.admin_panel_unlocked_until);
-    assert.equal(db.collection('admin_logs').documents.at(-1).action, 'admin_panel_unlocked');
+    assert.ok(db.collection('admin_logs').documents.some(
+      row => row.action === 'admin_panel_unlocked',
+    ));
   } finally {
     await app.close();
   }

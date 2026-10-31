@@ -98,7 +98,11 @@ function setup({ role = 'finance', authMethod = 'totp', lastAuthAt = new Date(),
       }
       return {
         userId: 'staff-1',
-        session: { admin_auth_method: authMethod, last_auth_at: lastAuthAt },
+        session: {
+          admin_auth_method: authMethod,
+          last_auth_at: lastAuthAt,
+          admin_panel_unlocked_at: new Date(),
+        },
       };
     },
     requireRecentAuth(identity) {

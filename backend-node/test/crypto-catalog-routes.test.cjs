@@ -93,7 +93,9 @@ function makeSetup({
     db,
     sessionService: {
       async authenticate(token) {
-        if (token === 'valid-session') return { userId: 'user-1' };
+        if (token === 'valid-session') {
+          return { userId: 'user-1', session: { admin_panel_unlocked_at: new Date() } };
+        }
         throw Object.assign(new Error('Session requise'), { status: 401 });
       },
       requireRecentAuth(authenticated) { return authenticated.userId; },

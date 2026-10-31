@@ -40,7 +40,7 @@ function setup() {
       }
       return {
         userId: admin.id,
-        session: { admin_auth_method: 'totp' },
+        session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
       };
     },
     requireRecentAuth() {},

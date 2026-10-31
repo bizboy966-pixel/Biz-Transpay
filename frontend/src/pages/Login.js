@@ -60,14 +60,17 @@ export default function Login() {
   const completeLogin = (data) => {
     if (data.mfa_required) {
       setMfaToken(data.mfa_token);
-      setSecurityMethods(data.security_methods || ['totp']);
-      setSecurityMethod(data.security_methods?.includes('pin') ? 'pin' : 'totp');
+      const methods = data.security_methods || ['totp'];
+      setSecurityMethods(methods);
+      setSecurityMethod(methods.includes('pin') ? 'pin' : 'totp');
       setOtp('');
       setPin('');
       setStep('mfa');
       setChallenge(null);
       setChallengeSolution('');
-      toast.success('Choisissez votre méthode de vérification');
+      toast.success(methods.length === 1 && methods[0] === 'pin'
+        ? 'Saisissez votre code PIN pour continuer'
+        : 'Confirmez votre identité pour continuer');
       return;
     }
     if (data.mfa_setup_required) {

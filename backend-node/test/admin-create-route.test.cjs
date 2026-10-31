@@ -51,7 +51,7 @@ function setup(role = 'super_admin') {
         }
         return {
           userId: 'owner-1',
-          session: { admin_auth_method: 'totp' },
+          session: { admin_auth_method: 'totp', admin_panel_unlocked_at: new Date() },
         };
       },
       requireRecentAuth() {},
