@@ -481,12 +481,28 @@ function createAdminSettingsRoutes({ db, sessionService, env = process.env }) {
         };
         const deliveryStatus = transactionEmailView(candidate, env);
         if (body.enabled && !deliveryStatus.ready_to_send) {
+          if (!deliveryStatus.resend_configured && !deliveryStatus.sender_configured) {
+            throw fail(409,
+              'Configuration incomplète : ajoutez RESEND_API_KEY dans les variables d’environnement de Plesk et saisissez une adresse d’expédition valide sur un domaine vérifié dans Resend.');
+          }
+          if (!deliveryStatus.resend_configured) {
+            throw fail(409,
+              'RESEND_API_KEY est absent de l’environnement du serveur. Ajoutez-le dans Plesk > Node.js > Environment Variables, puis redémarrez l’application.');
+          }
           throw fail(409,
-            'Configurez Resend et une adresse d’expédition valide avant d’activer les e-mails.');
+            'Adresse d’expédition invalide. Saisissez une adresse sur un domaine vérifié dans Resend.');
         }
         if (withdrawalOtpEnabled && !deliveryStatus.ready_to_send) {
+          if (!deliveryStatus.resend_configured && !deliveryStatus.sender_configured) {
+            throw fail(409,
+              'Configuration incomplète : ajoutez RESEND_API_KEY dans les variables d’environnement de Plesk et saisissez une adresse d’expédition valide sur un domaine vérifié dans Resend avant d’activer le code OTP.');
+          }
+          if (!deliveryStatus.resend_configured) {
+            throw fail(409,
+              'RESEND_API_KEY est absent de l’environnement du serveur. Ajoutez-le dans Plesk > Node.js > Environment Variables, puis redémarrez l’application avant d’activer le code OTP.');
+          }
           throw fail(409,
-            'Configurez Resend et une adresse d’expédition valide avant d’activer le code OTP.');
+            'Adresse d’expédition invalide. Saisissez une adresse sur un domaine vérifié dans Resend avant d’activer le code OTP.');
         }
         await db.collection('settings').update_one(
           { id: TRANSACTION_EMAIL_DEFAULTS.id }, { $set: candidate }, true,

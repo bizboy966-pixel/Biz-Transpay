@@ -190,8 +190,22 @@ test('admin email settings redact secrets, expose readiness, and require fresh a
     row.action === 'update_transaction_email_settings'), true);
 });
 
-test('admin email notifications cannot be activated without Resend and a valid sender', async () => {
+test('admin email notifications explain missing Plesk Resend configuration', async () => {
   const { service, collections } = setup();
+  const rejected = await call(service, 'PUT', '/api/admin/email-notifications', {
+    enabled: true,
+    sender_email: 'notifications@example.test',
+    event_types: ['deposit_confirmed'],
+    content_fields: ['event_status'],
+  });
+  assert.equal(rejected.status, 409);
+  assert.match(rejected.body.detail, /RESEND_API_KEY/);
+  assert.match(rejected.body.detail, /Plesk/);
+  assert.equal(collections.settings.rows.length, 0);
+});
+
+test('admin email notifications identify an invalid sender separately from missing Resend', async () => {
+  const { service, collections } = setup({ env: { RESEND_API_KEY: 'test-resend-key' } });
   const rejected = await call(service, 'PUT', '/api/admin/email-notifications', {
     enabled: true,
     sender_email: 'not-an-email',
@@ -199,6 +213,8 @@ test('admin email notifications cannot be activated without Resend and a valid s
     content_fields: ['event_status'],
   });
   assert.equal(rejected.status, 409);
+  assert.match(rejected.body.detail, /Adresse d’expédition invalide/);
+  assert.doesNotMatch(rejected.body.detail, /RESEND_API_KEY/);
   assert.equal(collections.settings.rows.length, 0);
 });
 

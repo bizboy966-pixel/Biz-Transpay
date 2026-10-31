@@ -188,8 +188,23 @@ export default function AdminEmailNotifications() {
           {!settings.resend_configured && (
             <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-              <p>Connectez Resend via les intégrations Replit. Les anciennes configurations peuvent conserver <code>RESEND_API_KEY</code> dans les Secrets ; ne saisissez aucune clé ici.</p>
+              <p>
+                Le serveur Plesk ne détecte pas Resend. Ajoutez <code>RESEND_API_KEY</code> dans
+                Plesk &gt; Node.js &gt; Environment Variables, enregistrez, puis redémarrez
+                l’application. Ne collez jamais cette clé dans ce panneau.
+              </p>
             </div>
+          )}
+          {settings.resend_configured && !settings.sender_configured && (
+            <div className="flex gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <p>Saisissez une adresse d’expédition valide appartenant à un domaine vérifié dans Resend.</p>
+            </div>
+          )}
+          {settings.resend_configured && settings.sender_configured && (
+            <p className="text-xs text-slate-500">
+              Vérifiez aussi dans Resend que le domaine de cette adresse est confirmé. Le format seul ne prouve pas que le domaine est validé.
+            </p>
           )}
           {!settings.password_reset_ready && (
             <p className="text-xs text-slate-500">

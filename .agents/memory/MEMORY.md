@@ -54,3 +54,4 @@
 - [Client query cache boundaries](client-query-cache-boundaries.md) — scope authenticated cached data by account and invalidate financial views after mutations.
 - [Local dependency mitigations](local-dependency-mitigations.md) — retain truthful package metadata when upstream has no fix; source guards do not clear version-only scans.
 - [Production export consistency](production-export-consistency.md) — never present paginated live production reads as a complete financial snapshot without matching row counts and fingerprints.
+- [Plesk Resend configuration](plesk-resend-configuration.md) — Replit’s Resend connector does not configure the Plesk runtime; set `RESEND_API_KEY` there and use a verified sender domain.
