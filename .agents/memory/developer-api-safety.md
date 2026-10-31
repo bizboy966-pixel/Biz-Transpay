@@ -15,6 +15,12 @@ For debited payouts with no stored provider transaction ID, a missing ID is not 
 
 **How to apply:** Require independently obtained, action-specific provider evidence before an administrator approves or refunds an uncertain payout, and record that evidence with the decision. Do not infer the provider outcome from a timeout.
 
+Merchant status webhooks use a durable outbox and a stable event ID. Treat delivery as at-least-once and require consumers to deduplicate before applying side effects.
+
+**Why:** A callback or process can repeat after a timeout or restart; marking an operation final before its notification is durably recorded can lose the merchant update.
+
+**How to apply:** Persist the event before advancing the API operation snapshot, reuse the existing HMAC delivery/URL-security path, and retry delivery without repeating the financial operation. Document event types, signature verification, and idempotency together.
+
 If a future official provider Sandbox is enabled, use the existing fee calculation and response contract, but keep its test ledger and settlement isolated from real balances. Do not restore local completion controls from the former merchant API.
 
 **Why:** Fee-free simulations hide accounting mistakes, and local completion does not verify a real provider test integration.

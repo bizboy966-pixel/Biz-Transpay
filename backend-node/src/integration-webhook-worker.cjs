@@ -23,7 +23,6 @@ const PENDING_STATES = [
   'pending', 'processing', 'created', 'submitted', 'accepted',
   'in_progress', 'awaiting_confirmation', 'pending_manual',
 ];
-const MAX_EVENT_ATTEMPTS = 8;
 
 function finalStatus(value) {
   const status = String(value || '').trim().toLowerCase();
@@ -53,6 +52,15 @@ function statusResponse(response, status) {
   return next;
 }
 
+async function findMany(collection, query, projection, sortField, limit) {
+  const cursor = collection?.find?.(query, projection);
+  if (Array.isArray(cursor)) return cursor.slice(0, limit);
+  if (!cursor || typeof cursor.to_list !== 'function') return [];
+  const sorted = sortField && typeof cursor.sort === 'function'
+    ? cursor.sort(sortField) : cursor;
+  return sorted.to_list(limit);
+}
+
 function createIntegrationWebhookWorker({
   db,
   deliverEvent = async () => ({ status: 'skipped' }),
@@ -80,9 +88,13 @@ function createIntegrationWebhookWorker({
 
     const userId = String(operation.user_id || '');
     const environment = String(operation.environment || '');
-    const destinations = await db.collection('integration_webhooks')
-      .find({ user_id: userId, environment, active: true }, { _id: 0, id: 1 })
-      .sort('created_at', 1).to_list(20);
+    const destinations = await findMany(
+      db.collection('integration_webhooks'),
+      { user_id: userId, environment, active: true },
+      { _id: 0, id: 1 },
+      'created_at',
+      20,
+    );
     if (!destinations.length) return null;
 
     const id = eventIdFor(String(operation.id), nextStatus);
@@ -166,11 +178,17 @@ function createIntegrationWebhookWorker({
   }
 
   async function reconcilePendingOperations() {
-    const operations = await db.collection('integration_operations').find({
-      environment: 'live',
-      kind: { $in: Object.keys(OPERATION_SOURCES) },
-      status: { $in: PENDING_STATES },
-    }, { _id: 0 }).sort('updated_at', 1).to_list(500);
+    const operations = await findMany(
+      db.collection('integration_operations'),
+      {
+        environment: 'live',
+        kind: { $in: Object.keys(OPERATION_SOURCES) },
+        status: { $in: PENDING_STATES },
+      },
+      { _id: 0 },
+      'updated_at',
+      500,
+    );
     for (const operation of operations) {
       try {
         await reconcileOperation(operation);
@@ -202,9 +220,13 @@ function createIntegrationWebhookWorker({
   }
 
   async function deliverPendingEvents() {
-    const candidates = await db.collection('integration_webhook_events').find({
-      status: { $in: ['pending', 'retry', 'processing'] },
-    }, { _id: 0 }).sort('created_at', 1).to_list(200);
+    const candidates = await findMany(
+      db.collection('integration_webhook_events'),
+      { status: { $in: ['pending', 'retry', 'processing'] } },
+      { _id: 0 },
+      'created_at',
+      200,
+    );
     const current = now();
     for (const event of candidates) {
       const dueAt = Date.parse(event.next_attempt_at || event.created_at || '');
@@ -231,20 +253,19 @@ function createIntegrationWebhookWorker({
       }
 
       const attempts = Number(event.attempts || 0) + 1;
-      const status = failed
-        ? (attempts >= MAX_EVENT_ATTEMPTS ? 'failed' : 'retry')
-        : 'delivered';
-      const backoffMs = Math.min(60_000 * (2 ** Math.max(0, attempts - 1)), 3_600_000);
+      const status = failed ? 'retry' : 'delivered';
+      const backoffMs = Math.min(
+        60_000 * (2 ** Math.min(Math.max(0, attempts - 1), 6)),
+        3_600_000,
+      );
       await db.collection('integration_webhook_events').update_one({
         id: String(event.id),
         status: 'processing',
       }, { $set: {
         status,
         attempts,
-        ...(failed && status === 'retry'
-          ? { next_attempt_at: new Date(now() + backoffMs).toISOString() } : {}),
-        completed_at: status === 'delivered' || status === 'failed'
-          ? new Date(now()).toISOString() : null,
+        ...(failed ? { next_attempt_at: new Date(now() + backoffMs).toISOString() } : {}),
+        completed_at: status === 'delivered' ? new Date(now()).toISOString() : null,
         updated_at: new Date(now()).toISOString(),
       } });
     }

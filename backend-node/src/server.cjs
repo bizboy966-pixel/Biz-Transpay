@@ -470,7 +470,10 @@ function createServer({
   appServer.mbiyoDepositWorker = mbiyoDepositWorker;
   appServer.integrationWebhookWorker = integrationWebhookWorker;
   appServer.once('listening', async () => {
-    integrationWebhookWorker?.start();
+    const webhookWorkerReady = !healthState?.issue
+      && (!healthState || healthState.schemaStatus === 'complete')
+      && (!healthState?.database || healthState.database === 'connected');
+    if (webhookWorkerReady) integrationWebhookWorker?.start();
     try {
       const provider = await db?.collection?.('settings')?.find_one?.(
         { id: 'payment_provider_mbiyo' }, { _id: 0 },

@@ -30,9 +30,13 @@ test('integration documentation describes authenticated reads and supported writ
   assert.equal(body.base_url, 'https://biz-transpay.com');
   const mobileMoney = body.sections.find(section => section.id === 'mobile-money');
   const transactionTracking = body.sections.find(section => section.id === 'transactions');
+  const webhooks = body.sections.find(section => section.id === 'webhooks');
   assert.match(mobileMoney.description, /fee_bearer indique/);
   assert.match(mobileMoney.description, /charged_amount/);
   assert.match(transactionTracking.description, /traitement Biz-transPay/);
+  assert.match(webhooks.description, /X-BizTransPay-Signature/);
+  assert.match(webhooks.description, /au moins une fois/);
+  assert.match(webhooks.code_examples.javascript, /timingSafeEqual/);
   assert.doesNotMatch(JSON.stringify(body), /PayDunya|AfriBaPay|Mbiyo/i);
 
   const deposit = body.endpoints.find(item => (
@@ -98,6 +102,7 @@ test('integration documentation PDF is delivered with a valid PDF response', asy
   const pdfText = res.body.toString('ascii');
   assert.ok(pdfText.includes('Apres creation, chaque operation garde le meme traitement'));
   assert.ok(pdfText.includes('charged_amount'));
+  assert.ok(pdfText.includes('X-BizTransPay-Signature'));
   assert.doesNotMatch(pdfText, /PayDunya|AfriBaPay|Mbiyo/i);
 });
 

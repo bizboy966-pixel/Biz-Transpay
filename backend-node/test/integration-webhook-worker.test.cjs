@@ -133,3 +133,45 @@ test('failed merchant webhook delivery is retried with the same event id', async
   assert.equal(deliveredEventIds.length, 2);
   assert.equal(deliveredEventIds[0], deliveredEventIds[1]);
 });
+
+test('payout reconciliation emits a terminal failure notification without changing funds', async () => {
+  const delivered = [];
+  const { collections, worker } = setup({
+    deliverEvent: async (userId, environment, destinationId, payload) => {
+      delivered.push(payload);
+      return { status: 'delivered' };
+    },
+  });
+  collections.integration_operations.rows.push({
+    id: 'operation-payout-1',
+    user_id: 'merchant-1',
+    environment: 'live',
+    kind: 'payout',
+    business_id: 'payout-1',
+    status: 'pending',
+    response: { id: 'payout-1', status: 'pending' },
+    updated_at: '2026-10-31T09:59:00.000Z',
+  });
+  collections.transactions.rows.push({
+    id: 'payout-1',
+    user_id: 'merchant-1',
+    status: 'failed',
+    amount: 500,
+    currency: 'XOF',
+  });
+
+  await worker.runOnce();
+
+  const operation = collections.integration_operations.rows.find(
+    item => item.id === 'operation-payout-1',
+  );
+  const event = collections.integration_webhook_events.rows.find(
+    item => item.kind === 'payout',
+  );
+  assert.equal(operation.status, 'failed');
+  assert.equal(event.event_type, 'payout.status_changed');
+  assert.equal(event.payload.data.status, 'failed');
+  assert.equal(event.payload.data.amount, 500);
+  assert.equal(event.payload.data.currency, 'XOF');
+  assert.ok(delivered.some(item => item.id === event.id));
+});

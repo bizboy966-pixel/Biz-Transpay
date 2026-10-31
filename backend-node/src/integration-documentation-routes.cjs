@@ -30,6 +30,18 @@ const SECTIONS = [
     description: 'Les listes donnent les opérations enregistrées. L’endpoint de détail actualise le statut avec le même traitement Biz-transPay que celui choisi à la création. Un dépôt ou un retrait peut rester « pending » pendant l’attente de confirmation; ne modifiez pas le parcours et ne créez pas une deuxième opération pour remplacer une réponse en attente.',
   },
   {
+    id: 'webhooks',
+    title: 'Recevoir et vérifier les webhooks',
+    description: [
+      'Activez une URL HTTPS et un secret de signature dans la configuration des webhooks Biz-transPay. Chaque dépôt ou retrait Mobile Money/crypto déclenche un événement lorsque son statut vérifié passe à completed ou failed : deposit.status_changed, payout.status_changed, crypto.deposit.status_changed ou crypto.payout.status_changed. Seules les destinations actives du même environnement reçoivent l’événement.',
+      'Biz-transPay envoie le JSON dans le corps brut de la requête avec X-BizTransPay-Event-Id, X-BizTransPay-Event-Type, X-BizTransPay-Timestamp et X-BizTransPay-Signature. La signature vaut sha256=HMAC-SHA256(secret, timestamp + "." + corps_brut). Vérifiez-la avant de traiter l’événement, puis répondez en 2xx. Les livraisons sont au moins une fois : dédupliquez toujours sur l’identifiant stable de l’événement (id) avant toute action.',
+      'Le champ data contient l’identifiant Biz-transPay, le type d’objet, les statuts précédent et final et, si disponibles, le montant, la devise et la référence. Aucun nom de prestataire ni secret de paiement n’est transmis. Les livraisons et tentatives sont consultables dans le panneau d’intégration.',
+    ].join('\n\n'),
+    code_examples: {
+      javascript: `const crypto = require('node:crypto');\nconst rawBody = req.rawBody; // Buffer du corps brut; ne pas re-sérialiser le JSON\nconst timestamp = req.headers['x-biztranspay-timestamp'];\nconst supplied = req.headers['x-biztranspay-signature'] || '';\nconst signedContent = Buffer.concat([Buffer.from(timestamp + '.', 'utf8'), rawBody]);\nconst expected = 'sha256=' + crypto.createHmac('sha256', process.env.BIZ_WEBHOOK_SECRET)\n  .update(signedContent)\n  .digest('hex');\nconst valid = supplied.length === expected.length\n  && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));\nif (!valid) return res.sendStatus(401);\nconst event = JSON.parse(rawBody.toString('utf8'));\n// Enregistrer event.id de façon unique avant de traiter event.data.\nreturn res.sendStatus(200);`,
+    },
+  },
+  {
     id: 'crypto',
     title: 'Dépôts et retraits crypto',
     description: 'Utilisez les codes d’actif et de réseau fournis par le catalogue crypto actif. Les retraits exigent aussi une clé Live avec autorisation de retrait, l’activation explicite des retraits API et un KYC marchand vérifié.',
@@ -485,9 +497,10 @@ function buildPdf() {
     'Si payment_flow.ussd_template contient {amount}, remplacez-le par charged_amount avant affichage ou composition.',
     'request_otp=true demande le code sans créer le dépôt; utilisez une clé d’idempotence distincte pour le dépôt final.',
     'Pay-out Mobile Money: amount, currency, country, operator, recipient; fee_bearer: sender ou receiver.',
+    'Webhooks: deposit.status_changed/payout.status_changed; verifiez X-BizTransPay-Signature sur timestamp + corps brut; livraisons au moins une fois, dedupliquez event.id.',
     '',
     ...ENDPOINTS.map(endpoint => `${endpoint.method} ${endpoint.path} - ${endpoint.title}`),
-  ].slice(0, 42);
+  ].slice(0, 43);
   const commands = ['BT', '/F1 9 Tf'];
   lines.forEach((line, index) => {
     commands.push(`1 0 0 1 40 ${790 - index * 17} Tm (${pdfText(line)}) Tj`);
@@ -519,7 +532,7 @@ function buildPdf() {
 function createIntegrationDocumentationRoutes() {
   const documentation = {
     title: 'Intégrer Biz-transPay',
-    description: 'Guide d’intégration API marchand : authentification, catalogues, dépôts, retraits, suivi des statuts, échanges, crypto et liens de paiement.',
+    description: 'Guide d’intégration API marchand : authentification, catalogues, dépôts, retraits, webhooks signés et suivi des statuts.',
     base_url: API_BASE_URL,
     sections: SECTIONS,
     endpoints: ENDPOINTS,

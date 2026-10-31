@@ -106,6 +106,8 @@ async function start() {
         'password_reset_limits', 'password_reset_tokens', 'settings',
         'transactions', 'momo_deposits', 'crypto_deposits', 'wallet_operations',
         'kyc', 'notifications', 'push_devices', 'referral_commissions',
+        'integration_operations', 'integration_webhooks',
+        'integration_webhook_deliveries', 'integration_webhook_events',
         'tickets', 'support_messages',
       ].map(collection => store.columnsForCollection(collection)));
       dependencies = {
