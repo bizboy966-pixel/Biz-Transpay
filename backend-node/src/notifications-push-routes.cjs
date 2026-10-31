@@ -479,6 +479,7 @@ module.exports = {
   createNotificationsPushRoutes,
   firebaseClientConfig,
   firebaseServerStatus,
+  missingFirebaseClientConfig,
   serviceAccountInfo,
   safeFcmError,
 };

@@ -226,3 +226,21 @@ test('admin push refuses a Firebase project mismatch before queueing a campaign'
   assert.match(result.body.detail, /FIREBASE_PROJECT_ID/);
   assert.equal(scheduled.length, 0);
 });
+
+test('admin push reports missing Firebase web variables before queueing', async () => {
+  const { handle, scheduled } = setup({
+    env: { FIREBASE_WEB_API_KEY: '' },
+  });
+  const result = await call(handle, 'POST', '/api/admin/push/send', {
+    audience: 'user',
+    user_id: 'u1',
+    title: 'Information',
+    body: 'Message',
+    url: '/dashboard',
+    confirmation: 'CONFIRMER',
+    request_id: '44444444-4444-4444-8444-444444444444',
+  });
+  assert.equal(result.status, 503);
+  assert.match(result.body.detail, /FIREBASE_WEB_API_KEY/);
+  assert.equal(scheduled.length, 0);
+});
