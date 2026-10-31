@@ -511,6 +511,34 @@ test('integration Mobile Money payout requires opt-in, KYC, scope and persists i
   assert.equal(submitted.length, 1);
 });
 
+test('integration Mobile Money payout exposes safe PayDunya 4002 detail and provider code', async () => {
+  const detail = 'PayDunya n’a pas pu préparer le retrait. (code 4002) '
+    + 'Détail PayDunya : vérifiez les autorisations du compte marchand.';
+  const createMobileMoneyPayout = async () => {
+    const error = new Error(detail);
+    error.status = 422;
+    error.code = 'PAYDUNYA_4002';
+    throw error;
+  };
+  const { service } = setup({
+    scopes: ['payouts:write'],
+    payoutOptIn: true,
+    createMobileMoneyPayout,
+  });
+  const response = await call(service, {
+    method: 'POST',
+    url: '/api/integration/v1/payouts',
+    idempotencyKey: 'paydunya-4002-api-01',
+    body: {
+      amount: 2000, currency: 'XOF', country: 'TG',
+      operator: 'tmoney_tg', recipient: '90123456',
+    },
+  });
+
+  assert.equal(response.status, 422);
+  assert.deepEqual(response.body, { detail, code: 'PAYDUNYA_4002' });
+});
+
 test('integration API refreshes PayDunya payouts without resubmitting or exposing invoice tokens', async () => {
   let collections;
   let createCalls = 0;

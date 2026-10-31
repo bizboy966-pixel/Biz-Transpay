@@ -811,7 +811,10 @@ function createIntegrationApiRoutes({
       const detail = error instanceof IntegrationApiError
         ? error.detail
         : error.detail ?? (status === 500 ? 'Integration API request failed.' : error.message);
-      reply(res, status, { detail });
+      const providerCode = /^PAYDUNYA_\d{3,4}$/.test(String(error.code || ''))
+        ? String(error.code)
+        : null;
+      reply(res, status, { detail, ...(providerCode ? { code: providerCode } : {}) });
       return true;
     }
   }
